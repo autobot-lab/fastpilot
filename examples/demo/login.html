@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Login</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 360px; margin: 48px auto; }
+    form { display: grid; gap: 8px; }
+    button { padding: 8px; }
+    [role=alert] { color: #b00020; }
+  </style>
+</head>
+<body>
+  <main id="login">
+    <h1>Masuk ke Akun</h1>
+    <form id="form">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password">
+      <label><input id="remember" type="checkbox"> Ingat saya</label>
+      <button id="submit" type="submit">Masuk</button>
+      <p id="error" role="alert" hidden></p>
+    </form>
+    <p><a href="#lupa">Lupa password?</a></p>
+  </main>
+  <main id="dashboard" hidden>
+    <h1>Dashboard</h1>
+    <p>Selamat datang, <strong id="user"></strong></p>
+    <button id="logout" type="button">Keluar</button>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    // Simulated network latency, so flows exercise auto-wait instead of sleeping.
+    $('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      $('submit').disabled = true;
+      $('error').hidden = true;
+      setTimeout(() => {
+        $('submit').disabled = false;
+        if ($('email').value === 'a@b.com' && $('password').value === 'rahasia123') {
+          document.title = 'Dashboard';
+          $('user').textContent = 'Budi';
+          $('login').hidden = true;
+          $('dashboard').hidden = false;
+        } else {
+          $('error').textContent = 'Email atau password salah';
+          $('error').hidden = false;
+        }
+      }, 400);
+    });
+    $('logout').addEventListener('click', () => {
+      document.title = 'Login';
+      $('form').reset();
+      $('dashboard').hidden = true;
+      $('login').hidden = false;
+    });
+  </script>
+</body>
+</html>
