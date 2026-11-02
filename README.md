@@ -1,93 +1,163 @@
-# Fastpilot
+# fastpilot
 
+MCP server berupa **satu binary Rust** untuk QA automation full-AI di Web (Android dan iOS menyusul). AI agent
+(Claude Code, Claude Desktop, Cursor, dll.) membaca test case bahasa natural, lalu menjalankan banyak langkah
+dalam **satu** `run_flow`. Hasilnya berupa snapshot teks ringkas dan diff, bukan view hierarchy mentah.
 
+- CDP langsung lewat satu WebSocket. Tanpa Node, JVM, Appium, chromedriver, atau XPath.
+- DSL YAML kompatibel Maestro (`tapOn`, `inputText`, `assertVisible`, `scroll`, `back`) ditambah `openUrl`,
+  `evalScript`, `session`, `parallel`.
+- Multi-sesi dalam satu `run_flow`: satu proses Chrome, satu `BrowserContext` terisolasi per sesi, blok `parallel:`.
+- Auto-wait (actionability, DOM quiet, request yang dipicu aksi), tanpa `sleep`. Stop-early pada langkah gagal
+  dengan alasan, kandidat ref, dan snapshot.
 
-## Getting started
+Spesifikasi lengkap: [docs/PRD.md](docs/PRD.md). Status: **Phase 1** (core + mcp + web launch mode).
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Build
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium (atau set `FASTPILOT_CHROME`).
 
-## Add your files
+```bash
+cargo build --release
+```
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Binary ada di `target/release/fastpilot` (~5 MB).
+
+## Konfigurasi MCP
+
+**Claude Code** (dari root proyek yang mau dites):
+
+```bash
+claude mcp add fastpilot -- /path/to/fastpilot mcp
+```
+
+atau `.mcp.json` di root proyek:
+
+```json
+{
+  "mcpServers": {
+    "fastpilot": {
+      "command": "/path/to/fastpilot",
+      "args": ["mcp"],
+      "env": { "DEMO_PASS": "rahasia123" }
+    }
+  }
+}
+```
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` di macOS,
+`%APPDATA%\Claude\claude_desktop_config.json` di Windows): blok `mcpServers` yang sama. Claude Desktop tidak
+menjalankan server dari folder proyek, jadi pakai URL atau path absolut di `target`/`openUrl`.
+
+| Env | Fungsi |
+|---|---|
+| `FASTPILOT_CHROME` | path executable Chrome/Chromium |
+| `FASTPILOT_HEADFUL=1` | tampilkan jendela browser (default headless); sama dengan `fastpilot mcp --headful` |
+| `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
+| variabel lain | dipakai flow lewat `${NAMA}`; nilainya tidak pernah dikirim balik ke AI |
+
+## Tools
+
+| Tool | Fungsi |
+|---|---|
+| `session` | `start` / `stop` / `list` / `devices`; `start` dengan `target` langsung mengembalikan snapshot |
+| `run_flow` | jalankan flow YAML (multi-langkah, multi-sesi, `parallel:`); kembalikan timing per langkah + diff per sesi |
+| `check_flow` | validasi tanpa eksekusi: syntax, step belum didukung, sesi tak dikenal, aturan parallel, `${ENV}` hilang |
+| `snapshot` | snapshot ringkas (`filter`, `full`); jarang dibutuhkan karena `run_flow` sudah mengembalikan state |
+| `screenshot` | JPEG base64 |
+| `docs` | referensi DSL on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors` |
+
+## Contoh: login demo dalam satu round-trip
+
+Test case: [tests/login.md](tests/login.md). Halaman demo: [examples/demo/login.html](examples/demo/login.html)
+(path relatif di-resolve dari working directory server).
+
+```yaml
+- session: { start: web1, platform: web, target: "examples/demo/login.html" }
+- inputText: { into: "Email", text: "a@b.com" }
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- tapOn: "Masuk"
+- assertVisible: "Budi"
+```
+
+Respons `run_flow`:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/autobot-lab/fastpilot.git
-git branch -M main
-git push -uf origin main
+ok 5/5 steps 1.70s
+  ✓ 1 [web1] session start web1 (web) 1063ms
+  ✓ 2 [web1] inputText "Email" "a@b.com" 78ms
+  ✓ 3 [web1] inputText "Password" "${DEMO_PASS}" 84ms
+  ✓ 4 [web1] tapOn "Masuk" 83ms
+  ✓ 5 [web1] assertVisible "Budi" 385ms
+[web1] screen "Dashboard" (file:///.../examples/demo/login.html)
+e7 heading "Dashboard"
+e8 text "Selamat datang,"
+e9 text "Budi"
+e10 button "Keluar"
 ```
 
-## Integrate with your tools
+Langkah gagal berhenti dini dan mengembalikan kandidat:
 
-* [Set up project integrations](https://gitlab.com/autobot-lab/fastpilot/-/settings/integrations)
+```
+fail step 1/1 [web1] tapOn "Hapus Akun": not_found: no element matches "Hapus Akun" (timeout 5000ms)
+candidates: e10 button "Keluar"
+```
 
-## Collaborate with your team
+Dua sesi paralel (contoh lain di `docs` topic `parallel`):
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```yaml
+- session: { start: a, target: "examples/demo/login.html" }
+- session: { start: b, target: "examples/demo/login.html" }
+- parallel:
+    - session: a
+      steps:
+        - inputText: { into: "Email", text: "a@b.com" }
+        - inputText: { into: "Password", text: "${DEMO_PASS}" }
+        - tapOn: "Masuk"
+        - assertVisible: "Dashboard"
+    - session: b
+      steps:
+        - inputText: { into: "Email", text: "salah@b.com" }
+        - tapOn: "Masuk"
+        - assertVisible: "Email atau password salah"
+```
 
-## Test and Deploy
+## Bench
 
-Use the built-in continuous integration in GitLab.
+```bash
+./target/release/fastpilot bench --iterations 30
+```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+Contoh hasil (M1 Pro, Chrome headless): snapshot p50 1.5 ms, tap→diff p50 83 ms, session start warm 167 ms.
+Bench ini mencetak latensi launch Chrome, session start, snapshot, dan tap→diff terhadap halaman demo, lalu
+membandingkannya dengan target PRD §14 (snapshot <50 ms, tap→diff <200 ms, session start warm <1 s).
 
-***
+## Test
 
-# Editing this README
+```bash
+cargo test
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Unit test ada di `crates/core` (DSL, `check_flow`, prune/ref/diff, resolusi selector, engine dengan driver palsu).
+`bin/fastpilot/tests/mcp_login.rs` menjalankan `fastpilot mcp` lewat stdio dan menguji login, stop-early, dua sesi
+paralel, `check_flow`, `snapshot`, dan `screenshot` terhadap Chrome sungguhan. Test ini di-skip kalau Chrome
+tidak ditemukan.
 
-## Suggestions for a good README
+## Layout
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```
+crates/core      Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, SessionRegistry
+crates/web       CDP client, launch Chrome, WebPage (Driver) per BrowserContext
+crates/mcp       rmcp stdio server + tools + docs
+crates/android   stub (Phase 2)
+crates/ios       stub (Phase 5)
+crates/memory    stub (Phase 3: path memory + run reports)
+bin/fastpilot    entrypoint: `mcp`, `bench`
+examples/demo    halaman login lokal
+tests            test case bahasa natural
+```
 
-## Name
-Choose a self-explaining name for your project.
+## Belum ada di Phase 1
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+`launchApp`, `assertNotVisible`, `swipe` (mobile), tool `assert` dan `report`, path memory, attach mode,
+`snapshot(coords:)`, screenshot Set-of-Mark, Android, dan iOS. Lihat roadmap di PRD §16.

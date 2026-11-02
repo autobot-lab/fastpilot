@@ -1,0 +1,18 @@
+[package]
+name = "fastpilot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fastpilot-core.workspace = true
+fastpilot-web.workspace = true
+fastpilot-mcp.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+serde_json.workspace = true
