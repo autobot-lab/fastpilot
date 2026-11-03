@@ -207,6 +207,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_TESTABILITY = YES;
+				FASTPILOT_BUNDLE_PREFIX = com.fastpilot;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				ONLY_ACTIVE_ARCH = YES;
@@ -230,7 +231,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fastpilot.runner;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FASTPILOT_BUNDLE_PREFIX).runner";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -246,7 +247,7 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fastpilot.runner.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FASTPILOT_BUNDLE_PREFIX).runner.uitests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TEST_TARGET_NAME = FastpilotHost;
 			};
@@ -265,7 +266,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fastpilot.demo;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FASTPILOT_BUNDLE_PREFIX).demo";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;

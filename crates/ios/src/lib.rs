@@ -4,6 +4,7 @@
 //! port forwarding is needed.
 
 pub mod device;
+pub mod runner;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -151,14 +152,7 @@ const RUNNER_BUNDLE: &str = "com.fastpilot.runner.uitests.xctrunner";
 const HOST_BUNDLE: &str = "com.fastpilot.runner";
 
 fn xctestrun() -> Option<PathBuf> {
-    let dir = std::env::var_os("FASTPILOT_IOS_RUNNER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build")));
-    let products = dir.join("Build/Products");
-    std::fs::read_dir(products)
-        .ok()?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|x| x == "xctestrun"))
+    runner::xctestrun(runner::Target::Simulator)
 }
 
 /// A SpringBoard alert over the app (permission prompts and the like), PRD §11.2 rule 6.
