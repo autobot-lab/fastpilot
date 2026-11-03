@@ -175,6 +175,45 @@ struct Pending {
     node: Node,
 }
 
+/// A text node made only of digits and punctuation (`(`, `11`, `)`, `4.8`, `·`).
+fn symbolic(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.chars().count() <= 12 && !t.chars().any(char::is_alphabetic)
+}
+
+fn join_inline(a: &str, b: &str) -> String {
+    let (a, b) = (a.trim_end(), b.trim_start());
+    let tight = a.ends_with(['(', '[', '{', '#', '@', '/']) || b.starts_with([')', ']', '}', ',', '.', ':', ';', '%', '/']);
+    if tight { format!("{a}{b}") } else { format!("{a} {b}") }
+}
+
+/// Sibling text runs split by markup (a rating as `text "("`, `text "11"`, `text ")"`) become
+/// one node, when the pieces are digits/punctuation; worded texts stay separate.
+fn merge_inline_text(kept: Vec<Pending>) -> Vec<Pending> {
+    let mut out: Vec<Pending> = Vec::with_capacity(kept.len());
+    for p in kept {
+        if let Some(last) = out.last_mut()
+            && last.node.role == "text"
+            && p.node.role == "text"
+            && last.depth == p.depth
+            && last.node.children.is_empty()
+            && (symbolic(&last.node.name) || symbolic(&p.node.name))
+        {
+            last.node.name = join_inline(&last.node.name, &p.node.name);
+            if let (Some(a), Some(b)) = (last.node.bounds, p.node.bounds) {
+                let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                last.node.bounds = Some(Rect { x, y, w: (a.x + a.w).max(b.x + b.w) - x, h: (a.y + a.h).max(b.y + b.h) - y });
+            }
+            continue;
+        }
+        out.push(p);
+    }
+    out
+}
+
+/// Runs of this many same-role siblings or more are summarized in capped renders.
+const RUN: usize = 12;
+
 impl Snapshot {
     pub fn build(
         title: impl Into<String>,
@@ -201,6 +240,7 @@ impl Snapshot {
             })
             .collect();
         let kept: Vec<Pending> = out.into_iter().zip(redundant).filter(|(_, r)| !r).map(|(p, _)| p).collect();
+        let kept = merge_inline_text(kept);
         let ids = refs.assign(&kept.iter().map(|p| (p.key, p.node.handle)).collect::<Vec<_>>());
         let entries = kept
             .into_iter()
@@ -260,20 +300,40 @@ impl Snapshot {
                 }
             }
         }
-        let lines: Vec<String> = self
-            .entries
-            .iter()
-            .zip(&keep)
-            .filter(|(_, k)| **k)
-            .map(|(e, _)| e)
-            .map(|e| {
-                let l = line(e, true);
-                match (coords, e.node.bounds) {
-                    (true, Some(b)) => format!("{l} @{:.0},{:.0} {:.0}x{:.0}", b.x, b.y, b.w, b.h),
-                    _ => l,
-                }
-            })
-            .collect();
+        let shown: Vec<&Entry> = self.entries.iter().zip(&keep).filter(|(_, k)| **k).map(|(e, _)| e).collect();
+        let render = |e: &Entry| {
+            let l = line(e, true);
+            match (coords, e.node.bounds) {
+                (true, Some(b)) => format!("{l} @{:.0},{:.0} {:.0}x{:.0}", b.x, b.y, b.w, b.h),
+                _ => l,
+            }
+        };
+        let mut lines: Vec<String> = Vec::with_capacity(shown.len());
+        let mut i = 0;
+        while i < shown.len() {
+            let e = shown[i];
+            let run = shown[i..].iter().take_while(|o| o.depth == e.depth && o.node.role == e.node.role).count();
+            // A long strip of same-role siblings (a 30-day date picker): first and last few,
+            // with how to list them all. Uncapped renders (diffs, `full`) keep every line.
+            if run >= RUN && max_lines != usize::MAX && filter.is_none() {
+                lines.extend(shown[i..i + 5].iter().map(|e| render(e)));
+                let hidden = &shown[i + 5..i + run - 1];
+                let (first, last) = (hidden[0], hidden[hidden.len() - 1]);
+                lines.push(format!(
+                    "{}… +{} {} ({}..{}; snapshot(filter: \"{}\") lists them)",
+                    "  ".repeat(e.depth),
+                    hidden.len(),
+                    e.node.role,
+                    first.r#ref,
+                    last.r#ref,
+                    e.node.role
+                ));
+                lines.push(render(shown[i + run - 1]));
+            } else {
+                lines.extend(shown[i..i + run].iter().map(|e| render(e)));
+            }
+            i += run;
+        }
         let mut out = self.header();
         for l in lines.iter().take(max_lines) {
             out.push('\n');
@@ -726,5 +786,23 @@ mod tests {
         // Harakat are ignored when comparing.
         let c = snap.candidates(&Selector::Text("كن شريكا".into()), Intent::Find);
         assert!(c[0].contains("كن شريكًا"), "{c:?}");
+    }
+
+    #[test]
+    fn merges_inline_text_and_summarizes_long_runs() {
+        let mut refs = RefRegistry::default();
+        let n = |role: &str, name: &str| Node { role: role.into(), name: name.into(), ..Node::default() };
+        let mut nodes = vec![n("text", "4.8"), n("text", "("), n("text", "11"), n("text", ")"), n("text", "Selamat datang,"), n("text", "Budi")];
+        nodes.extend((1..=30).map(|d| n("button", &format!("{d} Nov"))));
+        nodes.push(n("link", "Berikutnya"));
+        let snap = Snapshot::build("Jadwal", "u", nodes, &mut refs);
+        let text = snap.render(None, 120);
+        assert!(text.contains("text \"4.8 (11)\""), "{text}");
+        assert!(text.contains("text \"Selamat datang,\"") && text.contains("text \"Budi\""), "worded texts stay apart: {text}");
+        assert!(text.contains("button \"5 Nov\"") && !text.contains("\"6 Nov\"") && text.contains("button \"30 Nov\""), "{text}");
+        assert!(text.contains("… +24 button (") && text.contains("link \"Berikutnya\""), "{text}");
+        // Every node is still there for selectors and uncapped renders.
+        assert!(snap.resolve(&Selector::Text("17 Nov".into()), Intent::Tap).is_ok());
+        assert!(snap.render(None, usize::MAX).contains("\"17 Nov\""));
     }
 }
