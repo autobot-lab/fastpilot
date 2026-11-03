@@ -42,6 +42,11 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
 | waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
 | takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
+| setLocation | `{ latitude: -6.2088, longitude: 106.8456 }` (web: geolocation override; android: emulator console; ios: simctl) | all (android: emulator) |
+| setPermissions | `{ appId?, permissions: { camera: allow, location: deny, notifications: unset } }` (also microphone, contacts, photos, calendar, clipboard (web); a platform name passes through) | all (ios: no notifications) |
+| setNetwork / setAirplaneMode | `setNetwork: offline \| online \| { latency: 300, download: 1600, upload: 750 }` (ms, kbps); `setAirplaneMode: enabled \| disabled` | web, android (throttling: emulator) |
+| setLocale | `{ locale: id-ID, timezone: Asia/Jakarta }` (android: app locale + system timezone; ios: applied by relaunching the app) | all |
+| pushNotification | `{ appId?, title, body, payload? }` (ios: simctl push APNs payload; android: a notification posted by the shell) | android, ios |
 | startRecording / stopRecording | `startRecording: checkout` … `stopRecording` → `.fastpilot/recordings/checkout.mp4` (android screenrecord, ios simctl) or `.html` (web screencast filmstrip) | all |
 | inputRandomText / Number / Email / PersonName | `inputRandomEmail` or `{ length: 10 }`; the value is returned | all |
 | runFlow | `runFlow: login.yaml` (relative to the flow file, else the working dir; a Maestro config header `appId: ...` + `---` is skipped), or `{ file \| commands: [...], when: <condition>, env: { USER: a@b.com } }` | all |

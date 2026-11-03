@@ -725,6 +725,15 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
                 *guard(&ctx.recording) = Some(name.clone());
                 return Ok(None);
             }
+            Step::SetLocation { latitude, longitude } => d.set_location(*latitude, *longitude).await?,
+            Step::SetPermissions { app, permissions } => {
+                d.set_permissions(app.as_deref().map(subst).transpose()?.as_deref(), permissions).await?
+            }
+            Step::SetNetwork(n) => d.set_network(n).await?,
+            Step::SetLocale { locale, timezone } => d.set_locale(locale.as_deref(), timezone.as_deref()).await?,
+            Step::PushNotification { app, title, body, payload } => {
+                d.push_notification(app.as_deref().map(subst).transpose()?.as_deref(), &subst(title)?, &subst(body)?, payload.as_ref()).await?
+            }
             Step::StopRecording => {
                 let name = guard(&ctx.recording).take().unwrap_or_else(|| "recording".into());
                 let rec = d.stop_recording().await?;

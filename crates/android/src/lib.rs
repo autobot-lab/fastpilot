@@ -311,6 +311,25 @@ impl AndroidDriver {
         Ok(())
     }
 
+    /// Emulator console command through `adb emu` (which handles the console auth token).
+    async fn console(&self, args: &[&str]) -> Result<()> {
+        if !self.serial.starts_with("emulator-") {
+            return Err(CoreError::Unsupported(format!("`{}` needs an emulator (its console); {} is a device", args.join(" "), self.serial)));
+        }
+        let out = tokio::process::Command::new(adb::sdk_tool("platform-tools/adb", "adb"))
+            .args(["-s", &self.serial, "emu"])
+            .args(args)
+            .output()
+            .await
+            .map_err(|e| CoreError::Driver(format!("adb emu: {e}")))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        if text.lines().any(|l| l.starts_with("OK")) {
+            Ok(())
+        } else {
+            Err(CoreError::Driver(format!("emulator console `{}`: {}", args.join(" "), text.trim())))
+        }
+    }
+
     /// `app` (a package, or package/activity), else the app under test.
     fn app_or(&self, app: Option<&str>) -> Result<String> {
         match app {
@@ -493,6 +512,27 @@ fn find_webview(nodes: &mut [Node]) -> Option<&mut Node> {
     None
 }
 
+/// Runtime permissions behind a generic name; `android.permission.*` names pass through.
+fn permissions(name: &str) -> Vec<String> {
+    let short: &[&str] = match name {
+        "camera" => &["CAMERA"],
+        "microphone" => &["RECORD_AUDIO"],
+        "location" => &["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
+        "notifications" => &["POST_NOTIFICATIONS"],
+        "contacts" => &["READ_CONTACTS", "WRITE_CONTACTS"],
+        "photos" | "storage" => &["READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO"],
+        "calendar" => &["READ_CALENDAR", "WRITE_CALENDAR"],
+        "sms" => &["READ_SMS", "RECEIVE_SMS"],
+        other => return vec![other.to_owned()],
+    };
+    short.iter().map(|p| format!("android.permission.{p}")).collect()
+}
+
+/// Single-quoted for `sh -c` (the adb shell service runs one).
+fn quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn keycode(key: &str) -> Option<u32> {
     Some(match key.to_ascii_lowercase().as_str() {
         "enter" | "return" => 66,
@@ -661,6 +701,83 @@ impl Driver for AndroidDriver {
 
     fn platform(&self) -> Platform {
         Platform::Android
+    }
+
+    /// Emulator console `geo fix` (real devices have no console to fake GPS through).
+    async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
+        self.console(&["geo", "fix", &lon.to_string(), &lat.to_string()]).await
+    }
+
+    async fn set_permissions(&self, app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
+        use fastpilot_core::Grant;
+        let pkg = self.app_or(app)?;
+        let pkg = shell_safe(&pkg)?;
+        for (name, grant) in perms {
+            for p in permissions(name) {
+                let p = shell_safe(&p)?;
+                let cmd = match grant {
+                    Grant::Allow => format!("pm grant {pkg} {p}"),
+                    Grant::Deny => format!("pm revoke {pkg} {p}; pm set-permission-flags {pkg} {p} user-set user-fixed"),
+                    Grant::Unset => format!("pm revoke {pkg} {p}; pm clear-permission-flags {pkg} {p} user-set user-fixed"),
+                };
+                let out = self.adb.shell(&self.serial, &cmd).await?;
+                if out.contains("Exception") || out.contains("Unknown permission") || out.contains("not a changeable") {
+                    return Err(CoreError::Flow(format!("permission `{name}` ({p}): {}", out.trim())));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Offline = airplane mode; throttling via the emulator console (emulators only).
+    async fn set_network(&self, n: &fastpilot_core::Network) -> Result<()> {
+        let mode = if n.offline { "enable" } else { "disable" };
+        self.adb.shell(&self.serial, &format!("cmd connectivity airplane-mode {mode}")).await?;
+        let throttled = n.latency_ms.is_some() || n.download_kbps.is_some() || n.upload_kbps.is_some();
+        if throttled || !n.offline {
+            let speed = match (n.upload_kbps, n.download_kbps) {
+                (None, None) => "full".to_owned(),
+                (up, down) => format!("{}:{}", up.unwrap_or(0), down.unwrap_or(0)),
+            };
+            let delay = n.latency_ms.map_or("none".to_owned(), |l| l.to_string());
+            let res = async {
+                self.console(&["network", "speed", &speed]).await?;
+                self.console(&["network", "delay", &delay]).await
+            }
+            .await;
+            if throttled {
+                res?;
+            }
+        }
+        Ok(())
+    }
+
+    /// App locale (`cmd locale`, the app under test) and system timezone (`cmd alarm`).
+    async fn set_locale(&self, locale: Option<&str>, timezone: Option<&str>) -> Result<()> {
+        if let Some(l) = locale {
+            let pkg = self.app_or(None)?;
+            let out = self.adb.shell(&self.serial, &format!("cmd locale set-app-locales {} --locales {}", shell_safe(&pkg)?, shell_safe(l)?)).await?;
+            if !out.trim().is_empty() {
+                return Err(CoreError::Flow(format!("locale `{l}`: {}", out.trim())));
+            }
+        }
+        if let Some(tz) = timezone {
+            let out = self.adb.shell(&self.serial, &format!("cmd alarm set-timezone {}", shell_safe(tz)?)).await?;
+            if out.contains("rror") || out.contains("nvalid") {
+                return Err(CoreError::Flow(format!("timezone `{tz}`: {}", out.trim())));
+            }
+        }
+        Ok(())
+    }
+
+    /// Posts a notification from the shell (real push needs the app's server and FCM).
+    async fn push_notification(&self, _app: Option<&str>, title: &str, body: &str, _payload: Option<&Value>) -> Result<()> {
+        let cmd = format!("cmd notification post -S bigtext -t {} fastpilot {}", quote(title), quote(if body.is_empty() { title } else { body }));
+        let out = self.adb.shell(&self.serial, &cmd).await?;
+        if !out.contains("posting") {
+            return Err(CoreError::Driver(format!("notification: {}", out.trim())));
+        }
+        Ok(())
     }
 
     /// `screenrecord` (3 minutes at most, the tool's own limit).

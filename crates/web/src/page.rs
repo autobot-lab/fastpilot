@@ -1084,12 +1084,25 @@ impl Driver for WebPage {
     }
 
     async fn eval_script(&self, js: &str) -> Result<Value> {
+        // By reference first: in replMode a script whose value is a Promise (rather than a
+        // top-level await) would otherwise serialize as `{}`; such a promise is awaited.
         let mut r = self
             .call(
                 "Runtime.evaluate",
-                json!({ "expression": js, "returnByValue": true, "awaitPromise": true, "replMode": true }),
+                json!({ "expression": js, "awaitPromise": true, "replMode": true, "objectGroup": GROUP }),
             )
             .await?;
+        if r.get("exceptionDetails").is_none()
+            && let Some(id) = r["result"]["objectId"].as_str().map(str::to_owned)
+        {
+            r = if r["result"]["subtype"] == "promise" {
+                self.call("Runtime.awaitPromise", json!({ "promiseObjectId": id, "returnByValue": true })).await?
+            } else {
+                self.call("Runtime.callFunctionOn", json!({ "objectId": id, "functionDeclaration": "function() { return this; }", "returnByValue": true }))
+                    .await?
+            };
+            self.browser.cdp.send(self.tab().session.as_deref(), "Runtime.releaseObjectGroup", json!({ "objectGroup": GROUP }));
+        }
         if let Some(ex) = r.get("exceptionDetails") {
             let msg = ex["exception"]["description"].as_str().or(ex["text"].as_str()).unwrap_or("script error");
             return Err(CoreError::Script(msg.to_owned()));
@@ -1202,6 +1215,71 @@ impl Driver for WebPage {
         let (_, frames) = lock(&self.shared.screencast).take().ok_or_else(|| CoreError::Flow("not recording".into()))?;
         let b64 = base64::engine::general_purpose::STANDARD;
         Ok(fastpilot_core::Recording::Frames(frames.into_iter().filter_map(|(t, d)| b64.decode(d).ok().map(|j| (t, j))).collect()))
+    }
+
+    async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
+        self.call("Emulation.setGeolocationOverride", json!({ "latitude": lat, "longitude": lon, "accuracy": 10 })).await?;
+        Ok(())
+    }
+
+    /// Browser.setPermission on this session's context, for every origin.
+    async fn set_permissions(&self, _app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
+        for (name, grant) in perms {
+            // PermissionDescriptor names (navigator.permissions), not CDP PermissionType ones.
+            let names: &[&str] = match name.as_str() {
+                "location" | "geolocation" => &["geolocation"],
+                "clipboard" => &["clipboard-read", "clipboard-write"],
+                other => &[other][..],
+            };
+            let setting = match grant {
+                fastpilot_core::Grant::Allow => "granted",
+                fastpilot_core::Grant::Deny => "denied",
+                fastpilot_core::Grant::Unset => "prompt",
+            };
+            for n in names {
+                let mut params = json!({ "permission": { "name": n }, "setting": setting });
+                if let Some(ctx) = &self.context {
+                    params["browserContextId"] = json!(ctx);
+                }
+                self.browser
+                    .cdp
+                    .call(None, "Browser.setPermission", params)
+                    .await
+                    .map_err(|e| CoreError::Unsupported(format!("permission `{name}`: {e}")))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn set_network(&self, n: &fastpilot_core::Network) -> Result<()> {
+        let bps = |kbps: Option<u64>| kbps.map_or(-1.0, |k| k as f64 * 1000.0 / 8.0);
+        self.call(
+            "Network.emulateNetworkConditions",
+            json!({
+                "offline": n.offline,
+                "latency": n.latency_ms.unwrap_or(0),
+                "downloadThroughput": bps(n.download_kbps),
+                "uploadThroughput": bps(n.upload_kbps),
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Intl locale + navigator.language (Accept-Language) and the JS timezone.
+    async fn set_locale(&self, locale: Option<&str>, timezone: Option<&str>) -> Result<()> {
+        if let Some(l) = locale {
+            self.call("Emulation.setLocaleOverride", json!({ "locale": l.replace('-', "_") })).await?;
+            let ua = self.browser.cdp.call(None, "Browser.getVersion", json!({})).await?;
+            let user_agent = ua["userAgent"].as_str().unwrap_or("").to_owned();
+            self.call("Emulation.setUserAgentOverride", json!({ "userAgent": user_agent, "acceptLanguage": l })).await?;
+        }
+        if let Some(tz) = timezone {
+            self.call("Emulation.setTimezoneOverride", json!({ "timezoneId": tz }))
+                .await
+                .map_err(|e| CoreError::Flow(format!("timezone `{tz}`: {e}")))?;
+        }
+        Ok(())
     }
 
     async fn viewport(&self) -> Option<Rect> {

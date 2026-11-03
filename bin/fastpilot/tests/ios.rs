@@ -108,6 +108,17 @@ async fn ios_login_over_mcp() {
     assert!(ok && out.contains("= a@b.com"), "{out}");
     let video = std::fs::read(format!("{ROOT}/.fastpilot/recordings/ios-rec.mp4")).expect("ios recording");
     assert!(video.len() > 10_000 && &video[4..8] == b"ftyp", "not an mp4: {} bytes", video.len());
+    // Device control: a granted location permission means no alert; push and locale run.
+    let flow = format!(
+        "{login}- setPermissions: {{ permissions: {{ location: allow }} }}\n- tapOn: \"Izin lokasi\"\n- assertNotVisible: {{ role: dialog }}\n\
+         - setLocation: {{ latitude: -6.2088, longitude: 106.8456 }}\n- pushNotification: {{ title: \"Pesanan dikirim\", body: \"Paket dalam perjalanan\" }}\n\
+         - setLocale: {{ locale: id-ID, timezone: Asia/Jakarta }}\n- assertVisible: \"Masuk ke Akun\"\n"
+    );
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setNetwork: offline\n" })).await;
+    assert!(!ok && out.contains("unsupported"), "{out}");
     let flow = format!("{login}- tapOn: \"Crash\"\n- assertVisible: {{ text: \"Tidak ada\", timeout: 10000 }}\n");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");

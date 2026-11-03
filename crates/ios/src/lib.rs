@@ -175,6 +175,8 @@ pub struct IosDriver {
     notes: Mutex<Vec<String>>,
     /// `simctl io recordVideo` while recording, and its output file.
     recording: tokio::sync::Mutex<Option<(Child, PathBuf)>>,
+    /// `setLocale`: applied as launch arguments / environment on every launchApp.
+    locale: Mutex<(Option<String>, Option<String>)>,
     _runner: Child,
 }
 
@@ -238,6 +240,7 @@ impl IosDriver {
             policy: Policy::from_env(),
             notes: Mutex::default(),
             recording: tokio::sync::Mutex::new(None),
+            locale: Mutex::default(),
             _runner: child,
         })
     }
@@ -455,6 +458,68 @@ impl Driver for IosDriver {
         Platform::Ios
     }
 
+    async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
+        simctl(&["location", &self.udid, "set", &format!("{lat},{lon}")]).await?;
+        Ok(())
+    }
+
+    /// `simctl privacy` (TCC services; notifications are not among them).
+    async fn set_permissions(&self, app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
+        use fastpilot_core::Grant;
+        let bundle = self.app_or(app)?;
+        for (name, grant) in perms {
+            let service = match name.as_str() {
+                "notifications" => return Err(CoreError::Unsupported("notification permission cannot be set on the simulator (simctl privacy has no such service)".into())),
+                "location" => "location",
+                other => other,
+            };
+            let action = match grant {
+                Grant::Allow => "grant",
+                Grant::Deny => "revoke",
+                Grant::Unset => "reset",
+            };
+            simctl(&["privacy", &self.udid, action, service, &bundle]).await.map_err(|e| CoreError::Flow(format!("permission `{name}`: {e}")))?;
+        }
+        Ok(())
+    }
+
+    async fn set_network(&self, _n: &fastpilot_core::Network) -> Result<()> {
+        Err(CoreError::Unsupported(
+            "the iOS simulator uses the Mac's network: throttle with Network Link Conditioner, go offline on the host".into(),
+        ))
+    }
+
+    /// Takes effect from the next launch; the app under test is relaunched now.
+    async fn set_locale(&self, locale: Option<&str>, timezone: Option<&str>) -> Result<()> {
+        {
+            let mut l = lock(&self.locale);
+            if let Some(x) = locale {
+                l.0 = Some(x.to_owned());
+            }
+            if let Some(x) = timezone {
+                l.1 = Some(x.to_owned());
+            }
+        }
+        let bundle = lock(&self.bundle).clone();
+        if !bundle.is_empty() {
+            self.launch_app(&bundle).await?;
+        }
+        Ok(())
+    }
+
+    /// `simctl push`: an APNs payload delivered to the app as a remote notification.
+    async fn push_notification(&self, app: Option<&str>, title: &str, body: &str, payload: Option<&Value>) -> Result<()> {
+        let bundle = self.app_or(app)?;
+        let mut p = payload.cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        p["aps"]["alert"] = json!({ "title": title, "body": body });
+        let path = std::env::temp_dir().join(format!("fastpilot-push-{}.json", std::process::id()));
+        std::fs::write(&path, p.to_string()).map_err(|e| CoreError::Driver(e.to_string()))?;
+        let res = simctl(&["push", &self.udid, &bundle, &path.display().to_string()]).await;
+        let _ = std::fs::remove_file(&path);
+        res?;
+        Ok(())
+    }
+
     async fn start_recording(&self) -> Result<()> {
         let mut slot = self.recording.lock().await;
         if slot.is_some() {
@@ -620,9 +685,16 @@ impl Driver for IosDriver {
         self.call("key", json!({ "name": name })).await.map(|_| ())
     }
 
-    /// Maestro semantics: terminate and relaunch.
+    /// Maestro semantics: terminate and relaunch (with the `setLocale` launch settings).
     async fn launch_app(&self, app: &str) -> Result<()> {
-        self.call("launch", json!({ "bundleId": app })).await?;
+        let (locale, tz) = lock(&self.locale).clone();
+        let mut args = Vec::new();
+        if let Some(l) = &locale {
+            let lang = l.split(['-', '_']).next().unwrap_or(l);
+            args.extend(["-AppleLanguages".to_owned(), format!("({lang})"), "-AppleLocale".to_owned(), l.replace('-', "_")]);
+        }
+        let env: serde_json::Map<String, Value> = tz.into_iter().map(|t| ("TZ".to_owned(), json!(t))).collect();
+        self.call("launch", json!({ "bundleId": app, "args": args, "env": env })).await?;
         *lock(&self.bundle) = app.to_owned();
         Ok(())
     }

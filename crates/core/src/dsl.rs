@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_yaml::{Mapping, Value as Yaml};
 
-use crate::{Direction, Platform, Point, Selector};
+use crate::{Direction, Grant, Network, Platform, Point, Selector};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -54,6 +54,19 @@ pub enum Step {
     /// Screen recording of the active session, saved as `.fastpilot/recordings/<name>.*`.
     StartRecording(String),
     StopRecording,
+    SetLocation { latitude: f64, longitude: f64 },
+    SetPermissions { app: Option<String>, permissions: Vec<(String, Grant)> },
+    SetNetwork(Network),
+    SetLocale { locale: Option<String>, timezone: Option<String> },
+    PushNotification { app: Option<String>, title: String, body: String, payload: Option<serde_json::Value> },
+}
+
+fn grant_name(g: Grant) -> &'static str {
+    match g {
+        Grant::Allow => "allow",
+        Grant::Deny => "deny",
+        Grant::Unset => "unset",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,7 +260,7 @@ impl fmt::Display for FlowError {
 /// Maestro commands we recognise but do not run, so the AI gets a clear message.
 const MAESTRO_LATER: &[&str] = &[
     "runScript", "assertTrue", "assertWithAI", "assertNoDefectsWithAI", "extractTextWithAI", "evalScriptWithAI",
-    "setLocation", "travel", "addMedia", "setAirplaneMode", "toggleAirplaneMode",
+    "travel", "addMedia", "toggleAirplaneMode",
 ];
 
 fn null_or<T>(arg: &Yaml, f: impl FnOnce(&Yaml) -> Result<T, String>) -> Result<Option<T>, String> {
@@ -428,6 +441,76 @@ impl Step {
                     return Err("needs `times` and/or `while`".into());
                 }
                 Self::Repeat { times, while_, steps: steps_of(get(m, "commands").ok_or("missing `commands`")?, cx)? }
+            }
+            "setLocation" => {
+                let m = arg.as_mapping().ok_or("expects { latitude, longitude }")?;
+                let num = |k: &str| -> Result<f64, String> {
+                    match get(m, k).ok_or(format!("missing `{k}`"))? {
+                        Yaml::Number(n) => n.as_f64().ok_or(format!("`{k}` is a number")),
+                        Yaml::String(s) => s.parse().map_err(|_| format!("`{k}` is a number")),
+                        _ => Err(format!("`{k}` is a number")),
+                    }
+                };
+                let (latitude, longitude) = (num("latitude")?, num("longitude")?);
+                if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+                    return Err("latitude must be within ±90 and longitude within ±180".into());
+                }
+                Self::SetLocation { latitude, longitude }
+            }
+            "setPermissions" => {
+                let m = arg.as_mapping().ok_or("expects { appId?, permissions: { camera: allow, ... } }")?;
+                let perms = get(m, "permissions").and_then(Yaml::as_mapping).ok_or("missing `permissions` map")?;
+                let permissions = perms
+                    .iter()
+                    .map(|(k, v)| {
+                        let name = k.as_str().ok_or("permission names are strings")?.to_owned();
+                        let g = match v.as_str() {
+                            Some("allow") => Grant::Allow,
+                            Some("deny") => Grant::Deny,
+                            Some("unset") => Grant::Unset,
+                            _ => return Err(format!("`{name}`: allow, deny or unset")),
+                        };
+                        Ok((name, g))
+                    })
+                    .collect::<Result<_, String>>()?;
+                Self::SetPermissions { app: get(m, "appId").map(string).transpose()?, permissions }
+            }
+            "setNetwork" => Self::SetNetwork(match arg {
+                Yaml::String(s) if s == "offline" => Network { offline: true, ..Network::default() },
+                Yaml::String(s) if s == "online" => Network::default(),
+                Yaml::Mapping(m) => {
+                    let n = |k: &str| get(m, k).and_then(Yaml::as_u64);
+                    Network {
+                        offline: get(m, "offline").and_then(Yaml::as_bool).unwrap_or(false),
+                        latency_ms: n("latency"),
+                        download_kbps: n("download"),
+                        upload_kbps: n("upload"),
+                    }
+                }
+                _ => return Err("expects offline, online, or { latency: ms, download: kbps, upload: kbps }".into()),
+            }),
+            "setAirplaneMode" => Self::SetNetwork(match arg.as_str() {
+                Some("enabled") => Network { offline: true, ..Network::default() },
+                Some("disabled") => Network::default(),
+                _ => return Err("expects enabled or disabled".into()),
+            }),
+            "setLocale" => {
+                let m = arg.as_mapping().ok_or("expects { locale: id-ID, timezone: Asia/Jakarta }")?;
+                let locale = get(m, "locale").map(string).transpose()?;
+                let timezone = get(m, "timezone").map(string).transpose()?;
+                if locale.is_none() && timezone.is_none() {
+                    return Err("needs `locale` and/or `timezone`".into());
+                }
+                Self::SetLocale { locale, timezone }
+            }
+            "pushNotification" => {
+                let m = arg.as_mapping().ok_or("expects { appId?, title, body, payload? }")?;
+                Self::PushNotification {
+                    app: get(m, "appId").map(string).transpose()?,
+                    title: string(get(m, "title").ok_or("missing `title`")?)?,
+                    body: get(m, "body").map(string).transpose()?.unwrap_or_default(),
+                    payload: get(m, "payload").map(json_of).transpose()?,
+                }
             }
             "startRecording" => Self::StartRecording(match arg {
                 Yaml::Mapping(m) => string(get(m, "path").ok_or("missing `path`")?)?,
@@ -683,6 +766,23 @@ impl Step {
             Self::ReadOtp(o) => format!("readOtp {} -> {}", o.source.name(), o.into),
             Self::StartRecording(n) => format!("startRecording {n}"),
             Self::StopRecording => "stopRecording".into(),
+            Self::SetLocation { latitude, longitude } => format!("setLocation {latitude},{longitude}"),
+            Self::SetPermissions { permissions, .. } => {
+                let p: Vec<String> = permissions.iter().map(|(n, g)| format!("{n}={}", grant_name(*g))).collect();
+                format!("setPermissions {}", p.join(" "))
+            }
+            Self::SetNetwork(n) if n.offline => "setNetwork offline".into(),
+            Self::SetNetwork(n) if *n == Network::default() => "setNetwork online".into(),
+            Self::SetNetwork(n) => format!(
+                "setNetwork latency={}ms down={}kbps up={}kbps",
+                n.latency_ms.unwrap_or(0),
+                n.download_kbps.map_or("-".into(), |v| v.to_string()),
+                n.upload_kbps.map_or("-".into(), |v| v.to_string())
+            ),
+            Self::SetLocale { locale, timezone } => {
+                format!("setLocale {} {}", locale.as_deref().unwrap_or("-"), timezone.as_deref().unwrap_or("-"))
+            }
+            Self::PushNotification { title, .. } => format!("pushNotification {title:?}"),
         }
     }
 
@@ -870,6 +970,38 @@ impl Step {
             }
             Self::StartRecording(n) => one("startRecording", s(n)),
             Self::StopRecording => s("stopRecording"),
+            Self::SetLocation { latitude, longitude } => {
+                one("setLocation", map(vec![("latitude", (*latitude).into()), ("longitude", (*longitude).into())]))
+            }
+            Self::SetPermissions { app, permissions } => one(
+                "setPermissions",
+                map(vec![
+                    ("appId", app.as_deref().map(s).unwrap_or(Yaml::Null)),
+                    ("permissions", Yaml::Mapping(permissions.iter().map(|(n, g)| (s(n), s(grant_name(*g)))).collect())),
+                ]),
+            ),
+            Self::SetNetwork(n) if n.offline => one("setNetwork", s("offline")),
+            Self::SetNetwork(n) if *n == Network::default() => one("setNetwork", s("online")),
+            Self::SetNetwork(n) => {
+                let v = |x: Option<u64>| x.map(|v| Yaml::Number(v.into())).unwrap_or(Yaml::Null);
+                one("setNetwork", map(vec![("latency", v(n.latency_ms)), ("download", v(n.download_kbps)), ("upload", v(n.upload_kbps))]))
+            }
+            Self::SetLocale { locale, timezone } => one(
+                "setLocale",
+                map(vec![
+                    ("locale", locale.as_deref().map(s).unwrap_or(Yaml::Null)),
+                    ("timezone", timezone.as_deref().map(s).unwrap_or(Yaml::Null)),
+                ]),
+            ),
+            Self::PushNotification { app, title, body, payload } => one(
+                "pushNotification",
+                map(vec![
+                    ("appId", app.as_deref().map(s).unwrap_or(Yaml::Null)),
+                    ("title", s(title)),
+                    ("body", s(body)),
+                    ("payload", payload.as_ref().and_then(|p| serde_yaml::to_value(p).ok()).unwrap_or(Yaml::Null)),
+                ]),
+            ),
             Self::HttpRequest(h) => {
                 let kv = |v: &[(String, String)]| {
                     if v.is_empty() { Yaml::Null } else { Yaml::Mapping(v.iter().map(|(k, x)| (s(k), s(x))).collect()) }

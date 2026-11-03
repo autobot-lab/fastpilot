@@ -51,6 +51,8 @@ async fn serve(seen: Arc<Mutex<Vec<String>>>) -> u16 {
                         { "Content": { "Headers": { "To": ["budi@x.id"], "Subject": ["OTP"] }, "Body": "Kode: 55=\r\n1177" } }
                     ]}).to_string()),
                     ["GET", "/sms"] => ("200 OK", "Your code is 9081".to_owned()),
+                    ["GET", "/device"] => ("200 OK", "<!doctype html><title>Perangkat</title><h1>Kontrol perangkat</h1>".to_owned()),
+                    ["GET", p] if p.starts_with("/ping") => ("200 OK", "pong".to_owned()),
                     _ => ("404 Not Found", String::new()),
                 };
                 let resp = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
@@ -111,5 +113,43 @@ async fn http_requests_and_one_time_codes_over_mcp() {
     assert!(!ok && out.contains("assertion_failed") && out.contains("returned 401, expected 2xx"), "{out}");
     let (ok, out) = call(&client, "check_flow", json!({ "flow": "- readOtp: { from: pigeon }\n" })).await;
     assert!(!ok && out.contains("unknown source"), "{out}");
+    client.cancel().await.expect("shutdown");
+}
+
+/// Device control on Chrome: geolocation, permissions, locale/timezone, offline and latency.
+#[tokio::test]
+async fn device_control_on_web() {
+    let port = serve(Arc::new(Mutex::new(Vec::new()))).await;
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
+        c.arg("mcp").current_dir(ROOT);
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let flow = format!(
+        r#"
+- session: {{ start: d, target: "http://localhost:{port}/device" }}
+- setPermissions: {{ permissions: {{ location: allow, camera: deny }} }}
+- setLocation: {{ latitude: -6.2088, longitude: 106.8456 }}
+- evalScript: "new Promise(r => navigator.geolocation.getCurrentPosition(p => r(p.coords.latitude.toFixed(4) + ',' + p.coords.longitude.toFixed(4)), e => r('error ' + e.code)))"
+- evalScript: "navigator.permissions.query({{ name: 'camera' }}).then(s => s.state)"
+- setLocale: {{ locale: id-ID, timezone: Asia/Jakarta }}
+- evalScript: "Intl.DateTimeFormat().resolvedOptions().timeZone + ' ' + navigator.language + ' ' + (1234.5).toLocaleString()"
+- setNetwork: offline
+- evalScript: "fetch('/ping').then(() => 'up', () => 'down')"
+- setNetwork: {{ latency: 600 }}
+- evalScript: "(async () => {{ const t = performance.now(); await fetch('/ping?' + Math.random()); return Math.round(performance.now() - t) >= 500; }})()"
+- setNetwork: online
+"#
+    );
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    if out.contains("Chrome not found") {
+        return eprintln!("skipping: no Chrome");
+    }
+    assert!(ok, "{out}");
+    for want in ["= \"-6.2088,106.8456\"", "= \"denied\"", "= \"Asia/Jakarta id-ID 1.234,5\"", "= \"down\"", "= true"] {
+        assert!(out.contains(want), "missing {want} in\n{out}");
+    }
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- pushNotification: { title: Halo }\n" })).await;
+    assert!(!ok && out.contains("unsupported"), "{out}");
     client.cancel().await.expect("shutdown");
 }

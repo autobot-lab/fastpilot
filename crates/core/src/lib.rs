@@ -89,6 +89,24 @@ pub enum Recording {
     Frames(Vec<(f64, Vec<u8>)>),
 }
 
+/// `setPermissions` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    Allow,
+    Deny,
+    /// Back to "ask" (the next request shows the prompt again).
+    Unset,
+}
+
+/// `setNetwork`: offline, or online with optional throttling.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Network {
+    pub offline: bool,
+    pub latency_ms: Option<u64>,
+    pub download_kbps: Option<u64>,
+    pub upload_kbps: Option<u64>,
+}
+
 /// Shared by every platform (PRD §7.1).
 #[async_trait]
 pub trait Driver: Send + Sync {
@@ -166,6 +184,24 @@ pub trait Driver: Send + Sync {
     }
     async fn stop_recording(&self) -> Result<Recording> {
         Err(Error::Unsupported("recording is not supported by this driver".into()))
+    }
+    async fn set_location(&self, _lat: f64, _lon: f64) -> Result<()> {
+        Err(Error::Unsupported("setLocation is not supported by this driver".into()))
+    }
+    /// Permission names: camera, microphone, location, notifications, contacts, photos,
+    /// clipboard (web), calendar; a platform-specific name passes through.
+    async fn set_permissions(&self, _app: Option<&str>, _perms: &[(String, Grant)]) -> Result<()> {
+        Err(Error::Unsupported("setPermissions is not supported by this driver".into()))
+    }
+    async fn set_network(&self, _n: &Network) -> Result<()> {
+        Err(Error::Unsupported("setNetwork is not supported by this driver".into()))
+    }
+    /// Locale like `id-ID`, IANA timezone like `Asia/Jakarta`.
+    async fn set_locale(&self, _locale: Option<&str>, _timezone: Option<&str>) -> Result<()> {
+        Err(Error::Unsupported("setLocale is not supported by this driver".into()))
+    }
+    async fn push_notification(&self, _app: Option<&str>, _title: &str, _body: &str, _payload: Option<&Value>) -> Result<()> {
+        Err(Error::Unsupported("pushNotification is mobile-only".into()))
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))

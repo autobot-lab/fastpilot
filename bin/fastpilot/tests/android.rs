@@ -239,3 +239,37 @@ async fn android_reads_otp_from_sms() {
     assert!(!out.contains(&code) && out.contains("copyTextFrom \"Email\"") && out.contains("= ***"), "{out}");
     client.cancel().await.expect("shutdown");
 }
+
+/// Device control on the emulator: permissions, GPS, airplane mode, timezone, notification.
+#[tokio::test]
+async fn android_device_control() {
+    let _device = DEVICE.lock().await;
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let tz = adb_shell("getprop persist.sys.timezone").trim().to_owned();
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let flow = r#"
+- session: { start: dc, platform: android }
+- launchApp: com.fastpilot.demo/.LoginActivity
+- setPermissions: { permissions: { camera: allow } }
+- setLocation: { latitude: -6.2088, longitude: 106.8456 }
+- setLocale: { timezone: Asia/Jakarta }
+- setNetwork: offline
+- pushNotification: { title: "Pesanan dikirim", body: "Paket Anda dalam perjalanan" }
+"#;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    let airplane = adb_shell("settings get global airplane_mode_on");
+    let (ok2, out2) = call(&client, "run_flow", json!({ "flow": "- setNetwork: online\n" })).await;
+    if !tz.is_empty() {
+        adb_shell(&format!("cmd alarm set-timezone {tz}"));
+    }
+    assert!(ok, "{out}");
+    assert!(ok2, "{out2}");
+    assert_eq!(airplane.trim(), "1");
+    assert_eq!(adb_shell("settings get global airplane_mode_on").trim(), "0");
+    assert!(adb_shell("dumpsys package com.fastpilot.demo").contains("android.permission.CAMERA: granted=true"));
+    assert!(adb_shell("dumpsys notification --noredact").contains("Pesanan dikirim"));
+    client.cancel().await.expect("shutdown");
+}

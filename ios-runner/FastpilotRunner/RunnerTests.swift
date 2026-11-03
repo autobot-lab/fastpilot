@@ -127,6 +127,9 @@ final class RunnerTests: XCTestCase {
         case "launch":
             appId = try str("bundleId")
             let a = XCUIApplication(bundleIdentifier: appId)
+            // Locale / timezone for this launch (e.g. -AppleLanguages (id), TZ=Asia/Jakarta).
+            a.launchArguments = req["args"] as? [String] ?? []
+            a.launchEnvironment = req["env"] as? [String: String] ?? [:]
             a.launch() // terminates a running instance first
             app = a
             return [:]
