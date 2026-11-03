@@ -1305,6 +1305,30 @@ impl Driver for WebPage {
         Ok(fastpilot_core::Recording::Frames(frames.into_iter().filter_map(|(t, d)| b64.decode(d).ok().map(|j| (t, j))).collect()))
     }
 
+    /// Device metrics, touch and user agent (a mobile layout of a site); `None` resets them.
+    async fn set_viewport(&self, v: Option<&fastpilot_core::Viewport>) -> Result<()> {
+        let Some(v) = v else {
+            self.call("Emulation.clearDeviceMetricsOverride", json!({})).await?;
+            self.call("Emulation.setTouchEmulationEnabled", json!({ "enabled": false })).await?;
+            let ua = self.browser.cdp.call(None, "Browser.getVersion", json!({})).await.ok();
+            if let Some(ua) = ua.as_ref().and_then(|u| u["userAgent"].as_str()) {
+                self.call("Emulation.setUserAgentOverride", json!({ "userAgent": ua })).await?;
+            }
+            return Ok(());
+        };
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            json!({ "width": v.width, "height": v.height, "deviceScaleFactor": v.scale, "mobile": v.mobile, "screenWidth": v.width, "screenHeight": v.height }),
+        )
+        .await?;
+        self.call("Emulation.setTouchEmulationEnabled", json!({ "enabled": v.touch, "maxTouchPoints": if v.touch { 5 } else { 1 } })).await?;
+        if let Some(ua) = &v.user_agent {
+            let platform = if ua.contains("iPhone") || ua.contains("iPad") { "iOS" } else if ua.contains("Android") { "Android" } else { "" };
+            self.call("Emulation.setUserAgentOverride", json!({ "userAgent": ua, "platform": platform })).await?;
+        }
+        Ok(())
+    }
+
     async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
         self.call("Emulation.setGeolocationOverride", json!({ "latitude": lat, "longitude": lon, "accuracy": 10 })).await?;
         Ok(())

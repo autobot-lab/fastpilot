@@ -43,6 +43,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
 | waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
 | takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
+| setViewport | `setViewport: iPhone 15` (also iPhone SE, iPhone Pro Max, Pixel 8, Galaxy S23, iPad), `{ width: 390, height: 844, deviceScaleFactor: 3, mobile: true, touch: true, userAgent: "..." }`, `desktop` to reset — the site's mobile layout | web |
 | setLocation | `{ latitude: -6.2088, longitude: 106.8456 }` (web: geolocation override; android: emulator console; ios: simctl) | all (android: emulator) |
 | setPermissions | `{ appId?, permissions: { camera: allow, location: deny, notifications: unset } }` (also microphone, contacts, photos, calendar, clipboard (web); a platform name passes through) | all (ios: no notifications) |
 | setNetwork / setAirplaneMode | `setNetwork: offline \| online \| { latency: 300, download: 1600, upload: 750 }` (ms, kbps); `setAirplaneMode: enabled \| disabled` | web, android (throttling: emulator) |

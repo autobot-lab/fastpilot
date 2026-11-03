@@ -572,3 +572,13 @@ Menggantikan rencana PRD §7.5 "go-ios + prebuilt WDA" dan jalur go-ios dari ite
 | S11 | `real_ios.rs` opt-in, `docs/real-devices.md`, docs MCP, README | dibangun |
 
 Blocker hardware saat ini: Xcode 16.1 tidak bisa menargetkan iOS 26, belum ada identitas signing, iPhone offline, tidak ada ponsel Android fisik. Unit test ditulis tetapi belum dijalankan (pengujian ditunda atas permintaan user).
+
+### 21.3 Perbaikan dari uji situs nyata (motmaina.com, RTL Arab)
+
+| Bug | Perbaikan | Status |
+|---|---|---|
+| A | Nama, value, judul, selector dan label langkah tidak lagi diformat `Debug`: `quote()` hanya meng-escape `"`, `\` dan karakter kontrol, sehingga harakat (U+064B, U+0650, U+0651) tampil apa adanya dan bisa disalin sebagai selector | dibangun, unit test ditulis |
+| B | Kandidat `not_found` diurutkan menurut kemiripan: role sama dulu, lalu edit distance ternormalisasi dan overlap substring (huruf besar/kecil dan harakat diabaikan); fallback ke elemen yang bisa dipakai bila tidak ada yang mirip | dibangun, unit test ditulis |
+| C | Teks inline berisi angka/tanda baca digabung dengan saudaranya (`(`, `11`, `)` → `(11)`); deret ≥ 12 saudara ber-role sama diringkas (5 pertama, 1 terakhir, jumlah yang disembunyikan, rentang ref, filter untuk melihat semuanya) pada render yang dibatasi | dibangun, unit test ditulis |
+| D | "recent errors" web: tanpa duplikat, tiap error dilaporkan sekali per sesi, error host halaman sendiri (serta console error dan exception) sebelum pihak ketiga | dibangun, unit test ditulis |
+| E | Langkah `setViewport` (preset iPhone/Pixel/Galaxy/iPad atau ukuran custom, DPR, mobile, touch, UA; `desktop` untuk reset) lewat `Emulation.setDeviceMetricsOverride`, `setTouchEmulationEnabled`, `setUserAgentOverride` | dibangun, unit test ditulis |

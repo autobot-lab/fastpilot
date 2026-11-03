@@ -728,6 +728,7 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
                 return Ok(None);
             }
             Step::SetLocation { latitude, longitude } => d.set_location(*latitude, *longitude).await?,
+            Step::SetViewport { viewport, .. } => d.set_viewport(viewport.as_ref()).await?,
             Step::SetPermissions { app, permissions } => {
                 d.set_permissions(app.as_deref().map(subst).transpose()?.as_deref(), permissions).await?
             }

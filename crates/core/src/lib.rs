@@ -100,6 +100,39 @@ pub enum Grant {
     Unset,
 }
 
+/// `setViewport` (web): a device preset or explicit metrics; `None` from `preset("desktop")`
+/// means back to the normal window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Viewport {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+    pub mobile: bool,
+    pub touch: bool,
+    pub user_agent: Option<String>,
+}
+
+const IOS_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+const ANDROID_UA: &str = "Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+const IPAD_UA: &str = "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+
+impl Viewport {
+    /// Device presets (CSS pixels): iPhone 15/16, iPhone SE, Pixel 8, Galaxy S23, iPad.
+    pub fn preset(name: &str) -> Option<Option<Self>> {
+        let m = |width, height, scale, ua: &str| Some(Some(Self { width, height, scale, mobile: true, touch: true, user_agent: Some(ua.into()) }));
+        match name.to_ascii_lowercase().replace([' ', '-', '_'], "").as_str() {
+            "iphone" | "iphone15" | "iphone16" | "iphone15pro" | "iphone16pro" => m(393, 852, 3.0, IOS_UA),
+            "iphonese" => m(375, 667, 2.0, IOS_UA),
+            "iphonepromax" | "iphone16promax" | "iphone15promax" => m(430, 932, 3.0, IOS_UA),
+            "pixel" | "pixel8" | "pixel7" => m(412, 915, 2.625, ANDROID_UA),
+            "galaxy" | "galaxys23" | "samsung" => m(360, 780, 3.0, ANDROID_UA),
+            "ipad" | "ipadair" => m(820, 1180, 2.0, IPAD_UA),
+            "desktop" | "reset" | "none" => Some(None),
+            _ => None,
+        }
+    }
+}
+
 /// `setNetwork`: offline, or online with optional throttling.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Network {
@@ -187,6 +220,10 @@ pub trait Driver: Send + Sync {
     async fn stop_recording(&self) -> Result<Recording> {
         Err(Error::Unsupported("recording is not supported by this driver".into()))
     }
+    /// `None`: back to the normal window size.
+    async fn set_viewport(&self, _v: Option<&Viewport>) -> Result<()> {
+        Err(Error::Unsupported("setViewport is web-only (mobile sessions already run on a device)".into()))
+    }
     async fn set_location(&self, _lat: f64, _lon: f64) -> Result<()> {
         Err(Error::Unsupported("setLocation is not supported by this driver".into()))
     }
@@ -212,5 +249,23 @@ pub trait Driver: Send + Sync {
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+
+    #[test]
+    fn presets_and_parsing() {
+        let p = Viewport::preset("iPhone 15").flatten().expect("preset");
+        assert_eq!((p.width, p.height, p.mobile, p.touch), (393, 852, true, true));
+        assert_eq!(Viewport::preset("desktop"), Some(None));
+        assert_eq!(Viewport::preset("nokia 3310"), None);
+        let flow = parse_flow("- setViewport: Pixel 8\n- setViewport: { width: 800, height: 600, deviceScaleFactor: 2 }\n- setViewport: desktop\n").expect("flow");
+        assert_eq!(flow.steps[0].step.label(), "setViewport Pixel 8");
+        assert_eq!(flow.steps[1].step.label(), "setViewport 800x600@2");
+        assert_eq!(flow.steps[2].step.label(), "setViewport desktop");
+        assert!(parse_flow("- setViewport: { width: 5 }\n").is_err());
     }
 }

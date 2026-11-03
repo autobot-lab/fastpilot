@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_yaml::{Mapping, Value as Yaml};
 
-use crate::{Direction, Grant, Network, Platform, Point, Selector};
+use crate::{Direction, Grant, Network, Platform, Point, Selector, Viewport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -55,6 +55,8 @@ pub enum Step {
     StartRecording(String),
     StopRecording,
     SetLocation { latitude: f64, longitude: f64 },
+    /// Web device emulation; `None` = back to the normal window. `name` keeps the preset.
+    SetViewport { name: Option<String>, viewport: Option<Viewport> },
     SetPermissions { app: Option<String>, permissions: Vec<(String, Grant)> },
     SetNetwork(Network),
     SetLocale { locale: Option<String>, timezone: Option<String> },
@@ -442,6 +444,39 @@ impl Step {
                 }
                 Self::Repeat { times, while_, steps: steps_of(get(m, "commands").ok_or("missing `commands`")?, cx)? }
             }
+            "setViewport" => match arg {
+                Yaml::String(p) => match Viewport::preset(p) {
+                    Some(viewport) => Self::SetViewport { name: Some(p.clone()), viewport },
+                    None => return Err(format!("unknown device `{p}` (iPhone 15, iPhone SE, iPhone Pro Max, Pixel 8, Galaxy S23, iPad, desktop)")),
+                },
+                Yaml::Mapping(m) => {
+                    if let Some(p) = get(m, "device") {
+                        let p = string(p)?;
+                        let viewport = Viewport::preset(&p).ok_or(format!("unknown device `{p}`"))?;
+                        Self::SetViewport { name: Some(p), viewport }
+                    } else {
+                        let n = |k: &str| get(m, k).and_then(Yaml::as_u64).map(|v| v as u32);
+                        let width = n("width").ok_or("missing `width` (or use `device: iPhone 15`)")?;
+                        let height = n("height").ok_or("missing `height`")?;
+                        if !(100..=10_000).contains(&width) || !(100..=10_000).contains(&height) {
+                            return Err("width/height must be 100..10000 CSS pixels".into());
+                        }
+                        let mobile = get(m, "mobile").and_then(Yaml::as_bool).unwrap_or(false);
+                        Self::SetViewport {
+                            name: None,
+                            viewport: Some(Viewport {
+                                width,
+                                height,
+                                scale: get(m, "deviceScaleFactor").and_then(Yaml::as_f64).unwrap_or(1.0),
+                                mobile,
+                                touch: get(m, "touch").and_then(Yaml::as_bool).unwrap_or(mobile),
+                                user_agent: get(m, "userAgent").map(string).transpose()?,
+                            }),
+                        }
+                    }
+                }
+                _ => return Err("expects a device name (`iPhone 15`, `desktop`) or { width, height, deviceScaleFactor, mobile, touch, userAgent }".into()),
+            },
             "setLocation" => {
                 let m = arg.as_mapping().ok_or("expects { latitude, longitude }")?;
                 let num = |k: &str| -> Result<f64, String> {
@@ -768,6 +803,9 @@ impl Step {
             Self::StartRecording(n) => format!("startRecording {n}"),
             Self::StopRecording => "stopRecording".into(),
             Self::SetLocation { latitude, longitude } => format!("setLocation {latitude},{longitude}"),
+            Self::SetViewport { name: Some(n), .. } => format!("setViewport {n}"),
+            Self::SetViewport { viewport: Some(v), .. } => format!("setViewport {}x{}@{}", v.width, v.height, v.scale),
+            Self::SetViewport { .. } => "setViewport desktop".into(),
             Self::SetPermissions { permissions, .. } => {
                 let p: Vec<String> = permissions.iter().map(|(n, g)| format!("{n}={}", grant_name(*g))).collect();
                 format!("setPermissions {}", p.join(" "))
@@ -975,6 +1013,19 @@ impl Step {
             Self::SetLocation { latitude, longitude } => {
                 one("setLocation", map(vec![("latitude", (*latitude).into()), ("longitude", (*longitude).into())]))
             }
+            Self::SetViewport { name: Some(n), .. } => one("setViewport", s(n)),
+            Self::SetViewport { viewport: Some(v), .. } => one(
+                "setViewport",
+                map(vec![
+                    ("width", Yaml::Number(u64::from(v.width).into())),
+                    ("height", Yaml::Number(u64::from(v.height).into())),
+                    ("deviceScaleFactor", v.scale.into()),
+                    ("mobile", Yaml::Bool(v.mobile)),
+                    ("touch", Yaml::Bool(v.touch)),
+                    ("userAgent", v.user_agent.as_deref().map(s).unwrap_or(Yaml::Null)),
+                ]),
+            ),
+            Self::SetViewport { .. } => one("setViewport", s("desktop")),
             Self::SetPermissions { app, permissions } => one(
                 "setPermissions",
                 map(vec![
