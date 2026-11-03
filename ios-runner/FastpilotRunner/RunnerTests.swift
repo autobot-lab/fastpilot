@@ -14,6 +14,8 @@ final class RunnerTests: XCTestCase {
     /// XCTest's own wait for the app to be idle (animations included) after every action is
     /// switched off unless FASTPILOT_QUIESCENCE=1; `idle` then waits for a stable screen instead.
     private var quiescence = true
+    /// Device runs: the host's 128-bit token; the first request must be `hello{token}`.
+    private var token: String?
 
     /// The quiescence wait is a private XCTest method; replace it with a no-op, as
     /// WebDriverAgent does. Both known selector shapes are handled; if neither exists, nothing changes.
@@ -57,8 +59,10 @@ final class RunnerTests: XCTestCase {
         // exits on its own after this long without a client.
         let idleExit = Double(env["FASTPILOT_IDLE_EXIT"] ?? "") ?? 300
         if env["FASTPILOT_QUIESCENCE"] != "1" { skipQuiescence() }
-        let server = try listen(port: port)
-        print("FASTPILOT_RUNNER_READY port=\(port) version=1 quiescence=\(quiescence)")
+        token = env["FASTPILOT_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        let any = env["FASTPILOT_BIND"] == "any"
+        let server = try listen(port: port, any: any)
+        print("FASTPILOT_RUNNER_READY port=\(port) version=1 quiescence=\(quiescence) bind=\(any ? "any" : "loopback") token=\(token == nil ? "off" : "on")")
         fflush(stdout)
         var lastClient = Date()
         while running {
@@ -84,17 +88,33 @@ final class RunnerTests: XCTestCase {
 
     // MARK: socket + framing
 
-    private func listen(port: UInt16) throws -> Int32 {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+    /// Loopback IPv4 (simulator: shares the Mac's network), or every interface dual-stack
+    /// (device: reached over usbmux or the CoreDevice tunnel; guarded by the token).
+    private func listen(port: UInt16, any: Bool) throws -> Int32 {
+        let fd = socket(any ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let rc = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        let rc: Int32
+        if any {
+            var zero: Int32 = 0
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, socklen_t(MemoryLayout<Int32>.size))
+            var addr = sockaddr_in6()
+            addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            addr.sin6_family = sa_family_t(AF_INET6)
+            addr.sin6_port = port.bigEndian
+            addr.sin6_addr = in6addr_any
+            rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
+            }
+        } else {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = port.bigEndian
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+            rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
         }
         guard fd >= 0, rc == 0, Darwin.listen(fd, 4) == 0 else {
             print("FASTPILOT_RUNNER_ERROR bind 127.0.0.1:\(port) failed errno=\(errno)")
@@ -133,6 +153,7 @@ final class RunnerTests: XCTestCase {
     }
 
     private func serve(_ fd: Int32) {
+        var authenticated = token == nil
         while running {
             guard let head = readFully(fd, 4) else { return }
             let len = head.reduce(0) { $0 << 8 | Int($1) }
@@ -144,6 +165,14 @@ final class RunnerTests: XCTestCase {
                     throw ProtocolError(message: "request is not a JSON object")
                 }
                 id = req["id"] ?? NSNull()
+                if !authenticated {
+                    // Anything but a correct hello first closes the connection.
+                    guard req["cmd"] as? String == "hello", req["token"] as? String == token else {
+                        _ = writeFrame(fd, ["id": id, "ok": false, "error": "unauthorized"])
+                        return
+                    }
+                    authenticated = true
+                }
                 resp = try handle(req)
                 resp["ok"] = true
             } catch let e as ProtocolError {
@@ -173,7 +202,13 @@ final class RunnerTests: XCTestCase {
         case "hello":
             // UIScreen.main in the (letterboxed) runner process reports 320x480; SpringBoard's frame is the real screen.
             let b = XCUIApplication(bundleIdentifier: "com.apple.springboard").frame
-            return ["version": "1", "width": b.width, "height": b.height, "scale": UIScreen.main.scale]
+            #if targetEnvironment(simulator)
+            let kind = "simulator"
+            #else
+            let kind = "physical"
+            #endif
+            return ["version": "1", "width": b.width, "height": b.height, "scale": UIScreen.main.scale,
+                    "device": kind, "osVersion": UIDevice.current.systemVersion]
         case "launch":
             appId = try str("bundleId")
             let a = XCUIApplication(bundleIdentifier: appId)
@@ -189,6 +224,21 @@ final class RunnerTests: XCTestCase {
             a.activate()
             app = a
             return [:]
+        case "resetPermissions":
+            // Back to "not determined", so the app asks again (simulator and device).
+            let a = XCUIApplication(bundleIdentifier: try str("bundleId"))
+            let names = req["resources"] as? [String]
+            var all: [(String, XCUIProtectedResource)] = [("contacts", .contacts), ("calendar", .calendar), ("reminders", .reminders),
+                                                          ("photos", .photos), ("microphone", .microphone), ("camera", .camera),
+                                                          ("mediaLibrary", .mediaLibrary), ("homeKit", .homeKit)]
+            all.append(("bluetooth", .bluetooth))
+            if #available(iOS 14.0, *) { all.append(("location", .location)) }
+            var done: [String] = []
+            for (name, r) in all where names == nil || names!.contains(name) {
+                a.resetAuthorizationStatus(for: r)
+                done.append(name)
+            }
+            return ["reset": done]
         case "openUrl":
             // Real devices have no simctl openurl; XCUIApplication.open needs iOS 16.4+.
             guard let url = URL(string: try str("url")) else { throw ProtocolError(message: "bad url") }

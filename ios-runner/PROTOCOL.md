@@ -21,6 +21,12 @@ socket is listening (about 23 s after starting xcodebuild on an already-booted s
 If the port can't be bound it prints `FASTPILOT_RUNNER_ERROR ...` and the test fails.
 `FASTPILOT_PORT` defaults to 22087. xcodebuild passes `TEST_RUNNER_<X>` to the runner as `<X>`.
 
+Device mode: `FASTPILOT_BIND=any` listens on every interface (dual-stack IPv6, `IPV6_V6ONLY=0`) so the
+host can reach it over usbmux or the CoreDevice tunnel; otherwise it binds `127.0.0.1`.
+`FASTPILOT_TOKEN` (128-bit, random per start) makes `hello {token}` mandatory as the first request;
+anything else gets `unauthorized` and the connection is closed. The READY line adds `bind=` and
+`token=on|off`. The simulator path sets neither.
+
 Lifetime: the runner outlives its session. It exits after `FASTPILOT_IDLE_EXIT` seconds (default
 300) without a client, so the host can reconnect to the same port (fixed per simulator) instead of
 starting xcodebuild again. XCTest's wait for app quiescence (animations included) around every action
@@ -44,7 +50,9 @@ All coordinates are screen **points** (portrait origin top-left), not pixels.
 
 | cmd | args | result |
 |---|---|---|
-| `hello` | – | `version:"1"`, `width`, `height` (screen points), `scale` |
+| `hello` | `token` (device runs) | `version:"1"`, `width`, `height` (screen points), `scale`, `device` (`simulator` \| `physical`), `osVersion` |
+| `resetPermissions` | `bundleId`, `resources` (optional: contacts, calendar, reminders, photos, microphone, camera, mediaLibrary, homeKit, bluetooth, location) | `reset`: the resources reset (all when omitted) |
+| `openUrl` | `url` | – : `XCUIDevice.system.open` (iOS 16.4+; used on devices, simctl on the simulator) |
 | `launch` | `bundleId` | – : (re)launches the app fresh (`XCUIApplication.launch`, which terminates a running instance) and makes it the current app |
 | `activate` | `bundleId` | – : brings the app to the foreground without relaunching (launches it if not running) and makes it current |
 | `snapshot` | – | `bundleId`, `title`, `nodes` (`[root]`) for the current app (SpringBoard if none) |

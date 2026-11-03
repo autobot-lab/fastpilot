@@ -12,6 +12,20 @@ use tokio::sync::Mutex;
 
 use crate::Error;
 
+/// Where an agent/runner listens; `token` is sent in the first `hello` (device runners).
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub host: std::net::IpAddr,
+    pub port: u16,
+    pub token: Option<String>,
+}
+
+impl Endpoint {
+    pub fn local(port: u16) -> Self {
+        Self { host: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port, token: None }
+    }
+}
+
 pub struct Agent {
     stream: Arc<Mutex<TcpStream>>,
     next: AtomicU64,
@@ -21,9 +35,16 @@ pub struct Agent {
 
 impl Agent {
     pub async fn connect(port: u16) -> Result<Self, Error> {
+        Self::connect_to(&Endpoint::local(port), 20).await
+    }
+
+    /// Up to `attempts` tries 150 ms apart, each bounded to 3 s; the first request is
+    /// `hello` (with the endpoint's token, if any).
+    pub async fn connect_to(ep: &Endpoint, attempts: usize) -> Result<Self, Error> {
         let mut last = None;
-        for _ in 0..20 {
-            match TcpStream::connect(("127.0.0.1", port)).await {
+        for _ in 0..attempts.max(1) {
+            let conn = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect((ep.host, ep.port))).await;
+            match conn.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"))) {
                 Ok(s) => {
                     s.set_nodelay(true).ok();
                     let agent = Self {
@@ -32,7 +53,11 @@ impl Agent {
                         broken: Arc::new(AtomicBool::new(false)),
                     };
                     // adb accepts forwarded connections before the device side answers.
-                    match agent.call("hello", json!({})).await {
+                    let hello = match &ep.token {
+                        Some(t) => json!({ "token": t }),
+                        None => json!({}),
+                    };
+                    match agent.call("hello", hello).await {
                         Ok(_) => return Ok(agent),
                         Err(e) => last = Some(e),
                     }

@@ -20,7 +20,7 @@ use serde_json::json;
 use tokio::net::TcpStream;
 
 pub use adb::Adb;
-pub use agent::Agent;
+pub use agent::{Agent, Endpoint};
 pub use system::Policy;
 use system::Kind;
 
