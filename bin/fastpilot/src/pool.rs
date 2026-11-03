@@ -44,7 +44,10 @@ async fn healthy(d: Device) -> bool {
                 _ => false,
             }
         }
-        Platform::Ios => fastpilot_ios::devices().await.is_ok_and(|v| v.iter().any(|(u, _, st)| *u == d.id && st == "Booted")),
+        Platform::Ios => {
+            fastpilot_ios::devices().await.is_ok_and(|v| v.iter().any(|(u, _, st)| *u == d.id && st == "Booted"))
+                || fastpilot_ios::real_devices().await.contains(&d.id)
+        }
         Platform::Web => true,
     }
 }
@@ -67,6 +70,7 @@ impl Pool {
                     .map(|(id, _, _)| Device { platform: Platform::Ios, id }),
             );
         }
+        devices.extend(fastpilot_ios::real_devices().await.into_iter().map(|id| Device { platform: Platform::Ios, id }));
         Self::new(devices, Box::new(|d| Box::pin(healthy(d))))
     }
 

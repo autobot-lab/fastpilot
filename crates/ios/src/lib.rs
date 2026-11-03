@@ -84,6 +84,48 @@ pub async fn boot(name_or_udid: &str) -> std::result::Result<String, Error> {
     Ok(udid.clone())
 }
 
+/// go-ios (`ios` CLI, github.com/danielpaulus/go-ios): the real-device path, so no Appium,
+/// WDA or Xcode is needed at test time. `FASTPILOT_GO_IOS` overrides the executable.
+fn go_ios() -> String {
+    std::env::var("FASTPILOT_GO_IOS").unwrap_or_else(|_| "ios".into())
+}
+
+async fn go(args: &[&str]) -> std::result::Result<String, Error> {
+    let out = Command::new(go_ios())
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| Error::Runner(format!("go-ios (`{}`): {e}; install it from github.com/danielpaulus/go-ios", go_ios())))?;
+    if !out.status.success() {
+        return Err(Error::Runner(format!("ios {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// UDIDs of USB-attached iPhones/iPads (`ios list`: `{"deviceList": [...]}`).
+pub async fn real_devices() -> Vec<String> {
+    let Ok(out) = go(&["list"]).await else { return Vec::new() };
+    out.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .flat_map(|v| v["deviceList"].as_array().cloned().unwrap_or_default())
+        .filter_map(|d| d.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Runner and host apps built for devices by `ios-runner/build.sh --device` (signed).
+fn device_apps() -> Option<(PathBuf, PathBuf)> {
+    let dir = std::env::var_os("FASTPILOT_IOS_RUNNER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build")))
+        .join("Build/Products/Debug-iphoneos");
+    let runner = dir.join("FastpilotRunner-Runner.app");
+    let host = dir.join("FastpilotHost.app");
+    (runner.exists() && host.exists()).then_some((runner, host))
+}
+
+const RUNNER_BUNDLE: &str = "com.fastpilot.runner.uitests.xctrunner";
+const HOST_BUNDLE: &str = "com.fastpilot.runner";
+
 fn xctestrun() -> Option<PathBuf> {
     let dir = std::env::var_os("FASTPILOT_IOS_RUNNER")
         .map(PathBuf::from)
@@ -179,6 +221,8 @@ pub struct IosDriver {
     locale: Mutex<(Option<String>, Option<String>)>,
     /// The runner process when this driver started it (kept alive for the next session).
     _runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
+    /// A USB device driven through go-ios rather than a simulator: simctl features are unavailable.
+    device: bool,
 }
 
 /// Runners started by this process, by simulator: a session ending leaves its runner running
@@ -197,6 +241,12 @@ fn runner_port(udid: &str) -> u16 {
 impl IosDriver {
     /// Start the XCUITest runner on `udid` (or the booted simulator, booting "iPhone 16" if none).
     pub async fn start(udid: Option<&str>) -> std::result::Result<Self, Error> {
+        if let Some(u) = udid
+            && !devices().await.unwrap_or_default().iter().any(|(id, name, _)| id == u || name == u)
+            && real_devices().await.iter().any(|d| d == u)
+        {
+            return Self::start_device(u).await;
+        }
         let udid = match udid {
             Some(u) => boot(u).await?,
             None => match devices().await?.into_iter().find(|(_, _, st)| st == "Booted") {
@@ -252,10 +302,83 @@ impl IosDriver {
         Self::connected(udid, agent, Some(child)).await
     }
 
+    /// Real device over USB: go-ios forwards the runner port, installs the device-signed runner
+    /// and host app (`ios-runner/build.sh --device`), and runs the XCUITest runner. The protocol
+    /// is the same as on the simulator.
+    async fn start_device(udid: &str) -> std::result::Result<Self, Error> {
+        let port = runner_port(udid);
+        let udid_arg = format!("--udid={udid}");
+        // The device's loopback is not the Mac's: tunnel the port over usbmuxd.
+        let forward = Command::new(go_ios())
+            .args(["forward", &port.to_string(), &port.to_string(), &udid_arg])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .map_err(|e| Error::Runner(format!("go-ios forward: {e}; install go-ios from github.com/danielpaulus/go-ios")))?;
+        let key = format!("{udid}/forward");
+        lock(runners()).insert(key, std::sync::Arc::new(tokio::sync::Mutex::new(forward)));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Some(agent) = Agent::try_connect(port).await {
+            tracing::info!(udid, port, "reusing the runner on the device");
+            let runner = lock(runners()).get(udid).cloned();
+            return Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), runner, true).await;
+        }
+        if std::env::var("FASTPILOT_IOS_SKIP_INSTALL").as_deref() != Ok("1") {
+            let (runner_app, host_app) = device_apps().ok_or(Error::Runner(
+                "runner not built for devices: run `FASTPILOT_TEAM=<team id> ios-runner/build.sh --device`".into(),
+            ))?;
+            for app in [&host_app, &runner_app] {
+                go(&["install", &format!("--path={}", app.display()), &udid_arg]).await?;
+            }
+        }
+        let idle = std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into());
+        let quiescence = std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default();
+        let child = Command::new(go_ios())
+            .args([
+                "runtest",
+                &format!("--bundle-id={HOST_BUNDLE}"),
+                &format!("--test-runner-bundle-id={RUNNER_BUNDLE}"),
+                "--xctest-config=FastpilotRunner.xctest",
+                &format!("--env=FASTPILOT_PORT={port}"),
+                &format!("--env=FASTPILOT_IDLE_EXIT={idle}"),
+                &format!("--env=FASTPILOT_QUIESCENCE={quiescence}"),
+                &udid_arg,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .map_err(|e| Error::Runner(format!("go-ios runtest: {e}")))?;
+        let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
+        lock(runners()).insert(udid.to_owned(), child.clone());
+        // No READY line through go-ios: poll until the runner answers (first launch can take a while).
+        for _ in 0..120 {
+            if let Some(agent) = Agent::try_connect(port).await {
+                return Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), Some(child), true).await;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Err(Error::Runner(format!(
+            "runner on device {udid} did not answer on port {port}; is the device unlocked and the developer certificate trusted?"
+        )))
+    }
+
     async fn connected(
         udid: String,
         agent: std::sync::Arc<Agent>,
         runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
+    ) -> std::result::Result<Self, Error> {
+        Self::connected_as(udid, agent, runner, false).await
+    }
+
+    async fn connected_as(
+        udid: String,
+        agent: std::sync::Arc<Agent>,
+        runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
+        device: bool,
     ) -> std::result::Result<Self, Error> {
         let hello = agent.call("hello", json!({})).await?;
         let size = (hello["width"].as_f64().unwrap_or(390.0), hello["height"].as_f64().unwrap_or(844.0));
@@ -270,7 +393,16 @@ impl IosDriver {
             recording: tokio::sync::Mutex::new(None),
             locale: Mutex::default(),
             _runner: runner,
+            device,
         })
+    }
+
+    /// Simulator-only features (simctl) on a real device.
+    fn sim_only(&self, what: &str) -> Result<()> {
+        if self.device {
+            return Err(CoreError::Unsupported(format!("{what} needs the iOS simulator (simctl); not available on a real device")));
+        }
+        Ok(())
     }
 
     fn app_or(&self, app: Option<&str>) -> Result<String> {
@@ -446,7 +578,11 @@ impl Driver for IosDriver {
     /// Bundle id (activates the app) or URL (opened with `simctl openurl`).
     async fn open(&self, target: &str) -> Result<()> {
         if target.contains("://") {
-            simctl(&["openurl", &self.udid, target]).await?;
+            if self.device {
+                self.call("openUrl", json!({ "url": target })).await?;
+            } else {
+                simctl(&["openurl", &self.udid, target]).await?;
+            }
             return Ok(());
         }
         self.call("activate", json!({ "bundleId": target })).await?;
@@ -479,12 +615,17 @@ impl Driver for IosDriver {
     }
 
     async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
-        simctl(&["location", &self.udid, "set", &format!("{lat},{lon}")]).await?;
+        if self.device {
+            go(&["setlocation", &format!("--lat={lat}"), &format!("--lon={lon}"), &format!("--udid={}", self.udid)]).await?;
+        } else {
+            simctl(&["location", &self.udid, "set", &format!("{lat},{lon}")]).await?;
+        }
         Ok(())
     }
 
     /// `simctl privacy` (TCC services; notifications are not among them).
     async fn set_permissions(&self, app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
+        self.sim_only("setPermissions")?;
         use fastpilot_core::Grant;
         let bundle = self.app_or(app)?;
         for (name, grant) in perms {
@@ -529,6 +670,7 @@ impl Driver for IosDriver {
 
     /// `simctl push`: an APNs payload delivered to the app as a remote notification.
     async fn push_notification(&self, app: Option<&str>, title: &str, body: &str, payload: Option<&Value>) -> Result<()> {
+        self.sim_only("pushNotification")?;
         let bundle = self.app_or(app)?;
         let mut p = payload.cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
         p["aps"]["alert"] = json!({ "title": title, "body": body });
@@ -541,6 +683,7 @@ impl Driver for IosDriver {
     }
 
     async fn start_recording(&self) -> Result<()> {
+        self.sim_only("recording")?;
         let mut slot = self.recording.lock().await;
         if slot.is_some() {
             return Err(CoreError::Flow("already recording".into()));
@@ -605,6 +748,7 @@ impl Driver for IosDriver {
     /// The simulator keeps app data in a host directory: terminate, then empty it (keeps
     /// the top-level folders, which the app expects to exist).
     async fn clear_state(&self, app: Option<&str>) -> Result<()> {
+        self.sim_only("clearState")?;
         let bundle = self.app_or(app)?;
         self.stop_app(Some(&bundle)).await?;
         let dir = simctl(&["get_app_container", &self.udid, &bundle, "data"]).await?;
@@ -625,6 +769,7 @@ impl Driver for IosDriver {
     }
 
     async fn clear_keychain(&self) -> Result<()> {
+        self.sim_only("clearKeychain")?;
         simctl(&["keychain", &self.udid, "reset"]).await?;
         Ok(())
     }

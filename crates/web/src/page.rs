@@ -126,8 +126,10 @@ struct Tab {
 struct Frame {
     session: String,
     target: String,
-    /// The `<iframe>` element in the parent page, learned at snapshot time.
+    /// The `<iframe>` element in the parent document, learned at snapshot time.
     owner: Option<i64>,
+    /// Session of the parent document: `None` = the tab, else an enclosing OOPIF (nested).
+    parent: Option<String>,
 }
 
 struct Shared {
@@ -420,11 +422,25 @@ impl WebPage {
                 };
             }
         };
-        let Some(owner) = obj.owner else { return Ok((x, y)) };
-        // OOPIF: frame-local point + the iframe's content box in the page.
-        let model = self.call("DOM.getBoxModel", json!({ "backendNodeId": owner })).await?;
-        let quad = &model["model"]["content"];
-        Ok((x + quad[0].as_f64().unwrap_or(0.0), y + quad[1].as_f64().unwrap_or(0.0)))
+        if obj.owner.is_none() {
+            return Ok((x, y));
+        }
+        // OOPIF: frame-local point + each enclosing iframe's content box, up to the page.
+        let (mut x, mut y) = (x, y);
+        let mut session = obj.session.clone();
+        for _ in 0..16 {
+            let frame = lock(&self.shared.frames).values().find(|f| Some(&f.session) == session.as_ref()).cloned();
+            let Some(f) = frame else { break };
+            let Some(owner) = f.owner else { break };
+            let in_parent = f.parent.clone().or(self.tab().session);
+            let _ = self.call_in(in_parent.as_deref(), "DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": owner })).await;
+            let model = self.call_in(in_parent.as_deref(), "DOM.getBoxModel", json!({ "backendNodeId": owner })).await?;
+            let quad = &model["model"]["content"];
+            x += quad[0].as_f64().unwrap_or(0.0);
+            y += quad[1].as_f64().unwrap_or(0.0);
+            session = f.parent;
+        }
+        Ok((x, y))
     }
 
     async fn dom_quiet(&self) -> bool {
@@ -455,31 +471,46 @@ impl WebPage {
 
     /// AX roots of OOPIFs (handles namespaced by frame id), keyed by their `<iframe>` element.
     async fn oop_frames(&self) -> HashMap<i64, Vec<Node>> {
+        let frames: Vec<(u32, Frame)> = lock(&self.shared.frames).iter().map(|(k, v)| (*k, v.clone())).collect();
+        self.oop_level(&frames, None).await
+    }
+
+    /// AX roots of the OOPIFs whose parent document is `parent` (`None` = the tab), keyed by
+    /// their `<iframe>` element there; deeper frames are spliced in first (bottom-up).
+    fn oop_level<'a>(
+        &'a self,
+        frames: &'a [(u32, Frame)],
+        parent: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashMap<i64, Vec<Node>>> + Send + 'a>> {
         fn encode(nodes: &mut [Node], fid: u32) {
             for n in nodes {
-                n.handle = n.handle.map(|h| (i64::from(fid) << FRAME_SHIFT) | h);
+                // Nodes of nested frames already carry their own frame id.
+                n.handle = n.handle.map(|h| if h >> FRAME_SHIFT == 0 { (i64::from(fid) << FRAME_SHIFT) | h } else { h });
                 encode(&mut n.children, fid);
             }
         }
-        let frames: Vec<(u32, Frame)> = lock(&self.shared.frames).iter().map(|(k, v)| (*k, v.clone())).collect();
-        let mut out = HashMap::new();
-        for (fid, f) in frames {
-            let (owner, ax, dom) = tokio::join!(
-                self.call("DOM.getFrameOwner", json!({ "frameId": f.target })),
-                self.call_in(Some(&f.session), "Accessibility.getFullAXTree", json!({})),
-                self.call_in(Some(&f.session), "DOMSnapshot.captureSnapshot", json!({ "computedStyles": STYLES })),
-            );
-            let (Ok(owner), Ok(ax)) = (owner, ax) else { continue };
-            let Some(owner) = owner["backendNodeId"].as_i64() else { continue };
-            if let Some(slot) = lock(&self.shared.frames).get_mut(&fid) {
-                slot.owner = Some(owner);
+        Box::pin(async move {
+            let mut out = HashMap::new();
+            for (fid, f) in frames.iter().filter(|(_, f)| f.parent.as_deref() == parent) {
+                let parent_session = f.parent.as_deref().or(self.tab().session.as_deref()).map(str::to_owned);
+                let (owner, ax, dom) = tokio::join!(
+                    self.call_in(parent_session.as_deref(), "DOM.getFrameOwner", json!({ "frameId": f.target })),
+                    self.call_in(Some(&f.session), "Accessibility.getFullAXTree", json!({})),
+                    self.call_in(Some(&f.session), "DOMSnapshot.captureSnapshot", json!({ "computedStyles": STYLES })),
+                );
+                let (Ok(owner), Ok(ax)) = (owner, ax) else { continue };
+                let Some(owner) = owner["backendNodeId"].as_i64() else { continue };
+                if let Some(slot) = lock(&self.shared.frames).get_mut(fid) {
+                    slot.owner = Some(owner);
+                }
+                let children = self.oop_level(frames, Some(&f.session)).await;
+                let dom = dom.map(|d| dom_info(&d, false)).unwrap_or_default();
+                let mut roots = ax["nodes"].as_array().map(|n| ax_tree(n, &dom, &children)).unwrap_or_default();
+                encode(&mut roots, *fid);
+                out.insert(owner, roots);
             }
-            let dom = dom.map(|d| dom_info(&d, false)).unwrap_or_default();
-            let mut roots = ax["nodes"].as_array().map(|n| ax_tree(n, &dom, &HashMap::new())).unwrap_or_default();
-            encode(&mut roots, fid);
-            out.insert(owner, roots);
-        }
-        out
+            out
+        })
     }
 
     /// AX roots of same-process child frames, keyed by the iframe element's backendNodeId.
@@ -587,6 +618,27 @@ async fn event_loop(
             }
             continue;
         }
+        // OOPIFs at any depth: an iframe attached to the tab or to one of our frames.
+        if ev.method == "Target.attachedToTarget" || ev.method == "Target.detachedFromTarget" {
+            let from_tab = ev.session == tab.session;
+            let from_frame = !from_tab && lock(&shared.frames).values().any(|f| ev.session.as_deref() == Some(f.session.as_str()));
+            if from_tab || from_frame {
+                if ev.method == "Target.detachedFromTarget" {
+                    if let Some(session) = p["sessionId"].as_str() {
+                        lock(&shared.frames).retain(|_, f| f.session != session && f.parent.as_deref() != Some(session));
+                    }
+                } else if p["targetInfo"]["type"] == "iframe"
+                    && let (Some(session), Some(target)) = (p["sessionId"].as_str(), p["targetInfo"]["targetId"].as_str())
+                {
+                    let id = shared.next_frame.fetch_add(1, Ordering::Relaxed);
+                    let parent = if from_tab { None } else { ev.session.clone() };
+                    lock(&shared.frames).insert(id, Frame { session: session.to_owned(), target: target.to_owned(), owner: None, parent });
+                    // Its own cross-site iframes attach too (nested OOPIFs).
+                    cdp.send(Some(session), "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }));
+                }
+            }
+            continue;
+        }
         if ev.session != tab.session {
             continue;
         }
@@ -653,17 +705,6 @@ async fn event_loop(
                     && frames.len() < MAX_FRAMES
                 {
                     frames.push((t0.elapsed().as_secs_f64(), data.to_owned()));
-                }
-            }
-            "Target.attachedToTarget" if p["targetInfo"]["type"] == "iframe" => {
-                if let (Some(session), Some(target)) = (p["sessionId"].as_str(), p["targetInfo"]["targetId"].as_str()) {
-                    let id = shared.next_frame.fetch_add(1, Ordering::Relaxed);
-                    lock(&shared.frames).insert(id, Frame { session: session.to_owned(), target: target.to_owned(), owner: None });
-                }
-            }
-            "Target.detachedFromTarget" => {
-                if let Some(session) = p["sessionId"].as_str() {
-                    lock(&shared.frames).retain(|_, f| f.session != session);
                 }
             }
             _ => {}

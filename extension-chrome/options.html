@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>fastpilot attach</title>
+<style>body { font: 14px system-ui, sans-serif; margin: 16px; } label { display: block; margin: 8px 0; } input { width: 220px; }</style></head>
+<body>
+<h1>fastpilot attach</h1>
+<p>fastpilot listens on 127.0.0.1 only. Match <code>FASTPILOT_RELAY_TOKEN</code> if you set one.</p>
+<label>Relay port <input id="port" type="number" min="1" max="65535"></label>
+<label>Token <input id="token" type="password"></label>
+<button id="save">Save</button> <span id="saved"></span>
+<script src="options.js"></script>
+</body></html>

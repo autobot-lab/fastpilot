@@ -331,6 +331,21 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 
+## Chrome harian dan iPhone fisik
+
+- **Chrome sehari-hari tanpa restart**: muat `extension-chrome/` (chrome://extensions → Developer mode →
+  Load unpacked), minta `session { action: start, mode: attach, endpoint: extension }`, lalu klik tombol
+  extension di tab yang mau dikendalikan. Detail di [extension-chrome/README.md](extension-chrome/README.md).
+- **iPhone/iPad fisik (USB)**: pasang [go-ios](https://github.com/danielpaulus/go-ios), build runner untuk
+  device, lalu mulai sesi dengan UDID device:
+
+```bash
+FASTPILOT_TEAM=<apple team id> ios-runner/build.sh --device
+```
+
+  `session { action: devices }` menampilkan device yang terhubung. Device harus terbuka kuncinya, Developer
+  Mode aktif, dan sertifikat developer sudah dipercaya. Lihat `docs` topic `devices`.
+
 ## Bench
 
 ```bash

@@ -113,8 +113,10 @@ pub struct SessionArgs {
     pub target: Option<String>,
     /// web: launch (default, own Chrome) | attach (your running Chrome, see `endpoint`)
     pub mode: Option<String>,
-    /// attach: `http://127.0.0.1:9222` or a `ws://` URL; omitted = Chrome M144+ autoConnect
-    /// (enable chrome://inspect/#remote-debugging). android/ios: device serial / simulator UDID.
+    /// attach: `http://127.0.0.1:9222` or a `ws://` URL; `extension` (or `extension:<port>`) = the
+    /// tab you attached with the fastpilot Chrome extension; omitted = Chrome M144+ autoConnect
+    /// (enable chrome://inspect/#remote-debugging). android: device serial; ios: simulator UDID
+    /// or a real device UDID (needs go-ios, see docs topic devices).
     pub endpoint: Option<String>,
     /// Test case id: the response includes its path-memory hint, if any.
     pub test_id: Option<String>,
@@ -186,7 +188,7 @@ pub struct ReportArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocsArgs {
-    /// dsl | selectors | parallel | examples | errors | memory (default: dsl)
+    /// dsl | selectors | parallel | examples | errors | memory | devices (default: dsl)
     pub topic: Option<String>,
 }
 
@@ -247,6 +249,11 @@ impl FastPilot {
         };
         let _busy = self.lock_sessions([id.clone()]).await;
         let driver: Box<dyn Driver> = match (platform, args.mode.as_deref().unwrap_or("launch")) {
+            // `extension` / `extension:9231`: the user's tab through the fastpilot extension.
+            (Platform::Web, "attach") if args.endpoint.as_deref().is_some_and(|e| e.starts_with("extension")) => {
+                let port = args.endpoint.as_deref().and_then(|e| e.strip_prefix("extension:")).and_then(|p| p.parse().ok());
+                Box::new(fastpilot_web::extension_page(port).await?)
+            }
             (Platform::Web, "attach") => {
                 let browser = Browser::connect(args.endpoint.as_deref()).await?;
                 Box::new(browser.attach_page().await?)
@@ -669,12 +676,12 @@ impl FastPilot {
         }
     }
 
-    #[tool(description = "fastpilot reference docs. Topics: dsl, selectors, parallel, examples, errors, memory.")]
+    #[tool(description = "fastpilot reference docs. Topics: dsl, selectors, parallel, examples, errors, memory, devices.")]
     async fn docs(&self, Parameters(args): Parameters<DocsArgs>) -> Result<CallToolResult, ErrorData> {
         let topic = args.topic.as_deref().unwrap_or("dsl");
         match docs::topic(topic) {
             Some(md) => ok(md),
-            None => fail(format!("unknown topic `{topic}` (dsl, selectors, parallel, examples, errors, memory)")),
+            None => fail(format!("unknown topic `{topic}` (dsl, selectors, parallel, examples, errors, memory, devices)")),
         }
     }
 }
@@ -696,6 +703,7 @@ async fn devices() -> String {
         ),
         Err(e) => out.push(format!("ios: unavailable ({e})")),
     }
+    out.extend(fastpilot_ios::real_devices().await.into_iter().map(|u| format!("ios device: {u} (USB, via go-ios; endpoint: {u})")));
     out.join("\n")
 }
 

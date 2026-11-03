@@ -4,9 +4,11 @@
 mod browser;
 mod cdp;
 mod page;
+mod relay;
 
 pub use browser::{Browser, LaunchOptions, http_get};
 pub use page::WebPage;
+pub use relay::{DEFAULT_PORT as RELAY_PORT, extension_page};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

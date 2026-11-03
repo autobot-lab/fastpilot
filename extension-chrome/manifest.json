@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "fastpilot attach",
+  "version": "0.1.0",
+  "description": "Lets fastpilot (running on this machine) drive the current tab through chrome.debugger.",
+  "permissions": ["debugger", "storage", "activeTab"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "fastpilot: attach this tab" },
+  "options_page": "options.html"
+}

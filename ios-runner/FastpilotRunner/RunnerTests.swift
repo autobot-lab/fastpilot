@@ -189,6 +189,15 @@ final class RunnerTests: XCTestCase {
             a.activate()
             app = a
             return [:]
+        case "openUrl":
+            // Real devices have no simctl openurl; XCUIApplication.open needs iOS 16.4+.
+            guard let url = URL(string: try str("url")) else { throw ProtocolError(message: "bad url") }
+            if #available(iOS 16.4, *) {
+                XCUIDevice.shared.system.open(url)
+            } else {
+                throw ProtocolError(message: "openUrl needs iOS 16.4 or later")
+            }
+            return [:]
         case "snapshot":
             return try snapshot()
         case "tap":

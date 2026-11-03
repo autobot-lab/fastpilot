@@ -8,6 +8,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "examples" => EXAMPLES,
         "errors" => ERRORS,
         "memory" => MEMORY,
+        "devices" => DEVICES,
         _ => return None,
     })
 }
@@ -207,4 +208,22 @@ System dialogs (android, ios) are handled before tapOn/inputText:
 - A soft keyboard covering the target is hidden first.
 - Crash and ANR dialogs are closed after being reported, so the device recovers.
 What was handled shows up under "recent errors" when a step fails.
+"#;
+
+const DEVICES: &str = r#"# Devices and attach modes
+
+- Web, own Chrome: `session { action: start }` (one isolated BrowserContext per session).
+- Web, your Chrome: `mode: attach` with `endpoint: http://127.0.0.1:9222` (remote debugging port),
+  no endpoint (Chrome M144+ autoConnect, chrome://inspect/#remote-debugging), or `endpoint: extension`:
+  load `extension-chrome/` (Load unpacked), start the session, then click the extension's button on
+  the tab. The relay listens on 127.0.0.1:9230 only (`extension:<port>`; `FASTPILOT_RELAY_TOKEN`).
+- Android: attached device or emulator (`endpoint: <serial>`); `session { action: start_device,
+  platform: android, endpoint: <AVD> }` boots an emulator. setLocation / network throttling need an emulator.
+- iOS simulator: `platform: ios` (booted simulator, else "iPhone 16"); runner from `ios-runner/build.sh`.
+  The runner stays up between sessions (exits after 5 idle minutes), so later sessions start fast.
+- iOS real device (USB): `platform: ios, endpoint: <device UDID>` (see `session { action: devices }`).
+  Needs go-ios (`ios` on PATH or `FASTPILOT_GO_IOS`) and the runner built for devices:
+  `FASTPILOT_TEAM=<team id> ios-runner/build.sh --device`; the device must be unlocked with Developer
+  Mode on and the developer certificate trusted. simctl-only steps (setPermissions, pushNotification,
+  clearState, clearKeychain, recording) are unsupported there; setLocation uses go-ios.
 "#;
