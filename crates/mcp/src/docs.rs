@@ -30,8 +30,29 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | selectOption | `selectOption: { from: "Negara", option: "Indonesia" }` (native `<select>`) | web |
 | uploadFile | `uploadFile: { into: "Lampiran", files: ["a.pdf"] }` | web |
 | evalScript | `evalScript: "document.title"` (value is returned) | web, android WebView |
+| longPressOn / doubleTapOn | `longPressOn: "Item"` (selector) | all |
+| scrollUntilVisible | `scrollUntilVisible: "Footer"` or `{ element: <selector>, direction: down, timeout: 20000 }` | all |
+| hideKeyboard | `hideKeyboard` (web: blur) | all |
+| eraseText | `eraseText: 3` (characters before the cursor) or `eraseText` (all) | all |
+| copyTextFrom / pasteText | `copyTextFrom: { id: total }` then `pasteText` (types it into the focused field) | all |
+| openLink | `openLink: "myapp://orders/1"` (deep link; same as openUrl) | all |
+| stopApp / killApp | `stopApp` (app under test) or `stopApp: com.example.app` | android, ios |
+| clearState | `clearState` / `clearState: com.example.app` (android `pm clear`; ios wipes the simulator data container; web: cookies + storage of the origin) | all |
+| clearKeychain | `clearKeychain` | ios simulator |
+| extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
+| waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
+| takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
+| inputRandomText / Number / Email / PersonName | `inputRandomEmail` or `{ length: 10 }`; the value is returned | all |
+| runFlow | `runFlow: login.yaml` (relative to the flow file, else the working dir; a Maestro config header `appId: ...` + `---` is skipped), or `{ file \| commands: [...], when: <condition>, env: { USER: a@b.com } }` | all |
+| repeat | `{ times: 3, commands: [...] }` and/or `{ while: <condition>, commands: [...] }` (while stops after 1000) | all |
+| retry | `{ maxRetries: 2, commands: [...] \| file: x.yaml }` (runs the block again on failure) | all |
 | session | `session: web1` (switch) or `session: { start: web1, platform: web, target: "...", reset: true }` | — |
 | parallel | see docs(topic: parallel) | — |
+
+Conditions (`when`, `while`), checked once on the current screen: `{ visible: <selector> }`,
+`{ notVisible: <selector> }`, `{ platform: web | android | ios }`. JavaScript conditions
+(`true:`), `runScript`, `assertTrue` and the `*WithAI` commands are not supported.
+`env` variables stay set for the rest of the flow. Blocks may not contain `session`/`parallel`.
 
 Rules
 - Auto-wait before/after every step (actionability, DOM/accessibility quiet, navigation and requests

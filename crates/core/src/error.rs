@@ -38,6 +38,26 @@ pub enum Error {
 }
 
 impl Error {
+    /// Same failure, message prefixed (e.g. which step of a `repeat` block failed).
+    pub fn context(self, prefix: &str) -> Self {
+        let p = |m: String| format!("{prefix}: {m}");
+        match self {
+            Self::NotFound(m) => Self::NotFound(p(m)),
+            Self::Ambiguous { selector, candidates } => Self::Ambiguous { selector: p(selector), candidates },
+            Self::NotActionable(m) => Self::NotActionable(p(m)),
+            Self::Timeout(m) => Self::Timeout(p(m)),
+            Self::Transient(m) => Self::Transient(p(m)),
+            Self::Unsupported(m) => Self::Unsupported(p(m)),
+            Self::Script(m) => Self::Script(p(m)),
+            Self::Assertion(m) => Self::Assertion(p(m)),
+            Self::Session(m) => Self::Session(p(m)),
+            Self::Flow(m) => Self::Flow(p(m)),
+            Self::Driver(m) => Self::Driver(p(m)),
+            Self::AppCrashed(m) => Self::AppCrashed(p(m)),
+            Self::AppNotResponding(m) => Self::AppNotResponding(p(m)),
+        }
+    }
+
     /// Structured reason returned to the AI (PRD §11.2).
     pub fn reason(&self) -> &'static str {
         match self {

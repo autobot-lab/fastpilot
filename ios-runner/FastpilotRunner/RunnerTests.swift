@@ -172,6 +172,22 @@ final class RunnerTests: XCTestCase {
                 throw ProtocolError(message: "jpeg encoding failed")
             }
             return ["jpeg": jpeg.base64EncodedString()]
+        case "longPress":
+            point(try num("x"), try num("y")).press(forDuration: max(try num("ms", 800), 100) / 1000)
+            return [:]
+        case "doubleTap":
+            point(try num("x"), try num("y")).doubleTap()
+            return [:]
+        case "erase":
+            let el = try focusedField()
+            var existing = 0
+            if let v = el.value as? String, v != (el.placeholderValue ?? "") { existing = v.count }
+            let n = req["count"] is NSNumber ? min(Int(try num("count")), existing) : existing
+            if n > 0 { el.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: n)) }
+            return ["erased": n]
+        case "terminate":
+            XCUIApplication(bundleIdentifier: try str("bundleId")).terminate()
+            return [:]
         case "hideKeyboard":
             return ["hidden": hideKeyboard()]
         case "idle":

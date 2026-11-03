@@ -307,6 +307,10 @@ impl WebPage {
         let (cdp, sid) = (self.browser.cdp.clone(), self.tab().session);
         let task = tokio::spawn(async move {
             for (method, params) in events {
+                if method == PAUSE {
+                    tokio::time::sleep(Duration::from_millis(params["ms"].as_u64().unwrap_or(0))).await;
+                    continue;
+                }
                 cdp.call(sid.as_deref(), method, params).await?;
             }
             Ok::<(), Error>(())
@@ -320,11 +324,16 @@ impl WebPage {
     }
 
     async fn click(&self, x: f64, y: f64) -> Result<()> {
-        let ev = |kind: &str, button: &str, buttons: u8| {
-            ("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": button, "buttons": buttons, "clickCount": 1 }))
-        };
-        self.dispatch(vec![ev("mouseMoved", "none", 0), ev("mousePressed", "left", 1), ev("mouseReleased", "left", 0)])
-            .await
+        self.dispatch(mouse(x, y, 1, 0)).await
+    }
+
+    /// Element point for `sel`, after actionability checks.
+    async fn point_of(&self, sel: &Selector) -> Result<(f64, f64)> {
+        if let Selector::Point(p) = sel {
+            return Ok((p.x, p.y));
+        }
+        let obj = self.object_for(sel, Intent::Tap).await?;
+        self.actionable(&obj, false).await
     }
 
     async fn resolve(&self, sel: &Selector, intent: Intent) -> Result<i64> {
@@ -901,6 +910,26 @@ fn ax_node(n: &Value, ctx: &AxCtx, depth: usize, pointer_above: bool) -> Option<
 }
 
 /// (key, code, windowsVirtualKeyCode, text) for `pressKey`.
+/// Pseudo-method in a `dispatch` list: sleep `ms` inside the same uncancellable task.
+const PAUSE: &str = "fastpilot.pause";
+
+/// Mouse move, then `clicks` press/release pairs (clickCount 1, 2, ...), with `hold_ms`
+/// between each press and its release.
+fn mouse(x: f64, y: f64, clicks: u8, hold_ms: u64) -> Vec<(&'static str, Value)> {
+    let ev = |kind: &str, button: &str, buttons: u8, count: u8| {
+        ("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": button, "buttons": buttons, "clickCount": count }))
+    };
+    let mut out = vec![ev("mouseMoved", "none", 0, 0)];
+    for n in 1..=clicks {
+        out.push(ev("mousePressed", "left", 1, n));
+        if hold_ms > 0 {
+            out.push((PAUSE, json!({ "ms": hold_ms })));
+        }
+        out.push(ev("mouseReleased", "left", 0, n));
+    }
+    out
+}
+
 fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)> {
     Some(match key.to_ascii_lowercase().as_str() {
         "enter" | "return" => ("Enter", "Enter", 13, "\r"),
@@ -1097,6 +1126,61 @@ impl Driver for WebPage {
 
     async fn diagnostics(&self) -> Vec<String> {
         lock(&self.shared.live).diag.iter().cloned().collect()
+    }
+
+    async fn long_press(&self, sel: &Selector) -> Result<()> {
+        let (x, y) = self.point_of(sel).await?;
+        self.dispatch(mouse(x, y, 1, 800)).await
+    }
+
+    async fn double_tap(&self, sel: &Selector) -> Result<()> {
+        let (x, y) = self.point_of(sel).await?;
+        self.dispatch(mouse(x, y, 2, 0)).await
+    }
+
+    async fn hide_keyboard(&self) -> Result<()> {
+        self.eval_script("document.activeElement && document.activeElement.blur(); true").await.map(|_| ())
+    }
+
+    /// Real Backspace key events (frameworks see input events); all = select, then one.
+    async fn erase_text(&self, count: Option<usize>) -> Result<()> {
+        let n = match count {
+            Some(n) => n.min(1000),
+            None => {
+                let selected = self
+                    .eval_script("(() => { const e = document.activeElement; if (!e || e === document.body) return false; if (e.select) e.select(); else document.execCommand('selectAll'); return true; })()")
+                    .await?;
+                if selected != Value::Bool(true) {
+                    return Err(CoreError::NotActionable("no focused field to erase".into()));
+                }
+                1
+            }
+        };
+        let key = |kind: &str| ("Input.dispatchKeyEvent", json!({ "type": kind, "key": "Backspace", "code": "Backspace", "windowsVirtualKeyCode": 8 }));
+        self.dispatch((0..n).flat_map(|_| [key("rawKeyDown"), key("keyUp")]).collect()).await
+    }
+
+    /// Cookies of this session's browser context plus every storage of the current origin.
+    async fn clear_state(&self, _app: Option<&str>) -> Result<()> {
+        self.call("Network.clearBrowserCookies", json!({})).await?;
+        let origin = self.eval_script("location.origin").await?;
+        if let Some(o) = origin.as_str().filter(|o| o.starts_with("http")) {
+            self.call("Storage.clearDataForOrigin", json!({ "origin": o, "storageTypes": "all" })).await?;
+        } else {
+            self.eval_script("try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} true").await?;
+        }
+        Ok(())
+    }
+
+    async fn viewport(&self) -> Option<Rect> {
+        let m = self.call("Page.getLayoutMetrics", json!({})).await.ok()?;
+        let v = &m["cssVisualViewport"];
+        Some(Rect {
+            x: v["pageX"].as_f64()?,
+            y: v["pageY"].as_f64()?,
+            w: v["clientWidth"].as_f64()?,
+            h: v["clientHeight"].as_f64()?,
+        })
     }
 
     async fn screenshot_annotated(&self, marks: &[(String, Rect)]) -> Result<Vec<u8>> {

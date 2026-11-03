@@ -82,9 +82,9 @@ async fn login_and_parallel_sessions_over_mcp() {
     assert!(out.starts_with("ok 10/10 steps"), "{out}");
     assert!(out.contains("[a] screen \"Dashboard\"") && out.contains("[b] screen \"Login\""), "{out}");
 
-    let (ok, out) = call(&client, "check_flow", json!({ "flow": "- hideKeyboard\n- session: nope\n" })).await;
+    let (ok, out) = call(&client, "check_flow", json!({ "flow": "- assertTrue: x\n- session: nope\n" })).await;
     assert!(!ok);
-    assert!(out.contains("line 1: hideKeyboard: Maestro command"), "{out}");
+    assert!(out.contains("line 1: assertTrue: Maestro command"), "{out}");
 
     let (ok, out) = call(&client, "snapshot", json!({ "session": "b", "filter": "button" })).await;
     assert!(ok && out.contains("button \"Masuk\""), "{out}");

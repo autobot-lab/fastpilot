@@ -9,13 +9,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::time::Instant;
 
-use crate::dsl::substitute;
+use crate::dsl::{Condition, Random, substitute, substitute_with};
 use crate::snapshot::DEFAULT_MAX_LINES;
-use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Result, Selector, SessionId, Snapshot, Step, diff};
+use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Rect, Result, Selector, SessionId, Snapshot, Step, diff};
 
 const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
 const ASSERT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(3);
+const SCROLL_TIMEOUT: Duration = Duration::from_secs(20);
+/// `repeat: { while: ... }` without `times` stops here.
+const MAX_ITERATIONS: u32 = 1000;
 
 /// Live sessions of one fastpilot process, across platforms (PRD §8.1). Drivers are shared
 /// (`Arc`) so a flow can run on a cloned registry while other tools keep using the original;
@@ -227,11 +230,23 @@ struct Ctx {
     records: Mutex<Vec<StepRecord>>,
     stop_on_fail: bool,
     deadline: Instant,
+    /// Flow-local `${VARS}` (runFlow `env`), visible to every later step.
+    vars: Mutex<HashMap<String, String>>,
+    /// `copyTextFrom` → `pasteText`.
+    clipboard: Mutex<Option<String>>,
+}
+
+fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl Ctx {
     fn record(&self, r: StepRecord) {
-        self.records.lock().unwrap_or_else(|p| p.into_inner()).push(r);
+        guard(&self.records).push(r);
+    }
+
+    fn subst(&self, s: &str) -> Result<String> {
+        substitute_with(s, &guard(&self.vars)).map_err(Error::Flow)
     }
 }
 
@@ -258,6 +273,8 @@ pub async fn run_flow(
         records: Mutex::new(Vec::new()),
         stop_on_fail: opts.stop_on_fail,
         deadline: started + opts.deadline,
+        vars: Mutex::new(HashMap::new()),
+        clipboard: Mutex::new(None),
     };
     let mut baselines: Vec<(SessionId, Option<Snapshot>)> = Vec::new();
     let mut active = opts.session.clone().or_else(|| reg.active().map(str::to_owned));
@@ -467,6 +484,7 @@ async fn run_branch(
 fn step_ref(step: &Step) -> Option<&Selector> {
     let sel = match step {
         Step::TapOn(s) | Step::InputText { into: s, .. } | Step::UploadFile { into: s, .. } => s,
+        Step::LongPressOn(s) | Step::DoubleTapOn(s) | Step::CopyTextFrom(s) => s,
         Step::SelectOption { from: s, .. } => s,
         Step::AssertVisible { selector: s, .. } | Step::AssertNotVisible { selector: s, .. } => s,
         Step::Scroll { within: Some(s), .. } => s,
@@ -492,7 +510,7 @@ async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx
         Some(sel) => durable(d, sel).await,
         None => None,
     };
-    let res = exec(d, step).await;
+    let res = exec(d, step, ctx).await;
     if let Err(e) = &res {
         tracing::debug!(session = sid, step = %step.label(), error = %e, "step failed");
     }
@@ -513,7 +531,13 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
         Step::InputText { into, .. } | Step::UploadFile { into, .. } => {
             (Some(ACTION_TIMEOUT), Some((into.clone(), Intent::Type)))
         }
-        Step::SelectOption { from, .. } => (Some(ACTION_TIMEOUT), Some((from.clone(), Intent::Tap))),
+        Step::SelectOption { from, .. } | Step::LongPressOn(from) | Step::DoubleTapOn(from) => {
+            (Some(ACTION_TIMEOUT), Some((from.clone(), Intent::Tap)))
+        }
+        Step::CopyTextFrom(s) => (Some(ACTION_TIMEOUT), Some((s.clone(), Intent::Find))),
+        Step::ScrollUntilVisible { selector, timeout, .. } => {
+            (Some(timeout.unwrap_or(SCROLL_TIMEOUT)), Some((selector.clone(), Intent::Find)))
+        }
         Step::AssertVisible { selector, timeout } => {
             (Some(timeout.unwrap_or(ASSERT_TIMEOUT)), Some((selector.clone(), Intent::Find)))
         }
@@ -538,58 +562,252 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
     ok
 }
 
-async fn exec(d: &dyn Driver, step: &Step) -> Result<Option<String>> {
-    let subst = |s: &str| substitute(s).map_err(Error::Flow);
-    match step {
-        Step::OpenUrl(url) => d.open(&subst(url)?).await?,
-        Step::TapOn(sel) => retry(ACTION_TIMEOUT, || d.tap(sel)).await?,
-        Step::InputText { into, text } => {
-            let text = subst(text)?;
-            retry(ACTION_TIMEOUT, || d.type_text(into, &text)).await?
-        }
-        Step::AssertVisible { selector, timeout } => {
-            retry(timeout.unwrap_or(ASSERT_TIMEOUT), || async {
-                d.snapshot().await?.resolve(selector, Intent::Find).map(|_| ())
-            })
-            .await?;
-            return Ok(None);
-        }
-        Step::Scroll { direction, within } => retry(ACTION_TIMEOUT, || d.scroll(*direction, within.as_ref())).await?,
-        Step::Back => d.back().await?,
-        Step::AssertNotVisible { selector, timeout } => {
-            let timeout = timeout.unwrap_or(ACTION_TIMEOUT);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match d.snapshot().await?.resolve(selector, Intent::Find) {
-                    Err(Error::NotFound(_)) => return Ok(None),
-                    _ if Instant::now() >= deadline => {
-                        return Err(Error::Timeout(format!("{selector} still visible after {}ms", timeout.as_millis())));
+type StepFuture<'a> = std::pin::Pin<Box<dyn Future<Output = Result<Option<String>>> + Send + 'a>>;
+
+/// Boxed: blocks (runFlow, repeat, retry) run their steps through `exec` again.
+fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
+    Box::pin(async move {
+        let subst = |s: &str| ctx.subst(s);
+        match step {
+            Step::OpenUrl(url) => d.open(&subst(url)?).await?,
+            Step::TapOn(sel) => retry(ACTION_TIMEOUT, || d.tap(sel)).await?,
+            Step::InputText { into, text } => {
+                let text = subst(text)?;
+                retry(ACTION_TIMEOUT, || d.type_text(into, &text)).await?
+            }
+            Step::AssertVisible { selector, timeout } => {
+                retry(timeout.unwrap_or(ASSERT_TIMEOUT), || async {
+                    d.snapshot().await?.resolve(selector, Intent::Find).map(|_| ())
+                })
+                .await?;
+                return Ok(None);
+            }
+            Step::Scroll { direction, within } => retry(ACTION_TIMEOUT, || d.scroll(*direction, within.as_ref())).await?,
+            Step::Back => d.back().await?,
+            Step::AssertNotVisible { selector, timeout } => {
+                let timeout = timeout.unwrap_or(ACTION_TIMEOUT);
+                let deadline = Instant::now() + timeout;
+                loop {
+                    match d.snapshot().await?.resolve(selector, Intent::Find) {
+                        Err(Error::NotFound(_)) => return Ok(None),
+                        _ if Instant::now() >= deadline => {
+                            return Err(Error::Timeout(format!("{selector} still visible after {}ms", timeout.as_millis())));
+                        }
+                        _ => tokio::time::sleep(Duration::from_millis(100)).await,
                     }
-                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            }
+            Step::PressKey(k) => d.press_key(k).await?,
+            Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
+            Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
+            Step::LaunchApp(app) => d.launch_app(&subst(app)?).await?,
+            Step::Swipe { from, to } => d.swipe(*from, *to).await?,
+            Step::EvalScript(js) => {
+                let v = d.eval_script(&subst(js)?).await?;
+                return Ok(Some(clip(v.to_string())));
+            }
+            Step::UseSession(_) | Step::StartSession { .. } | Step::Parallel(_) => {
+                return Err(Error::Flow(format!("`{}` is not allowed here", step.label())));
+            }
+            Step::LongPressOn(sel) => retry(ACTION_TIMEOUT, || d.long_press(sel)).await?,
+            Step::DoubleTapOn(sel) => retry(ACTION_TIMEOUT, || d.double_tap(sel)).await?,
+            Step::ScrollUntilVisible { selector, direction, timeout } => {
+                let timeout = timeout.unwrap_or(SCROLL_TIMEOUT);
+                let deadline = Instant::now() + timeout;
+                let mut scrolls = 0;
+                loop {
+                    let snap = d.snapshot().await?;
+                    if let Ok(e) = snap.resolve(selector, Intent::Find)
+                        && in_view(e.node.bounds, d.viewport().await)
+                    {
+                        return Ok(Some(format!("{scrolls} scrolls")));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(Error::NotFound(format!(
+                            "{selector} not visible after {scrolls} scrolls ({}ms)",
+                            timeout.as_millis()
+                        )));
+                    }
+                    d.scroll(*direction, None).await?;
+                    settle(d).await;
+                    scrolls += 1;
+                }
+            }
+            Step::HideKeyboard => d.hide_keyboard().await?,
+            Step::EraseText(n) => d.erase_text(*n).await?,
+            Step::StopApp(app) => d.stop_app(app.as_deref().map(subst).transpose()?.as_deref()).await?,
+            Step::ClearState(app) => d.clear_state(app.as_deref().map(subst).transpose()?.as_deref()).await?,
+            Step::ClearKeychain => d.clear_keychain().await?,
+            Step::CopyTextFrom(sel) => {
+                retry(ACTION_TIMEOUT, || async {
+                    let snap = d.snapshot().await?;
+                    let n = &snap.resolve(sel, Intent::Find)?.node;
+                    if n.secure {
+                        return Err(Error::NotActionable(format!("{sel} is a secure field; its text cannot be copied")));
+                    }
+                    let text = n.value.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| n.name.clone());
+                    *guard(&ctx.clipboard) = Some(text);
+                    Ok(())
+                })
+                .await?;
+                return Ok(guard(&ctx.clipboard).clone().map(clip));
+            }
+            Step::PasteText => {
+                let text = guard(&ctx.clipboard)
+                    .clone()
+                    .ok_or_else(|| Error::Flow("nothing copied yet; use copyTextFrom first".into()))?;
+                retry(ACTION_TIMEOUT, || d.type_text(&Selector::Focused, &text)).await?
+            }
+            Step::WaitForAnimationToEnd(t) => {
+                if let Err(e) = d.wait_idle(t.unwrap_or(IDLE_TIMEOUT)).await {
+                    tracing::debug!(error = %e, "still animating, continuing");
+                }
+                return Ok(None);
+            }
+            Step::TakeScreenshot(name) => {
+                let jpeg = d.screenshot().await?;
+                return save_screenshot(name, &jpeg).map(Some);
+            }
+            Step::InputRandom { kind, length } => {
+                let value = random(*kind, *length);
+                retry(ACTION_TIMEOUT, || d.type_text(&Selector::Focused, &value)).await?;
+                settle(d).await;
+                return Ok(Some(value));
+            }
+            Step::RunFlow { when, env, steps, .. } => {
+                if let Some(c) = when
+                    && !holds(d, c).await?
+                {
+                    return Ok(Some(format!("skipped ({c} is false)")));
+                }
+                for (k, v) in env {
+                    let v = subst(v)?;
+                    guard(&ctx.vars).insert(k.clone(), v);
+                }
+                block(d, steps, ctx).await?;
+                return Ok(None);
+            }
+            Step::Repeat { times, while_, steps } => {
+                let mut n = 0;
+                loop {
+                    if times.is_some_and(|t| n >= t) {
+                        break;
+                    }
+                    if let Some(c) = while_
+                        && !holds(d, c).await?
+                    {
+                        break;
+                    }
+                    if Instant::now() >= ctx.deadline {
+                        return Err(Error::Timeout(format!("flow time budget spent after {n} iterations")));
+                    }
+                    if times.is_none() && n >= MAX_ITERATIONS {
+                        return Err(Error::Flow(format!("repeat while: still true after {MAX_ITERATIONS} iterations")));
+                    }
+                    block(d, steps, ctx).await.map_err(|e| e.context(&format!("iteration {}", n + 1)))?;
+                    n += 1;
+                }
+                return Ok(Some(format!("{n} iterations")));
+            }
+            Step::Retry { max, steps } => {
+                let mut attempt = 0;
+                loop {
+                    match block(d, steps, ctx).await {
+                        Ok(()) => return Ok(Some(format!("passed on attempt {}", attempt + 1))),
+                        Err(e) if attempt < *max && Instant::now() < ctx.deadline => {
+                            tracing::debug!(attempt, error = %e, "retry block failed, running it again");
+                            attempt += 1;
+                        }
+                        Err(e) => return Err(e.context(&format!("attempt {}", attempt + 1))),
+                    }
                 }
             }
         }
-        Step::PressKey(k) => d.press_key(k).await?,
-        Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
-        Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
-        Step::LaunchApp(app) => d.launch_app(&subst(app)?).await?,
-        Step::Swipe { from, to } => d.swipe(*from, *to).await?,
-        Step::EvalScript(js) => {
-            let v = d.eval_script(&subst(js)?).await?;
-            let mut s = v.to_string();
-            if s.len() > 200 {
-                let cut = (0..=200).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
-                s.truncate(cut);
-                s.push('…');
-            }
-            return Ok(Some(s));
+        settle(d).await;
+        Ok(None)
+    })
+}
+
+/// Steps of a block, in order; a failure names the step inside the block.
+async fn block(d: &dyn Driver, steps: &[FlowStep], ctx: &Ctx) -> Result<()> {
+    for (i, s) in steps.iter().enumerate() {
+        if Instant::now() >= ctx.deadline {
+            return Err(Error::Timeout("flow exceeded its time budget (FASTPILOT_FLOW_TIMEOUT)".into()));
         }
-        Step::UseSession(_) | Step::StartSession { .. } | Step::Parallel(_) => {
-            return Err(Error::Flow(format!("`{}` is not allowed here", step.label())));
+        exec(d, &s.step, ctx).await.map_err(|e| e.context(&format!("step {} {}", i + 1, s.step.label())))?;
+    }
+    Ok(())
+}
+
+/// `when` / `while`, checked once on the current screen.
+async fn holds(d: &dyn Driver, c: &Condition) -> Result<bool> {
+    let found = |sel: &Selector, snap: &Snapshot| match snap.resolve(sel, Intent::Find) {
+        Ok(_) | Err(Error::Ambiguous { .. }) => Ok(true),
+        Err(Error::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    };
+    Ok(match c {
+        Condition::Visible(sel) => found(sel, &d.snapshot().await?)?,
+        Condition::NotVisible(sel) => !found(sel, &d.snapshot().await?)?,
+        Condition::Platform(p) => d.platform() == *p,
+    })
+}
+
+/// A node counts as visible when its center is in the viewport (web snapshots include
+/// off-screen nodes; mobile ones do not, so no viewport means visible).
+fn in_view(node: Option<Rect>, viewport: Option<Rect>) -> bool {
+    match (node, viewport) {
+        (Some(b), Some(v)) => v.contains(b.center()),
+        _ => true,
+    }
+}
+
+fn clip(mut s: String) -> String {
+    if s.len() > 200 {
+        let cut = (0..=200).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        s.truncate(cut);
+        s.push('…');
+    }
+    s
+}
+
+/// `takeScreenshot: name` → `.fastpilot/screenshots/<name>.jpg` (or `FASTPILOT_DIR`).
+fn save_screenshot(name: &str, jpeg: &[u8]) -> Result<String> {
+    let stem = name.trim_end_matches(".jpg").trim_end_matches(".png");
+    if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || stem.contains("..") {
+        return Err(Error::Flow(format!("screenshot name `{name}`: use letters, digits, '-', '_' and '.'")));
+    }
+    let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("screenshots");
+    let path = dir.join(format!("{stem}.jpg"));
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, jpeg))
+        .map_err(|e| Error::Flow(format!("cannot write {}: {e}", path.display())))?;
+    Ok(path.display().to_string())
+}
+
+/// Test data for `inputRandom*` (xorshift; not for secrets).
+fn random(kind: Random, length: usize) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let mut x = STATE.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed) ^ seed | 1;
+    let mut next = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % n
+    };
+    let letters = |next: &mut dyn FnMut(u64) -> u64, n: usize| (0..n).map(|_| (b'a' + next(26) as u8) as char).collect::<String>();
+    match kind {
+        Random::Text => letters(&mut next, length),
+        Random::Number => (0..length).map(|i| char::from(b'0' + if i == 0 { 1 + next(9) } else { next(10) } as u8)).collect(),
+        Random::Email => format!("{}@example.com", letters(&mut next, length)),
+        Random::PersonName => {
+            const FIRST: &[&str] = &["Budi", "Siti", "Agus", "Dewi", "Rina", "Andi", "Maya", "Joko"];
+            const LAST: &[&str] = &["Santoso", "Wijaya", "Lestari", "Pratama", "Saputra", "Hidayat"];
+            format!("{} {}", FIRST[next(FIRST.len() as u64) as usize], LAST[next(LAST.len() as u64) as usize])
         }
     }
-    settle(d).await;
-    Ok(None)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -787,6 +1005,35 @@ mod tests {
             out.starts_with("fail step 2/3 [web1] tapOn \"Login\": not_found: no element matches \"Login\" (timeout 5000ms)\ncandidates: e1 textfield \"Email\" value=\"\", e2 button \"Masuk\", e3 button \"Daftar\""),
             "{out}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blocks_conditions_and_clipboard() {
+        let mut reg = SessionRegistry::default();
+        let flow = r#"
+- session: { start: web1 }
+- runFlow:
+    env: { WHO: budi@x.id }
+    commands:
+      - inputText: { into: Email, text: "${WHO}" }
+- copyTextFrom: Email
+- runFlow: { when: { visible: "Nope" }, commands: [ tapOn: Nope ] }
+- runFlow: { when: { platform: web }, commands: [ tapOn: Daftar ] }
+- repeat: { times: 3, commands: [ tapOn: Daftar ] }
+- repeat: { while: { visible: "Masuk" }, commands: [ tapOn: Masuk ] }
+- retry: { maxRetries: 1, commands: [ assertVisible: Budi ] }
+"#;
+        let report = run(&mut reg, flow).await;
+        let out = report.to_string();
+        assert!(report.passed(), "{out}");
+        assert!(out.contains("copyTextFrom \"Email\" 0ms = budi@x.id"), "{out}");
+        assert!(out.contains("= skipped (visible \"Nope\" is false)"), "{out}");
+        assert!(out.contains("repeat 3x (1 steps) 0ms = 3 iterations"), "{out}");
+        assert!(out.contains("repeat while visible \"Masuk\" (1 steps) 0ms = 1 iterations"), "{out}");
+
+        let report = run(&mut reg, "- retry: { maxRetries: 2, commands: [ tapOn: Logout ] }\n").await;
+        let out = report.to_string();
+        assert!(out.contains("not_found: attempt 3: step 1 tapOn \"Logout\": no element matches"), "{out}");
     }
 
     #[tokio::test(start_paused = true)]

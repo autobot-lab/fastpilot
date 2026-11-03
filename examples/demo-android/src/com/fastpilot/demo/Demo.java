@@ -98,7 +98,17 @@ public final class Demo {
             setTitle("Dashboard");
             LinearLayout l = column(this);
             l.addView(text(this, "Dashboard", 24));
-            l.addView(text(this, "Selamat datang, Budi", 16));
+            TextView welcome = text(this, "Selamat datang, Budi", 16);
+            welcome.setOnLongClickListener(v -> {
+                welcome.setText("Ditekan lama");
+                return true;
+            });
+            l.addView(welcome);
+            // Counts taps: a double tap shows "Ketukan: 2".
+            TextView taps = text(this, "Ketukan: 0", 16);
+            int[] n = {0};
+            taps.setOnClickListener(v -> taps.setText("Ketukan: " + (++n[0])));
+            l.addView(taps);
             Button pay = button(this, "Bayar");
             pay.setOnClickListener(v -> startActivity(new Intent(this, PayActivity.class)));
             l.addView(pay);
@@ -117,7 +127,12 @@ public final class Demo {
             Button freeze = button(this, "Freeze");
             freeze.setOnClickListener(v -> android.os.SystemClock.sleep(30000));
             l.addView(freeze);
-            setContentView(l);
+            // Long history for scrollUntilVisible.
+            for (int i = 1; i <= 30; i++) l.addView(text(this, "Riwayat " + i, 16));
+            android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+            scroll.setFitsSystemWindows(true);
+            scroll.addView(l);
+            setContentView(scroll);
         }
     }
 

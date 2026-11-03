@@ -13,7 +13,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub use dsl::{Branch, Flow, FlowError, FlowStep, Step, check_flow, flow_to_yaml, parse_flow, redact};
+pub use dsl::{
+    Branch, Condition, Flow, FlowError, FlowStep, Random, Step, check_flow, check_flow_file, flow_to_yaml, parse_flow,
+    parse_flow_file, redact,
+};
 pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
 pub use error::{Error, Result};
 pub use selector::Selector;
@@ -113,5 +116,37 @@ pub trait Driver: Send + Sync {
     /// Maestro `launchApp`: package / package/activity / bundleId.
     async fn launch_app(&self, app: &str) -> Result<()> {
         self.open(app).await
+    }
+    /// Which platform this driver drives (for `when: { platform: ... }`).
+    fn platform(&self) -> Platform {
+        Platform::Web
+    }
+    async fn long_press(&self, _sel: &Selector) -> Result<()> {
+        Err(Error::Unsupported("longPressOn is not supported by this driver".into()))
+    }
+    async fn double_tap(&self, _sel: &Selector) -> Result<()> {
+        Err(Error::Unsupported("doubleTapOn is not supported by this driver".into()))
+    }
+    async fn hide_keyboard(&self) -> Result<()> {
+        Err(Error::Unsupported("hideKeyboard is not supported by this driver".into()))
+    }
+    /// Delete `count` characters before the cursor of the focused field (`None`: all of them).
+    async fn erase_text(&self, _count: Option<usize>) -> Result<()> {
+        Err(Error::Unsupported("eraseText is not supported by this driver".into()))
+    }
+    /// Stop the app (`None`: the app under test). Mobile only.
+    async fn stop_app(&self, _app: Option<&str>) -> Result<()> {
+        Err(Error::Unsupported("stopApp is mobile-only".into()))
+    }
+    /// Wipe the app's data (web: cookies and storage of the session's origin).
+    async fn clear_state(&self, _app: Option<&str>) -> Result<()> {
+        Err(Error::Unsupported("clearState is not supported by this driver".into()))
+    }
+    /// Visible area in snapshot coordinates, when the snapshot includes off-screen nodes (web).
+    async fn viewport(&self) -> Option<Rect> {
+        None
+    }
+    async fn clear_keychain(&self) -> Result<()> {
+        Err(Error::Unsupported("clearKeychain is iOS-only".into()))
     }
 }

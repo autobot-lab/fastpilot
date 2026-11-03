@@ -11,7 +11,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use fastpilot_android::{Agent, Policy};
-use fastpilot_core::{Direction, Driver, Error as CoreError, Intent, Node, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value};
+use fastpilot_core::{
+    Direction, Driver, Error as CoreError, Intent, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
+};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -237,6 +239,30 @@ impl IosDriver {
         })
     }
 
+    fn app_or(&self, app: Option<&str>) -> Result<String> {
+        match app {
+            Some(a) => Ok(a.to_owned()),
+            None => Some(lock(&self.bundle).clone())
+                .filter(|b| !b.is_empty())
+                .ok_or_else(|| CoreError::Flow("no app under test yet; pass an appId or launchApp first".into())),
+        }
+    }
+
+    /// Stopped on purpose: not running is no longer a crash.
+    fn forget(&self, bundle: &str) {
+        let mut b = lock(&self.bundle);
+        if *b == bundle {
+            b.clear();
+        }
+    }
+
+    async fn point_of(&self, sel: &Selector) -> Result<Point> {
+        match sel {
+            Selector::Point(p) => Ok(*p),
+            _ => Self::center(&self.resolve(sel, Intent::Tap).await?),
+        }
+    }
+
     fn note(&self, text: String) {
         tracing::info!("{text}");
         let mut n = lock(&self.notes);
@@ -408,6 +434,66 @@ impl Driver for IosDriver {
 
     async fn diagnostics(&self) -> Vec<String> {
         lock(&self.notes).clone()
+    }
+
+    fn platform(&self) -> Platform {
+        Platform::Ios
+    }
+
+    async fn long_press(&self, sel: &Selector) -> Result<()> {
+        let p = self.point_of(sel).await?;
+        self.call("longPress", json!({ "x": p.x, "y": p.y, "ms": 800 })).await.map(|_| ())
+    }
+
+    async fn double_tap(&self, sel: &Selector) -> Result<()> {
+        let p = self.point_of(sel).await?;
+        self.call("doubleTap", json!({ "x": p.x, "y": p.y })).await.map(|_| ())
+    }
+
+    async fn hide_keyboard(&self) -> Result<()> {
+        self.call("hideKeyboard", json!({})).await.map(|_| ())
+    }
+
+    async fn erase_text(&self, count: Option<usize>) -> Result<()> {
+        let args = match count {
+            Some(n) => json!({ "count": n }),
+            None => json!({}),
+        };
+        self.call("erase", args).await.map(|_| ())
+    }
+
+    async fn stop_app(&self, app: Option<&str>) -> Result<()> {
+        let bundle = self.app_or(app)?;
+        self.call("terminate", json!({ "bundleId": bundle })).await?;
+        self.forget(&bundle);
+        Ok(())
+    }
+
+    /// The simulator keeps app data in a host directory: terminate, then empty it (keeps
+    /// the top-level folders, which the app expects to exist).
+    async fn clear_state(&self, app: Option<&str>) -> Result<()> {
+        let bundle = self.app_or(app)?;
+        self.stop_app(Some(&bundle)).await?;
+        let dir = simctl(&["get_app_container", &self.udid, &bundle, "data"]).await?;
+        let dir = PathBuf::from(dir.trim());
+        let wipe = |d: &std::path::Path| -> std::io::Result<()> {
+            for top in std::fs::read_dir(d)?.flatten() {
+                if !top.path().is_dir() {
+                    continue;
+                }
+                for e in std::fs::read_dir(top.path())?.flatten() {
+                    let p = e.path();
+                    if p.is_dir() { std::fs::remove_dir_all(&p)? } else { std::fs::remove_file(&p)? }
+                }
+            }
+            Ok(())
+        };
+        wipe(&dir).map_err(|e| CoreError::Driver(format!("clear {}: {e}", dir.display())))
+    }
+
+    async fn clear_keychain(&self) -> Result<()> {
+        simctl(&["keychain", &self.udid, "reset"]).await?;
+        Ok(())
     }
 
     async fn tap(&self, sel: &Selector) -> Result<()> {

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
-use fastpilot_core::{Direction, Driver, Error as CoreError, Intent, Node, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value};
+use fastpilot_core::{
+    Direction, Driver, Error as CoreError, Intent, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
+};
 use fastpilot_web::{Browser, WebPage, http_get};
 use serde_json::json;
 use tokio::net::TcpStream;
@@ -275,7 +277,7 @@ impl AndroidDriver {
             let ime = system::ime(&raw);
             if ime.is_some() && matches!(node, Err(CoreError::NotFound(_))) {
                 self.note(format!("{sel} not on screen with the keyboard up; keyboard hidden"));
-                self.hide_keyboard().await?;
+                self.dismiss_ime().await?;
                 continue;
             }
             let node = node?;
@@ -283,7 +285,7 @@ impl AndroidDriver {
                 && ime.contains(b.center())
             {
                 self.note(format!("keyboard covered {sel}; hidden"));
-                self.hide_keyboard().await?;
+                self.dismiss_ime().await?;
                 continue;
             }
             return Ok((snap, node));
@@ -294,7 +296,7 @@ impl AndroidDriver {
     }
 
     /// Back closes the IME without navigating; only sent while the keyboard is up.
-    async fn hide_keyboard(&self) -> Result<()> {
+    async fn dismiss_ime(&self) -> Result<()> {
         let v = self.agent.call("snapshot", json!({})).await?;
         if system::ime(&v).is_some() {
             self.acted();
@@ -302,6 +304,22 @@ impl AndroidDriver {
             let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
         }
         Ok(())
+    }
+
+    /// `app` (a package, or package/activity), else the app under test.
+    fn app_or(&self, app: Option<&str>) -> Result<String> {
+        match app {
+            Some(a) => Ok(a.split('/').next().unwrap_or(a).to_owned()),
+            None => lock(&self.app).clone().ok_or_else(|| CoreError::Flow("no app under test yet; pass an appId or launchApp first".into())),
+        }
+    }
+
+    /// The app was stopped on purpose: it no longer running is not a crash.
+    fn forget(&self, pkg: &str) {
+        let mut app = lock(&self.app);
+        if app.as_deref() == Some(pkg) {
+            *app = None;
+        }
     }
 
     /// The app under test is `pkg` from now on; forget crashes of earlier runs.
@@ -622,6 +640,66 @@ impl Driver for AndroidDriver {
 
     async fn diagnostics(&self) -> Vec<String> {
         lock(&self.notes).clone()
+    }
+
+    fn platform(&self) -> Platform {
+        Platform::Android
+    }
+
+    async fn long_press(&self, sel: &Selector) -> Result<()> {
+        let p = match sel {
+            Selector::Point(p) => *p,
+            _ => self.center(&self.resolve(sel, Intent::Tap).await?)?,
+        };
+        self.acted();
+        // A swipe that does not move is a press held for `ms`.
+        self.agent.call("swipe", json!({ "x1": p.x, "y1": p.y, "x2": p.x, "y2": p.y, "ms": 800 })).await?;
+        Ok(())
+    }
+
+    async fn double_tap(&self, sel: &Selector) -> Result<()> {
+        let p = match sel {
+            Selector::Point(p) => *p,
+            _ => self.center(&self.resolve(sel, Intent::Tap).await?)?,
+        };
+        self.tap_at(p).await?;
+        self.tap_at(p).await
+    }
+
+    async fn hide_keyboard(&self) -> Result<()> {
+        self.dismiss_ime().await
+    }
+
+    async fn erase_text(&self, count: Option<usize>) -> Result<()> {
+        let snap = self.snapshot().await?;
+        let field = snap.resolve(&Selector::Focused, Intent::Type)?.node.clone();
+        let text = field.value.unwrap_or_default();
+        let keep = match count {
+            Some(n) => text.chars().count().saturating_sub(n),
+            None => 0,
+        };
+        self.acted();
+        self.agent.call("text", json!({ "text": text.chars().take(keep).collect::<String>() })).await?;
+        Ok(())
+    }
+
+    async fn stop_app(&self, app: Option<&str>) -> Result<()> {
+        let pkg = self.app_or(app)?;
+        self.shell(&format!("am force-stop {}", shell_safe(&pkg)?)).await?;
+        self.forget(&pkg);
+        Ok(())
+    }
+
+    /// `pm clear`: data, caches and runtime permissions; the app is stopped too.
+    async fn clear_state(&self, app: Option<&str>) -> Result<()> {
+        let pkg = self.app_or(app)?;
+        let out = self.shell(&format!("pm clear {}", shell_safe(&pkg)?)).await?;
+        if !out.contains("Success") {
+            return Err(CoreError::Driver(format!("pm clear {pkg}: {}", out.trim())));
+        }
+        self.forget(&pkg);
+        *self.web.lock().await = None;
+        Ok(())
     }
 
     async fn press_key(&self, key: &str) -> Result<()> {

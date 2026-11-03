@@ -113,9 +113,20 @@ final class DashboardViewController: UIViewController {
         ask.addTarget(self, action: #selector(askLocation), for: .touchUpInside)
         let crash = button("Crash")
         crash.addTarget(self, action: #selector(die), for: .touchUpInside)
+        // Gesture fixtures: long press, and a tap counter (a double tap shows "Ketukan: 2").
+        welcome.isUserInteractionEnabled = true
+        welcome.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(held)))
+        taps.isUserInteractionEnabled = true
+        taps.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         stack([label("Dashboard", font: .preferredFont(forTextStyle: .title1)),
-               label("Selamat datang, Budi"), logout, ask, crash], in: self)
+               welcome, taps, logout, ask, crash], in: self)
     }
+
+    private let welcome = label("Selamat datang, Budi")
+    private let taps = label("Ketukan: 0")
+    private var count = 0
+    @objc private func held(_ g: UILongPressGestureRecognizer) { if g.state == .began { welcome.text = "Ditekan lama" } }
+    @objc private func tapped() { count += 1; taps.text = "Ketukan: \(count)" }
 
     @objc private func back() { navigationController?.popViewController(animated: true) }
     @objc private func askLocation() { location.requestWhenInUseAuthorization() }

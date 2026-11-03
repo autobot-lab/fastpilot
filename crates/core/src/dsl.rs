@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_yaml::{Mapping, Value as Yaml};
@@ -26,7 +27,102 @@ pub enum Step {
     UseSession(String),
     StartSession { id: String, platform: Platform, target: Option<String>, reset: bool },
     Parallel(Vec<Branch>),
+    LongPressOn(Selector),
+    DoubleTapOn(Selector),
+    ScrollUntilVisible { selector: Selector, direction: Direction, timeout: Option<Duration> },
+    HideKeyboard,
+    /// `None`: erase everything in the focused field.
+    EraseText(Option<usize>),
+    /// `None`: the app under test.
+    StopApp(Option<String>),
+    ClearState(Option<String>),
+    ClearKeychain,
+    CopyTextFrom(Selector),
+    PasteText,
+    WaitForAnimationToEnd(Option<Duration>),
+    TakeScreenshot(String),
+    InputRandom { kind: Random, length: usize },
+    /// A sub-flow: `file` (kept for round-trips) or inline `commands`, optionally conditional,
+    /// with `env` variables visible inside it.
+    RunFlow { file: Option<String>, when: Option<Condition>, env: Vec<(String, String)>, steps: Vec<FlowStep> },
+    Repeat { times: Option<u32>, while_: Option<Condition>, steps: Vec<FlowStep> },
+    Retry { max: u32, steps: Vec<FlowStep> },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Random {
+    Text,
+    Number,
+    Email,
+    PersonName,
+}
+
+impl Random {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Text => "inputRandomText",
+            Self::Number => "inputRandomNumber",
+            Self::Email => "inputRandomEmail",
+            Self::PersonName => "inputRandomPersonName",
+        }
+    }
+}
+
+/// `when:` / `while:` condition, checked once against the current screen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Condition {
+    Visible(Selector),
+    NotVisible(Selector),
+    Platform(Platform),
+}
+
+impl fmt::Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Visible(s) => write!(f, "visible {s}"),
+            Self::NotVisible(s) => write!(f, "notVisible {s}"),
+            Self::Platform(p) => write!(f, "platform {p}"),
+        }
+    }
+}
+
+impl Condition {
+    fn parse(v: &Yaml) -> Result<Self, String> {
+        let m = v.as_mapping().ok_or("expects { visible | notVisible | platform }")?;
+        if let Some(s) = get(m, "visible") {
+            return Ok(Self::Visible(Selector::from_yaml(s, &[])?));
+        }
+        if let Some(s) = get(m, "notVisible") {
+            return Ok(Self::NotVisible(Selector::from_yaml(s, &[])?));
+        }
+        if let Some(p) = get(m, "platform") {
+            let p = string(p)?;
+            return Platform::parse(&p).map(Self::Platform).ok_or(format!("unknown platform `{p}` (web, android, ios)"));
+        }
+        // `true:` is a boolean key in YAML.
+        if get(m, "true").is_some() || m.get(Yaml::Bool(true)).is_some() {
+            return Err("JavaScript conditions (`true:`) are not supported; use visible, notVisible or platform".into());
+        }
+        Err("expects { visible | notVisible | platform }".into())
+    }
+
+    fn to_yaml(&self) -> Yaml {
+        match self {
+            Self::Visible(s) => map(vec![("visible", s.to_yaml())]),
+            Self::NotVisible(s) => map(vec![("notVisible", s.to_yaml())]),
+            Self::Platform(p) => map(vec![("platform", Yaml::String(p.to_string()))]),
+        }
+    }
+}
+
+/// Where relative `runFlow` files resolve, and how deep sub-flows already nest.
+#[derive(Debug, Clone)]
+struct Cx {
+    base: PathBuf,
+    depth: usize,
+}
+
+const MAX_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Branch {
@@ -61,27 +157,56 @@ impl fmt::Display for FlowError {
     }
 }
 
-/// Maestro commands we recognise but do not run yet, so the AI gets a clear message.
+/// Maestro commands we recognise but do not run, so the AI gets a clear message.
 const MAESTRO_LATER: &[&str] = &[
-    "stopApp", "clearState", "clearKeychain",
-    "hideKeyboard", "eraseText", "longPressOn", "doubleTapOn", "scrollUntilVisible",
-    "extendedWaitUntil", "waitForAnimationToEnd", "takeScreenshot", "copyTextFrom", "pasteText",
-    "runFlow", "runScript", "repeat", "retry", "assertTrue", "openLink", "setLocation", "travel",
-    "addMedia", "inputRandomText", "inputRandomEmail", "inputRandomNumber", "inputRandomPersonName",
-    "killApp", "setAirplaneMode", "toggleAirplaneMode", "startRecording", "stopRecording",
+    "runScript", "assertTrue", "assertWithAI", "assertNoDefectsWithAI", "extractTextWithAI", "evalScriptWithAI",
+    "setLocation", "travel", "addMedia", "setAirplaneMode", "toggleAirplaneMode", "startRecording", "stopRecording",
 ];
 
+fn null_or<T>(arg: &Yaml, f: impl FnOnce(&Yaml) -> Result<T, String>) -> Result<Option<T>, String> {
+    if arg.is_null() { Ok(None) } else { f(arg).map(Some) }
+}
+
+fn millis(v: &Yaml) -> Result<Duration, String> {
+    v.as_u64().map(Duration::from_millis).ok_or_else(|| "`timeout` is milliseconds".to_owned())
+}
+
+/// App id argument: absent, `stopApp: com.x`, or `{ appId: com.x }`.
+fn app_arg(arg: &Yaml) -> Result<Option<String>, String> {
+    match arg {
+        Yaml::Mapping(m) => get(m, "appId").map(string).transpose(),
+        other => null_or(other, string),
+    }
+}
+
+fn steps_of(v: &Yaml, cx: &Cx) -> Result<Vec<FlowStep>, String> {
+    let seq = v.as_sequence().ok_or("`commands` must be a list of steps")?;
+    seq.iter()
+        .enumerate()
+        .map(|(i, s)| Step::parse(s, cx).map(|step| FlowStep { line: None, step }).map_err(|e| format!("command {}: {e}", i + 1)))
+        .collect()
+}
+
+/// Steps of a sub-flow file (relative to the including flow's directory).
+fn load(path: &str, cx: &Cx) -> Result<Vec<FlowStep>, String> {
+    if cx.depth >= MAX_DEPTH {
+        return Err(format!("sub-flows nest deeper than {MAX_DEPTH} levels (a cycle?)"));
+    }
+    if !(path.ends_with(".yaml") || path.ends_with(".yml")) {
+        return Err(format!("`{path}`: sub-flows are .yaml / .yml files"));
+    }
+    let full = cx.base.join(path);
+    let text = std::fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+    let sub = Cx { base: full.parent().map(Path::to_path_buf).unwrap_or_default(), depth: cx.depth + 1 };
+    parse_with(&text, &sub)
+        .map(|f| f.steps)
+        .map_err(|errs| format!("{path}: {}", errs.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")))
+}
+
 impl Step {
-    fn parse(v: &Yaml) -> Result<Self, String> {
+    fn parse(v: &Yaml, cx: &Cx) -> Result<Self, String> {
         match v {
-            Yaml::String(s) => match s.as_str() {
-                "back" => Ok(Self::Back),
-                "scroll" => Ok(Self::Scroll {
-                    direction: Direction::Down,
-                    within: None,
-                }),
-                other => Err(format!("{other}: {}", unknown(other))),
-            },
+            Yaml::String(s) => Self::parse_command(s, &Yaml::Null, cx).map_err(|e| format!("{s}: {e}")),
             Yaml::Mapping(m) => {
                 let mut it = m.iter();
                 let (Some((k, arg)), None) = (it.next(), it.next()) else {
@@ -92,15 +217,141 @@ impl Step {
                     ));
                 };
                 let cmd = k.as_str().ok_or("step command must be a string")?;
-                Self::parse_command(cmd, arg).map_err(|e| format!("{cmd}: {e}"))
+                Self::parse_command(cmd, arg, cx).map_err(|e| format!("{cmd}: {e}"))
             }
             _ => Err("a step must be a command string or a `command: args` map".into()),
         }
     }
 
-    fn parse_command(cmd: &str, arg: &Yaml) -> Result<Self, String> {
+    fn parse_command(cmd: &str, arg: &Yaml, cx: &Cx) -> Result<Self, String> {
+        let none = || -> Result<(), String> { if arg.is_null() { Ok(()) } else { Err("takes no arguments".into()) } };
         Ok(match cmd {
             "openUrl" => Self::OpenUrl(string(arg)?),
+            "openLink" => match arg {
+                Yaml::Mapping(m) => Self::OpenUrl(string(get(m, "link").ok_or("missing `link`")?)?),
+                other => Self::OpenUrl(string(other)?),
+            },
+            "longPressOn" => Self::LongPressOn(Selector::from_yaml(arg, &[])?),
+            "doubleTapOn" => Self::DoubleTapOn(Selector::from_yaml(arg, &[])?),
+            "scrollUntilVisible" => match arg {
+                Yaml::Mapping(m) if get(m, "element").is_some() => Self::ScrollUntilVisible {
+                    selector: Selector::from_yaml(get(m, "element").ok_or("missing `element`")?, &[])?,
+                    direction: get(m, "direction").map(direction).transpose()?.unwrap_or(Direction::Down),
+                    timeout: get(m, "timeout").map(millis).transpose()?,
+                },
+                other => Self::ScrollUntilVisible { selector: Selector::from_yaml(other, &[])?, direction: Direction::Down, timeout: None },
+            },
+            "hideKeyboard" => {
+                none()?;
+                Self::HideKeyboard
+            }
+            "eraseText" => Self::EraseText(match arg {
+                Yaml::Mapping(m) => get(m, "charactersToErase").and_then(Yaml::as_u64).map(|n| n as usize),
+                other => null_or(other, |v| v.as_u64().map(|n| n as usize).ok_or("expects a number of characters".into()))?,
+            }),
+            "stopApp" | "killApp" => Self::StopApp(app_arg(arg)?),
+            "clearState" => Self::ClearState(app_arg(arg)?),
+            "clearKeychain" => {
+                none()?;
+                Self::ClearKeychain
+            }
+            "copyTextFrom" => Self::CopyTextFrom(Selector::from_yaml(arg, &[])?),
+            "pasteText" => {
+                none()?;
+                Self::PasteText
+            }
+            "waitForAnimationToEnd" => Self::WaitForAnimationToEnd(match arg {
+                Yaml::Mapping(m) => get(m, "timeout").map(millis).transpose()?,
+                other => null_or(other, millis)?,
+            }),
+            "extendedWaitUntil" => {
+                let m = arg.as_mapping().ok_or("expects { visible | notVisible: <selector>, timeout }")?;
+                let timeout = get(m, "timeout").map(millis).transpose()?;
+                match (get(m, "visible"), get(m, "notVisible")) {
+                    (Some(s), None) => Self::AssertVisible { selector: Selector::from_yaml(s, &[])?, timeout },
+                    (None, Some(s)) => Self::AssertNotVisible { selector: Selector::from_yaml(s, &[])?, timeout },
+                    _ => return Err("expects exactly one of `visible` / `notVisible`".into()),
+                }
+            }
+            "takeScreenshot" => Self::TakeScreenshot(match arg {
+                Yaml::Mapping(m) => string(get(m, "path").ok_or("missing `path`")?)?,
+                other => string(other)?,
+            }),
+            "inputRandomText" | "inputRandomNumber" | "inputRandomEmail" | "inputRandomPersonName" => {
+                let kind = match cmd {
+                    "inputRandomText" => Random::Text,
+                    "inputRandomNumber" => Random::Number,
+                    "inputRandomEmail" => Random::Email,
+                    _ => Random::PersonName,
+                };
+                let length = match arg {
+                    Yaml::Mapping(m) => get(m, "length").and_then(Yaml::as_u64).unwrap_or(8) as usize,
+                    _ => 8,
+                };
+                Self::InputRandom { kind, length: length.clamp(1, 200) }
+            }
+            "runFlow" => match arg {
+                Yaml::Mapping(m) => {
+                    let when = get(m, "when").map(Condition::parse).transpose().map_err(|e| format!("when: {e}"))?;
+                    let env = match get(m, "env") {
+                        Some(Yaml::Mapping(e)) => e
+                            .iter()
+                            .map(|(k, v)| {
+                                let k = k.as_str().ok_or("env names are strings")?.to_owned();
+                                if !is_var(&k) {
+                                    return Err(format!("env name `{k}` must be UPPER_SNAKE_CASE"));
+                                }
+                                let v = match v {
+                                    Yaml::Number(n) => n.to_string(),
+                                    other => string(other)?,
+                                };
+                                Ok((k, v))
+                            })
+                            .collect::<Result<_, String>>()?,
+                        Some(_) => return Err("`env` must be a map".into()),
+                        None => Vec::new(),
+                    };
+                    let (file, steps) = match (get(m, "file"), get(m, "commands")) {
+                        (Some(f), None) => {
+                            let f = string(f)?;
+                            let steps = load(&f, cx)?;
+                            (Some(f), steps)
+                        }
+                        (None, Some(c)) => (None, steps_of(c, cx)?),
+                        _ => return Err("expects exactly one of `file` / `commands`".into()),
+                    };
+                    Self::RunFlow { file, when, env, steps }
+                }
+                other => {
+                    let f = string(other)?;
+                    Self::RunFlow { steps: load(&f, cx)?, file: Some(f), when: None, env: Vec::new() }
+                }
+            },
+            "repeat" => {
+                let m = arg.as_mapping().ok_or("expects { times | while, commands }")?;
+                let times = get(m, "times")
+                    .map(|t| match t {
+                        Yaml::Number(n) => n.as_u64().map(|n| n as u32).ok_or("`times` is a count".to_owned()),
+                        Yaml::String(s) => s.parse().map_err(|_| "`times` is a count".to_owned()),
+                        _ => Err("`times` is a count".to_owned()),
+                    })
+                    .transpose()?;
+                let while_ = get(m, "while").map(Condition::parse).transpose().map_err(|e| format!("while: {e}"))?;
+                if times.is_none() && while_.is_none() {
+                    return Err("needs `times` and/or `while`".into());
+                }
+                Self::Repeat { times, while_, steps: steps_of(get(m, "commands").ok_or("missing `commands`")?, cx)? }
+            }
+            "retry" => {
+                let m = arg.as_mapping().ok_or("expects { maxRetries, commands | file }")?;
+                let max = get(m, "maxRetries").and_then(Yaml::as_u64).unwrap_or(1).min(10) as u32;
+                let steps = match (get(m, "commands"), get(m, "file")) {
+                    (Some(c), None) => steps_of(c, cx)?,
+                    (None, Some(f)) => load(&string(f)?, cx)?,
+                    _ => return Err("expects exactly one of `commands` / `file`".into()),
+                };
+                Self::Retry { max, steps }
+            }
             "tapOn" => Self::TapOn(Selector::from_yaml(arg, &[])?),
             "inputText" => match arg {
                 Yaml::Mapping(m) => Self::InputText {
@@ -212,7 +463,7 @@ impl Step {
                             .iter()
                             .enumerate()
                             .map(|(j, s)| {
-                                Step::parse(s)
+                                Step::parse(s, cx)
                                     .map(|step| FlowStep { line: None, step })
                                     .map_err(|e| format!("branch {} step {}: {e}", i + 1, j + 1))
                             })
@@ -246,17 +497,61 @@ impl Step {
             Self::UseSession(id) => format!("session {id}"),
             Self::StartSession { id, platform, .. } => format!("session start {id} ({platform})"),
             Self::Parallel(b) => format!("parallel ({} branches)", b.len()),
+            Self::LongPressOn(s) => format!("longPressOn {s}"),
+            Self::DoubleTapOn(s) => format!("doubleTapOn {s}"),
+            Self::ScrollUntilVisible { selector, direction, .. } => format!("scrollUntilVisible {selector} {direction:?}"),
+            Self::HideKeyboard => "hideKeyboard".into(),
+            Self::EraseText(Some(n)) => format!("eraseText {n}"),
+            Self::EraseText(None) => "eraseText".into(),
+            Self::StopApp(a) => format!("stopApp{}", a.as_deref().map(|a| format!(" {a}")).unwrap_or_default()),
+            Self::ClearState(a) => format!("clearState{}", a.as_deref().map(|a| format!(" {a}")).unwrap_or_default()),
+            Self::ClearKeychain => "clearKeychain".into(),
+            Self::CopyTextFrom(s) => format!("copyTextFrom {s}"),
+            Self::PasteText => "pasteText".into(),
+            Self::WaitForAnimationToEnd(_) => "waitForAnimationToEnd".into(),
+            Self::TakeScreenshot(n) => format!("takeScreenshot {n}"),
+            Self::InputRandom { kind, .. } => kind.command().into(),
+            Self::RunFlow { file, when, steps, .. } => {
+                let what = file.clone().unwrap_or_else(|| format!("({} steps)", steps.len()));
+                let when = when.as_ref().map(|c| format!(" when {c}")).unwrap_or_default();
+                format!("runFlow {what}{when}")
+            }
+            Self::Repeat { times, while_, steps } => {
+                let times = times.map(|t| format!(" {t}x")).unwrap_or_default();
+                let cond = while_.as_ref().map(|c| format!(" while {c}")).unwrap_or_default();
+                format!("repeat{times}{cond} ({} steps)", steps.len())
+            }
+            Self::Retry { max, steps } => format!("retry {max}x ({} steps)", steps.len()),
         }
     }
 
+    /// Steps nested in a block (runFlow, repeat, retry).
+    pub fn children(&self) -> &[FlowStep] {
+        match self {
+            Self::RunFlow { steps, .. } | Self::Repeat { steps, .. } | Self::Retry { steps, .. } => steps,
+            _ => &[],
+        }
+    }
+
+    /// `${VARS}` this step itself reads (not those of nested steps).
     fn vars(&self) -> Vec<String> {
         let texts: Vec<&str> = match self {
             Self::OpenUrl(s) | Self::EvalScript(s) => vec![s],
             Self::InputText { text, .. } => vec![text],
             Self::StartSession { target: Some(t), .. } => vec![t],
+            Self::StopApp(Some(a)) | Self::ClearState(Some(a)) => vec![a],
+            Self::RunFlow { env, .. } => env.iter().map(|(_, v)| v.as_str()).collect(),
             _ => vec![],
         };
         texts.into_iter().flat_map(var_names).collect()
+    }
+
+    /// Variables this step defines for the steps after it / inside it.
+    fn defines(&self) -> Vec<String> {
+        match self {
+            Self::RunFlow { env, .. } => env.iter().map(|(k, _)| k.clone()).collect(),
+            _ => vec![],
+        }
     }
 }
 
@@ -336,8 +631,68 @@ impl Step {
                 ]),
             ),
             Self::Parallel(_) => Yaml::Null, // handled above
+            Self::LongPressOn(x) => one("longPressOn", sel(x)),
+            Self::DoubleTapOn(x) => one("doubleTapOn", sel(x)),
+            Self::ScrollUntilVisible { selector, direction, timeout } => one(
+                "scrollUntilVisible",
+                map(vec![
+                    ("element", sel(selector)),
+                    ("direction", s(&format!("{direction:?}").to_lowercase())),
+                    ("timeout", timeout.map(|t| Yaml::Number((t.as_millis() as u64).into())).unwrap_or(Yaml::Null)),
+                ]),
+            ),
+            Self::HideKeyboard => s("hideKeyboard"),
+            Self::EraseText(Some(n)) => one("eraseText", Yaml::Number((*n as u64).into())),
+            Self::EraseText(None) => s("eraseText"),
+            Self::StopApp(Some(a)) => one("stopApp", s(a)),
+            Self::StopApp(None) => s("stopApp"),
+            Self::ClearState(Some(a)) => one("clearState", s(a)),
+            Self::ClearState(None) => s("clearState"),
+            Self::ClearKeychain => s("clearKeychain"),
+            Self::CopyTextFrom(x) => one("copyTextFrom", sel(x)),
+            Self::PasteText => s("pasteText"),
+            Self::WaitForAnimationToEnd(Some(t)) => one("waitForAnimationToEnd", map(vec![("timeout", Yaml::Number((t.as_millis() as u64).into()))])),
+            Self::WaitForAnimationToEnd(None) => s("waitForAnimationToEnd"),
+            Self::TakeScreenshot(n) => one("takeScreenshot", s(n)),
+            Self::InputRandom { kind, length } => one(kind.command(), map(vec![("length", Yaml::Number((*length as u64).into()))])),
+            Self::RunFlow { file, when, env, steps } => {
+                let env = if env.is_empty() {
+                    Yaml::Null
+                } else {
+                    Yaml::Mapping(env.iter().map(|(k, v)| (s(k), s(v))).collect())
+                };
+                match (file, when, &env) {
+                    (Some(f), None, Yaml::Null) => one("runFlow", s(f)),
+                    _ => one(
+                        "runFlow",
+                        map(vec![
+                            ("when", when.as_ref().map(Condition::to_yaml).unwrap_or(Yaml::Null)),
+                            ("env", env),
+                            ("file", file.as_deref().map(s).unwrap_or(Yaml::Null)),
+                            ("commands", if file.is_some() { Yaml::Null } else { block(steps) }),
+                        ]),
+                    ),
+                }
+            }
+            Self::Repeat { times, while_, steps } => one(
+                "repeat",
+                map(vec![
+                    ("times", times.map(|t| Yaml::Number(u64::from(t).into())).unwrap_or(Yaml::Null)),
+                    ("while", while_.as_ref().map(Condition::to_yaml).unwrap_or(Yaml::Null)),
+                    ("commands", block(steps)),
+                ]),
+            ),
+            Self::Retry { max, steps } => {
+                one("retry", map(vec![("maxRetries", Yaml::Number(u64::from(*max).into())), ("commands", block(steps))]))
+            }
         }
     }
+}
+
+/// Nested steps keep their own selectors (path memory only rewrites top-level refs).
+fn block(steps: &[FlowStep]) -> Yaml {
+    let mut leaf = 0;
+    Yaml::Sequence(steps.iter().map(|st| st.step.to_yaml(&mut leaf, &HashMap::new())).collect())
 }
 
 /// Serialize a flow back to DSL YAML, replacing selectors of the given leaf steps (1-based,
@@ -353,7 +708,11 @@ fn unknown(cmd: &str) -> String {
         format!("Maestro command `{cmd}` is not supported yet")
     } else {
         format!(
-            "unknown step `{cmd}` (supported: launchApp, openUrl, tapOn, inputText, assertVisible, assertNotVisible, scroll, swipe, back, pressKey, selectOption, uploadFile, evalScript, session, parallel)"
+            "unknown step `{cmd}` (supported: launchApp, openUrl, openLink, tapOn, longPressOn, doubleTapOn, inputText, eraseText, \
+             hideKeyboard, copyTextFrom, pasteText, assertVisible, assertNotVisible, extendedWaitUntil, scroll, \
+             scrollUntilVisible, swipe, back, pressKey, selectOption, uploadFile, evalScript, stopApp, killApp, \
+             clearState, clearKeychain, waitForAnimationToEnd, takeScreenshot, inputRandom*, runFlow, repeat, \
+             retry, session, parallel)"
         )
     }
 }
@@ -442,6 +801,11 @@ pub(crate) fn substitute(s: &str) -> Result<String, String> {
     expand(s, lookup)
 }
 
+/// Like `substitute`, flow-local variables (runFlow `env`, captures) first.
+pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
+    expand(s, |n| local.get(n).cloned().map_or_else(|| lookup(n), Ok))
+}
+
 /// Mask every allowed variable's value in text going back to the AI (PRD §15).
 pub fn redact(text: &str) -> String {
     let mut out = text.to_owned();
@@ -471,11 +835,38 @@ fn item_lines(lines: &[&str], from: usize, to: usize) -> Vec<usize> {
     items.into_iter().filter(|&(_, i)| i == min).map(|(l, _)| l).collect()
 }
 
-/// Parse YAML into a flow. Shape errors carry the line of the offending step.
+/// Maestro flow files may start with a config document (`appId: ...` then `---`); the steps
+/// are the last document. Returns the steps text and how many lines precede it.
+fn body(yaml: &str) -> (&str, usize) {
+    let mut offset = 0;
+    let mut start = 0;
+    for line in yaml.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            start = offset + line.len();
+        }
+        offset += line.len();
+    }
+    let before = yaml[..start].lines().count();
+    (&yaml[start..], before)
+}
+
+/// Parse YAML into a flow. Shape errors carry the line of the offending step; relative
+/// `runFlow` files resolve against the working directory.
 pub fn parse_flow(yaml: &str) -> Result<Flow, Vec<FlowError>> {
+    parse_with(yaml, &Cx { base: PathBuf::new(), depth: 0 })
+}
+
+/// `parse_flow` for a flow read from `path`: its sub-flows resolve next to it.
+pub fn parse_flow_file(yaml: &str, path: &Path) -> Result<Flow, Vec<FlowError>> {
+    parse_with(yaml, &Cx { base: path.parent().map(Path::to_path_buf).unwrap_or_default(), depth: 0 })
+}
+
+fn parse_with(yaml: &str, cx: &Cx) -> Result<Flow, Vec<FlowError>> {
+    let (yaml, skipped) = body(yaml);
+    let shift = |l: usize| l + skipped;
     let doc: Yaml = serde_yaml::from_str(yaml).map_err(|e| {
         vec![FlowError {
-            line: e.location().map(|l| l.line()),
+            line: e.location().map(|l| shift(l.line())),
             message: format!("YAML: {e}"),
         }]
     })?;
@@ -496,12 +887,15 @@ pub fn parse_flow(yaml: &str) -> Result<Flow, Vec<FlowError>> {
     let mut steps = Vec::new();
     let mut errors = Vec::new();
     for (i, v) in seq.iter().enumerate() {
-        let line = roots.get(i).map(|l| l + 1);
-        match Step::parse(v) {
+        let line = roots.get(i).map(|l| shift(l + 1));
+        match Step::parse(v, cx) {
             Ok(mut step) => {
                 if let (Step::Parallel(branches), Some(&start)) = (&mut step, roots.get(i)) {
                     let end = roots.get(i + 1).copied().unwrap_or(lines.len());
                     locate_branches(branches, &lines, start + 1, end);
+                    for b in branches.iter_mut() {
+                        b.steps.iter_mut().for_each(|s| s.line = s.line.map(shift));
+                    }
                 }
                 steps.push(FlowStep { line, step });
             }
@@ -527,20 +921,46 @@ fn locate_branches(branches: &mut [Branch], lines: &[&str], from: usize, to: usi
     }
 }
 
+/// `${VARS}` of a step and everything nested in it must be allowlisted or defined by the flow
+/// (runFlow `env`); blocks may not contain session or parallel steps.
+fn check_step(step: &Step, defined: &mut HashSet<String>, out: &mut dyn FnMut(String)) {
+    for v in step.vars() {
+        if !defined.contains(&v)
+            && let Err(e) = lookup(&v)
+        {
+            out(e);
+        }
+    }
+    defined.extend(step.defines());
+    for c in step.children() {
+        match &c.step {
+            Step::Parallel(_) | Step::UseSession(_) | Step::StartSession { .. } => {
+                out(format!("`{}` is not allowed inside runFlow/repeat/retry", c.step.label()));
+            }
+            other => check_step(other, defined, out),
+        }
+    }
+}
+
 /// Parse + semantic validation without executing anything. `known` are sessions that already
 /// exist in the registry.
 pub fn check_flow(yaml: &str, known: &[String]) -> Result<Flow, Vec<FlowError>> {
-    let flow = parse_flow(yaml)?;
+    check_parsed(parse_flow(yaml)?, known)
+}
+
+/// `check_flow` for a flow file (sub-flows resolve next to it).
+pub fn check_flow_file(yaml: &str, path: &Path, known: &[String]) -> Result<Flow, Vec<FlowError>> {
+    check_parsed(parse_flow_file(yaml, path)?, known)
+}
+
+fn check_parsed(flow: Flow, known: &[String]) -> Result<Flow, Vec<FlowError>> {
     let mut errors = Vec::new();
     let mut sessions: HashSet<&str> = known.iter().map(String::as_str).collect();
     let mut active = !known.is_empty();
+    let mut defined = HashSet::new();
     for fs in &flow.steps {
         let err = |message: String| FlowError { line: fs.line, message };
-        for v in fs.step.vars() {
-            if let Err(e) = lookup(&v) {
-                errors.push(err(e));
-            }
-        }
+        check_step(&fs.step, &mut defined, &mut |m| errors.push(err(m)));
         match &fs.step {
             Step::StartSession { id, reset, .. } => {
                 if !sessions.insert(id) && !reset {
@@ -574,13 +994,7 @@ pub fn check_flow(yaml: &str, known: &[String]) -> Result<Flow, Vec<FlowError>> 
                             Step::UseSession(_) | Step::StartSession { .. } => errors.push(serr(
                                 "a branch is bound to one session; `session` steps are not allowed inside".into(),
                             )),
-                            other => {
-                                for v in other.vars() {
-                                    if let Err(e) = lookup(&v) {
-                                        errors.push(serr(e));
-                                    }
-                                }
-                            }
+                            other => check_step(other, &mut defined, &mut |m| errors.push(serr(m))),
                         }
                     }
                 }
@@ -648,9 +1062,9 @@ mod tests {
         assert_eq!(errs[0].to_string(), "line 7: branch 2: unknown session `web2`");
         assert!(check_flow(LOGIN, &["web2".into()]).is_ok());
 
-        let errs = check_flow("- tapOn: Login\n- hideKeyboard\n- frobnicate: 1\n", &[]).expect_err("bad");
+        let errs = check_flow("- tapOn: Login\n- assertTrue: x\n- frobnicate: 1\n", &[]).expect_err("bad");
         assert_eq!(errs.len(), 2);
-        assert!(errs[0].to_string().starts_with("line 2: hideKeyboard: Maestro command"), "{}", errs[0]);
+        assert!(errs[0].to_string().starts_with("line 2: assertTrue: Maestro command"), "{}", errs[0]);
         assert!(errs[1].to_string().starts_with("line 3: frobnicate: unknown step"));
 
         let errs = check_flow("- tapOn: Login\n", &[]).expect_err("no session");
@@ -686,6 +1100,60 @@ mod tests {
                 .collect()
         };
         assert_eq!(strip(steps(&again)), strip(expected));
+    }
+
+    #[test]
+    fn parses_maestro_blocks_and_subflows() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-dsl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        // A Maestro file: config document, then the steps.
+        std::fs::write(dir.join("login.yaml"), "appId: com.x\n---\n- inputText: { into: Email, text: \"${USER_EMAIL}\" }\n- tapOn: Masuk\n")
+            .expect("write");
+        let main = dir.join("main.yaml");
+        let yaml = r#"
+- session: { start: w, target: x }
+- runFlow: { file: login.yaml, env: { USER_EMAIL: a@b.com } }
+- runFlow:
+    when: { visible: "Promo" }
+    commands:
+      - tapOn: "Tutup"
+- repeat: { times: 2, commands: [ scrollUntilVisible: { element: "Footer", direction: down, timeout: 3000 } ] }
+- retry: { maxRetries: 2, commands: [ longPressOn: "Item", doubleTapOn: { id: img } ] }
+- eraseText: 3
+- hideKeyboard
+- copyTextFrom: { id: total }
+- pasteText
+- openLink: "myapp://home"
+- stopApp
+- clearState: com.x
+- inputRandomEmail
+- extendedWaitUntil: { visible: "Done", timeout: 5000 }
+"#;
+        let flow = check_flow_file(yaml, &main, &[]).expect("valid");
+        let Step::RunFlow { file, env, steps, .. } = &flow.steps[1].step else { panic!("runFlow") };
+        assert_eq!((file.as_deref(), env.len(), steps.len()), (Some("login.yaml"), 1, 2));
+        assert_eq!(steps[1].line, Some(4), "lines count the config document");
+        assert_eq!(flow.steps[2].step.label(), "runFlow (1 steps) when visible \"Promo\"");
+        assert_eq!(flow.steps[3].step.label(), "repeat 2x (1 steps)");
+        assert_eq!(flow.steps[9].step, Step::OpenUrl("myapp://home".into()));
+        assert_eq!(flow.steps[13].step, Step::AssertVisible { selector: Selector::Text("Done".into()), timeout: Some(Duration::from_secs(5)) });
+
+        let again = parse_flow_file(&flow_to_yaml(&flow, &HashMap::new()), &main).expect("re-parses");
+        let steps = |f: &Flow| f.steps.iter().map(|s| s.step.label()).collect::<Vec<_>>();
+        assert_eq!(steps(&again), steps(&flow));
+
+        // Unknown var inside a block is still caught; env-defined ones are fine.
+        let errs = check_flow_file("- session: { start: w }\n- repeat: { times: 1, commands: [ inputText: \"${NOPE_X}\" ] }\n", &main, &[])
+            .expect_err("unknown var");
+        assert!(errs[0].message.contains("NOPE_X"), "{}", errs[0]);
+        let errs = check_flow_file("- runFlow: { file: missing.yaml }\n", &main, &[]).expect_err("missing");
+        assert!(errs[0].message.contains("missing.yaml"), "{}", errs[0]);
+        let errs = check_flow("- retry: { commands: [ session: w ] }\n", &["w".into()]).expect_err("session in block");
+        assert!(errs[0].message.contains("not allowed inside"), "{}", errs[0]);
+        assert!(check_flow("- runFlow: { when: { true: \"1\" }, commands: [ back ] }\n", &[]).is_err());
+        std::fs::write(dir.join("loop.yaml"), "- runFlow: loop.yaml\n").expect("write");
+        assert!(parse_flow_file("- runFlow: loop.yaml\n", &main).expect_err("cycle")[0].message.contains("deeper"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="id">
+<head><meta charset="utf-8"><title>Langkah Maestro</title></head>
+<!-- Fixture for the Maestro-compatible steps: long press, double tap, erase/copy/paste,
+     scrollUntilVisible, clearState (a localStorage visit counter). -->
+<body style="font-family: sans-serif">
+<h1>Langkah Maestro</h1>
+<button id="hold">Tahan</button> <span id="holdout"></span>
+<button id="dbl">Ketuk dua kali</button> <span id="dblout"></span>
+<p><label>Kode <input id="kode"></label></p>
+<p><label>Salinan <input id="salin"></label></p>
+<p id="promo">Kode promo: HEMAT50</p>
+<p id="visits"></p>
+<div style="height: 3000px"></div>
+<p id="footer">Akhir halaman</p>
+<script>
+  let down = 0;
+  const hold = document.getElementById('hold');
+  hold.addEventListener('pointerdown', () => (down = Date.now()));
+  hold.addEventListener('pointerup', () => {
+    if (Date.now() - down > 500) document.getElementById('holdout').textContent = 'Ditahan';
+  });
+  document.getElementById('dbl').addEventListener('dblclick', () => (document.getElementById('dblout').textContent = 'Dua kali'));
+  const v = (Number(localStorage.getItem('visits')) || 0) + 1;
+  localStorage.setItem('visits', String(v));
+  document.getElementById('visits').textContent = 'Kunjungan ' + v;
+</script>
+</body>
+</html>

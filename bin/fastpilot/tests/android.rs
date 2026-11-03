@@ -86,10 +86,10 @@ const CROSS_PLATFORM: &str = r#"
 
 #[tokio::test]
 async fn android_login_webview_and_cross_platform_over_mcp() {
+    let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
     if prepare().is_none() {
         return eprintln!("skipping: no Android device or demo APK");
     }
-    let _device = DEVICE.lock().await;
     let client: Client = ().serve(server()).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": ANDROID_LOGIN })).await;
     println!("{out}");
@@ -125,10 +125,10 @@ const LOGIN_STEPS: &str = r#"
 /// keyboard is hidden, a crash / ANR fails the flow with a structured reason.
 #[tokio::test]
 async fn android_system_dialogs() {
+    let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
     if prepare().is_none() {
         return eprintln!("skipping: no Android device or demo APK");
     }
-    let _device = DEVICE.lock().await;
     adb_shell("pm revoke com.fastpilot.demo android.permission.CAMERA; pm clear-permission-flags com.fastpilot.demo android.permission.CAMERA user-set user-fixed");
     let client: Client = ().serve(server()).await.expect("initialize");
     let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "dlg", "platform": "android" })).await;
@@ -157,5 +157,42 @@ async fn android_system_dialogs() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow, "stop_on_fail": false })).await;
     println!("{out}");
     assert!(!ok && out.contains("app_not_responding"), "{out}");
+    client.cancel().await.expect("shutdown");
+}
+
+/// Maestro-compatible steps on a device (the web e2e covers the remaining ones).
+#[tokio::test]
+async fn android_maestro_steps() {
+    let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let flow = r#"
+- session: { start: m1, platform: android }
+- launchApp: com.fastpilot.demo/.LoginActivity
+- inputText: { into: "Email", text: "a@b.comXY" }
+- eraseText: 2
+- copyTextFrom: "Email"
+- tapOn: "Password"
+- pasteText
+- eraseText
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- hideKeyboard
+- runFlow: { when: { platform: android }, commands: [ tapOn: "Masuk" ] }
+- assertVisible: "Selamat datang, Budi"
+- longPressOn: "Selamat datang, Budi"
+- assertVisible: "Ditekan lama"
+- doubleTapOn: "Ketukan: 0"
+- assertVisible: "Ketukan: 2"
+- scrollUntilVisible: "Riwayat 30"
+- stopApp
+- assertNotVisible: "Riwayat 30"
+- clearState: com.fastpilot.demo
+"#;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    assert!(out.contains("copyTextFrom \"Email\"") && out.contains("= a@b.com"), "{out}");
     client.cancel().await.expect("shutdown");
 }

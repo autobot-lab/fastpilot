@@ -50,7 +50,7 @@ async fn ios_login_over_mcp() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS");
+        c.arg("mcp").current_dir(ROOT).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS").env("FASTPILOT_LOG", std::env::var("FASTPILOT_LOG").unwrap_or_else(|_| "warn".into()));
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": IOS_LOGIN })).await;
@@ -68,6 +68,30 @@ async fn ios_login_over_mcp() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
     assert!(ok, "{out}");
+    // Maestro-compatible steps (the web e2e covers the rest).
+    let flow = r#"
+- launchApp: com.fastpilot.demo
+- inputText: { into: "Email", text: "a@b.comXY" }
+- eraseText: 2
+- copyTextFrom: "Email"
+- tapOn: "Password"
+- pasteText
+- eraseText
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- hideKeyboard
+- runFlow: { when: { platform: ios }, commands: [ tapOn: "Masuk" ] }
+- assertVisible: "Selamat datang, Budi"
+- longPressOn: "Selamat datang, Budi"
+- assertVisible: "Ditekan lama"
+- doubleTapOn: "Ketukan: 0"
+- assertVisible: "Ketukan: 2"
+- stopApp
+- assertNotVisible: "Ketukan: 2"
+- clearState: com.fastpilot.demo
+"#;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok && out.contains("= a@b.com"), "{out}");
     let flow = format!("{login}- tapOn: \"Crash\"\n- assertVisible: {{ text: \"Tidak ada\", timeout: 10000 }}\n");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
