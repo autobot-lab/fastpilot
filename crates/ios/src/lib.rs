@@ -173,6 +173,8 @@ pub struct IosDriver {
     refs: Mutex<RefRegistry>,
     policy: Policy,
     notes: Mutex<Vec<String>>,
+    /// `simctl io recordVideo` while recording, and its output file.
+    recording: tokio::sync::Mutex<Option<(Child, PathBuf)>>,
     _runner: Child,
 }
 
@@ -235,6 +237,7 @@ impl IosDriver {
             refs: Mutex::default(),
             policy: Policy::from_env(),
             notes: Mutex::default(),
+            recording: tokio::sync::Mutex::new(None),
             _runner: child,
         })
     }
@@ -450,6 +453,39 @@ impl Driver for IosDriver {
 
     fn platform(&self) -> Platform {
         Platform::Ios
+    }
+
+    async fn start_recording(&self) -> Result<()> {
+        let mut slot = self.recording.lock().await;
+        if slot.is_some() {
+            return Err(CoreError::Flow("already recording".into()));
+        }
+        let path = std::env::temp_dir().join(format!("fastpilot-{}-{}.mp4", self.udid, std::process::id()));
+        let child = Command::new("xcrun")
+            .args(["simctl", "io", &self.udid, "recordVideo", "--codec", "h264", "--force"])
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| CoreError::Driver(format!("simctl recordVideo: {e}")))?;
+        // recordVideo needs a moment before the first frame is captured.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        *slot = Some((child, path));
+        Ok(())
+    }
+
+    async fn stop_recording(&self) -> Result<fastpilot_core::Recording> {
+        let (mut child, path) = self.recording.lock().await.take().ok_or_else(|| CoreError::Flow("not recording".into()))?;
+        // SIGINT makes simctl finalize the file.
+        if let Some(pid) = child.id() {
+            let _ = Command::new("kill").args(["-INT", &pid.to_string()]).status().await;
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(15), child.wait()).await;
+        let data = std::fs::read(&path).map_err(|e| CoreError::Driver(format!("recording {}: {e}", path.display())))?;
+        let _ = std::fs::remove_file(&path);
+        Ok(fastpilot_core::Recording::Video { mime: "video/mp4", data })
     }
 
     async fn long_press(&self, sel: &Selector) -> Result<()> {

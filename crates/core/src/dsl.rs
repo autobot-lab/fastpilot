@@ -51,6 +51,9 @@ pub enum Step {
     HttpRequest(Box<HttpRequest>),
     /// Wait for a one-time code and store it in a variable.
     ReadOtp(Box<ReadOtp>),
+    /// Screen recording of the active session, saved as `.fastpilot/recordings/<name>.*`.
+    StartRecording(String),
+    StopRecording,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,7 +247,7 @@ impl fmt::Display for FlowError {
 /// Maestro commands we recognise but do not run, so the AI gets a clear message.
 const MAESTRO_LATER: &[&str] = &[
     "runScript", "assertTrue", "assertWithAI", "assertNoDefectsWithAI", "extractTextWithAI", "evalScriptWithAI",
-    "setLocation", "travel", "addMedia", "setAirplaneMode", "toggleAirplaneMode", "startRecording", "stopRecording",
+    "setLocation", "travel", "addMedia", "setAirplaneMode", "toggleAirplaneMode",
 ];
 
 fn null_or<T>(arg: &Yaml, f: impl FnOnce(&Yaml) -> Result<T, String>) -> Result<Option<T>, String> {
@@ -425,6 +428,15 @@ impl Step {
                     return Err("needs `times` and/or `while`".into());
                 }
                 Self::Repeat { times, while_, steps: steps_of(get(m, "commands").ok_or("missing `commands`")?, cx)? }
+            }
+            "startRecording" => Self::StartRecording(match arg {
+                Yaml::Mapping(m) => string(get(m, "path").ok_or("missing `path`")?)?,
+                Yaml::Null => "recording".into(),
+                other => string(other)?,
+            }),
+            "stopRecording" => {
+                none()?;
+                Self::StopRecording
             }
             "httpRequest" => {
                 let m = arg.as_mapping().ok_or("expects { method, url, headers, json, expect, capture, secret }")?;
@@ -669,6 +681,8 @@ impl Step {
             Self::Retry { max, steps } => format!("retry {max}x ({} steps)", steps.len()),
             Self::HttpRequest(h) => format!("httpRequest {} {}", h.method, h.url),
             Self::ReadOtp(o) => format!("readOtp {} -> {}", o.source.name(), o.into),
+            Self::StartRecording(n) => format!("startRecording {n}"),
+            Self::StopRecording => "stopRecording".into(),
         }
     }
 
@@ -854,6 +868,8 @@ impl Step {
             Self::Retry { max, steps } => {
                 one("retry", map(vec![("maxRetries", Yaml::Number(u64::from(*max).into())), ("commands", block(steps))]))
             }
+            Self::StartRecording(n) => one("startRecording", s(n)),
+            Self::StopRecording => s("stopRecording"),
             Self::HttpRequest(h) => {
                 let kv = |v: &[(String, String)]| {
                     if v.is_empty() { Yaml::Null } else { Yaml::Mapping(v.iter().map(|(k, x)| (s(k), s(x))).collect()) }

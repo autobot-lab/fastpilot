@@ -35,6 +35,7 @@ async fn maestro_steps_on_web() {
     let flow = format!(
         r#"
 - session: {{ start: m, target: examples/demo/maestro.html }}
+- startRecording: maestro-rec
 - runFlow: {{ when: {{ platform: android }}, commands: [ tapOn: "Tidak ada" ] }}
 - longPressOn: "Tahan"
 - assertVisible: "Ditahan"
@@ -61,6 +62,7 @@ async fn maestro_steps_on_web() {
 - tapOn: "Salinan"
 - inputRandomEmail
 - takeScreenshot: maestro-web
+- stopRecording
 "#,
         sub = sub.display()
     );
@@ -77,6 +79,7 @@ async fn maestro_steps_on_web() {
         "= \"BODY\"",
         "= true",
         "= 2 iterations",
+        "maestro-rec.html",
         "= passed on attempt 1",
         "@example.com",
         "maestro-web.jpg",
@@ -85,6 +88,9 @@ async fn maestro_steps_on_web() {
     }
     assert!(!out.contains("visible \"Kode promo\" is false"), "{out}");
     assert!(dir.join(".fastpilot/screenshots/maestro-web.jpg").exists());
+    // Web recording = CDP screencast frames in a self-contained filmstrip player.
+    let rec = std::fs::read_to_string(dir.join(".fastpilot/recordings/maestro-rec.html")).expect("recording");
+    assert!(rec.matches("data:image/jpeg;base64,").count() >= 2, "too few frames");
     let (ok, out) = call(&client, "check_flow", json!({ "flow": "- runFlow: { when: { true: \"${A}\" }, commands: [ back ] }" })).await;
     assert!(!ok && out.contains("not supported"), "{out}");
     client.cancel().await.expect("shutdown");

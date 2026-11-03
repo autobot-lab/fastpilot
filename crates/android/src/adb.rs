@@ -129,6 +129,38 @@ impl Adb {
         Ok(())
     }
 
+    /// Pull a file with the sync protocol (`RECV`, then `DATA` chunks until `DONE`).
+    pub async fn pull(&self, serial: &str, remote: &str) -> Result<Vec<u8>, Error> {
+        let mut s = self.transport(serial).await?;
+        s.write_all(b"0005sync:").await.map_err(Error::io)?;
+        status(&mut s).await?;
+        let mut req = b"RECV".to_vec();
+        req.extend_from_slice(&(remote.len() as u32).to_le_bytes());
+        req.extend_from_slice(remote.as_bytes());
+        s.write_all(&req).await.map_err(Error::io)?;
+        let mut out = Vec::new();
+        loop {
+            let mut head = [0u8; 8];
+            s.read_exact(&mut head).await.map_err(Error::io)?;
+            let len = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+            match &head[..4] {
+                b"DATA" => {
+                    let start = out.len();
+                    out.resize(start + len, 0);
+                    s.read_exact(&mut out[start..]).await.map_err(Error::io)?;
+                }
+                b"DONE" => break,
+                _ => {
+                    let mut msg = vec![0u8; len.min(4096)];
+                    let _ = s.read_exact(&mut msg).await;
+                    return Err(Error::Adb(format!("pull {remote}: {}", String::from_utf8_lossy(&msg))));
+                }
+            }
+        }
+        let _ = s.write_all(b"QUIT\0\0\0\0").await;
+        Ok(out)
+    }
+
     pub async fn install(&self, serial: &str, apk: &[u8]) -> Result<(), Error> {
         let tmp = "/data/local/tmp/fastpilot-install.apk";
         self.push(serial, apk, tmp).await?;

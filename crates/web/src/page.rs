@@ -138,7 +138,15 @@ struct Shared {
     frames: Mutex<HashMap<u32, Frame>>,
     next_frame: AtomicU32,
     downloads_dir: Option<PathBuf>,
+    /// CDP screencast while recording: start time and base64 JPEG frames (capped).
+    screencast: Mutex<Option<Screencast>>,
 }
+
+/// Recording start and `(seconds since start, base64 jpeg)` frames.
+type Screencast = (Instant, Vec<(f64, String)>);
+
+/// About 2 minutes at the screencast's usual rate; later frames are dropped.
+const MAX_FRAMES: usize = 1200;
 
 /// Handles of OOPIF nodes carry their frame id above this bit; main-page handles are plain
 /// backendNodeIds.
@@ -257,6 +265,7 @@ impl WebPage {
             frames: Mutex::default(),
             next_frame: AtomicU32::new(1),
             downloads_dir,
+            screencast: Mutex::new(None),
         });
         let (nav_tx, nav) = watch::channel(Nav::default());
         let rx = browser.cdp.subscribe();
@@ -637,6 +646,15 @@ async fn event_loop(
                 cdp.send(tab.session.as_deref(), "Page.handleJavaScriptDialog", json!({ "accept": true, "promptText": prompt }));
             }
             "Page.fileChooserOpened" => note("file chooser opened (use uploadFile)".into()),
+            "Page.screencastFrame" => {
+                // Chrome sends the next frame only after this ack.
+                cdp.send(ev.session.as_deref(), "Page.screencastFrameAck", json!({ "sessionId": p["sessionId"] }));
+                if let (Some((t0, frames)), Some(data)) = (lock(&shared.screencast).as_mut(), p["data"].as_str())
+                    && frames.len() < MAX_FRAMES
+                {
+                    frames.push((t0.elapsed().as_secs_f64(), data.to_owned()));
+                }
+            }
             "Target.attachedToTarget" if p["targetInfo"]["type"] == "iframe" => {
                 if let (Some(session), Some(target)) = (p["sessionId"].as_str(), p["targetInfo"]["targetId"].as_str()) {
                     let id = shared.next_frame.fetch_add(1, Ordering::Relaxed);
@@ -1170,6 +1188,20 @@ impl Driver for WebPage {
             self.eval_script("try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} true").await?;
         }
         Ok(())
+    }
+
+    async fn start_recording(&self) -> Result<()> {
+        *lock(&self.shared.screencast) = Some((Instant::now(), Vec::new()));
+        self.call("Page.startScreencast", json!({ "format": "jpeg", "quality": 50, "maxWidth": 960, "maxHeight": 960, "everyNthFrame": 1 }))
+            .await?;
+        Ok(())
+    }
+
+    async fn stop_recording(&self) -> Result<fastpilot_core::Recording> {
+        let _ = self.call("Page.stopScreencast", json!({})).await;
+        let (_, frames) = lock(&self.shared.screencast).take().ok_or_else(|| CoreError::Flow("not recording".into()))?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        Ok(fastpilot_core::Recording::Frames(frames.into_iter().filter_map(|(t, d)| b64.decode(d).ok().map(|j| (t, j))).collect()))
     }
 
     async fn viewport(&self) -> Option<Rect> {

@@ -170,6 +170,7 @@ async fn android_maestro_steps() {
     let client: Client = ().serve(server()).await.expect("initialize");
     let flow = r#"
 - session: { start: m1, platform: android }
+- startRecording: android-rec
 - launchApp: com.fastpilot.demo/.LoginActivity
 - inputText: { into: "Email", text: "a@b.comXY" }
 - eraseText: 2
@@ -188,12 +189,16 @@ async fn android_maestro_steps() {
 - scrollUntilVisible: "Riwayat 30"
 - stopApp
 - assertNotVisible: "Riwayat 30"
+- stopRecording
 - clearState: com.fastpilot.demo
 "#;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
     assert!(ok, "{out}");
     assert!(out.contains("copyTextFrom \"Email\"") && out.contains("= a@b.com"), "{out}");
+    let mp4 = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.fastpilot/recordings/android-rec.mp4"));
+    let video = std::fs::read(mp4).expect("android recording");
+    assert!(video.len() > 10_000 && &video[4..8] == b"ftyp", "not an mp4: {} bytes", video.len());
 
     // Set-of-Mark on the device: the agent confirms it drew every listed box.
     let (ok, _) = call(&client, "run_flow", json!({ "flow": "- launchApp: com.fastpilot.demo/.LoginActivity\n" })).await;

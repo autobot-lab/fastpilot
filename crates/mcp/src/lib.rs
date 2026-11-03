@@ -90,6 +90,8 @@ struct State {
     /// One lock per session: a flow holds the sessions it touches, so tools on *other*
     /// sessions never wait for it (the registry lock itself is only held briefly).
     busy: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Record every session from its start; recordings land in the test's run (`run --record`).
+    record: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -275,6 +277,11 @@ impl FastPilot {
                 Err(e) => text = format!("{text}\nsnapshot failed: {e}"),
             }
         }
+        if self.state.record.load(std::sync::atomic::Ordering::Relaxed)
+            && let Err(e) = driver.start_recording().await
+        {
+            text = format!("{text}\nrecording not started: {e}");
+        }
         if let Some(hint) = args.test_id.as_deref().and_then(|t| self.state.memory.hint(t, header.as_deref())) {
             text = format!("{text}\n\n{hint}");
         }
@@ -321,6 +328,35 @@ impl FastPilot {
         }
     }
 
+    /// Record every session from its start (headless `run --record`).
+    pub fn set_record(&self, on: bool) {
+        self.state.record.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Final screen of every session, plus recordings when recording is on, into the run.
+    async fn collect_evidence(&self, run: &mut Run) {
+        let sessions: Vec<(String, Arc<dyn Driver>)> = {
+            let reg = self.state.registry.lock().await;
+            reg.ids().into_iter().filter_map(|id| reg.shared(&id).map(|d| (id, d))).collect()
+        };
+        for (id, d) in sessions {
+            let _busy = self.lock_sessions([id.clone()]).await;
+            if let Ok(jpeg) = d.screenshot().await {
+                run.add_screenshot(&format!("{id} (final)"), jpeg);
+            }
+            if self.state.record.load(std::sync::atomic::Ordering::Relaxed) {
+                match d.stop_recording().await {
+                    Ok(rec) => {
+                        if let Err(e) = run.add_recording(&id, rec) {
+                            tracing::warn!(session = id, error = %e, "recording not saved");
+                        }
+                    }
+                    Err(e) => tracing::debug!(session = id, error = %e, "no recording"),
+                }
+            }
+        }
+    }
+
     /// Close a test's run (opening an empty one if nothing was recorded).
     pub async fn finish_test(
         &self,
@@ -337,6 +373,7 @@ impl FastPilot {
         if passed_on_retry {
             run.passed_on_retry();
         }
+        self.collect_evidence(&mut run).await;
         run.finish(&self.state.memory, passed, notes).map_err(|e| e.to_string())
     }
 
@@ -398,6 +435,7 @@ impl FastPilot {
                 memory: Memory::from_env(),
                 runs: Mutex::new(HashMap::new()),
                 busy: Mutex::new(HashMap::new()),
+                record: std::sync::atomic::AtomicBool::new(false),
             }),
             tool_router: Self::tool_router(),
         }
@@ -590,16 +628,17 @@ impl FastPilot {
         }
     }
 
-    #[tool(description = "Close a test run: writes .fastpilot/runs/<ts>-<test_id>/report.md (+ steps.jsonl, assertions.json, failure screenshots) and, when status is pass, saves the flow as path memory for the next run.")]
+    #[tool(description = "Close a test run: writes .fastpilot/runs/<ts>-<test_id>/report.md and a self-contained report.html (steps, timings, diffs, screenshots, recordings) plus steps.jsonl and assertions.json, and, when status is pass, saves the flow as path memory for the next run.")]
     async fn report(&self, Parameters(args): Parameters<ReportArgs>) -> Result<CallToolResult, ErrorData> {
         let passed = match args.status.as_str() {
             "pass" => true,
             "fail" => false,
             other => return fail(format!("unknown status `{other}` (pass, fail)")),
         };
-        let Some(run) = self.state.runs.lock().await.remove(&args.test_id) else {
+        let Some(mut run) = self.state.runs.lock().await.remove(&args.test_id) else {
             return fail(format!("no open run for `{}`; pass test_id to run_flow/assert first", args.test_id));
         };
+        self.collect_evidence(&mut run).await;
         if let Some(q) = args.quarantine {
             let reason = args.notes.as_deref().filter(|n| !n.is_empty()).unwrap_or("quarantined by the agent");
             if let Err(e) = self.state.memory.set_quarantine(&args.test_id, q.then_some(reason)) {

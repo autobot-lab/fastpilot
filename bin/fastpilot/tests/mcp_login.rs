@@ -198,8 +198,15 @@ async fn assert_report_and_path_memory_over_mcp() {
     let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "w2", "target": "examples/demo/login.html", "test_id": "login-ok" })).await;
     assert!(ok && out.contains("QUARANTINED"), "{out}");
     client.cancel().await.expect("shutdown");
-    let runs = std::fs::read_dir(dir.join("runs")).expect("runs").count();
-    assert_eq!(runs, 3);
+    let runs: Vec<_> = std::fs::read_dir(dir.join("runs")).expect("runs").filter_map(|e| e.ok().map(|e| e.path())).collect();
+    assert_eq!(runs.len(), 3);
+    // Every run has a self-contained report.html: steps, diffs, the final screenshot.
+    for r in &runs {
+        let html = std::fs::read_to_string(r.join("report.html")).expect("report.html");
+        assert!(html.contains("data:image/jpeg;base64,") && html.contains("(final)"), "{}", r.display());
+        assert!(!html.contains("rahasia123"));
+    }
+    assert!(runs.iter().any(|r| std::fs::read_to_string(r.join("report.html")).is_ok_and(|h| h.contains("<h2>Steps</h2>") && h.contains("failure class <b>product</b>"))));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

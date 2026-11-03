@@ -42,6 +42,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
 | waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
 | takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
+| startRecording / stopRecording | `startRecording: checkout` … `stopRecording` → `.fastpilot/recordings/checkout.mp4` (android screenrecord, ios simctl) or `.html` (web screencast filmstrip) | all |
 | inputRandomText / Number / Email / PersonName | `inputRandomEmail` or `{ length: 10 }`; the value is returned | all |
 | runFlow | `runFlow: login.yaml` (relative to the flow file, else the working dir; a Maestro config header `appId: ...` + `---` is skipped), or `{ file \| commands: [...], when: <condition>, env: { USER: a@b.com } }` | all |
 | repeat | `{ times: 3, commands: [...] }` and/or `{ while: <condition>, commands: [...] }` (while stops after 1000) | all |
@@ -155,7 +156,9 @@ const MEMORY: &str = r#"# Test runs and path memory
 2. Send the hint as one `run_flow` with the same `test_id`. If a step fails, explore from the returned
    snapshot and continue with more `run_flow`/`assert` calls (all with `test_id`).
 3. `report { test_id, status: pass|fail, notes }` closes the run: `.fastpilot/runs/<utc>-<test_id>/`
-   gets `report.md`, `steps.jsonl`, `assertions.json`, and `fail-N.jpg|txt` evidence.
+   gets `report.md`, a self-contained `report.html` (steps with timings, every run_flow response with
+   its diff, assertions, failure and final screenshots, recordings), `steps.jsonl`, `assertions.json`,
+   and `fail-N.jpg|txt` evidence.
 4. Only a run reported `pass` with no failed step/assert becomes the new hint. Refs are saved as
    role+name selectors. A failed run only adds to the statistics.
 

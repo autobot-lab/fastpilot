@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fastpilot_core::FlowReport;
+use fastpilot_core::{FlowReport, Recording, escape_html};
 use serde::{Deserialize, Serialize};
 
 pub use triage::{Breaker, Class, RetryBudget, Stats, classify, pass_hat_k, wilson};
@@ -254,6 +254,11 @@ pub struct Run {
     /// `(reason, category)` of the first failure, for classification.
     first_failure: Option<(String, String)>,
     passed_on_retry: bool,
+    /// Per-step rows (as in steps.jsonl) and each flow's full response, for report.html.
+    rows: Vec<serde_json::Value>,
+    outputs: Vec<(bool, String)>,
+    shots: Vec<(String, Vec<u8>)>,
+    recordings: Vec<(String, Recording)>,
 }
 
 impl Run {
@@ -289,7 +294,9 @@ impl Run {
                 "error": r.error.as_ref().map(|e| fastpilot_core::redact(&e.to_string())),
             });
             writeln!(f, "{line}").map_err(io(&path))?;
+            self.rows.push(line);
         }
+        self.outputs.push((report.passed(), fastpilot_core::redact(&report.to_string())));
         self.steps += report.records.len();
         for s in &report.states {
             if let Some(header) = s.lines().next() {
@@ -314,9 +321,25 @@ impl Run {
             fs::write(&snap, fastpilot_core::redact(&report.to_string())).map_err(io(&snap))?;
             if let Some(jpeg) = screenshot {
                 let shot = self.dir.join(format!("fail-{n}.jpg"));
-                fs::write(&shot, jpeg).map_err(io(&shot))?;
+                fs::write(&shot, &jpeg).map_err(io(&shot))?;
+                self.shots.push((format!("failure {n}"), jpeg));
             }
         }
+        Ok(())
+    }
+
+    /// A screenshot for the report (e.g. each session's final screen).
+    pub fn add_screenshot(&mut self, label: &str, jpeg: Vec<u8>) {
+        self.shots.push((label.to_owned(), jpeg));
+    }
+
+    /// A session's screen recording: saved as `recording-<session>.mp4|html` and embedded.
+    pub fn add_recording(&mut self, session: &str, rec: Recording) -> Result<()> {
+        let safe: String = session.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        let (ext, bytes) = rec.file(&format!("{} {session}", self.test_id));
+        let path = self.dir.join(format!("recording-{safe}.{ext}"));
+        fs::write(&path, bytes).map_err(io(&path))?;
+        self.recordings.push((session.to_owned(), rec));
         Ok(())
     }
 
@@ -398,9 +421,12 @@ impl Run {
             }
             md.push('\n');
         }
-        md.push_str("Evidence: `steps.jsonl`, `assertions.json`, `fail-*.txt|jpg`.\n");
+        md.push_str("Evidence: `report.html` (self-contained), `steps.jsonl`, `assertions.json`, `fail-*.txt|jpg`, `recording-*`.\n");
         let report = self.dir.join("report.md");
         fs::write(&report, fastpilot_core::redact(&md)).map_err(io(&report))?;
+        let html = self.html(passed, notes, class, stats.as_ref(), quarantine.as_ref(), &stamp);
+        let html_path = self.dir.join("report.html");
+        fs::write(&html_path, fastpilot_core::redact(&html)).map_err(io(&html_path))?;
 
         if memory.mode == Mode::ReadWrite {
             let path = memory.memory_path(&self.test_id);
@@ -435,6 +461,96 @@ impl Run {
             fs::write(&path, json).map_err(io(&path))?;
         }
         Ok(Finished { report, class, stats, quarantine })
+    }
+}
+
+impl Run {
+    /// One self-contained page: verdict, class, history, steps with timings, every flow's
+    /// response (diffs), assertions, screenshots and recordings (all inlined).
+    fn html(&self, passed: bool, notes: &str, class: Option<Class>, stats: Option<&Stats>, q: Option<&Quarantine>, stamp: &str) -> String {
+        use base64::Engine;
+        let e = escape_html;
+        let mut b = String::new();
+        let status = if passed { "pass" } else { "fail" };
+        b.push_str(&format!("<h1>{} <span class=\"badge {status}\">{status}</span></h1>", e(&self.test_id)));
+        if let Some(q) = q {
+            b.push_str(&format!("<p class=\"warn\">QUARANTINED since {}: {}</p>", e(&q.since), e(&q.reason)));
+        }
+        b.push_str(&format!("<p class=\"meta\">run {} · finished {stamp} UTC · {} steps · {} failures", e(&self.id), self.steps, self.failures));
+        if let Some(c) = class {
+            let why = self.first_failure.as_ref().map(|(r, _)| format!(" ({r})")).unwrap_or_default();
+            b.push_str(&format!(" · failure class <b>{}</b>{}", c.as_str(), e(&why)));
+        }
+        b.push_str("</p>");
+        if let Some(st) = stats {
+            b.push_str(&format!("<p class=\"meta\">history: {}</p>", e(&st.to_string())));
+        }
+        if !notes.is_empty() {
+            b.push_str(&format!("<p>{}</p>", e(notes)));
+        }
+        if !self.rows.is_empty() {
+            b.push_str("<h2>Steps</h2><table><tr><th>flow</th><th>#</th><th>session</th><th>step</th><th>ms</th><th>result</th></tr>");
+            for r in &self.rows {
+                let ok = r["ok"].as_bool() == Some(true);
+                let result = if ok {
+                    "✓".to_owned()
+                } else {
+                    format!("✗ {}: {}", r["reason"].as_str().unwrap_or(""), r["error"].as_str().unwrap_or(""))
+                };
+                b.push_str(&format!(
+                    "<tr class=\"{}\"><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    if ok { "ok" } else { "bad" },
+                    r["flow"],
+                    r["step"],
+                    e(r["session"].as_str().unwrap_or("")),
+                    e(r["label"].as_str().unwrap_or("")),
+                    r["ms"],
+                    e(&result)
+                ));
+            }
+            b.push_str("</table>");
+        }
+        for (i, (ok, text)) in self.outputs.iter().enumerate() {
+            b.push_str(&format!(
+                "<details{}><summary>run_flow {} — {}</summary><pre>{}</pre></details>",
+                if *ok { "" } else { " open" },
+                i + 1,
+                if *ok { "ok" } else { "failed" },
+                e(text)
+            ));
+        }
+        if !self.assertions.is_empty() {
+            b.push_str("<h2>Assertions</h2><ul>");
+            for a in &self.assertions {
+                b.push_str(&format!("<li>{} [{}] {} {}</li>", if a.pass { "✓" } else { "✗" }, e(&a.session), e(&a.what), e(&a.detail)));
+            }
+            b.push_str("</ul>");
+        }
+        if !self.shots.is_empty() {
+            b.push_str("<h2>Screenshots</h2><div class=\"shots\">");
+            for (label, jpeg) in &self.shots {
+                let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+                b.push_str(&format!("<figure><img alt=\"{0}\" src=\"data:image/jpeg;base64,{data}\"><figcaption>{0}</figcaption></figure>", e(label)));
+            }
+            b.push_str("</div>");
+        }
+        for (session, rec) in &self.recordings {
+            b.push_str(&format!("<h2>Recording [{}]</h2>{}", e(session), rec.embed(session)));
+        }
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>{} — {status}</title><style>
+:root {{ --fg:#1d1d1f; --bg:#fff; --muted:#6e6e73; --line:#d0d7de; --pass:#1a7f37; --fail:#cf222e; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --fg:#e6edf3; --bg:#0d1117; --muted:#8b949e; --line:#30363d; }} }}
+body {{ font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 1100px; margin: 16px auto; padding: 0 16px; }}
+.badge {{ font-size: 14px; text-transform: uppercase; }} .pass {{ color: var(--pass); }} .fail, .bad td:last-child {{ color: var(--fail); }}
+.meta {{ color: var(--muted); }} .warn {{ color: #9a6700; font-weight: 600; }}
+table {{ border-collapse: collapse; width: 100%; }} td, th {{ border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }}
+pre {{ white-space: pre-wrap; word-break: break-word; }} .shots {{ display: flex; flex-wrap: wrap; gap: 12px; }}
+figure {{ margin: 0; }} img {{ max-width: 320px; max-height: 640px; border: 1px solid var(--line); }}
+</style></head><body>{b}</body></html>
+",
+            e(&self.test_id)
+        )
     }
 }
 

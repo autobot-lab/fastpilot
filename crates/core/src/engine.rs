@@ -234,6 +234,8 @@ struct Ctx {
     vars: Mutex<HashMap<String, String>>,
     /// `copyTextFrom` → `pasteText`.
     clipboard: Mutex<Option<String>>,
+    /// Name given to `startRecording`, used by `stopRecording`.
+    recording: Mutex<Option<String>>,
 }
 
 fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -275,6 +277,7 @@ pub async fn run_flow(
         deadline: started + opts.deadline,
         vars: Mutex::new(HashMap::new()),
         clipboard: Mutex::new(None),
+        recording: Mutex::new(None),
     };
     let mut baselines: Vec<(SessionId, Option<Snapshot>)> = Vec::new();
     let mut active = opts.session.clone().or_else(|| reg.active().map(str::to_owned));
@@ -716,6 +719,18 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
                 return Ok(Some(format!("{n} iterations")));
             }
             Step::HttpRequest(_) | Step::ReadOtp(_) => return sessionless(step, ctx, Some(d)).await,
+            Step::StartRecording(name) => {
+                check_name(name)?;
+                d.start_recording().await?;
+                *guard(&ctx.recording) = Some(name.clone());
+                return Ok(None);
+            }
+            Step::StopRecording => {
+                let name = guard(&ctx.recording).take().unwrap_or_else(|| "recording".into());
+                let rec = d.stop_recording().await?;
+                let (ext, bytes) = rec.file(&name);
+                return save_file("recordings", &format!("{name}.{ext}"), &bytes).map(Some);
+            }
             Step::Retry { max, steps } => {
                 let mut attempt = 0;
                 loop {
@@ -968,18 +983,29 @@ fn clip(mut s: String) -> String {
     s
 }
 
+fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || name.contains("..") {
+        return Err(Error::Flow(format!("name `{name}`: use letters, digits, '-', '_' and '.'")));
+    }
+    Ok(())
+}
+
+/// `.fastpilot/<dir>/<file>` (or under `FASTPILOT_DIR`); returns the path.
+fn save_file(dir: &str, file: &str, bytes: &[u8]) -> Result<String> {
+    check_name(file)?;
+    let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join(dir);
+    let path = dir.join(file);
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, bytes))
+        .map_err(|e| Error::Flow(format!("cannot write {}: {e}", path.display())))?;
+    Ok(path.display().to_string())
+}
+
 /// `takeScreenshot: name` → `.fastpilot/screenshots/<name>.jpg` (or `FASTPILOT_DIR`).
 fn save_screenshot(name: &str, jpeg: &[u8]) -> Result<String> {
     let stem = name.trim_end_matches(".jpg").trim_end_matches(".png");
-    if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || stem.contains("..") {
-        return Err(Error::Flow(format!("screenshot name `{name}`: use letters, digits, '-', '_' and '.'")));
-    }
-    let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("screenshots");
-    let path = dir.join(format!("{stem}.jpg"));
-    std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&path, jpeg))
-        .map_err(|e| Error::Flow(format!("cannot write {}: {e}", path.display())))?;
-    Ok(path.display().to_string())
+    check_name(stem)?;
+    save_file("screenshots", &format!("{stem}.jpg"), jpeg)
 }
 
 /// Test data for `inputRandom*` (xorshift; not for secrets).

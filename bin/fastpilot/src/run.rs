@@ -44,6 +44,8 @@ pub struct Options {
     pub web: LaunchOptions,
     /// Tests run at once (each with its own Chrome and leased devices).
     pub workers: usize,
+    /// Record every session (web screencast, Android screenrecord, iOS simctl) into the run.
+    pub record: bool,
 }
 
 /// One natural-language test case (`tests/*.md`: `# Title`, `id:`, `platform:`, steps).
@@ -211,6 +213,7 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
     let started = Instant::now();
     let pick = |p: Platform| devices.iter().find(|d| d.platform == p).map(|d| d.id.clone());
     let fp = FastPilot::with_devices(opts.web.clone(), Devices { android: pick(Platform::Android), ios: pick(Platform::Ios) });
+    fp.set_record(opts.record);
     let hint = fp.hint(&case.id);
     let mut model = match (&opts.model, &hint) {
         (Some(m), _) => m.clone(),

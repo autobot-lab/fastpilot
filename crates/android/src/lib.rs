@@ -135,7 +135,11 @@ pub struct AndroidDriver {
     policy: Policy,
     /// System dialogs handled on the flow's behalf, newest last (reported with failures).
     notes: Mutex<Vec<String>>,
+    /// `screenrecord` shell stream while recording.
+    recording: tokio::sync::Mutex<Option<TcpStream>>,
 }
+
+const RECORDING: &str = "/data/local/tmp/fastpilot-recording.mp4";
 
 impl AndroidDriver {
     /// Connect to `serial` (or the only attached device), install/refresh the agent, start it.
@@ -192,6 +196,7 @@ impl AndroidDriver {
             check_crash: std::sync::atomic::AtomicBool::new(false),
             policy: Policy::from_env(),
             notes: Mutex::default(),
+            recording: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -656,6 +661,29 @@ impl Driver for AndroidDriver {
 
     fn platform(&self) -> Platform {
         Platform::Android
+    }
+
+    /// `screenrecord` (3 minutes at most, the tool's own limit).
+    async fn start_recording(&self) -> Result<()> {
+        let mut slot = self.recording.lock().await;
+        if slot.is_some() {
+            return Err(CoreError::Flow("already recording".into()));
+        }
+        let cmd = format!("screenrecord --time-limit 180 --bit-rate 2000000 {RECORDING}");
+        *slot = Some(self.adb.shell_stream(&self.serial, &cmd).await?);
+        Ok(())
+    }
+
+    async fn stop_recording(&self) -> Result<fastpilot_core::Recording> {
+        use tokio::io::AsyncReadExt;
+        let mut stream = self.recording.lock().await.take().ok_or_else(|| CoreError::Flow("not recording".into()))?;
+        // SIGINT lets screenrecord finish the mp4; its shell stream closes once it has.
+        self.shell("pkill -INT screenrecord").await?;
+        let mut sink = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut sink)).await;
+        let data = self.adb.pull(&self.serial, RECORDING).await?;
+        let _ = self.shell(&format!("rm -f {RECORDING}")).await;
+        Ok(fastpilot_core::Recording::Video { mime: "video/mp4", data })
     }
 
     /// The SMS provider sorts the inbox newest first; a body may span several lines.

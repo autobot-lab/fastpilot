@@ -4,6 +4,7 @@
 mod dsl;
 mod engine;
 mod error;
+mod recording;
 mod selector;
 mod snapshot;
 
@@ -19,6 +20,7 @@ pub use dsl::{
 };
 pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
 pub use error::{Error, Result};
+pub use recording::{escape_html, filmstrip};
 pub use selector::Selector;
 pub use snapshot::{Entry, Intent, Node, Rect, RefRegistry, Snapshot, diff};
 
@@ -77,6 +79,14 @@ impl fmt::Display for Platform {
             Self::Ios => "ios",
         })
     }
+}
+
+/// What a recording produced: an encoded video (mobile), or timed JPEG frames (web screencast).
+#[derive(Debug, Clone)]
+pub enum Recording {
+    Video { mime: &'static str, data: Vec<u8> },
+    /// `(seconds since the recording started, jpeg)`.
+    Frames(Vec<(f64, Vec<u8>)>),
 }
 
 /// Shared by every platform (PRD §7.1).
@@ -149,6 +159,13 @@ pub trait Driver: Send + Sync {
     /// SMS inbox bodies, newest first (for one-time codes).
     async fn read_sms(&self) -> Result<Vec<String>> {
         Err(Error::Unsupported("reading SMS is Android-only".into()))
+    }
+    /// Start recording the screen (web: CDP screencast; android: screenrecord; ios: simctl).
+    async fn start_recording(&self) -> Result<()> {
+        Err(Error::Unsupported("recording is not supported by this driver".into()))
+    }
+    async fn stop_recording(&self) -> Result<Recording> {
+        Err(Error::Unsupported("recording is not supported by this driver".into()))
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))

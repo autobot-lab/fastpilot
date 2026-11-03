@@ -21,7 +21,7 @@ commands:
                                    (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
   stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
                                      95% upper bound of the failure rate
-  run <tests dir|file.md> [--workers N] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+  run <tests dir|file.md> [--workers N] [--record] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless CI: Claude drives each natural-language test case over the same tools;
           exits non-zero when a test outside quarantine fails (needs ANTHROPIC_API_KEY)
 
@@ -84,6 +84,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 max_steps: value("--max-steps").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(30).max(1),
                 junit: value("--junit").map(Into::into),
                 html: value("--html").map(Into::into),
+                record: flag("--record"),
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 web,
             };

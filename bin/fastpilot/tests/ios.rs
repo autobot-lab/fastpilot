@@ -82,6 +82,7 @@ async fn ios_login_over_mcp() {
     assert!(ok, "{out}");
     // Maestro-compatible steps (the web e2e covers the rest).
     let flow = r#"
+- startRecording: ios-rec
 - launchApp: com.fastpilot.demo
 - inputText: { into: "Email", text: "a@b.comXY" }
 - eraseText: 2
@@ -99,11 +100,14 @@ async fn ios_login_over_mcp() {
 - assertVisible: "Ketukan: 2"
 - stopApp
 - assertNotVisible: "Ketukan: 2"
+- stopRecording
 - clearState: com.fastpilot.demo
 "#;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
     assert!(ok && out.contains("= a@b.com"), "{out}");
+    let video = std::fs::read(format!("{ROOT}/.fastpilot/recordings/ios-rec.mp4")).expect("ios recording");
+    assert!(video.len() > 10_000 && &video[4..8] == b"ftyp", "not an mp4: {} bytes", video.len());
     let flow = format!("{login}- tapOn: \"Crash\"\n- assertVisible: {{ text: \"Tidak ada\", timeout: 10000 }}\n");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");

@@ -114,7 +114,7 @@ async fn headless_run_with_stubbed_model() {
 
     let junit = dir.join("junit.xml");
     let html = dir.join("report.html");
-    let (ok, out) = run(port, &dir, &["--junit", junit.to_str().unwrap_or(""), "--html", html.to_str().unwrap_or("")]);
+    let (ok, out) = run(port, &dir, &["--record", "--junit", junit.to_str().unwrap_or(""), "--html", html.to_str().unwrap_or("")]);
     if out.contains("Chrome not found") {
         return eprintln!("skipping: no Chrome");
     }
@@ -141,7 +141,12 @@ async fn headless_run_with_stubbed_model() {
     }
     let xml = std::fs::read_to_string(&junit).expect("junit");
     assert!(xml.contains("tests=\"1\" failures=\"0\"") && xml.contains("name=\"login-ok: Login berhasil\""), "{xml}");
-    assert!(std::fs::read_to_string(&html).expect("html").contains("checked Budi on the dashboard"));
+    let page = std::fs::read_to_string(&html).expect("html");
+    assert!(page.contains("checked Budi on the dashboard") && page.contains("iframe class=\"run\""), "suite html");
+    // --record: the session's screencast is in the run directory and inlined in its report.
+    let run_dir = std::fs::read_dir(dir.join("runs")).expect("runs").filter_map(|e| e.ok()).map(|e| e.path()).next().expect("run");
+    assert!(run_dir.join("recording-w.html").exists(), "{}", run_dir.display());
+    assert!(std::fs::read_to_string(run_dir.join("report.html")).expect("report").contains("Recording [w]"));
 
     // Second run: the passing flow is now path memory, so the fast model replays it.
     seen.lock().unwrap().clear();

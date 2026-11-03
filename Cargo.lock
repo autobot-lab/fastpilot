@@ -279,6 +279,7 @@ name = "fastpilot-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "reqwest",
  "serde",
@@ -337,6 +338,7 @@ dependencies = [
 name = "fastpilot-memory"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "fastpilot-core",
  "serde",
  "serde_json",
