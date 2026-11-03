@@ -709,12 +709,13 @@ impl FastPilot {
 
 async fn devices() -> String {
     let mut out = vec!["web: chrome (launch | attach)".to_owned()];
-    match fastpilot_android::devices().await {
-        Ok((attached, avds)) => {
-            out.extend(attached.into_iter().map(|(s, st)| format!("android: {s} ({st})")));
-            out.extend(avds.into_iter().map(|a| format!("android avd: {a} (start_device to boot)")));
-        }
+    match fastpilot_android::device::list().await {
+        // Every state is listed, with what to do when the phone needs the user.
+        Ok(list) => out.extend(list.iter().map(fastpilot_core::DeviceInfo::line)),
         Err(e) => out.push(format!("android: unavailable ({e})")),
+    }
+    if let Ok((_, avds)) = fastpilot_android::devices().await {
+        out.extend(avds.into_iter().map(|a| format!("android avd: {a} (start_device to boot)")));
     }
     match fastpilot_ios::devices().await {
         Ok(sims) => out.extend(

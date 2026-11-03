@@ -72,6 +72,12 @@ impl Adb {
             .collect())
     }
 
+    /// `host:devices-l`: serial, state, product/model/device/transport_id.
+    pub async fn devices_long(&self) -> Result<Vec<crate::device::Entry>, Error> {
+        let mut s = self.open("host:devices-l").await?;
+        Ok(crate::device::parse_devices_l(&read_len_string(&mut s).await?))
+    }
+
     pub async fn shell(&self, serial: &str, cmd: &str) -> Result<String, Error> {
         let mut s = self.shell_stream(serial, cmd).await?;
         let mut out = Vec::new();

@@ -4,6 +4,7 @@
 
 mod adb;
 mod agent;
+pub mod device;
 mod system;
 
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -37,6 +38,16 @@ pub enum Error {
     Agent(String),
     #[error("io: {0}")]
     Io(String),
+    #[error("{0}")]
+    Unauthorized(String),
+    #[error("{0}")]
+    Offline(String),
+    /// Screen locked with a PIN/pattern fastpilot cannot (and must not) enter.
+    #[error("{0}")]
+    Locked(String),
+    /// The OEM blocked installing the agent (MIUI "Install via USB", Samsung Auto Blocker, ...).
+    #[error("{0}")]
+    InstallBlocked(String),
 }
 
 impl Error {
@@ -49,6 +60,8 @@ impl From<Error> for CoreError {
     fn from(e: Error) -> Self {
         match &e {
             Error::Agent(m) if m.contains("no focused text field") => Self::NotActionable(m.clone()),
+            // The device needs the user: an environment problem, not a product bug.
+            Error::Unauthorized(m) | Error::Offline(m) | Error::Locked(m) => Self::Session(m.clone()),
             _ => Self::Driver(e.to_string()),
         }
     }
@@ -148,16 +161,7 @@ impl AndroidDriver {
             return Err(Error::Agent("agent APK not embedded: run agent-android/build.sh, then rebuild fastpilot".into()));
         }
         let adb = Adb::new().await?;
-        let ready: Vec<String> = adb.devices().await?.into_iter().filter(|(_, st)| st == "device").map(|(s, _)| s).collect();
-        let serial = match serial {
-            Some(s) if ready.iter().any(|r| r == s) => s.to_owned(),
-            Some(s) => return Err(Error::Adb(format!("device `{s}` not attached (have: {})", ready.join(", ")))),
-            None => match ready.as_slice() {
-                [one] => one.clone(),
-                [] => return Err(Error::Adb("no Android device; boot one with session start_device".into())),
-                many => return Err(Error::Adb(format!("several devices, pass endpoint: {}", many.join(", ")))),
-            },
-        };
+        let serial = device::resolve(serial).await?;
         let sum = checksum(AGENT_APK);
         let marker = "/data/local/tmp/fastpilot-agent.sum";
         let installed = adb.shell(&serial, &format!("pm path {AGENT_PKG} >/dev/null && cat {marker}")).await?;
