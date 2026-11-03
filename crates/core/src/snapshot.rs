@@ -17,6 +17,48 @@ const MAX_VALUE: usize = 40;
 pub const DEFAULT_MAX_LINES: usize = 120;
 const MAX_DIFF_LINES: usize = 40;
 
+/// `"text"` with only `"`, `\` and control characters escaped: every other character, Arabic
+/// harakat and other combining marks included, is shown as is, so a name copied from a
+/// snapshot works as a selector.
+pub fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Lowercase, without Arabic harakat / tatweel, for comparing names.
+fn fold(s: &str) -> Vec<char> {
+    s.to_lowercase().chars().filter(|c| !matches!(*c as u32, 0x064B..=0x065F | 0x0670 | 0x0640)).collect()
+}
+
+/// 1 - normalized Levenshtein distance (characters).
+fn similarity(a: &[char], b: &[char]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    1.0 - prev[b.len()] as f64 / a.len().max(b.len()) as f64
+}
+
 /// Element box in screen (mobile) or document (web) pixels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Rect {
@@ -177,7 +219,7 @@ impl Snapshot {
     }
 
     pub fn header(&self) -> String {
-        format!("screen {:?} ({})", self.title, self.location)
+        format!("screen {} ({})", quote(&self.title), self.location)
     }
 
     /// Render with an optional case-insensitive role/name filter and a hard line cap.
@@ -289,28 +331,54 @@ impl Snapshot {
     }
 
     /// Nearest alternatives shown when a step fails, so the AI can pick a ref.
+    /// The closest matches for a selector that failed: same role first, then name similarity
+    /// (normalized edit distance, substring overlap; case and harakat ignored). Selectors
+    /// without a name fall back to elements usable for the intent.
     pub fn candidates(&self, sel: &Selector, intent: Intent) -> Vec<String> {
-        let words: Vec<String> = match sel {
-            Selector::Text(t) | Selector::Role { name: Some(t), .. } => t
-                .split_whitespace()
-                .filter(|w| w.chars().count() >= 3)
-                .map(str::to_lowercase)
-                .collect(),
-            _ => Vec::new(),
+        let usable = |e: &Entry| match intent {
+            Intent::Tap => INTERACTIVE.contains(&e.node.role.as_str()),
+            Intent::Type => EDITABLE.contains(&e.node.role.as_str()),
+            Intent::Find => true,
         };
-        self.entries
+        let (want_role, want_name) = match sel {
+            Selector::Text(t) => (None, Some(t.as_str())),
+            Selector::Role { role, name } => (Some(role.as_str()), name.as_deref()),
+            _ => (None, None),
+        };
+        let Some(want) = want_name.map(fold).filter(|w| !w.is_empty()) else {
+            return self.entries.iter().filter(|e| usable(e) && want_role.is_none_or(|r| e.node.role == r)).take(5).map(|e| line(e, false)).collect();
+        };
+        let want_s: String = want.iter().collect();
+        let mut scored: Vec<(f64, usize, &Entry)> = self
+            .entries
             .iter()
-            .filter(|e| match intent {
-                Intent::Tap => INTERACTIVE.contains(&e.node.role.as_str()),
-                Intent::Type => EDITABLE.contains(&e.node.role.as_str()),
-                Intent::Find => {
-                    let name = e.node.name.to_lowercase();
-                    words.iter().any(|w| name.contains(w))
+            .enumerate()
+            .filter(|(_, e)| !e.node.name.is_empty())
+            .filter_map(|(i, e)| {
+                let name = fold(&e.node.name);
+                let name_s: String = name.iter().collect();
+                let mut score = similarity(&want, &name);
+                if name_s.contains(&want_s) || want_s.contains(&name_s) {
+                    score = score.max(0.6);
                 }
+                if score < 0.3 {
+                    return None;
+                }
+                if want_role.is_some_and(|r| e.node.role == r) {
+                    score += 1.0;
+                }
+                if usable(e) {
+                    score += 0.1;
+                }
+                Some((score, i, e))
             })
-            .take(5)
-            .map(|e| line(e, false))
-            .collect()
+            .collect();
+        if scored.is_empty() {
+            // Nothing close: still offer what the step could act on.
+            return self.entries.iter().filter(|e| usable(e)).take(5).map(|e| line(e, false)).collect();
+        }
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().take(5).map(|(_, _, e)| line(e, false)).collect()
     }
 }
 
@@ -423,7 +491,7 @@ fn line(e: &Entry, indent: bool) -> String {
 }
 
 fn quoted_name(n: &Node) -> String {
-    if n.name.is_empty() { String::new() } else { format!(" {:?}", clip(&n.name, MAX_NAME)) }
+    if n.name.is_empty() { String::new() } else { format!(" {}", quote(&clip(&n.name, MAX_NAME))) }
 }
 
 fn attrs(n: &Node) -> String {
@@ -433,7 +501,7 @@ fn attrs(n: &Node) -> String {
     } else if let Some(v) = &n.value
         && (EDITABLE.contains(&n.role.as_str()) || !v.is_empty())
     {
-        s.push_str(&format!(" value={:?}", clip(v, MAX_VALUE)));
+        s.push_str(&format!(" value={}", quote(&clip(v, MAX_VALUE))));
     }
     for (on, label) in [
         (n.disabled, " disabled"),
@@ -631,5 +699,32 @@ mod tests {
         let out = s.render(None, 3);
         assert_eq!(out.lines().count(), 5);
         assert!(out.ends_with("... +7 nodes (scroll or snapshot(filter:) to see more)"));
+    }
+
+    #[test]
+    fn arabic_names_render_as_is_and_rank_candidates() {
+        let mut refs = RefRegistry::default();
+        let n = |role: &str, name: &str| Node { role: role.into(), name: name.into(), ..Node::default() };
+        let nodes = vec![
+            n("link", "كن شريكًا"),
+            n("link", "الرئيسية"),
+            n("link", "الاستشاريين"),
+            n("button", "تسجيل الدخول"),
+            n("text", "say \"hi\"\n"),
+        ];
+        let snap = Snapshot::build("موتمينا", "https://motmaina.com/ar", nodes, &mut refs);
+        let text = snap.render(None, 50);
+        assert!(text.contains("e1 link \"كن شريكًا\""), "{text}");
+        assert!(!text.contains("\\u{"), "no escaped harakat: {text}");
+        assert!(text.contains("\"say \\\"hi\\\"\\n\""), "quotes and control chars escaped: {text}");
+        // A name copied from the rendered line still resolves.
+        let copied = text.lines().nth(1).and_then(|l| l.split('"').nth(1)).expect("name");
+        assert!(snap.resolve(&Selector::Text(copied.into()), Intent::Tap).is_ok());
+        // A near miss suggests the closest link first, not the first five elements.
+        let c = snap.candidates(&Selector::Role { role: "link".into(), name: Some("المستشارين".into()) }, Intent::Tap);
+        assert!(c[0].contains("الاستشاريين"), "{c:?}");
+        // Harakat are ignored when comparing.
+        let c = snap.candidates(&Selector::Text("كن شريكا".into()), Intent::Find);
+        assert!(c[0].contains("كن شريكًا"), "{c:?}");
     }
 }

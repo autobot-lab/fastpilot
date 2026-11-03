@@ -130,8 +130,8 @@ impl fmt::Display for Selector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ref(r) => write!(f, "{r}"),
-            Self::Text(t) => write!(f, "{t:?}"),
-            Self::Role { role, name: Some(n) } => write!(f, "{{role: {role}, name: {n:?}}}"),
+            Self::Text(t) => f.write_str(&crate::quote(t)),
+            Self::Role { role, name: Some(n) } => write!(f, "{{role: {role}, name: {}}}", crate::quote(n)),
             Self::Role { role, name: None } => write!(f, "{{role: {role}}}"),
             Self::Id(id) => write!(f, "{{id: {id}}}"),
             Self::Point(p) => write!(f, "[{}, {}]", p.x, p.y),

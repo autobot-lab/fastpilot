@@ -721,17 +721,17 @@ impl Step {
     /// Context-free label used in reports (`${VARS}` stay unresolved, so secrets never echo back).
     pub fn label(&self) -> String {
         match self {
-            Self::OpenUrl(u) => format!("openUrl {u:?}"),
+            Self::OpenUrl(u) => format!("openUrl {}", crate::quote(u)),
             Self::TapOn(s) => format!("tapOn {s}"),
-            Self::InputText { into, text } => format!("inputText {into} {text:?}"),
+            Self::InputText { into, text } => format!("inputText {into} {}", crate::quote(text)),
             Self::AssertVisible { selector, .. } => format!("assertVisible {selector}"),
             Self::Scroll { direction, within: Some(w) } => format!("scroll {direction:?} within {w}"),
             Self::Scroll { direction, within: None } => format!("scroll {direction:?}"),
             Self::Back => "back".into(),
-            Self::EvalScript(js) => format!("evalScript {js:?}"),
+            Self::EvalScript(js) => format!("evalScript {}", crate::quote(js)),
             Self::AssertNotVisible { selector, .. } => format!("assertNotVisible {selector}"),
             Self::PressKey(k) => format!("pressKey {k}"),
-            Self::SelectOption { from, option } => format!("selectOption {from} {option:?}"),
+            Self::SelectOption { from, option } => format!("selectOption {from} {}", crate::quote(option)),
             Self::UploadFile { into, files } => format!("uploadFile {into} {files:?}"),
             Self::LaunchApp(a) => format!("launchApp {a}"),
             Self::Swipe { from, to } => format!("swipe [{}, {}] -> [{}, {}]", from.x, from.y, to.x, to.y),
@@ -783,7 +783,7 @@ impl Step {
             Self::SetLocale { locale, timezone } => {
                 format!("setLocale {} {}", locale.as_deref().unwrap_or("-"), timezone.as_deref().unwrap_or("-"))
             }
-            Self::PushNotification { title, .. } => format!("pushNotification {title:?}"),
+            Self::PushNotification { title, .. } => format!("pushNotification {}", crate::quote(title)),
         }
     }
 

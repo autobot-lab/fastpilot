@@ -24,7 +24,7 @@ pub use device::{DeviceInfo, DeviceKind, DeviceSpec, SelectError, select};
 pub use error::{Error, Result};
 pub use recording::{escape_html, filmstrip};
 pub use selector::Selector;
-pub use snapshot::{Entry, Intent, Node, Rect, RefRegistry, Snapshot, diff};
+pub use snapshot::{Entry, Intent, Node, Rect, RefRegistry, Snapshot, diff, quote};
 
 pub type Value = serde_json::Value;
 pub type SessionId = String;
