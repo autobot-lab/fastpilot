@@ -51,6 +51,10 @@ impl Claude {
     }
 
     async fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        self.post_with(path, body, &[]).await
+    }
+
+    async fn post_with(&self, path: &str, body: &Value, betas: &[&str]) -> Result<Value> {
         // Retry what the SDKs retry: 408/409/429/5xx and connection errors.
         let mut delay = Duration::from_millis(500);
         for attempt in 0..3 {
@@ -60,10 +64,17 @@ impl Claude {
                 .header("anthropic-version", API_VERSION)
                 .header("content-type", "application/json")
                 .json(body);
+            let mut beta: Vec<&str> = betas.to_vec();
             req = match &self.auth {
                 Auth::ApiKey(k) => req.header("x-api-key", k),
-                Auth::Bearer(t) => req.bearer_auth(t).header("anthropic-beta", "oauth-2025-04-20"),
+                Auth::Bearer(t) => {
+                    beta.push("oauth-2025-04-20");
+                    req.bearer_auth(t)
+                }
             };
+            if !beta.is_empty() {
+                req = req.header("anthropic-beta", beta.join(","));
+            }
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if attempt < 2 => {
@@ -90,9 +101,9 @@ impl Claude {
         Err(Error::Http("retries exhausted".into()))
     }
 
-    /// `POST /v1/messages` (non-streaming).
-    pub async fn messages(&self, body: &Value) -> Result<Value> {
-        self.post("/v1/messages", body).await
+    /// `POST /v1/messages` (non-streaming), with optional beta headers.
+    pub async fn messages(&self, body: &Value, betas: &[&str]) -> Result<Value> {
+        self.post_with("/v1/messages", body, betas).await
     }
 
     /// Exact input tokens of `text` as one user message, minus the per-message overhead.

@@ -259,6 +259,73 @@ impl FastPilot {
         Ok(text)
     }
 
+    /// Tool definitions as the Claude Messages API takes them (the same tools MCP serves).
+    pub fn api_tools() -> Vec<serde_json::Value> {
+        Self::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| {
+                let mut schema = (*t.input_schema).clone();
+                schema.remove("$schema");
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description.as_deref().unwrap_or(""),
+                    "input_schema": serde_json::Value::Object(schema),
+                })
+            })
+            .collect()
+    }
+
+    /// Call a tool in-process (headless runner): `(ok, content blocks as MCP JSON)`.
+    pub async fn call_json(&self, name: &str, args: serde_json::Value) -> (bool, Vec<serde_json::Value>) {
+        fn parse<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<Parameters<T>, String> {
+            serde_json::from_value(v).map(Parameters).map_err(|e| format!("invalid arguments: {e}"))
+        }
+        let res = match name {
+            "session" => match parse(args) { Ok(a) => self.session(a).await, Err(e) => fail(e) },
+            "run_flow" => match parse(args) { Ok(a) => self.run_flow(a).await, Err(e) => fail(e) },
+            "check_flow" => match parse(args) { Ok(a) => self.check_flow(a).await, Err(e) => fail(e) },
+            "snapshot" => match parse(args) { Ok(a) => self.snapshot(a).await, Err(e) => fail(e) },
+            "screenshot" => match parse(args) { Ok(a) => self.screenshot(a).await, Err(e) => fail(e) },
+            "assert" => match parse(args) { Ok(a) => self.assert(a).await, Err(e) => fail(e) },
+            "report" => match parse(args) { Ok(a) => self.report(a).await, Err(e) => fail(e) },
+            "docs" => match parse(args) { Ok(a) => self.docs(a).await, Err(e) => fail(e) },
+            other => fail(format!("unknown tool `{other}`")),
+        };
+        match res {
+            Ok(r) => (r.is_error != Some(true), r.content.iter().filter_map(|c| serde_json::to_value(c).ok()).collect()),
+            Err(e) => (false, vec![serde_json::json!({ "type": "text", "text": e.to_string() })]),
+        }
+    }
+
+    /// Close a test's run (opening an empty one if nothing was recorded).
+    pub async fn finish_test(
+        &self,
+        test_id: &str,
+        passed: bool,
+        notes: &str,
+        passed_on_retry: bool,
+    ) -> Result<fastpilot_memory::Finished, String> {
+        let run = self.state.runs.lock().await.remove(test_id);
+        let mut run = match run {
+            Some(r) => r,
+            None => self.state.memory.begin_run(test_id).map_err(|e| e.to_string())?,
+        };
+        if passed_on_retry {
+            run.passed_on_retry();
+        }
+        run.finish(&self.state.memory, passed, notes).map_err(|e| e.to_string())
+    }
+
+    /// Path-memory hint for a test (headless runner: picks the replay model).
+    pub fn hint(&self, test_id: &str) -> Option<String> {
+        self.state.memory.hint(test_id, None)
+    }
+
+    pub fn quarantined(&self, test_id: &str) -> Option<fastpilot_memory::Quarantine> {
+        self.state.memory.quarantined().remove(test_id)
+    }
+
     /// Append a `run_flow` to its test's run: durable YAML, steps, failure evidence.
     async fn record(&self, test_id: &str, flow: &fastpilot_core::Flow, report: &FlowReport, reg: &SessionRegistry) -> String {
         let durable = report.records.iter().filter_map(|r| r.durable.clone().map(|d| (r.index, d))).collect();

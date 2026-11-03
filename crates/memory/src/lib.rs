@@ -261,8 +261,8 @@ impl Run {
         &self.dir
     }
 
-    /// An earlier attempt of this test failed and this one passed (suite retry): the
-    /// earlier failure is classified flaky.
+    /// This run is a retry of a failed attempt (suite retry budget): if it passes, the test
+    /// is classified flaky.
     pub fn passed_on_retry(&mut self) {
         self.passed_on_retry = true;
     }
@@ -332,9 +332,12 @@ impl Run {
     /// class and the quarantine decision.
     pub fn finish(self, memory: &Memory, passed: bool, notes: &str) -> Result<Finished> {
         let previous = memory.load(&self.test_id);
-        let class = (!passed || self.passed_on_retry).then(|| {
+        // Only a retry that passed makes the test flaky; a retry that failed again is classified
+        // like any failure.
+        let retried_pass = passed && self.passed_on_retry;
+        let class = (!passed || retried_pass).then(|| {
             let category = self.first_failure.as_ref().map(|(_, c)| c.as_str());
-            classify(category, self.passed_on_retry, previous.as_ref())
+            classify(category, retried_pass, previous.as_ref())
         });
         // Statistics and quarantine include this run (only when memory is written).
         let mut updated = previous.clone().unwrap_or_else(|| PathMemory { test_id: self.test_id.clone(), ..PathMemory::default() });
@@ -505,6 +508,12 @@ mod tests {
         assert!(mem.hint("login-ok", None).is_some());
         let text = fs::read_to_string(&md.report).expect("report");
         assert!(text.contains("history: pass 1/2"), "{text}");
+        let mut retry = mem.begin_run("login-ok").expect("run");
+        retry.passed_on_retry();
+        assert_eq!(retry.finish(&mem, true, "").expect("finish").class, Some(Class::Flaky));
+        let mut retry = mem.begin_run("login-ok").expect("run");
+        retry.passed_on_retry();
+        assert_eq!(retry.finish(&mem, false, "").expect("finish").class, Some(Class::Product));
         mem.set_quarantine("login-ok", None).expect("release");
         assert!(mem.quarantined().is_empty());
         assert!(mem.begin_run("../evil").is_err());

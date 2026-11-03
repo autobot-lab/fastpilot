@@ -305,6 +305,25 @@ candidates: e10 button "Keluar"
 Path memory: `session start` dengan `test_id` mengembalikan hint YAML dari run lolos terakhir. Kirim hint
 itu sebagai satu `run_flow` dengan `test_id` yang sama, lalu tutup dengan `report`. Lihat `docs` topic `memory`.
 
+## CI tanpa klien MCP: `fastpilot run`
+
+Menjalankan test case bahasa natural (`tests/*.md`) secara headless: Claude memanggil tool yang sama
+dengan server MCP, langsung di proses yang sama.
+
+```bash
+export ANTHROPIC_API_KEY=...            # atau ANTHROPIC_AUTH_TOKEN
+DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
+  ./target/release/fastpilot run tests/ --junit junit.xml --html report.html
+```
+
+- Test dengan hint path memory diputar ulang oleh model cepat (`claude-haiku-5-5`); bila replay gagal
+  atau belum ada hint, model besar (`claude-opus-5-5`) yang mengeksplorasi. `--model` memaksa satu model,
+  `--max-steps` membatasi jumlah giliran (default 30).
+- Kegagalan diulang selama `FASTPILOT_RETRY_BUDGET` (default 3) masih ada; retry yang lolos = flaky.
+  Setelah `FASTPILOT_BREAKER` (default 3) kegagalan infra beruntun, sisa test dilewati sebagai infra.
+- Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
+  test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
+
 ## Bench
 
 ```bash

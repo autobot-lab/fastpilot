@@ -1,6 +1,8 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod bench;
+mod report;
+mod run;
 mod stability;
 
 use std::error::Error;
@@ -18,6 +20,9 @@ commands:
                                    (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
   stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
                                      95% upper bound of the failure rate
+  run <tests dir|file.md> [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+          headless CI: Claude drives each natural-language test case over the same tools;
+          exits non-zero when a test outside quarantine fails (needs ANTHROPIC_API_KEY)
 
 env:
   FASTPILOT_CHROME   Chrome/Chromium executable
@@ -66,6 +71,21 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .transpose()?
                 .unwrap_or(20);
             stability::run(path, runs.max(1), web).await
+        }
+        Some("run") => {
+            let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                eprintln!("usage: fastpilot run <tests dir|file.md> [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]");
+                std::process::exit(2);
+            };
+            let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+            let opts = run::Options {
+                model: value("--model"),
+                max_steps: value("--max-steps").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(30).max(1),
+                junit: value("--junit").map(Into::into),
+                html: value("--html").map(Into::into),
+                web,
+            };
+            run::run(std::path::Path::new(path), opts).await
         }
         Some("--version" | "-V") => {
             println!("fastpilot {}", env!("CARGO_PKG_VERSION"));

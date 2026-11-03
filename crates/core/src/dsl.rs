@@ -1010,6 +1010,20 @@ pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Resul
     expand(s, |n| local.get(n).cloned().map_or_else(|| lookup(n), Ok))
 }
 
+/// Replace allowed variables' values with their `${NAME}` (prompts written by people, e.g. a
+/// test case that spells out a password: the model sees and uses the variable instead).
+pub fn to_vars(text: &str) -> String {
+    let mut out = text.to_owned();
+    for name in allowed() {
+        if let Ok(v) = std::env::var(&name)
+            && v.chars().count() >= 3
+        {
+            out = out.replace(&v, &format!("${{{name}}}"));
+        }
+    }
+    out
+}
+
 /// Mask every allowed variable's value in text going back to the AI (PRD §15).
 pub fn redact(text: &str) -> String {
     let mut out = text.to_owned();
