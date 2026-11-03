@@ -196,6 +196,35 @@ public class Agent extends Instrumentation {
             case "screenshot": {
                 Bitmap b = ui.takeScreenshot();
                 if (b == null) throw new IllegalStateException("screenshot failed");
+                JSONArray marks = req.optJSONArray("marks");
+                if (marks != null) {
+                    // Set-of-Mark: a numbered box per target, drawn on the device (no image codec on the host).
+                    Bitmap m = b.copy(Bitmap.Config.ARGB_8888, true);
+                    b.recycle();
+                    b = m;
+                    android.graphics.Canvas c = new android.graphics.Canvas(b);
+                    android.graphics.Paint box = new android.graphics.Paint();
+                    box.setStyle(android.graphics.Paint.Style.STROKE);
+                    box.setStrokeWidth(3);
+                    box.setColor(0xFFEE0000);
+                    android.graphics.Paint tag = new android.graphics.Paint();
+                    tag.setColor(0xFFEE0000);
+                    android.graphics.Paint text = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+                    text.setColor(0xFFFFFFFF);
+                    text.setTextSize(24);
+                    for (int i = 0; i < marks.length(); i++) {
+                        JSONObject k = marks.getJSONObject(i);
+                        float x = (float) k.getDouble("x"), y = (float) k.getDouble("y");
+                        float w = (float) k.getDouble("w"), h = (float) k.getDouble("h");
+                        c.drawRect(x, y, x + w, y + h, box);
+                        String label = k.optString("r");
+                        float tw = text.measureText(label) + 8;
+                        float ty = y >= 28 ? y - 28 : y;
+                        c.drawRect(x, ty, x + tw, ty + 28, tag);
+                        c.drawText(label, x + 4, ty + 22, text);
+                    }
+                    r.put("marked", marks.length());
+                }
                 ByteArrayOutputStream bo = new ByteArrayOutputStream();
                 b.compress(Bitmap.CompressFormat.JPEG, req.optInt("quality", 80), bo);
                 b.recycle();

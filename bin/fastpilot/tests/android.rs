@@ -194,6 +194,23 @@ async fn android_maestro_steps() {
     println!("{out}");
     assert!(ok, "{out}");
     assert!(out.contains("copyTextFrom \"Email\"") && out.contains("= a@b.com"), "{out}");
+
+    // Set-of-Mark on the device: the agent confirms it drew every listed box.
+    let (ok, _) = call(&client, "run_flow", json!({ "flow": "- launchApp: com.fastpilot.demo/.LoginActivity\n" })).await;
+    assert!(ok);
+    let res: CallToolResult = client
+        .call_tool(CallToolRequestParams::new("screenshot").with_arguments(json!({ "annotate": "som" }).as_object().cloned().unwrap_or_default()))
+        .await
+        .expect("screenshot");
+    let text = res.content.iter().filter_map(|c| c.as_text()).map(|t| t.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(res.is_error != Some(true), "{text}");
+    let image = res.content.iter().find_map(|c| c.as_image()).expect("annotated image");
+    assert!(text.contains(" @"), "{text}");
+    if let Ok(out) = std::env::var("FASTPILOT_SOM_OUT") {
+        use base64::Engine;
+        let jpeg = base64::engine::general_purpose::STANDARD.decode(&image.data).expect("base64");
+        std::fs::write(out, jpeg).expect("write");
+    }
     client.cancel().await.expect("shutdown");
 }
 

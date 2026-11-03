@@ -168,10 +168,35 @@ final class RunnerTests: XCTestCase {
             return [:]
         case "screenshot":
             let q = try num("quality", 80)
-            guard let jpeg = XCUIScreen.main.screenshot().image.jpegData(compressionQuality: min(max(q / 100, 0), 1)) else {
+            var image = XCUIScreen.main.screenshot().image
+            var result: [String: Any] = [:]
+            if let marks = req["marks"] as? [[String: Any]] {
+                // Set-of-Mark: boxes in screen points; UIImage.size is in points too.
+                image = UIGraphicsImageRenderer(size: image.size).image { ctx in
+                    image.draw(at: .zero)
+                    let red = UIColor(red: 0.93, green: 0, blue: 0, alpha: 1)
+                    let font = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+                    for m in marks {
+                        let d = { (k: String) in (m[k] as? NSNumber)?.doubleValue ?? 0 }
+                        let r = CGRect(x: d("x"), y: d("y"), width: d("w"), height: d("h"))
+                        red.setStroke()
+                        ctx.cgContext.setLineWidth(2)
+                        ctx.cgContext.stroke(r)
+                        let label = (m["r"] as? String ?? "") as NSString
+                        let size = label.size(withAttributes: [.font: font])
+                        let tag = CGRect(x: r.minX, y: r.minY >= 14 ? r.minY - 14 : r.minY, width: size.width + 4, height: 14)
+                        red.setFill()
+                        ctx.fill(tag)
+                        label.draw(at: CGPoint(x: tag.minX + 2, y: tag.minY), withAttributes: [.font: font, .foregroundColor: UIColor.white])
+                    }
+                }
+                result["marked"] = marks.count
+            }
+            guard let jpeg = image.jpegData(compressionQuality: min(max(q / 100, 0), 1)) else {
                 throw ProtocolError(message: "jpeg encoding failed")
             }
-            return ["jpeg": jpeg.base64EncodedString()]
+            result["jpeg"] = jpeg.base64EncodedString()
+            return result
         case "longPress":
             point(try num("x"), try num("y")).press(forDuration: max(try num("ms", 800), 100) / 1000)
             return [:]

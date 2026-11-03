@@ -59,6 +59,18 @@ async fn ios_login_over_mcp() {
     assert!(out.contains("(ios, com.fastpilot.demo)") && !out.contains("rahasia123"), "{out}");
     let (ok, out) = call(&client, "screenshot", json!({ "session": "ios1" })).await;
     assert!(ok, "{out}");
+    // Set-of-Mark drawn by the runner; it confirms every box.
+    let res: CallToolResult = client
+        .call_tool(CallToolRequestParams::new("screenshot").with_arguments(json!({ "session": "ios1", "annotate": "som" }).as_object().cloned().unwrap_or_default()))
+        .await
+        .expect("screenshot");
+    let text = res.content.iter().filter_map(|c| c.as_text()).map(|t| t.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(res.is_error != Some(true) && text.contains(" @"), "{text}");
+    let image = res.content.iter().find_map(|c| c.as_image()).expect("annotated image");
+    if let Ok(out) = std::env::var("FASTPILOT_SOM_OUT") {
+        use base64::Engine;
+        std::fs::write(out, base64::engine::general_purpose::STANDARD.decode(&image.data).expect("base64")).expect("write");
+    }
 
     // System dialogs (PRD §11.2 rule 6): an unrelated SpringBoard permission alert is denied
     // before the next tap; a crash fails with app_crashed.

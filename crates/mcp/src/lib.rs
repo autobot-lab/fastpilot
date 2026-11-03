@@ -135,7 +135,7 @@ pub struct SnapshotArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreenshotArgs {
     pub session: Option<String>,
-    /// `som`: Set-of-Mark — numbered boxes per target (drawn on web) plus a ref -> coordinates list.
+    /// `som`: Set-of-Mark — a box labelled with its ref per target (web, android, ios) plus a ref -> coordinates list.
     pub annotate: Option<String>,
 }
 

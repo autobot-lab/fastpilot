@@ -642,6 +642,18 @@ impl Driver for AndroidDriver {
         lock(&self.notes).clone()
     }
 
+    /// Set-of-Mark drawn on the device (android): boxes and refs in screen coordinates.
+    async fn screenshot_annotated(&self, marks: &[(String, Rect)]) -> Result<Vec<u8>> {
+        let list: Vec<Value> = marks.iter().map(|(r, b)| json!({ "r": r, "x": b.x, "y": b.y, "w": b.w, "h": b.h })).collect();
+        let v = self.agent.call("screenshot", json!({ "quality": 80, "marks": list })).await?;
+        if v["marked"].as_u64() != Some(marks.len() as u64) {
+            return Err(CoreError::Driver(format!("agent drew {} of {} marks (rebuild the agent)", v["marked"], marks.len())));
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(s(&v, "jpeg"))
+            .map_err(|e| CoreError::Driver(format!("screenshot decode: {e}")))
+    }
+
     fn platform(&self) -> Platform {
         Platform::Android
     }

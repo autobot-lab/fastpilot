@@ -94,7 +94,8 @@ Apps without accessibility labels (`low_label_coverage` in the snapshot):
   `Modifier.testTag("login")`, then use `{ id: login }`.
 - Flutter: wrap widgets in `Semantics(label: ...)` / set `identifier`; Flutter builds semantics only
   while an accessibility client is connected (the agent's UiAutomation counts as one).
-- Otherwise: `screenshot { annotate: som }` lists every target box; tap with `{ point: [x, y] }`.
+- Otherwise: `screenshot { annotate: som }` draws a box labelled with its ref on every target (web,
+  android, ios) and lists the boxes; tap with `{ ref: eN }` or `{ point: [x, y] }`.
 "#;
 
 const PARALLEL: &str = r#"# Multi-session and parallel
