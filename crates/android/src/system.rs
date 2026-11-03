@@ -86,7 +86,8 @@ impl Dialog {
                 ":id/permission_allow_button",
                 ":id/permission_allow_one_time_button",
             ]),
-            (Kind::Crash | Kind::Anr, _) => self.button(&["android:id/aerr_close"]),
+            // OEM builds (MIUI/HyperOS, One UI) may own the dialog under their own package.
+            (Kind::Crash | Kind::Anr, _) => self.button(&[":id/aerr_close"]),
         }
     }
 
@@ -97,6 +98,7 @@ impl Dialog {
 
 /// The first system dialog on screen, if any.
 pub fn dialog(snapshot: &Value) -> Option<Dialog> {
+    let app = snapshot["package"].as_str().unwrap_or("");
     for root in snapshot["nodes"].as_array().into_iter().flatten() {
         let pkg = root["pkg"].as_str().unwrap_or("");
         let mut d = Dialog { kind: Kind::Permission, text: String::new(), ids: Vec::new(), boxes: Vec::new() };
@@ -106,11 +108,16 @@ pub fn dialog(snapshot: &Value) -> Option<Dialog> {
         if permission {
             return Some(d);
         }
-        if d.has("android:id/aerr_wait") {
+        if d.has(":id/aerr_wait") {
             return Some(Dialog { kind: Kind::Anr, ..d });
         }
-        if d.has("android:id/aerr_close") {
+        if d.has(":id/aerr_close") {
             return Some(Dialog { kind: Kind::Crash, ..d });
+        }
+        // Unknown windows of other packages: logged so OEM dialogs can be captured as fixtures.
+        if !pkg.is_empty() && pkg != app && pkg != "android" {
+            let ids: Vec<&str> = d.ids.iter().map(|(id, _)| id.as_str()).take(12).collect();
+            tracing::debug!(pkg, ?ids, text = %d.text, "unrecognized system window");
         }
     }
     None
@@ -162,6 +169,10 @@ mod tests {
         let crash = json!({ "nodes": [{ "pkg": "android", "bounds": [0, 0, 10, 10], "children": [
             { "id": "android:id/aerr_close", "bounds": [0, 0, 10, 10] }
         ]}]});
+        let miui = json!({ "nodes": [{ "pkg": "com.miui.securitycenter", "bounds": [0, 0, 10, 10], "children": [
+            { "id": "com.miui.securitycenter:id/aerr_wait", "bounds": [0, 0, 10, 10] }
+        ]}]});
+        assert_eq!(dialog(&miui).map(|d| d.kind), Some(Kind::Anr), "suffix match covers OEM packages");
         let c = dialog(&crash).expect("crash");
         assert_eq!((c.kind, c.dismiss(Policy::Deny)), (Kind::Crash, Some(Point { x: 5.0, y: 5.0 })));
         assert!(dialog(&json!({ "nodes": [{ "pkg": "com.x", "bounds": [0, 0, 1, 1] }] })).is_none());
