@@ -110,6 +110,8 @@ struct Live {
     notes: Vec<String>,
     /// Recent console errors / exceptions / failed requests, newest last.
     diag: VecDeque<String>,
+    /// Diagnostics already shown with a failure: each error is reported once per session.
+    reported: std::collections::HashSet<String>,
     downloads: HashMap<String, String>,
 }
 
@@ -554,8 +556,13 @@ async fn event_loop(
     let note = |s: String| lock(&shared.live).notes.push(s);
     let diag = |s: String| {
         let mut l = lock(&shared.live);
-        l.diag.push_back(clip(&s));
-        if l.diag.len() > 10 {
+        // The same broken request repeats on every page view: keep one copy.
+        let s = clip(&s);
+        if l.diag.contains(&s) || l.reported.contains(&s) {
+            return;
+        }
+        l.diag.push_back(s);
+        if l.diag.len() > 20 {
             l.diag.pop_front();
         }
     };
@@ -969,6 +976,40 @@ fn ax_node(n: &Value, ctx: &AxCtx, depth: usize, pointer_above: bool) -> Option<
 }
 
 /// (key, code, windowsVirtualKeyCode, text) for `pressKey`.
+/// Host of the first URL in `s` (`""` when there is none).
+fn host_of(s: &str) -> &str {
+    let Some(i) = s.find("://") else { return "" };
+    let rest = &s[i + 3..];
+    rest.split(['/', ':', '?', '#', ' ']).next().unwrap_or("")
+}
+
+/// Stable order: messages about the page's host (or with no URL) first.
+fn third_party_last(mut diag: Vec<String>, page: &str) -> Vec<String> {
+    diag.sort_by_key(|d| {
+        let h = host_of(d);
+        !(h.is_empty() || h == page || (!page.is_empty() && (h.ends_with(&format!(".{page}")) || page.ends_with(&format!(".{h}")))))
+    });
+    diag
+}
+
+#[cfg(test)]
+mod diag_tests {
+    use super::*;
+
+    #[test]
+    fn orders_first_party_errors_first() {
+        let d = vec![
+            "request failed: net::ERR_NAME_NOT_RESOLVED https://analytics.broken.example/collect".to_owned(),
+            "HTTP 500 https://motmaina.com/api/consultants".to_owned(),
+            "console.error: stok habis".to_owned(),
+            "HTTP 404 https://cdn.motmaina.com/x.png".to_owned(),
+        ];
+        let out = third_party_last(d, "motmaina.com");
+        assert!(out[3].contains("analytics.broken.example"), "{out:?}");
+        assert_eq!(host_of("HTTP 500 https://motmaina.com:443/api"), "motmaina.com");
+    }
+}
+
 /// Pseudo-method in a `dispatch` list: sleep `ms` inside the same uncancellable task.
 const PAUSE: &str = "fastpilot.pause";
 
@@ -1196,8 +1237,14 @@ impl Driver for WebPage {
         Ok(())
     }
 
+    /// New errors since the last failure report, the page's own origin first (console errors
+    /// and exceptions count as its own), third-party hosts after.
     async fn diagnostics(&self) -> Vec<String> {
-        lock(&self.shared.live).diag.iter().cloned().collect()
+        let page = self.location().await.map(|(_, url)| host_of(&url).to_owned()).unwrap_or_default();
+        let mut live = lock(&self.shared.live);
+        let fresh: Vec<String> = live.diag.drain(..).collect();
+        live.reported.extend(fresh.iter().cloned());
+        third_party_last(fresh, &page)
     }
 
     async fn long_press(&self, sel: &Selector) -> Result<()> {
