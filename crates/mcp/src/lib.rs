@@ -72,11 +72,16 @@ impl PlatformLauncher {
 
 #[async_trait]
 impl Launcher for PlatformLauncher {
-    async fn launch(&self, platform: Platform) -> fastpilot_core::Result<Box<dyn Driver>> {
+    async fn launch(&self, platform: Platform, device: Option<&str>) -> fastpilot_core::Result<Box<dyn Driver>> {
+        let spec = device.map(fastpilot_core::DeviceSpec::parse).transpose().map_err(Error::Flow)?;
+        if let Some(s) = &spec {
+            s.check_platform(platform).map_err(Error::Flow)?;
+        }
+        let pick = |fallback: Option<String>| spec.as_ref().map(ToString::to_string).or(fallback);
         match platform {
             Platform::Web => Ok(Box::new(self.browser().await?.new_page().await?)),
-            Platform::Android => Ok(Box::new(fastpilot_android::AndroidDriver::start(self.devices.android().as_deref()).await?)),
-            Platform::Ios => Ok(Box::new(fastpilot_ios::IosDriver::start(self.devices.ios().as_deref()).await?)),
+            Platform::Android => Ok(Box::new(fastpilot_android::AndroidDriver::start(pick(self.devices.android()).as_deref()).await?)),
+            Platform::Ios => Ok(Box::new(fastpilot_ios::IosDriver::start(pick(self.devices.ios()).as_deref()).await?)),
         }
     }
 }
@@ -120,6 +125,9 @@ pub struct SessionArgs {
     pub endpoint: Option<String>,
     /// Test case id: the response includes its path-memory hint, if any.
     pub test_id: Option<String>,
+    /// android/ios: which device (see action devices): `ios-device:<udid>`, `simulator:<udid>`,
+    /// `emulator:<serial>`, `android-device:<serial>`, or a plain id / name. Wins over endpoint.
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -258,15 +266,11 @@ impl FastPilot {
                 let browser = Browser::connect(args.endpoint.as_deref()).await?;
                 Box::new(browser.attach_page().await?)
             }
-            (Platform::Android, "launch") => {
-                let serial = args.endpoint.clone().or_else(|| self.state.launcher.devices.android());
-                Box::new(fastpilot_android::AndroidDriver::start(serial.as_deref()).await?)
+            (Platform::Android | Platform::Ios, "launch") => {
+                let device = args.device.clone().or_else(|| args.endpoint.clone());
+                self.state.launcher.launch(platform, device.as_deref()).await?
             }
-            (Platform::Ios, "launch") => {
-                let udid = args.endpoint.clone().or_else(|| self.state.launcher.devices.ios());
-                Box::new(fastpilot_ios::IosDriver::start(udid.as_deref()).await?)
-            }
-            (_, "launch") => self.state.launcher.launch(platform).await?,
+            (_, "launch") => self.state.launcher.launch(platform, None).await?,
             (_, mode) => return Err(Error::Unsupported(format!("mode `{mode}` (launch, attach)"))),
         };
         let mut text = format!("session {id} started ({platform})");
@@ -332,6 +336,19 @@ impl FastPilot {
         match res {
             Ok(r) => (r.is_error != Some(true), r.content.iter().filter_map(|c| serde_json::to_value(c).ok()).collect()),
             Err(e) => (false, vec![serde_json::json!({ "type": "text", "text": e.to_string() })]),
+        }
+    }
+
+    /// Close every session (restores device settings) before the process exits.
+    pub async fn close_all(&self) {
+        let drivers: Vec<Arc<dyn Driver>> = {
+            let mut reg = self.state.registry.lock().await;
+            reg.ids().into_iter().filter_map(|id| reg.remove(&id)).collect()
+        };
+        for d in drivers {
+            if let Err(e) = d.close().await {
+                tracing::warn!(error = %e, "session cleanup failed");
+            }
         }
     }
 
@@ -464,8 +481,12 @@ impl FastPilot {
                     return fail("no session to stop");
                 };
                 let _busy = self.lock_sessions([id.clone()]).await;
-                match self.state.registry.lock().await.remove(&id) {
-                    Some(_) => ok(format!("session {id} stopped")),
+                let removed = self.state.registry.lock().await.remove(&id);
+                match removed {
+                    Some(d) => match d.close().await {
+                        Ok(()) => ok(format!("session {id} stopped")),
+                        Err(e) => ok(format!("session {id} stopped (cleanup: {e})")),
+                    },
                     None => fail(format!("unknown session `{id}`")),
                 }
             }
@@ -738,11 +759,13 @@ impl ServerHandler for FastPilot {
 /// Serve MCP over stdin/stdout until the client disconnects or SIGINT/SIGTERM arrives; either
 /// way sessions are dropped, so Chrome, agents and runners are shut down cleanly.
 pub async fn serve_stdio(web: LaunchOptions) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let service = FastPilot::new(web).serve(rmcp::transport::stdio()).await?;
+    let server = FastPilot::new(web);
+    let service = server.clone().serve(rmcp::transport::stdio()).await?;
     tokio::select! {
         r = service.waiting() => { r?; }
         () = shutdown_signal() => tracing::info!("signal received, shutting down"),
     }
+    server.close_all().await;
     Ok(())
 }
 

@@ -55,7 +55,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | retry | `{ maxRetries: 2, commands: [...] \| file: x.yaml }` (runs the block again on failure) | all |
 | httpRequest | `{ method: POST, url: "${API}/users", headers: {...}, json: {...}, expect: 201, capture: { USER_ID: id, TOKEN: session.token }, secret: [USER_ID] }` — seed/teardown test data; no session needed | — |
 | readOtp | `{ from: mailpit \| mailhog \| http \| sms, url, to: "a@b.com", after: "kode", length: 6, into: OTP, timeout: 30000 }` — waits for a one-time code, stores it in `${OTP}` | sms: android |
-| session | `session: web1` (switch) or `session: { start: web1, platform: web, target: "...", reset: true }` | — |
+| session | `session: web1` (switch) or `session: { start: web1, platform: web, target: "...", reset: true }`; mobile: `device: ios-device:<udid>` / `simulator:<udid>` / `emulator:<serial>` / `android-device:<serial>` or a plain id / name (docs topic devices) | — |
 | parallel | see docs(topic: parallel) | — |
 
 Conditions (`when`, `while`), checked once on the current screen: `{ visible: <selector> }`,

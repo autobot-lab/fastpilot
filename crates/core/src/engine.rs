@@ -118,7 +118,8 @@ impl SessionRegistry {
 /// Creates drivers for `session: { start: ... }`; implemented where the platform crates are known.
 #[async_trait]
 pub trait Launcher: Send + Sync {
-    async fn launch(&self, platform: Platform) -> Result<Box<dyn Driver>>;
+    /// `device`: a `DeviceSpec` (tagged id, plain id or name); `None` = the platform default.
+    async fn launch(&self, platform: Platform, device: Option<&str>) -> Result<Box<dyn Driver>>;
 }
 
 #[derive(Debug, Clone)]
@@ -291,13 +292,13 @@ pub async fn run_flow(
             break;
         }
         let ok = match &fs.step {
-            Step::StartSession { id, platform, target, reset } => {
+            Step::StartSession { id, platform, target, reset, device } => {
                 index += 1;
                 let t0 = Instant::now();
                 if *reset {
                     reg.remove(id);
                 }
-                let res = start_session(reg, launcher, id, *platform, target.as_deref()).await;
+                let res = start_session(reg, launcher, id, *platform, target.as_deref(), device.as_deref()).await;
                 if res.is_ok() {
                     active = Some(id.clone());
                     baselines.retain(|(s, _)| s != id);
@@ -434,11 +435,12 @@ async fn start_session(
     id: &str,
     platform: Platform,
     target: Option<&str>,
+    device: Option<&str>,
 ) -> Result<()> {
     if reg.contains(id) {
         return Err(Error::Session(format!("session `{id}` already exists")));
     }
-    let driver = launcher.launch(platform).await?;
+    let driver = launcher.launch(platform, device).await?;
     if let Some(t) = target {
         driver.open(&substitute(t).map_err(Error::Flow)?).await?;
         settle(&*driver).await;
@@ -1197,7 +1199,7 @@ mod tests {
 
     #[async_trait]
     impl Launcher for FakeLauncher {
-        async fn launch(&self, platform: Platform) -> Result<Box<dyn Driver>> {
+        async fn launch(&self, platform: Platform, _device: Option<&str>) -> Result<Box<dyn Driver>> {
             match platform {
                 Platform::Web => Ok(Box::new(Fake::default())),
                 p => Err(Error::Unsupported(format!("{p}"))),

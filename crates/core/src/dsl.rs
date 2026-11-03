@@ -25,7 +25,7 @@ pub enum Step {
     LaunchApp(String),
     Swipe { from: Point, to: Point },
     UseSession(String),
-    StartSession { id: String, platform: Platform, target: Option<String>, reset: bool },
+    StartSession { id: String, platform: Platform, target: Option<String>, reset: bool, device: Option<String> },
     Parallel(Vec<Branch>),
     LongPressOn(Selector),
     DoubleTapOn(Selector),
@@ -686,6 +686,7 @@ impl Step {
                     },
                     target: get(m, "target").map(string).transpose()?,
                     reset: get(m, "reset").and_then(Yaml::as_bool).unwrap_or(false),
+                    device: get(m, "device").map(string).transpose()?,
                 },
                 other => Self::UseSession(string(other)?),
             },
@@ -904,13 +905,14 @@ impl Step {
             Self::LaunchApp(a) => one("launchApp", s(a)),
             Self::Swipe { from, to } => one("swipe", map(vec![("from", pt(from)), ("to", pt(to))])),
             Self::UseSession(id) => one("session", s(id)),
-            Self::StartSession { id, platform, target, reset } => one(
+            Self::StartSession { id, platform, target, reset, device } => one(
                 "session",
                 map(vec![
                     ("start", s(id)),
                     ("platform", s(&platform.to_string())),
                     ("target", target.as_deref().map(s).unwrap_or(Yaml::Null)),
                     ("reset", if *reset { Yaml::Bool(true) } else { Yaml::Null }),
+                    ("device", device.as_deref().map(s).unwrap_or(Yaml::Null)),
                 ]),
             ),
             Self::Parallel(_) => Yaml::Null, // handled above
@@ -1331,9 +1333,14 @@ fn check_parsed(flow: Flow, known: &[String]) -> Result<Flow, Vec<FlowError>> {
         let err = |message: String| FlowError { line: fs.line, message };
         check_step(&fs.step, &mut defined, &mut |m| errors.push(err(m)));
         match &fs.step {
-            Step::StartSession { id, reset, .. } => {
+            Step::StartSession { id, reset, device, platform, .. } => {
                 if !sessions.insert(id) && !reset {
                     errors.push(err(format!("session `{id}` already exists")));
+                }
+                if let Some(d) = device
+                    && let Err(e) = crate::DeviceSpec::parse(d).and_then(|spec| spec.check_platform(*platform))
+                {
+                    errors.push(err(e));
                 }
                 active = true;
             }

@@ -1,6 +1,7 @@
 //! fastpilot core: the platform-agnostic driver contract, selectors, snapshots,
 //! the flow DSL and the flow engine. Drivers (web, android, ios) live in their own crates.
 
+mod device;
 mod dsl;
 mod engine;
 mod error;
@@ -19,6 +20,7 @@ pub use dsl::{
     parse_flow_file, redact, to_vars,
 };
 pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
+pub use device::{DeviceInfo, DeviceKind, DeviceSpec, SelectError, select};
 pub use error::{Error, Result};
 pub use recording::{escape_html, filmstrip};
 pub use selector::Selector;
@@ -202,6 +204,11 @@ pub trait Driver: Send + Sync {
     }
     async fn push_notification(&self, _app: Option<&str>, _title: &str, _body: &str, _payload: Option<&Value>) -> Result<()> {
         Err(Error::Unsupported("pushNotification is mobile-only".into()))
+    }
+    /// End of the session: undo what the driver changed on the device (animation scales,
+    /// stay-awake) and stop on-device helpers. Called on `session stop` and at shutdown.
+    async fn close(&self) -> Result<()> {
+        Ok(())
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))
