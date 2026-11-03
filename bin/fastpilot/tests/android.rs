@@ -196,3 +196,24 @@ async fn android_maestro_steps() {
     assert!(out.contains("copyTextFrom \"Email\"") && out.contains("= a@b.com"), "{out}");
     client.cancel().await.expect("shutdown");
 }
+
+/// One-time code from the device's SMS inbox (emulator console `sms send`).
+#[tokio::test]
+async fn android_reads_otp_from_sms() {
+    let _device = DEVICE.lock().await;
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let code = format!("{}", 100_000 + std::process::id() % 900_000);
+    let sent = std::process::Command::new(adb()).args(["emu", "sms", "send", "5551234", &format!("Kode masuk Anda {code}")]).output().expect("adb emu");
+    if !String::from_utf8_lossy(&sent.stdout).contains("OK") {
+        return eprintln!("skipping: not an emulator (no console to send an SMS)");
+    }
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let flow = "- session: { start: sms1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- readOtp: { from: sms, after: \"kode\", into: SMS_OTP, timeout: 10000 }\n- inputText: { into: \"Email\", text: \"${SMS_OTP}\" }\n- copyTextFrom: \"Email\"\n";
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok && out.contains("code from sms in ${SMS_OTP}"), "{out}");
+    assert!(!out.contains(&code) && out.contains("copyTextFrom \"Email\"") && out.contains("= ***"), "{out}");
+    client.cancel().await.expect("shutdown");
+}

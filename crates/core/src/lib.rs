@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use dsl::{
-    Branch, Condition, Flow, FlowError, FlowStep, Random, Step, check_flow, check_flow_file, flow_to_yaml, parse_flow,
+    Branch, Condition, Flow, FlowError, FlowStep, HttpRequest, OtpSource, Random, ReadOtp, Step, check_flow, check_flow_file, flow_to_yaml, parse_flow,
     parse_flow_file, redact,
 };
 pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
@@ -145,6 +145,10 @@ pub trait Driver: Send + Sync {
     /// Visible area in snapshot coordinates, when the snapshot includes off-screen nodes (web).
     async fn viewport(&self) -> Option<Rect> {
         None
+    }
+    /// SMS inbox bodies, newest first (for one-time codes).
+    async fn read_sms(&self) -> Result<Vec<String>> {
+        Err(Error::Unsupported("reading SMS is Android-only".into()))
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))

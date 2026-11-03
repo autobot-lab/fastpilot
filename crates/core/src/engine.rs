@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::time::Instant;
 
-use crate::dsl::{Condition, Random, substitute, substitute_with};
+use crate::dsl::{Condition, HttpRequest, OtpSource, Random, ReadOtp, add_secret, looks_secret, substitute, substitute_with};
 use crate::snapshot::DEFAULT_MAX_LINES;
 use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Rect, Result, Selector, SessionId, Snapshot, Step, diff};
 
@@ -333,6 +333,12 @@ pub async fn run_flow(
                 } else {
                     futures_util::future::join_all(futs).await.iter().all(Result::is_ok)
                 }
+            }
+            step if step.sessionless() => {
+                index += 1;
+                let t0 = Instant::now();
+                let res = sessionless(step, &ctx, None).await;
+                record(&ctx, index, active.as_deref(), step, t0, res)
             }
             step => {
                 index += 1;
@@ -709,6 +715,7 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
                 }
                 return Ok(Some(format!("{n} iterations")));
             }
+            Step::HttpRequest(_) | Step::ReadOtp(_) => return sessionless(step, ctx, Some(d)).await,
             Step::Retry { max, steps } => {
                 let mut attempt = 0;
                 loop {
@@ -726,6 +733,196 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
         settle(d).await;
         Ok(None)
     })
+}
+
+/// Steps that talk to services instead of a screen (test data, one-time codes).
+async fn sessionless(step: &Step, ctx: &Ctx, d: Option<&dyn Driver>) -> Result<Option<String>> {
+    match step {
+        Step::HttpRequest(h) => http_request(h, ctx).await,
+        Step::ReadOtp(o) => read_otp(o, ctx, d).await,
+        other => Err(Error::Flow(format!("`{}` needs a session", other.label()))),
+    }
+}
+
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap_or_default())
+}
+
+fn subst_json(v: &serde_json::Value, ctx: &Ctx) -> Result<serde_json::Value> {
+    use serde_json::Value as J;
+    Ok(match v {
+        J::String(s) => J::String(ctx.subst(s)?),
+        J::Array(a) => J::Array(a.iter().map(|x| subst_json(x, ctx)).collect::<Result<_>>()?),
+        J::Object(o) => J::Object(o.iter().map(|(k, x)| Ok((k.clone(), subst_json(x, ctx)?))).collect::<Result<_>>()?),
+        other => other.clone(),
+    })
+}
+
+/// `a.b.0.c` into a JSON value; strings come back unquoted.
+fn json_path(v: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = v;
+    for part in path.split('.').filter(|p| !p.is_empty()) {
+        cur = match part.parse::<usize>() {
+            Ok(i) if cur.is_array() => cur.get(i)?,
+            _ => cur.get(part)?,
+        };
+    }
+    Some(match cur {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => return None,
+        other => other.to_string(),
+    })
+}
+
+/// Set a flow variable; secret-looking (or listed) ones are redacted from every output.
+fn set_var(ctx: &Ctx, name: &str, value: String, secret: bool) {
+    if secret || looks_secret(name) {
+        add_secret(&value);
+    }
+    guard(&ctx.vars).insert(name.to_owned(), value);
+}
+
+async fn http_request(h: &HttpRequest, ctx: &Ctx) -> Result<Option<String>> {
+    let url = ctx.subst(&h.url)?;
+    let method = reqwest::Method::from_bytes(h.method.as_bytes()).map_err(|e| Error::Flow(e.to_string()))?;
+    let mut req = http().request(method, &url);
+    for (k, v) in &h.headers {
+        req = req.header(k.as_str(), ctx.subst(v)?);
+    }
+    if let Some(j) = &h.json {
+        req = req.json(&subst_json(j, ctx)?);
+    }
+    let what = format!("{} {}", h.method, h.url);
+    let resp = req.send().await.map_err(|e| Error::Driver(format!("{what}: {e}")))?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.map_err(|e| Error::Driver(format!("{what}: {e}")))?;
+    let expected = h.expect.map_or((200..300).contains(&status), |e| e == status);
+    if !expected {
+        let want = h.expect.map_or("2xx".to_owned(), |e| e.to_string());
+        let msg = format!("{what} returned {status}, expected {want}: {}", clip(body));
+        return Err(if status >= 500 { Error::Driver(msg) } else { Error::Assertion(msg) });
+    }
+    if h.capture.is_empty() {
+        return Ok(Some(status.to_string()));
+    }
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| Error::Assertion(format!("{what}: response is not JSON ({e}), cannot capture")))?;
+    for (name, path) in &h.capture {
+        let value = json_path(&json, path).ok_or_else(|| Error::Assertion(format!("{what}: response has no `{path}` for {name}")))?;
+        set_var(ctx, name, value, h.secret.contains(name));
+    }
+    let names: Vec<&str> = h.capture.iter().map(|(n, _)| n.as_str()).collect();
+    Ok(Some(format!("{status}; captured {}", names.join(", "))))
+}
+
+/// First one-time code in `text` (after `after`, if given): a digit run of exactly `length`,
+/// else of 4 to 8 digits.
+fn otp_in(text: &str, after: Option<&str>, length: Option<usize>) -> Option<String> {
+    // ASCII lowering keeps byte offsets valid for slicing the original.
+    let start = match after {
+        Some(a) => text.to_ascii_lowercase().find(&a.to_ascii_lowercase())? + a.len(),
+        None => 0,
+    };
+    let rest = &text[start..];
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let j = (i..bytes.len()).find(|&k| !bytes[k].is_ascii_digit()).unwrap_or(bytes.len());
+            let ok = match length {
+                Some(n) => j - i == n,
+                None => (4..=8).contains(&(j - i)),
+            };
+            if ok {
+                return Some(rest[i..j].to_owned());
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+async fn get_json(url: &str) -> Result<serde_json::Value> {
+    let resp = http().get(url).send().await.map_err(|e| Error::Driver(format!("GET {url}: {e}")))?;
+    resp.json().await.map_err(|e| Error::Driver(format!("GET {url}: {e}")))
+}
+
+/// Candidate texts, newest first.
+async fn otp_texts(o: &ReadOtp, ctx: &Ctx, d: Option<&dyn Driver>) -> Result<Vec<String>> {
+    let base = o.url.as_deref().map(|u| ctx.subst(u)).transpose()?.unwrap_or_default();
+    let base = base.trim_end_matches('/');
+    let to = o.to.as_deref().map(|t| ctx.subst(t)).transpose()?.map(|t| t.to_ascii_lowercase());
+    let addressed = |addrs: Vec<String>| to.as_ref().is_none_or(|t| addrs.iter().any(|a| a.to_ascii_lowercase().contains(t.as_str())));
+    Ok(match o.source {
+        // https://mailpit.axllent.org/docs/api-v1/ — newest first.
+        OtpSource::Mailpit => {
+            let list = get_json(&format!("{base}/api/v1/messages?limit=20")).await?;
+            let mut out = Vec::new();
+            for m in list["messages"].as_array().into_iter().flatten() {
+                let addrs = m["To"].as_array().into_iter().flatten().filter_map(|a| a["Address"].as_str().map(str::to_owned)).collect();
+                if !addressed(addrs) {
+                    continue;
+                }
+                let Some(id) = m["ID"].as_str() else { continue };
+                let full = get_json(&format!("{base}/api/v1/message/{id}")).await?;
+                let subject = m["Subject"].as_str().unwrap_or("");
+                out.push(format!("{subject}
+{}", full["Text"].as_str().or(full["HTML"].as_str()).unwrap_or("")));
+                break;
+            }
+            out
+        }
+        // MailHog API v2 — newest first; bodies may be quoted-printable (soft breaks removed).
+        OtpSource::Mailhog => {
+            let list = get_json(&format!("{base}/api/v2/messages?limit=20")).await?;
+            list["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| {
+                    let to = m["Content"]["Headers"]["To"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_owned));
+                    addressed(to.collect())
+                })
+                .map(|m| {
+                    let subject = m["Content"]["Headers"]["Subject"][0].as_str().unwrap_or("");
+                    format!("{subject}
+{}", m["Content"]["Body"].as_str().unwrap_or("").replace("=
+", "").replace("=
+", ""))
+                })
+                .take(1)
+                .collect()
+        }
+        OtpSource::Http => {
+            let resp = http().get(base).send().await.map_err(|e| Error::Driver(format!("GET {base}: {e}")))?;
+            vec![resp.text().await.map_err(|e| Error::Driver(format!("GET {base}: {e}")))?]
+        }
+        OtpSource::Sms => {
+            let d = d.ok_or_else(|| Error::Flow("readOtp from sms needs an android session".into()))?;
+            d.read_sms().await?.into_iter().take(1).collect()
+        }
+    })
+}
+
+/// Poll the source until a code shows up; it becomes `${into}` (always redacted).
+async fn read_otp(o: &ReadOtp, ctx: &Ctx, d: Option<&dyn Driver>) -> Result<Option<String>> {
+    let timeout = o.timeout.unwrap_or(Duration::from_secs(30));
+    let deadline = Instant::now() + timeout;
+    loop {
+        for text in otp_texts(o, ctx, d).await? {
+            if let Some(code) = otp_in(&text, o.after.as_deref(), o.length) {
+                set_var(ctx, &o.into, code, true);
+                return Ok(Some(format!("code from {} in ${{{}}}", o.source.name(), o.into)));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::NotFound(format!("no one-time code from {} within {}ms", o.source.name(), timeout.as_millis())));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Steps of a block, in order; a failure names the step inside the block.
@@ -1005,6 +1202,18 @@ mod tests {
             out.starts_with("fail step 2/3 [web1] tapOn \"Login\": not_found: no element matches \"Login\" (timeout 5000ms)\ncandidates: e1 textfield \"Email\" value=\"\", e2 button \"Masuk\", e3 button \"Daftar\""),
             "{out}"
         );
+    }
+
+    #[test]
+    fn finds_one_time_codes_and_json_paths() {
+        assert_eq!(otp_in("Kode OTP Anda: 482913. Berlaku 5 menit.", None, None).as_deref(), Some("482913"));
+        assert_eq!(otp_in("Order 12 — code 2026 1234567890 ok 7788", Some("code"), Some(4)).as_deref(), Some("2026"));
+        assert_eq!(otp_in("Tanggal 03/11/2026, kode: 5521", Some("kode"), None).as_deref(), Some("5521"));
+        assert_eq!(otp_in("no digits", None, None), None);
+        let j = serde_json::json!({ "data": { "token": "t0k", "items": [{ "id": 7 }] } });
+        assert_eq!(json_path(&j, "data.token").as_deref(), Some("t0k"));
+        assert_eq!(json_path(&j, "data.items.0.id").as_deref(), Some("7"));
+        assert_eq!(json_path(&j, "data.nope"), None);
     }
 
     #[tokio::test(start_paused = true)]

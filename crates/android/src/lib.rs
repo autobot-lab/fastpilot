@@ -646,6 +646,24 @@ impl Driver for AndroidDriver {
         Platform::Android
     }
 
+    /// The SMS provider sorts the inbox newest first; a body may span several lines.
+    async fn read_sms(&self) -> Result<Vec<String>> {
+        let out = self.shell("content query --uri content://sms/inbox --projection body").await?;
+        let mut bodies: Vec<String> = Vec::new();
+        for line in out.lines() {
+            match line.strip_prefix("Row: ").and_then(|r| r.split_once(" body=")) {
+                Some((_, body)) => bodies.push(body.to_owned()),
+                None => {
+                    if let Some(last) = bodies.last_mut() {
+                        last.push('\n');
+                        last.push_str(line);
+                    }
+                }
+            }
+        }
+        Ok(bodies)
+    }
+
     async fn long_press(&self, sel: &Selector) -> Result<()> {
         let p = match sel {
             Selector::Point(p) => *p,

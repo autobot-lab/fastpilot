@@ -47,6 +47,90 @@ pub enum Step {
     RunFlow { file: Option<String>, when: Option<Condition>, env: Vec<(String, String)>, steps: Vec<FlowStep> },
     Repeat { times: Option<u32>, while_: Option<Condition>, steps: Vec<FlowStep> },
     Retry { max: u32, steps: Vec<FlowStep> },
+    /// Test-data setup/teardown over HTTP; needs no session.
+    HttpRequest(Box<HttpRequest>),
+    /// Wait for a one-time code and store it in a variable.
+    ReadOtp(Box<ReadOtp>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// JSON body; `${VARS}` are replaced inside its strings.
+    pub json: Option<serde_json::Value>,
+    /// Expected status; default: any 2xx.
+    pub expect: Option<u16>,
+    /// `VAR: dotted.path` into the JSON response (`items.0.id`).
+    pub capture: Vec<(String, String)>,
+    /// Captured names to redact in addition to the secret-looking ones.
+    pub secret: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtpSource {
+    Mailpit,
+    Mailhog,
+    /// Any endpoint whose body contains the code.
+    Http,
+    /// The device's SMS inbox (Android).
+    Sms,
+}
+
+impl OtpSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mailpit => "mailpit",
+            Self::Mailhog => "mailhog",
+            Self::Http => "http",
+            Self::Sms => "sms",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadOtp {
+    pub source: OtpSource,
+    pub url: Option<String>,
+    /// Mail: recipient address to look for.
+    pub to: Option<String>,
+    /// Only text after this (case-insensitive), e.g. "kode".
+    pub after: Option<String>,
+    /// Exact number of digits; default 4 to 8.
+    pub length: Option<usize>,
+    pub into: String,
+    pub timeout: Option<Duration>,
+}
+
+/// Captured variables with these in their name are redacted like `FASTPILOT_VARS`.
+const SECRET_HINTS: &[&str] = &["TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "OTP", "COOKIE", "SESSION", "AUTH"];
+
+pub(crate) fn looks_secret(name: &str) -> bool {
+    SECRET_HINTS.iter().any(|h| name.contains(h))
+}
+
+/// Values captured at runtime that must never reach the AI (process-wide, like FASTPILOT_VARS).
+static SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn add_secret(value: &str) {
+    if value.chars().count() >= 3 {
+        let mut s = SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+        if !s.iter().any(|v| v == value) {
+            s.push(value.to_owned());
+            let extra = s.len().saturating_sub(1000);
+            s.drain(..extra);
+        }
+    }
+}
+
+fn json_of(v: &Yaml) -> Result<serde_json::Value, String> {
+    serde_json::to_value(v).map_err(|e| format!("json: {e}"))
+}
+
+fn var_name(v: &Yaml) -> Result<String, String> {
+    let k = v.as_str().ok_or("variable names are strings")?.to_owned();
+    if is_var(&k) { Ok(k) } else { Err(format!("variable `{k}` must be UPPER_SNAKE_CASE")) }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +426,67 @@ impl Step {
                 }
                 Self::Repeat { times, while_, steps: steps_of(get(m, "commands").ok_or("missing `commands`")?, cx)? }
             }
+            "httpRequest" => {
+                let m = arg.as_mapping().ok_or("expects { method, url, headers, json, expect, capture, secret }")?;
+                let method = get(m, "method").map(string).transpose()?.unwrap_or_else(|| "GET".into()).to_uppercase();
+                if !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&method.as_str()) {
+                    return Err(format!("unknown method `{method}`"));
+                }
+                let pairs = |key: &str, value: &dyn Fn(&Yaml) -> Result<String, String>| -> Result<Vec<(String, String)>, String> {
+                    match get(m, key) {
+                        None => Ok(Vec::new()),
+                        Some(Yaml::Mapping(h)) => h
+                            .iter()
+                            .map(|(k, v)| Ok((k.as_str().ok_or(format!("`{key}` keys are strings"))?.to_owned(), value(v)?)))
+                            .collect(),
+                        Some(_) => Err(format!("`{key}` must be a map")),
+                    }
+                };
+                let capture = pairs("capture", &|v| string(v))?;
+                for (k, _) in &capture {
+                    var_name(&Yaml::String(k.clone()))?;
+                }
+                let secret = match get(m, "secret") {
+                    Some(Yaml::Sequence(v)) => v.iter().map(var_name).collect::<Result<_, _>>()?,
+                    Some(_) => return Err("`secret` is a list of captured names".into()),
+                    None => Vec::new(),
+                };
+                Self::HttpRequest(Box::new(HttpRequest {
+                    method,
+                    url: string(get(m, "url").ok_or("missing `url`")?)?,
+                    headers: pairs("headers", &|v| match v {
+                        Yaml::Number(n) => Ok(n.to_string()),
+                        other => string(other),
+                    })?,
+                    json: get(m, "json").map(json_of).transpose()?,
+                    expect: get(m, "expect").map(|e| e.as_u64().map(|n| n as u16).ok_or("`expect` is a status code")).transpose()?,
+                    capture,
+                    secret,
+                }))
+            }
+            "readOtp" => {
+                let m = arg.as_mapping().ok_or("expects { from: mailpit | mailhog | http | sms, url, to, after, length, into, timeout }")?;
+                let source = match string(get(m, "from").ok_or("missing `from`")?)?.as_str() {
+                    "mailpit" => OtpSource::Mailpit,
+                    "mailhog" => OtpSource::Mailhog,
+                    "http" => OtpSource::Http,
+                    "sms" => OtpSource::Sms,
+                    other => return Err(format!("unknown source `{other}` (mailpit, mailhog, http, sms)")),
+                };
+                let url = get(m, "url").map(string).transpose()?;
+                if url.is_none() && source != OtpSource::Sms {
+                    return Err("missing `url` (e.g. http://localhost:8025 for Mailpit)".into());
+                }
+                Self::ReadOtp(Box::new(ReadOtp {
+                    source,
+                    url,
+                    to: get(m, "to").map(string).transpose()?,
+                    after: get(m, "after").map(string).transpose()?,
+                    length: get(m, "length").and_then(Yaml::as_u64).map(|n| n as usize),
+                    into: get(m, "into").map(var_name).transpose()?.unwrap_or_else(|| "OTP".into()),
+                    timeout: get(m, "timeout").map(millis).transpose()?,
+                }))
+            }
             "retry" => {
                 let m = arg.as_mapping().ok_or("expects { maxRetries, commands | file }")?;
                 let max = get(m, "maxRetries").and_then(Yaml::as_u64).unwrap_or(1).min(10) as u32;
@@ -522,6 +667,17 @@ impl Step {
                 format!("repeat{times}{cond} ({} steps)", steps.len())
             }
             Self::Retry { max, steps } => format!("retry {max}x ({} steps)", steps.len()),
+            Self::HttpRequest(h) => format!("httpRequest {} {}", h.method, h.url),
+            Self::ReadOtp(o) => format!("readOtp {} -> {}", o.source.name(), o.into),
+        }
+    }
+
+    /// Steps that do not drive a screen (run before any session is started).
+    pub fn sessionless(&self) -> bool {
+        match self {
+            Self::HttpRequest(_) => true,
+            Self::ReadOtp(o) => o.source != OtpSource::Sms,
+            _ => false,
         }
     }
 
@@ -541,6 +697,17 @@ impl Step {
             Self::StartSession { target: Some(t), .. } => vec![t],
             Self::StopApp(Some(a)) | Self::ClearState(Some(a)) => vec![a],
             Self::RunFlow { env, .. } => env.iter().map(|(_, v)| v.as_str()).collect(),
+            Self::HttpRequest(h) => {
+                let mut names: Vec<String> = std::iter::once(h.url.as_str())
+                    .chain(h.headers.iter().map(|(_, v)| v.as_str()))
+                    .flat_map(var_names)
+                    .collect();
+                if let Some(j) = &h.json {
+                    names.extend(var_names(&j.to_string()));
+                }
+                return names;
+            }
+            Self::ReadOtp(o) => o.url.iter().chain(&o.to).map(String::as_str).collect(),
             _ => vec![],
         };
         texts.into_iter().flat_map(var_names).collect()
@@ -550,6 +717,8 @@ impl Step {
     fn defines(&self) -> Vec<String> {
         match self {
             Self::RunFlow { env, .. } => env.iter().map(|(k, _)| k.clone()).collect(),
+            Self::HttpRequest(h) => h.capture.iter().map(|(k, _)| k.clone()).collect(),
+            Self::ReadOtp(o) => vec![o.into.clone()],
             _ => vec![],
         }
     }
@@ -685,6 +854,41 @@ impl Step {
             Self::Retry { max, steps } => {
                 one("retry", map(vec![("maxRetries", Yaml::Number(u64::from(*max).into())), ("commands", block(steps))]))
             }
+            Self::HttpRequest(h) => {
+                let kv = |v: &[(String, String)]| {
+                    if v.is_empty() { Yaml::Null } else { Yaml::Mapping(v.iter().map(|(k, x)| (s(k), s(x))).collect()) }
+                };
+                one(
+                    "httpRequest",
+                    map(vec![
+                        ("method", s(&h.method)),
+                        ("url", s(&h.url)),
+                        ("headers", kv(&h.headers)),
+                        ("json", h.json.as_ref().and_then(|j| serde_yaml::to_value(j).ok()).unwrap_or(Yaml::Null)),
+                        ("expect", h.expect.map(|e| Yaml::Number(u64::from(e).into())).unwrap_or(Yaml::Null)),
+                        ("capture", kv(&h.capture)),
+                        (
+                            "secret",
+                            if h.secret.is_empty() { Yaml::Null } else { Yaml::Sequence(h.secret.iter().map(|x| s(x)).collect()) },
+                        ),
+                    ]),
+                )
+            }
+            Self::ReadOtp(o) => {
+                let opt = |v: &Option<String>| v.as_deref().map(s).unwrap_or(Yaml::Null);
+                one(
+                    "readOtp",
+                    map(vec![
+                        ("from", s(o.source.name())),
+                        ("url", opt(&o.url)),
+                        ("to", opt(&o.to)),
+                        ("after", opt(&o.after)),
+                        ("length", o.length.map(|n| Yaml::Number((n as u64).into())).unwrap_or(Yaml::Null)),
+                        ("into", s(&o.into)),
+                        ("timeout", o.timeout.map(|t| Yaml::Number((t.as_millis() as u64).into())).unwrap_or(Yaml::Null)),
+                    ]),
+                )
+            }
         }
     }
 }
@@ -815,6 +1019,9 @@ pub fn redact(text: &str) -> String {
         {
             out = out.replace(&v, "***");
         }
+    }
+    for v in SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+        out = out.replace(v.as_str(), "***");
     }
     out
 }
@@ -999,6 +1206,7 @@ fn check_parsed(flow: Flow, known: &[String]) -> Result<Flow, Vec<FlowError>> {
                     }
                 }
             }
+            step if step.sessionless() => {}
             _ if !active => {
                 errors.push(err(
                     "no active session: add `- session: { start: web1, platform: web, target: ... }` first".into(),

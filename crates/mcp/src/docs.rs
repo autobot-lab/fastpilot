@@ -46,6 +46,8 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | runFlow | `runFlow: login.yaml` (relative to the flow file, else the working dir; a Maestro config header `appId: ...` + `---` is skipped), or `{ file \| commands: [...], when: <condition>, env: { USER: a@b.com } }` | all |
 | repeat | `{ times: 3, commands: [...] }` and/or `{ while: <condition>, commands: [...] }` (while stops after 1000) | all |
 | retry | `{ maxRetries: 2, commands: [...] \| file: x.yaml }` (runs the block again on failure) | all |
+| httpRequest | `{ method: POST, url: "${API}/users", headers: {...}, json: {...}, expect: 201, capture: { USER_ID: id, TOKEN: session.token }, secret: [USER_ID] }` — seed/teardown test data; no session needed | — |
+| readOtp | `{ from: mailpit \| mailhog \| http \| sms, url, to: "a@b.com", after: "kode", length: 6, into: OTP, timeout: 30000 }` — waits for a one-time code, stores it in `${OTP}` | sms: android |
 | session | `session: web1` (switch) or `session: { start: web1, platform: web, target: "...", reset: true }` | — |
 | parallel | see docs(topic: parallel) | — |
 
@@ -53,6 +55,14 @@ Conditions (`when`, `while`), checked once on the current screen: `{ visible: <s
 `{ notVisible: <selector> }`, `{ platform: web | android | ios }`. JavaScript conditions
 (`true:`), `runScript`, `assertTrue` and the `*WithAI` commands are not supported.
 `env` variables stay set for the rest of the flow. Blocks may not contain `session`/`parallel`.
+
+Test data: `httpRequest` captures JSON fields (dotted paths, `items.0.id`) into `${VARS}` for later
+steps; a status other than `expect` (default 2xx) fails with the response. Captured names containing
+TOKEN, SECRET, PASS, KEY, OTP, COOKIE, SESSION or AUTH (or listed in `secret`) and every `readOtp`
+code are masked as `***` in everything returned, like `FASTPILOT_VARS`. `readOtp` takes the newest
+matching message (Mailpit `/api/v1`, MailHog `/api/v2`, any URL's body, or the Android SMS inbox) and
+the first run of `length` digits (default 4–8) after `after`; clear the inbox in setup if old codes
+could match.
 
 Rules
 - Auto-wait before/after every step (actionability, DOM/accessibility quiet, navigation and requests
