@@ -325,6 +325,20 @@ Hasil di M1 Pro (Chrome headless; emulator Android API 35; simulator iPhone 16 i
 
 iOS diukur manual lewat klien protokol; belum ada `bench ios`.
 
+Biaya token yang dibaca AI (`count_tokens` bila `ANTHROPIC_API_KEY` di-set, selain itu aproksimasi yang
+dicetak di output):
+
+```bash
+./target/release/fastpilot bench tokens web      # atau android / ios
+```
+
+| Yang dibaca AI (aproksimasi) | Web | Android |
+|---|---|---|
+| Snapshot layar login | 111 | 86 |
+| `run_flow` 1 langkah (tap → diff) | 92 | 60 |
+| `run_flow` login 4 langkah | 236 | 379 |
+| Screenshot sebagai pembanding (w·h/750) | 1366 | 1229 |
+
 Stabilitas (PRD G6) diukur dengan pass^k dan batas atas failure rate, bukan dari satu angka "lolos 20 kali":
 
 ```bash
