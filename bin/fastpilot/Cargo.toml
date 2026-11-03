@@ -9,6 +9,7 @@ fastpilot-core.workspace = true
 fastpilot-web.workspace = true
 fastpilot-mcp.workspace = true
 fastpilot-android.workspace = true
+fastpilot-ios.workspace = true
 fastpilot-llm.workspace = true
 fastpilot-memory.workspace = true
 tokio.workspace = true

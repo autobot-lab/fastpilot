@@ -27,11 +27,34 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 pub struct PlatformLauncher {
     web: LaunchOptions,
     browser: Mutex<Option<Arc<Browser>>>,
+    devices: Devices,
+}
+
+/// Devices this server's sessions use when a start names none (suite runner: the leased
+/// devices of one test). Unset fields fall back to `FASTPILOT_ANDROID_SERIAL` / `FASTPILOT_IOS_UDID`.
+#[derive(Debug, Clone, Default)]
+pub struct Devices {
+    pub android: Option<String>,
+    pub ios: Option<String>,
+}
+
+impl Devices {
+    fn android(&self) -> Option<String> {
+        self.android.clone().or_else(|| std::env::var("FASTPILOT_ANDROID_SERIAL").ok())
+    }
+
+    fn ios(&self) -> Option<String> {
+        self.ios.clone().or_else(|| std::env::var("FASTPILOT_IOS_UDID").ok())
+    }
 }
 
 impl PlatformLauncher {
     pub fn new(web: LaunchOptions) -> Self {
-        Self { web, browser: Mutex::new(None) }
+        Self::with_devices(web, Devices::default())
+    }
+
+    pub fn with_devices(web: LaunchOptions, devices: Devices) -> Self {
+        Self { web, browser: Mutex::new(None), devices }
     }
 
     async fn browser(&self) -> fastpilot_core::Result<Arc<Browser>> {
@@ -52,14 +75,8 @@ impl Launcher for PlatformLauncher {
     async fn launch(&self, platform: Platform) -> fastpilot_core::Result<Box<dyn Driver>> {
         match platform {
             Platform::Web => Ok(Box::new(self.browser().await?.new_page().await?)),
-            Platform::Android => {
-                let serial = std::env::var("FASTPILOT_ANDROID_SERIAL").ok();
-                Ok(Box::new(fastpilot_android::AndroidDriver::start(serial.as_deref()).await?))
-            }
-            Platform::Ios => {
-                let udid = std::env::var("FASTPILOT_IOS_UDID").ok();
-                Ok(Box::new(fastpilot_ios::IosDriver::start(udid.as_deref()).await?))
-            }
+            Platform::Android => Ok(Box::new(fastpilot_android::AndroidDriver::start(self.devices.android().as_deref()).await?)),
+            Platform::Ios => Ok(Box::new(fastpilot_ios::IosDriver::start(self.devices.ios().as_deref()).await?)),
         }
     }
 }
@@ -232,8 +249,14 @@ impl FastPilot {
                 let browser = Browser::connect(args.endpoint.as_deref()).await?;
                 Box::new(browser.attach_page().await?)
             }
-            (Platform::Android, "launch") => Box::new(fastpilot_android::AndroidDriver::start(args.endpoint.as_deref()).await?),
-            (Platform::Ios, "launch") => Box::new(fastpilot_ios::IosDriver::start(args.endpoint.as_deref()).await?),
+            (Platform::Android, "launch") => {
+                let serial = args.endpoint.clone().or_else(|| self.state.launcher.devices.android());
+                Box::new(fastpilot_android::AndroidDriver::start(serial.as_deref()).await?)
+            }
+            (Platform::Ios, "launch") => {
+                let udid = args.endpoint.clone().or_else(|| self.state.launcher.devices.ios());
+                Box::new(fastpilot_ios::IosDriver::start(udid.as_deref()).await?)
+            }
             (_, "launch") => self.state.launcher.launch(platform).await?,
             (_, mode) => return Err(Error::Unsupported(format!("mode `{mode}` (launch, attach)"))),
         };
@@ -363,10 +386,15 @@ impl FastPilot {
 #[tool_router]
 impl FastPilot {
     pub fn new(web: LaunchOptions) -> Self {
+        Self::with_devices(web, Devices::default())
+    }
+
+    /// A server whose sessions default to `devices` (one test of a parallel suite).
+    pub fn with_devices(web: LaunchOptions, devices: Devices) -> Self {
         Self {
             state: Arc::new(State {
                 registry: Mutex::new(SessionRegistry::default()),
-                launcher: PlatformLauncher::new(web),
+                launcher: PlatformLauncher::with_devices(web, devices),
                 memory: Memory::from_env(),
                 runs: Mutex::new(HashMap::new()),
                 busy: Mutex::new(HashMap::new()),

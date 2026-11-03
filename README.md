@@ -321,6 +321,10 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   `--max-steps` membatasi jumlah giliran (default 30).
 - Kegagalan diulang selama `FASTPILOT_RETRY_BUDGET` (default 3) masih ada; retry yang lolos = flaky.
   Setelah `FASTPILOT_BREAKER` (default 3) kegagalan infra beruntun, sisa test dilewati sebagai infra.
+- `--workers N` menjalankan N test sekaligus. Tiap test punya Chrome sendiri; device Android dan simulator
+  iOS yang sudah boot dipinjamkan ke satu test pada satu waktu (dicek sehat saat dipinjam, device yang
+  gagal cek dikeluarkan), retry memakai device lain bila ada, dan antrean diurutkan dari durasi tercatat
+  terlama (test yang belum pernah jalan lebih dulu).
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 

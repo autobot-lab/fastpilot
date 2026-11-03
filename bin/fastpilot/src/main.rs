@@ -1,6 +1,7 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod bench;
+mod pool;
 mod report;
 mod run;
 mod stability;
@@ -20,7 +21,7 @@ commands:
                                    (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
   stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
                                      95% upper bound of the failure rate
-  run <tests dir|file.md> [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+  run <tests dir|file.md> [--workers N] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless CI: Claude drives each natural-language test case over the same tools;
           exits non-zero when a test outside quarantine fails (needs ANTHROPIC_API_KEY)
 
@@ -74,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         Some("run") => {
             let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
-                eprintln!("usage: fastpilot run <tests dir|file.md> [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]");
+                eprintln!("usage: fastpilot run <tests dir|file.md> [--workers N] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]");
                 std::process::exit(2);
             };
             let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -83,6 +84,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 max_steps: value("--max-steps").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(30).max(1),
                 junit: value("--junit").map(Into::into),
                 html: value("--html").map(Into::into),
+                workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 web,
             };
             run::run(std::path::Path::new(path), opts).await

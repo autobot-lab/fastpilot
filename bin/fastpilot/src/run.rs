@@ -9,11 +9,16 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use std::sync::{Arc, Mutex};
+
+use fastpilot_core::Platform;
 use fastpilot_llm::{Claude, MODEL_EXPLORE, MODEL_REPLAY};
-use fastpilot_mcp::FastPilot;
+use fastpilot_mcp::{Devices, FastPilot};
 use fastpilot_memory::{Breaker, Class, RetryBudget};
 use fastpilot_web::LaunchOptions;
 use serde_json::{Value, json};
+
+use crate::pool::{Device, Pool};
 
 const SYSTEM: &str = "You are fastpilot's QA agent running one test case unattended in CI. Nobody is watching and \
 nobody can answer questions: decide for yourself, and always finish.
@@ -37,6 +42,8 @@ pub struct Options {
     pub junit: Option<PathBuf>,
     pub html: Option<PathBuf>,
     pub web: LaunchOptions,
+    /// Tests run at once (each with its own Chrome and leased devices).
+    pub workers: usize,
 }
 
 /// One natural-language test case (`tests/*.md`: `# Title`, `id:`, `platform:`, steps).
@@ -61,6 +68,25 @@ impl Case {
             text,
             path: path.to_owned(),
         })
+    }
+
+    /// Platforms the test uses (`platform:` and `sessions:` lines); web when none is named.
+    pub fn platforms(&self) -> Vec<Platform> {
+        let lines: String = self
+            .text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("platform:") || l.trim_start().starts_with("sessions:"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        let mut out: Vec<Platform> = [Platform::Web, Platform::Android, Platform::Ios]
+            .into_iter()
+            .filter(|p| lines.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == p.to_string()))
+            .collect();
+        if out.is_empty() {
+            out.push(Platform::Web);
+        }
+        out
     }
 }
 
@@ -100,6 +126,8 @@ pub struct CaseResult {
     /// Tool calls and their (redacted, clipped) results, for the reports.
     pub transcript: Vec<String>,
     pub report: Option<PathBuf>,
+    /// Devices of the last attempt.
+    pub devices: Vec<String>,
 }
 
 impl CaseResult {
@@ -117,6 +145,7 @@ impl CaseResult {
             attempts: 0,
             transcript: Vec::new(),
             report: None,
+            devices: Vec::new(),
         }
     }
 }
@@ -178,9 +207,10 @@ fn request(model: &str, tools: &[Value], messages: &[Value]) -> (Value, Vec<&'st
 }
 
 /// Drive one test case to a verdict.
-async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry: bool) -> CaseResult {
+async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry: bool, devices: &[Device]) -> CaseResult {
     let started = Instant::now();
-    let fp = FastPilot::new(opts.web.clone());
+    let pick = |p: Platform| devices.iter().find(|d| d.platform == p).map(|d| d.id.clone());
+    let fp = FastPilot::with_devices(opts.web.clone(), Devices { android: pick(Platform::Android), ios: pick(Platform::Ios) });
     let hint = fp.hint(&case.id);
     let mut model = match (&opts.model, &hint) {
         (Some(m), _) => m.clone(),
@@ -190,11 +220,20 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
     let mut models = vec![model.clone()];
     let mut tools: Vec<Value> = FastPilot::api_tools().into_iter().filter(|t| t["name"] != "report").collect();
     tools.push(finish_tool());
+    let plan: Vec<String> = case
+        .platforms()
+        .iter()
+        .map(|p| match pick(*p) {
+            Some(id) => format!("{p}: device {id} (assigned; start sessions without an endpoint)"),
+            None => format!("{p}: {}", if *p == Platform::Web { "your own Chrome" } else { "default device" }),
+        })
+        .collect();
     let intro = format!(
-        "Test case `{}` (file {}):\n\n{}\n\n{}",
+        "Test case `{}` (file {}):\n\n{}\n\nSession plan: {}.\n\n{}",
         case.id,
         case.path.display(),
         fastpilot_core::to_vars(case.text.trim()),
+        plan.join("; "),
         hint.as_deref().unwrap_or("No path memory for this test yet: explore.")
     );
     let mut messages = vec![json!({ "role": "user", "content": intro })];
@@ -304,20 +343,39 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
         attempts: 1,
         transcript,
         report,
+        devices: devices.iter().map(|d| d.id.clone()).collect(),
     }
 }
 
 /// Run a test case with the suite's retry budget and breaker: a failure is rerun while the
 /// budget lasts; a rerun that passes makes the test flaky.
-pub async fn run_with_retries(case: &Case, claude: &Claude, opts: &Options, budget: &RetryBudget, breaker: &Breaker) -> CaseResult {
+/// Lease devices, run, release; `avoid` steers a retry to other devices.
+async fn attempt(case: &Case, claude: &Claude, opts: &Options, pool: &Pool, retry: bool, avoid: &[String]) -> CaseResult {
+    let devices = match pool.lease(&case.platforms(), avoid).await {
+        Ok(d) => d,
+        Err(e) => return CaseResult::skipped(case, &format!("skipped: {e}")),
+    };
+    let result = run_case(case, claude, opts, retry, &devices).await;
+    pool.release(devices);
+    result
+}
+
+pub async fn run_with_retries(
+    case: &Case,
+    claude: &Claude,
+    opts: &Options,
+    budget: &RetryBudget,
+    breaker: &Breaker,
+    pool: &Pool,
+) -> CaseResult {
     if breaker.is_open() {
         return CaseResult::skipped(case, "skipped: the infra circuit breaker is open (consecutive infra failures)");
     }
-    let mut result = run_case(case, claude, opts, false).await;
+    let mut result = attempt(case, claude, opts, pool, false, &[]).await;
     let mut attempts = 1;
-    while !result.passed && result.class != Some(Class::Agent) && budget.take() {
+    while !result.passed && result.attempts > 0 && result.class != Some(Class::Agent) && budget.take() {
         attempts += 1;
-        let mut again = run_case(case, claude, opts, true).await;
+        let mut again = attempt(case, claude, opts, pool, true, &result.devices).await;
         let earlier = std::mem::take(&mut result.transcript);
         again.transcript.splice(0..0, earlier.into_iter().chain(std::iter::once(format!("— attempt {attempts} —"))));
         again.usage.input += result.usage.input;
@@ -340,8 +398,9 @@ pub fn summary_line(r: &CaseResult) -> String {
     };
     let class = r.class.map(|c| format!(" [{}]", c.as_str())).unwrap_or_default();
     let tries = if r.attempts > 1 { format!(", {} attempts", r.attempts) } else { String::new() };
+    let on = if r.devices.is_empty() { String::new() } else { format!(" on {}", r.devices.join("+")) };
     format!(
-        "{mark} {} {:.1}s, {} turns{tries}, {}{class}: {}",
+        "{mark} {} {:.1}s, {} turns{tries}{on}, {}{class}: {}",
         r.case.id,
         r.elapsed.as_secs_f64(),
         r.turns,
@@ -359,16 +418,47 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let claude = Claude::from_env().ok_or(
         "fastpilot run needs Claude credentials: set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN; ANTHROPIC_BASE_URL for a proxy)",
     )?;
-    let budget = RetryBudget::from_env();
-    let breaker = Breaker::from_env();
+    let pool = Arc::new(Pool::discover().await);
+    let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
+    println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary());
     let started = Instant::now();
-    let mut results = Vec::new();
-    for case in &cases {
-        let r = run_with_retries(case, &claude, &opts, &budget, &breaker).await;
-        println!("{}", summary_line(&r));
-        results.push(r);
+    let queue = Arc::new(Mutex::new(order.into_iter().collect::<std::collections::VecDeque<_>>()));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::new((claude, opts.clone(), RetryBudget::from_env(), Breaker::from_env()));
+    let workers: Vec<_> = (0..opts.workers.clamp(1, cases.len()))
+        .map(|_| {
+            let (queue, results, shared, pool, cases) = (queue.clone(), results.clone(), shared.clone(), pool.clone(), cases.clone());
+            tokio::spawn(async move {
+                loop {
+                    let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
+                    let Some(i) = next else { break };
+                    let (claude, opts, budget, breaker) = &*shared;
+                    let r = run_with_retries(&cases[i], claude, opts, budget, breaker, &pool).await;
+                    println!("{}", summary_line(&r));
+                    results.lock().unwrap_or_else(|p| p.into_inner()).push((i, r));
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.await?;
     }
+    let mut results = std::mem::take(&mut *results.lock().unwrap_or_else(|p| p.into_inner()));
+    results.sort_by_key(|(i, _)| *i);
+    let results: Vec<CaseResult> = results.into_iter().map(|(_, r)| r).collect();
     finish_suite(&results, started.elapsed(), &opts)
+}
+
+/// Longest first (LPT scheduling) by the last passing duration; tests never seen first, since
+/// their cost is unknown.
+pub fn shard_order(cases: &[Case], memory: &fastpilot_memory::Memory) -> Vec<usize> {
+    let mut order: Vec<(usize, u64)> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i, memory.load(&c.id).map(|m| m.duration_ms).filter(|d| *d > 0).unwrap_or(u64::MAX)))
+        .collect();
+    order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    order.into_iter().map(|(i, _)| i).collect()
 }
 
 pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -397,4 +487,29 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
         return Err(format!("{failed} test(s) failed").into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platforms_and_longest_first_order() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-shard-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("cases")).expect("dir");
+        for (id, extra) in [("a", "platform: web"), ("b", "sessions: web (x), android (y)"), ("c", "platform: ios")] {
+            std::fs::write(dir.join(format!("cases/{id}.md")), format!("# {id}\nid: {id}\n{extra}\n- step\n")).expect("case");
+        }
+        let cases = load(&dir.join("cases")).expect("load");
+        let ids: Vec<_> = cases.iter().map(|c| (c.id.as_str(), c.platforms())).collect();
+        assert_eq!(ids, vec![("a", vec![Platform::Web]), ("b", vec![Platform::Web, Platform::Android]), ("c", vec![Platform::Ios])]);
+        let mem = fastpilot_memory::Memory::new(dir.join("fp"), fastpilot_memory::Mode::ReadWrite);
+        std::fs::create_dir_all(dir.join("fp/memory")).expect("dir");
+        for (id, ms) in [("a", 1000), ("c", 9000)] {
+            std::fs::write(dir.join(format!("fp/memory/{id}.json")), json!({ "test_id": id, "flow": "", "start": "", "screens": [], "duration_ms": ms, "pass_count": 1, "fail_count": 0, "last_pass": "", "failed_at": [] }).to_string()).expect("mem");
+        }
+        // b has no recorded duration (unknown: first), then c (9 s), then a (1 s).
+        assert_eq!(shard_order(&cases, &mem), vec![1, 2, 0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

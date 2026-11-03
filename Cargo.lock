@@ -248,6 +248,7 @@ dependencies = [
  "base64 0.22.1",
  "fastpilot-android",
  "fastpilot-core",
+ "fastpilot-ios",
  "fastpilot-llm",
  "fastpilot-mcp",
  "fastpilot-memory",
