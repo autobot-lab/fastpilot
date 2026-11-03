@@ -220,18 +220,36 @@ public class Agent extends Instrumentation {
         }
     }
 
-    private void touch(long down, long now, int action, float x, float y) {
+    private void touch(long down, long now, int action, float x, float y) throws InterruptedException {
         MotionEvent e = MotionEvent.obtain(down, now, action, x, y, 0);
         e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         // Only the final event waits for dispatch; earlier ones queue in order (halves tap latency).
-        boolean ok = ui.injectInputEvent(e, action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_MOVE);
-        e.recycle();
-        if (!ok) throw new IllegalStateException("inject motion failed");
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            boolean ok = ui.injectInputEvent(e, false);
+            e.recycle();
+            if (!ok) throw new IllegalStateException("inject motion failed");
+        } else {
+            injectBounded(e, "motion");
+        }
     }
 
-    private void key(KeyEvent e) {
+    private void key(KeyEvent e) throws InterruptedException {
         e.setSource(InputDevice.SOURCE_KEYBOARD);
-        if (!ui.injectInputEvent(e, true)) throw new IllegalStateException("inject key failed");
+        injectBounded(e, "key");
+    }
+
+    /**
+     * Synchronous injection, but never blocks the agent for more than 3 s: a hung app (ANR in
+     * the making) keeps the event queued while snapshots go on, so the ANR dialog can be seen.
+     */
+    private void injectBounded(android.view.InputEvent e, String what) throws InterruptedException {
+        final boolean[] ok = {true};
+        Thread t = new Thread(() -> ok[0] = ui.injectInputEvent(e, true));
+        t.start();
+        t.join(3000);
+        if (t.isAlive()) return; // still queued behind a busy main thread
+        if (e instanceof MotionEvent) ((MotionEvent) e).recycle();
+        if (!ok[0]) throw new IllegalStateException("inject " + what + " failed");
     }
 
     private void snapshot(JSONObject r) throws Exception {
@@ -246,6 +264,11 @@ public class Agent extends Instrumentation {
         // (e.g. ANR / "android" package alerts); skip status bar, nav bar and IME.
         for (AccessibilityWindowInfo w : windows) {
             int type = w.getType();
+            // The soft keyboard: the host hides it when it covers a tap target.
+            if (type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                w.getBoundsInScreen(RECT);
+                r.put("ime", new JSONArray().put(RECT.left).put(RECT.top).put(RECT.right).put(RECT.bottom));
+            }
             // Top-most app window title = activity label, used as the screen name.
             if (type == AccessibilityWindowInfo.TYPE_APPLICATION && title.isEmpty() && w.getTitle() != null) {
                 title = w.getTitle().toString();
@@ -258,6 +281,9 @@ public class Agent extends Instrumentation {
                     if (type == AccessibilityWindowInfo.TYPE_APPLICATION || !systemUi) {
                         JSONObject n = node(root);
                         if (n != null) {
+                            // Window owner: tells the host a permission prompt or crash/ANR
+                            // dialog ("android") apart from the app under test.
+                            if (p != null) n.put("pkg", p.toString());
                             nodes.put(n);
                             any = true;
                         }

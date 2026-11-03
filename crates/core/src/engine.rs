@@ -351,11 +351,18 @@ pub async fn run_flow(
     let failed = records.iter().find(|r| r.error.is_some());
     let mut candidates = Vec::new();
     let mut states = Vec::new();
+    let mut root_cause = None;
     for (sid, base) in &baselines {
         let Ok(d) = reg.get(sid) else { continue };
         let snap = match d.snapshot().await {
             Ok(s) => s,
             Err(e) => {
+                // The app died or hung: that, not the timeout it caused, is why the step failed.
+                if matches!(e, Error::AppCrashed(_) | Error::AppNotResponding(_))
+                    && let Some(f) = failed.filter(|f| f.session.as_deref() == Some(sid.as_str()))
+                {
+                    root_cause = Some((f.index, e.clone()));
+                }
                 states.push(format!("[{sid}] snapshot failed: {}: {e}", e.reason()));
                 continue;
             }
@@ -380,6 +387,11 @@ pub async fn run_flow(
             }
         }
         states.push(block);
+    }
+    if let Some((index, e)) = root_cause
+        && let Some(r) = records.iter_mut().find(|r| r.index == index && r.error.is_some())
+    {
+        r.error = Some(e);
     }
     FlowReport {
         total: leaf_count(&flow.steps),

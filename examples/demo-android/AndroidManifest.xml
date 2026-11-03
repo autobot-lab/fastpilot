@@ -3,10 +3,12 @@
     package="com.fastpilot.demo"
     android:versionCode="1"
     android:versionName="1">
+    <uses-permission android:name="android.permission.CAMERA" />
     <application android:label="fastpilot demo" android:theme="@android:style/Theme.Material.Light.DarkActionBar">
         <!-- All activities live in Demo.java as nested classes; aliases give them the short names
              used by the host (`am start -n com.fastpilot.demo/.LoginActivity`). -->
-        <activity android:name=".Demo$LoginActivity" android:label="Login" android:exported="true" />
+        <activity android:name=".Demo$LoginActivity" android:label="Login" android:exported="true"
+            android:windowSoftInputMode="adjustPan" />
         <activity android:name=".Demo$DashboardActivity" android:label="Dashboard" android:exported="false" />
         <activity android:name=".Demo$PayActivity" android:label="Pembayaran" android:exported="false" />
         <activity-alias android:name=".LoginActivity" android:targetActivity=".Demo$LoginActivity"

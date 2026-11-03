@@ -535,3 +535,9 @@ Status: Phase 1–5 terimplementasi. Phase 6 tetap roadmap. Penyimpangan dari dr
 | §9.2 diff | di Phase 3 | sejak Phase 1; full snapshot hanya jika URL/lokasi berubah | `run_flow` perlu state per sesi |
 | §11.1 DSL | — | tambahan `assertNotVisible`, `swipe`, `pressKey`, `selectOption`, `uploadFile`, `launchApp`, `session.reset` | kebutuhan QA umum |
 | G6 | ≥99% dari 20 run | metrik pass^k + flake rate | 20/20 hanya membuktikan failure rate <15% (95% CI); klaim 99% butuh ±300 run |
+
+### 21.1 Iterasi lanjutan (2026-11-03): 12 gap dari PRD dan riset
+
+| # | Fitur | Implementasi | Verifikasi |
+|---|---|---|---|
+| 1 | Dialog sistem mobile (§11.2 aturan 6) | Android: agent melaporkan paket pemilik tiap window dan kotak IME; host mengenali prompt izin (`permissioncontroller`, id `permission_*_button`), dialog crash (`android:id/aerr_close`) dan ANR (`aerr_wait`) dari resource id, jadi tidak bergantung bahasa. Crash tanpa dialog dikenali dari `logcat -b crash` setelah tiap input. iOS: runner menyertakan alert SpringBoard (`system: true`) dan `state` aplikasi; `notRunning` = crash. Prompt izin yang tidak ditarget step dijawab sesuai `FASTPILOT_PERMISSIONS` (`deny` default / `allow` / `keep`); keyboard yang menutupi target disembunyikan; error terstruktur `app_crashed` / `app_not_responding`. Injeksi input sinkron di agent dibatasi 3 s supaya ANR bisa terlihat. iOS tidak punya ANR (watchdog membunuh app → terlapor sebagai crash). | e2e emulator API 35 (keyboard, izin, crash, ANR) dan simulator iOS 18.1 (alert lokasi, crash) |

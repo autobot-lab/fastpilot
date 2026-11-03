@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
-use fastpilot_android::Agent;
+use fastpilot_android::{Agent, Policy};
 use fastpilot_core::{Direction, Driver, Error as CoreError, Intent, Node, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -93,12 +93,84 @@ fn xctestrun() -> Option<PathBuf> {
         .find(|p| p.extension().is_some_and(|x| x == "xctestrun"))
 }
 
+/// A SpringBoard alert over the app (permission prompts and the like), PRD §11.2 rule 6.
+#[derive(Debug, Default)]
+struct Alert {
+    text: String,
+    buttons: Vec<(String, Point)>,
+    boxes: Vec<Rect>,
+}
+
+fn frame(v: &Value) -> Option<Rect> {
+    let b = v["frame"].as_array()?;
+    let n = |i: usize| b.get(i).and_then(Value::as_f64).unwrap_or(0.0);
+    Some(Rect { x: n(0), y: n(1), w: n(2), h: n(3) })
+}
+
+fn walk_alert(v: &Value, a: &mut Alert) {
+    if let Some(f) = frame(v) {
+        a.boxes.push(f);
+        match s(v, "type") {
+            "button" => a.buttons.push((s(v, "label").to_owned(), f.center())),
+            "staticText" if !s(v, "label").is_empty() => {
+                if !a.text.is_empty() {
+                    a.text.push_str(" / ");
+                }
+                a.text.push_str(s(v, "label"));
+            }
+            _ => {}
+        }
+    }
+    for c in v["children"].as_array().into_iter().flatten() {
+        walk_alert(c, a);
+    }
+}
+
+fn system_alert(snapshot: &Value) -> Option<Alert> {
+    let root = snapshot["nodes"].as_array()?.iter().find(|n| n["system"].as_bool() == Some(true))?;
+    let mut a = Alert::default();
+    walk_alert(root, &mut a);
+    Some(a)
+}
+
+impl Alert {
+    /// Labels are localized; English ones first, then the usual position (deny is the
+    /// "Don't …" / "Not Now" button).
+    fn dismiss(&self, policy: Policy) -> Option<Point> {
+        let find = |pred: &dyn Fn(&str) -> bool| self.buttons.iter().find(|(l, _)| pred(l)).map(|(_, p)| *p);
+        match policy {
+            Policy::Keep => None,
+            Policy::Deny => find(&|l| l.starts_with("Don") || l.starts_with("Not Now") || l.starts_with("Ask App Not")),
+            Policy::Allow => ["Allow While Using App", "Allow", "OK", "Allow Once"].iter().find_map(|w| find(&|l| l == *w)),
+        }
+    }
+
+    fn owns(&self, b: &Rect) -> bool {
+        self.boxes.iter().any(|x| x == b)
+    }
+}
+
+fn keyboard(v: &Value) -> Option<Rect> {
+    if s(v, "type") == "keyboard" {
+        return frame(v);
+    }
+    v.get("children")
+        .or_else(|| v.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find_map(keyboard)
+}
+
 pub struct IosDriver {
     udid: String,
     agent: std::sync::Arc<Agent>,
     size: (f64, f64),
+    /// App under test (open/launchApp); a crash shows up as it no longer running.
     bundle: Mutex<String>,
     refs: Mutex<RefRegistry>,
+    policy: Policy,
+    notes: Mutex<Vec<String>>,
     _runner: Child,
 }
 
@@ -153,7 +225,68 @@ impl IosDriver {
         let agent = std::sync::Arc::new(Agent::connect(port).await?);
         let hello = agent.call("hello", json!({})).await?;
         let size = (hello["width"].as_f64().unwrap_or(390.0), hello["height"].as_f64().unwrap_or(844.0));
-        Ok(Self { udid, agent, size, bundle: Mutex::new(String::new()), refs: Mutex::default(), _runner: child })
+        Ok(Self {
+            udid,
+            agent,
+            size,
+            bundle: Mutex::new(String::new()),
+            refs: Mutex::default(),
+            policy: Policy::from_env(),
+            notes: Mutex::default(),
+            _runner: child,
+        })
+    }
+
+    fn note(&self, text: String) {
+        tracing::info!("{text}");
+        let mut n = lock(&self.notes);
+        n.push(text);
+        let extra = n.len().saturating_sub(20);
+        n.drain(..extra);
+    }
+
+    /// Raw runner snapshot plus the core snapshot; `app_crashed` when the app under test died.
+    async fn screen(&self) -> Result<(Value, Snapshot)> {
+        let v = self.call("snapshot", json!({})).await?;
+        let bundle = s(&v, "bundleId").to_owned();
+        // XCUIApplication.State.notRunning
+        if v["state"].as_i64() == Some(1) && *lock(&self.bundle) == bundle && !bundle.is_empty() {
+            lock(&self.bundle).clear();
+            return Err(CoreError::AppCrashed(format!("{bundle} is no longer running (crashed)")));
+        }
+        let roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().filter_map(convert).collect();
+        let title = if s(&v, "title").is_empty() { bundle.clone() } else { s(&v, "title").to_owned() };
+        let snap = Snapshot::build(title, format!("ios, {bundle}"), roots, &mut lock(&self.refs));
+        Ok((v, snap))
+    }
+
+    /// Like the Android driver: clear an unrelated permission alert or a covering keyboard first.
+    async fn target(&self, sel: &Selector, intent: Intent) -> Result<Node> {
+        for _ in 0..3 {
+            let (raw, snap) = self.screen().await?;
+            let node = snap.resolve(sel, intent).map(|e| e.node.clone());
+            if let Some(a) = system_alert(&raw) {
+                let ours = node.as_ref().is_ok_and(|n| n.bounds.is_some_and(|b| a.owns(&b)));
+                if let (false, Some(p)) = (ours, a.dismiss(self.policy)) {
+                    self.note(format!("system alert {:?} dismissed ({:?}) before {sel}", a.text, self.policy));
+                    self.tap_at(p).await?;
+                    continue;
+                }
+            }
+            let kb = keyboard(&raw);
+            let covered = match (&node, kb) {
+                (Err(CoreError::NotFound(_)), Some(_)) => true,
+                (Ok(n), Some(k)) => n.bounds.is_some_and(|b| k.contains(b.center())),
+                _ => false,
+            };
+            if covered {
+                self.note(format!("keyboard covered {sel}; hidden"));
+                self.call("hideKeyboard", json!({})).await?;
+                continue;
+            }
+            return node;
+        }
+        Ok(self.snapshot().await?.resolve(sel, intent)?.node.clone())
     }
 
     async fn call(&self, cmd: &str, args: Value) -> Result<Value> {
@@ -161,7 +294,7 @@ impl IosDriver {
     }
 
     async fn resolve(&self, sel: &Selector, intent: Intent) -> Result<Node> {
-        Ok(self.snapshot().await?.resolve(sel, intent)?.node.clone())
+        self.target(sel, intent).await
     }
 
     async fn tap_at(&self, p: Point) -> Result<()> {
@@ -270,12 +403,11 @@ impl Driver for IosDriver {
     }
 
     async fn snapshot(&self) -> Result<Snapshot> {
-        let v = self.call("snapshot", json!({})).await?;
-        let bundle = s(&v, "bundleId").to_owned();
-        let roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().filter_map(convert).collect();
-        let title = if s(&v, "title").is_empty() { bundle.clone() } else { s(&v, "title").to_owned() };
-        let mut refs = lock(&self.refs);
-        Ok(Snapshot::build(title, format!("ios, {bundle}"), roots, &mut refs))
+        Ok(self.screen().await?.1)
+    }
+
+    async fn diagnostics(&self) -> Vec<String> {
+        lock(&self.notes).clone()
     }
 
     async fn tap(&self, sel: &Selector) -> Result<()> {
@@ -377,6 +509,18 @@ mod tests {
             { "type": "button", "label": "Masuk", "frame": [20, 350, 353, 44], "enabled": true },
             { "type": "keyboard", "frame": [0, 500, 393, 300], "children": [{ "type": "key", "label": "q" }] }
         ]});
+        assert_eq!(keyboard(&json!({ "nodes": [v.clone()] })), Some(Rect { x: 0.0, y: 500.0, w: 393.0, h: 300.0 }));
+        let alert = json!({ "nodes": [v.clone(), { "type": "alert", "system": true, "label": "Allow?", "frame": [40, 300, 300, 200], "enabled": true, "children": [
+            { "type": "staticText", "label": "Allow “Demo” to use your location?", "frame": [50, 310, 280, 40] },
+            { "type": "button", "label": "Allow Once", "frame": [40, 400, 300, 40], "enabled": true },
+            { "type": "button", "label": "Allow While Using App", "frame": [40, 440, 300, 40], "enabled": true },
+            { "type": "button", "label": "Don’t Allow", "frame": [40, 480, 300, 40], "enabled": true }
+        ]}]});
+        let a = system_alert(&alert).expect("alert");
+        assert!(a.text.starts_with("Allow “Demo”"), "{}", a.text);
+        assert_eq!(a.dismiss(Policy::Deny), Some(Point { x: 190.0, y: 500.0 }));
+        assert_eq!(a.dismiss(Policy::Allow), Some(Point { x: 190.0, y: 460.0 }));
+        assert!(system_alert(&json!({ "nodes": [v.clone()] })).is_none());
         let mut refs = RefRegistry::default();
         let snap = Snapshot::build("Login", "ios, com.fastpilot.demo", convert(&v).into_iter().collect(), &mut refs);
         assert_eq!(

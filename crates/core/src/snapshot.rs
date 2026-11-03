@@ -30,6 +30,10 @@ impl Rect {
     pub fn center(&self) -> crate::Point {
         crate::Point { x: self.x + self.w / 2.0, y: self.y + self.h / 2.0 }
     }
+
+    pub fn contains(&self, p: crate::Point) -> bool {
+        p.x >= self.x && p.x < self.x + self.w && p.y >= self.y && p.y < self.y + self.h
+    }
 }
 
 /// Raw node as produced by a driver. Drivers drop invisible nodes and map roles onto the

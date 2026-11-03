@@ -1,3 +1,4 @@
+import CoreLocation
 import UIKit
 
 // iOS twin of examples/demo/login.html (built by ios-runner/FastpilotRunner.xcodeproj, target FastpilotDemo).
@@ -100,14 +101,23 @@ final class LoginViewController: UIViewController {
 }
 
 final class DashboardViewController: UIViewController {
+    private let location = CLLocationManager()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Dashboard"
         let logout = button("Keluar")
         logout.addTarget(self, action: #selector(back), for: .touchUpInside)
+        // System-dialog fixtures: SpringBoard permission alert, crash.
+        let ask = button("Izin lokasi")
+        ask.addTarget(self, action: #selector(askLocation), for: .touchUpInside)
+        let crash = button("Crash")
+        crash.addTarget(self, action: #selector(die), for: .touchUpInside)
         stack([label("Dashboard", font: .preferredFont(forTextStyle: .title1)),
-               label("Selamat datang, Budi"), logout], in: self)
+               label("Selamat datang, Budi"), logout, ask, crash], in: self)
     }
 
     @objc private func back() { navigationController?.popViewController(animated: true) }
+    @objc private func askLocation() { location.requestWhenInUseAuthorization() }
+    @objc private func die() { fatalError("demo crash") }
 }

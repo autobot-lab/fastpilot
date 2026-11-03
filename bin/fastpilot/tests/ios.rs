@@ -59,5 +59,18 @@ async fn ios_login_over_mcp() {
     assert!(out.contains("(ios, com.fastpilot.demo)") && !out.contains("rahasia123"), "{out}");
     let (ok, out) = call(&client, "screenshot", json!({ "session": "ios1" })).await;
     assert!(ok, "{out}");
+
+    // System dialogs (PRD §11.2 rule 6): an unrelated SpringBoard permission alert is denied
+    // before the next tap; a crash fails with app_crashed.
+    let _ = std::process::Command::new("xcrun").args(["simctl", "privacy", "booted", "reset", "location", "com.fastpilot.demo"]).output();
+    let login = "- launchApp: com.fastpilot.demo\n- inputText: { into: \"Email\", text: \"a@b.com\" }\n- inputText: { into: \"Password\", text: \"${DEMO_PASS}\" }\n- tapOn: \"Masuk\"\n- assertVisible: \"Selamat datang, Budi\"\n";
+    let flow = format!("{login}- tapOn: \"Izin lokasi\"\n- assertVisible: {{ role: dialog }}\n- tapOn: \"Keluar\"\n- assertVisible: \"Masuk ke Akun\"\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    let flow = format!("{login}- tapOn: \"Crash\"\n- assertVisible: {{ text: \"Tidak ada\", timeout: 10000 }}\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(!ok && out.contains("app_crashed"), "{out}");
     client.cancel().await.expect("shutdown");
 }

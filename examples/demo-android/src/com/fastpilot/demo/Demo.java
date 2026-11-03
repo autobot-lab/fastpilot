@@ -65,8 +65,12 @@ public final class Demo {
             error.setTextColor(0xFFB00020);
             error.setVisibility(View.GONE);
             l.addView(error);
+            // Pinned to the bottom (window pans, not resizes): the soft keyboard covers it,
+            // which exercises the driver's hide-keyboard-before-tap.
+            View spacer = new View(this);
+            l.addView(spacer, new LinearLayout.LayoutParams(1, 0, 1f));
             TextView forgot = text(this, "Lupa password?", 16);
-            forgot.setOnClickListener(v -> {});
+            forgot.setOnClickListener(v -> forgot.setText("Cek email Anda"));
             l.addView(forgot);
             // Simulated network latency, so flows exercise auto-wait instead of sleeping.
             submit.setOnClickListener(v -> {
@@ -101,6 +105,18 @@ public final class Demo {
             Button logout = button(this, "Keluar");
             logout.setOnClickListener(v -> finish());
             l.addView(logout);
+            // System-dialog fixtures: runtime permission prompt, crash, ANR (main thread blocked).
+            Button camera = button(this, "Izin kamera");
+            camera.setOnClickListener(v -> requestPermissions(new String[] {android.Manifest.permission.CAMERA}, 1));
+            l.addView(camera);
+            Button crash = button(this, "Crash");
+            crash.setOnClickListener(v -> {
+                throw new IllegalStateException("demo crash");
+            });
+            l.addView(crash);
+            Button freeze = button(this, "Freeze");
+            freeze.setOnClickListener(v -> android.os.SystemClock.sleep(30000));
+            l.addView(freeze);
             setContentView(l);
         }
     }

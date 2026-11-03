@@ -148,4 +148,14 @@ Every failure also has a category: `app` (screen not as expected: product bug or
 | assertion_failed | assert tool: property did not hold | compare text in the returned snapshot |
 | invalid_flow | bad YAML or step | run check_flow |
 | driver_error | CDP/browser failure (e.g. Chrome exited, navigation error) | restart the session |
+| app_crashed | the app under test died (crash dialog, or its process is gone) | product bug: report it; `launchApp` to continue |
+| app_not_responding | Android ANR dialog: the app's main thread is blocked | product bug: report it |
+
+System dialogs (android, ios) are handled before tapOn/inputText:
+- A runtime permission prompt (Android permission controller, iOS SpringBoard alert) that the step
+  does not target is answered per `FASTPILOT_PERMISSIONS`: `deny` (default), `allow`, `keep`.
+  To answer it yourself, target its button (`tapOn: "Allow"`, `{ id: permission_allow_button }`).
+- A soft keyboard covering the target is hidden first.
+- Crash and ANR dialogs are closed after being reported, so the device recovers.
+What was handled shows up under "recent errors" when a step fails.
 "#;

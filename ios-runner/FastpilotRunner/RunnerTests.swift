@@ -172,6 +172,8 @@ final class RunnerTests: XCTestCase {
                 throw ProtocolError(message: "jpeg encoding failed")
             }
             return ["jpeg": jpeg.base64EncodedString()]
+        case "hideKeyboard":
+            return ["hidden": hideKeyboard()]
         case "idle":
             // XCUI waits for app quiescence after every action; nothing extra to do.
             return ["idle": true]
@@ -181,6 +183,27 @@ final class RunnerTests: XCTestCase {
         default:
             throw ProtocolError(message: "unknown cmd '\(cmd)'")
         }
+    }
+
+    /// Keyboard dismissal without a universal API: an accessory "Hide keyboard"/"Done" button,
+    /// else a downward drag just above the keyboard (scroll views dismiss on drag), else Return.
+    private func hideKeyboard() -> Bool {
+        let a = current()
+        let kb = a.keyboards.firstMatch
+        guard kb.exists else { return false }
+        for name in ["Hide keyboard", "Done", "Selesai"] {
+            let b = a.buttons[name]
+            if b.exists && b.isHittable {
+                b.tap()
+                return !kb.exists
+            }
+        }
+        let top = kb.frame.minY
+        point(a.frame.midX, top - 40).press(forDuration: 0.05, thenDragTo: point(a.frame.midX, top + 80))
+        if kb.exists, let f = try? focusedField() {
+            f.typeText("\n")
+        }
+        return !kb.exists
     }
 
     private func current() -> XCUIApplication {
@@ -202,6 +225,10 @@ final class RunnerTests: XCTestCase {
 
     private func snapshot() throws -> [String: Any] {
         let a = current()
+        // A crashed app is `notRunning`: report it instead of snapshotting nothing.
+        if appId != "com.apple.springboard" && a.state == .notRunning {
+            return ["bundleId": appId, "title": "", "state": Int(a.state.rawValue), "nodes": []]
+        }
         let root = try a.snapshot()
         let screen = root.frame // the application element spans the screen
         var title = ""
@@ -214,9 +241,22 @@ final class RunnerTests: XCTestCase {
         }
         _ = find(root)
         var budget = 2000
+        var nodes = convert(root, screen, 0, &budget)
+        // Permission prompts and other system alerts belong to SpringBoard, not the app.
+        if appId != "com.apple.springboard" {
+            let alert = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
+            if alert.exists, let snap = try? alert.snapshot() {
+                var b = 200
+                for var n in convert(snap, screen, 0, &b) {
+                    n["system"] = true
+                    nodes.append(n)
+                }
+            }
+        }
         return ["bundleId": appId,
                 "title": title,
-                "nodes": convert(root, screen, 0, &budget)]
+                "state": Int(a.state.rawValue),
+                "nodes": nodes]
     }
 
     /// Returns the node, or (for an offscreen/zero-size node) its visible children promoted in its place.

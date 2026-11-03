@@ -29,6 +29,12 @@ pub enum Error {
     /// Transport/protocol failure inside a driver (CDP, adb, WDA).
     #[error("{0}")]
     Driver(String),
+    /// The app under test died (crash dialog, process gone).
+    #[error("{0}")]
+    AppCrashed(String),
+    /// The app's main thread stopped responding (Android ANR dialog).
+    #[error("{0}")]
+    AppNotResponding(String),
 }
 
 impl Error {
@@ -46,6 +52,8 @@ impl Error {
             Self::Session(_) => "session",
             Self::Flow(_) => "invalid_flow",
             Self::Driver(_) => "driver_error",
+            Self::AppCrashed(_) => "app_crashed",
+            Self::AppNotResponding(_) => "app_not_responding",
         }
     }
 
@@ -59,7 +67,9 @@ impl Error {
             | Self::NotActionable(_)
             | Self::Timeout(_)
             | Self::Script(_)
-            | Self::Assertion(_) => "app",
+            | Self::Assertion(_)
+            | Self::AppCrashed(_)
+            | Self::AppNotResponding(_) => "app",
             Self::Transient(_) | Self::Driver(_) | Self::Session(_) => "infra",
             Self::Flow(_) | Self::Unsupported(_) => "flow",
         }

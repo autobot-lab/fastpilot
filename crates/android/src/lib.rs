@@ -4,6 +4,7 @@
 
 mod adb;
 mod agent;
+mod system;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -17,6 +18,8 @@ use tokio::net::TcpStream;
 
 pub use adb::Adb;
 pub use agent::Agent;
+pub use system::Policy;
+use system::Kind;
 
 const AGENT_APK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fastpilot-agent.apk"));
 const AGENT_PKG: &str = "com.fastpilot.agent";
@@ -124,6 +127,12 @@ pub struct AndroidDriver {
     /// The screen was seen idle after the last action (tap verification), so the engine's
     /// post-action settle can skip a second idle wait.
     settled: std::sync::atomic::AtomicBool,
+    /// Package of the app under test (set by open/launchApp), to detect it crashing.
+    app: Mutex<Option<String>>,
+    check_crash: std::sync::atomic::AtomicBool,
+    policy: Policy,
+    /// System dialogs handled on the flow's behalf, newest last (reported with failures).
+    notes: Mutex<Vec<String>>,
 }
 
 impl AndroidDriver {
@@ -177,7 +186,132 @@ impl AndroidDriver {
             refs: Mutex::default(),
             web: tokio::sync::Mutex::new(None),
             settled: std::sync::atomic::AtomicBool::new(false),
+            app: Mutex::new(None),
+            check_crash: std::sync::atomic::AtomicBool::new(false),
+            policy: Policy::from_env(),
+            notes: Mutex::default(),
         })
+    }
+
+    /// Input was sent: the next idle wait must really wait, and the next snapshot checks
+    /// whether the app crashed meanwhile.
+    fn acted(&self) {
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.check_crash.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn note(&self, text: String) {
+        tracing::info!("{text}");
+        let mut n = lock(&self.notes);
+        n.push(text);
+        let extra = n.len().saturating_sub(20);
+        n.drain(..extra);
+    }
+
+    /// Raw agent snapshot plus the core snapshot. A crash or ANR of the app under test fails
+    /// with `app_crashed` / `app_not_responding` (the dialog is closed so the device recovers).
+    async fn screen(&self) -> Result<(Value, Snapshot)> {
+        let v = self.agent.call("snapshot", json!({})).await?;
+        let dialog = system::dialog(&v);
+        if let Some(d) = dialog.as_ref().filter(|d| d.kind != Kind::Permission) {
+            if let Some(p) = d.dismiss(self.policy) {
+                let _ = self.tap_at(p).await;
+            }
+            *lock(&self.app) = None;
+            return Err(match d.kind {
+                Kind::Anr => CoreError::AppNotResponding(format!("{} (dialog closed)", d.text)),
+                _ => CoreError::AppCrashed(format!("{} (dialog closed)", d.text)),
+            });
+        }
+        let pkg = s(&v, "package").to_owned();
+        let app = lock(&self.app).clone();
+        let acted = self.check_crash.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(app) = app.filter(|a| (acted || *a != pkg) && dialog.is_none()) {
+            // Recent Android versions close (and may restart) a crashed app without a dialog.
+            let log = self.shell("logcat -b crash -d").await.unwrap_or_default();
+            if let Some(why) = system::crash_in_log(&log, &app) {
+                let _ = self.shell("logcat -b crash -c").await;
+                *lock(&self.app) = None;
+                return Err(CoreError::AppCrashed(format!("{app} crashed: {why}")));
+            }
+        }
+        let snap = self.build(&v, &pkg).await;
+        Ok((v, snap))
+    }
+
+    async fn build(&self, v: &Value, pkg: &str) -> Snapshot {
+        let mut roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().map(convert).collect();
+        if let Some(wv) = find_webview(&mut roots) {
+            let mut slot = self.web.lock().await;
+            if let Some(page) = self.webview(pkg, &mut slot).await {
+                match page.raw_nodes().await {
+                    // Web nodes keep their CDP handles: actions on them go through CDP.
+                    Ok((_, _, nodes)) => wv.children = nodes,
+                    Err(_) => *slot = None,
+                }
+            }
+        }
+        let title = if s(v, "title").is_empty() { pkg.to_owned() } else { s(v, "title").to_owned() };
+        let mut refs = lock(&self.refs);
+        Snapshot::build(title, format!("android, {pkg}"), roots, &mut refs)
+    }
+
+    /// Resolve a tap/type target, first clearing what stands in its way: a permission prompt
+    /// the target is not part of (per `FASTPILOT_PERMISSIONS`), or the keyboard covering it.
+    async fn target(&self, sel: &Selector, intent: Intent) -> Result<(Snapshot, Node)> {
+        for _ in 0..3 {
+            let (raw, snap) = self.screen().await?;
+            let node = snap.resolve(sel, intent).map(|e| e.node.clone());
+            if let Some(d) = system::dialog(&raw) {
+                let ours = node.as_ref().is_ok_and(|n| n.bounds.is_some_and(|b| d.owns(&b)));
+                if let (false, Some(p)) = (ours, d.dismiss(self.policy)) {
+                    self.note(format!("permission prompt {:?} dismissed ({:?}) before {sel}", d.text, self.policy));
+                    self.tap_at(p).await?;
+                    let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
+                    continue;
+                }
+            }
+            // A target under the keyboard may also drop out of the tree (not visible to user).
+            let ime = system::ime(&raw);
+            if ime.is_some() && matches!(node, Err(CoreError::NotFound(_))) {
+                self.note(format!("{sel} not on screen with the keyboard up; keyboard hidden"));
+                self.hide_keyboard().await?;
+                continue;
+            }
+            let node = node?;
+            if let (Some(ime), Some(b)) = (ime, node.bounds)
+                && ime.contains(b.center())
+            {
+                self.note(format!("keyboard covered {sel}; hidden"));
+                self.hide_keyboard().await?;
+                continue;
+            }
+            return Ok((snap, node));
+        }
+        let snap = self.snapshot().await?;
+        let node = snap.resolve(sel, intent)?.node.clone();
+        Ok((snap, node))
+    }
+
+    /// Back closes the IME without navigating; only sent while the keyboard is up.
+    async fn hide_keyboard(&self) -> Result<()> {
+        let v = self.agent.call("snapshot", json!({})).await?;
+        if system::ime(&v).is_some() {
+            self.acted();
+            self.agent.call("key", json!({ "code": 4 })).await?;
+            let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
+        }
+        Ok(())
+    }
+
+    /// The app under test is `pkg` from now on; forget crashes of earlier runs.
+    async fn track(&self, target: &str) {
+        if target.contains("://") {
+            return;
+        }
+        let pkg = target.split('/').next().unwrap_or(target).to_owned();
+        let _ = self.shell("logcat -b crash -c").await;
+        *lock(&self.app) = Some(pkg);
     }
 
     async fn shell(&self, cmd: &str) -> Result<String> {
@@ -217,12 +351,11 @@ impl AndroidDriver {
     }
 
     async fn resolve(&self, sel: &Selector, intent: Intent) -> Result<Node> {
-        let snap = self.snapshot().await?;
-        Ok(snap.resolve(sel, intent)?.node.clone())
+        Ok(self.target(sel, intent).await?.1)
     }
 
     async fn tap_at(&self, p: Point) -> Result<()> {
-        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.acted();
         self.agent.call("tap", json!({ "x": p.x, "y": p.y })).await?;
         Ok(())
     }
@@ -379,34 +512,19 @@ impl Driver for AndroidDriver {
         if out.contains("Error") {
             return Err(CoreError::Driver(out.trim().to_owned()));
         }
+        self.track(target).await;
         Ok(())
     }
 
     async fn snapshot(&self) -> Result<Snapshot> {
-        let v = self.agent.call("snapshot", json!({})).await?;
-        let pkg = s(&v, "package").to_owned();
-        let mut roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().map(convert).collect();
-        if let Some(wv) = find_webview(&mut roots) {
-            let mut slot = self.web.lock().await;
-            if let Some(page) = self.webview(&pkg, &mut slot).await {
-                match page.raw_nodes().await {
-                    // Web nodes keep their CDP handles: actions on them go through CDP.
-                    Ok((_, _, nodes)) => wv.children = nodes,
-                    Err(_) => *slot = None,
-                }
-            }
-        }
-        let title = if s(&v, "title").is_empty() { pkg.clone() } else { s(&v, "title").to_owned() };
-        let mut refs = lock(&self.refs);
-        Ok(Snapshot::build(title, format!("android, {pkg}"), roots, &mut refs))
+        Ok(self.screen().await?.1)
     }
 
     async fn tap(&self, sel: &Selector) -> Result<()> {
         if let Selector::Point(p) = sel {
             return self.tap_at(*p).await;
         }
-        let snap = self.snapshot().await?;
-        let node = snap.resolve(sel, Intent::Tap)?.node.clone();
+        let (snap, node) = self.target(sel, Intent::Tap).await?;
         if let Some(h) = node.handle {
             return self.web_page().await?.tap_handle(h).await;
         }
@@ -416,7 +534,11 @@ impl Driver for AndroidDriver {
         // likely swallowed by an animation or a re-layout; retry it once.
         let idle = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 800 })).await;
         let before = snap.render(None, usize::MAX);
-        if self.snapshot().await.is_ok_and(|after| after.render(None, usize::MAX) == before) {
+        let after = match self.snapshot().await {
+            Err(e @ (CoreError::AppCrashed(_) | CoreError::AppNotResponding(_))) => return Err(e),
+            other => other,
+        };
+        if after.is_ok_and(|after| after.render(None, usize::MAX) == before) {
             tracing::debug!(%sel, "tap had no visible effect; retrying once");
             self.tap_at(p).await?;
         } else if idle.is_ok_and(|v| v["idle"].as_bool() == Some(true)) {
@@ -439,7 +561,7 @@ impl Driver for AndroidDriver {
                 }
             }
         }
-        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.acted();
         self.agent.call("text", json!({ "text": text })).await?;
         Ok(())
     }
@@ -462,13 +584,13 @@ impl Driver for AndroidDriver {
     }
 
     async fn swipe(&self, from: Point, to: Point) -> Result<()> {
-        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.acted();
         self.agent.call("swipe", json!({ "x1": from.x, "y1": from.y, "x2": to.x, "y2": to.y, "ms": 300 })).await?;
         Ok(())
     }
 
     async fn back(&self) -> Result<()> {
-        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.acted();
         self.agent.call("key", json!({ "code": 4 })).await?;
         Ok(())
     }
@@ -498,8 +620,12 @@ impl Driver for AndroidDriver {
         self.web_page().await?.eval_script(js).await
     }
 
+    async fn diagnostics(&self) -> Vec<String> {
+        lock(&self.notes).clone()
+    }
+
     async fn press_key(&self, key: &str) -> Result<()> {
-        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.acted();
         let code = keycode(key).ok_or_else(|| CoreError::Unsupported(format!("unknown key `{key}`")))?;
         self.agent.call("key", json!({ "code": code })).await?;
         Ok(())

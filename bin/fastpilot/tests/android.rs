@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 
 type Client = RunningService<RoleClient, ()>;
 
+/// One UiAutomation agent per device: tests that drive the device take turns.
+static DEVICE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn call(client: &Client, tool: &'static str, args: Value) -> (bool, String) {
     let args = args.as_object().cloned().unwrap_or_default();
     let res: CallToolResult = client.call_tool(CallToolRequestParams::new(tool).with_arguments(args)).await.expect("tool call");
@@ -86,6 +89,7 @@ async fn android_login_webview_and_cross_platform_over_mcp() {
     if prepare().is_none() {
         return eprintln!("skipping: no Android device or demo APK");
     }
+    let _device = DEVICE.lock().await;
     let client: Client = ().serve(server()).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": ANDROID_LOGIN })).await;
     println!("{out}");
@@ -101,5 +105,57 @@ async fn android_login_webview_and_cross_platform_over_mcp() {
     println!("{out}");
     assert!(ok, "{out}");
     assert!(out.contains("[web1] screen \"Dashboard\"") && out.contains("[and1] screen"), "{out}");
+    client.cancel().await.expect("shutdown");
+}
+
+fn adb_shell(cmd: &str) -> String {
+    let out = std::process::Command::new(adb()).args(["shell", cmd]).output().expect("adb");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+const LOGIN_STEPS: &str = r#"
+- launchApp: com.fastpilot.demo/.LoginActivity
+- inputText: { into: "Email", text: "a@b.com" }
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- tapOn: "Masuk"
+- assertVisible: "Selamat datang, Budi"
+"#;
+
+/// PRD §11.2 rule 6: permission prompts the flow does not touch are dismissed, a covering
+/// keyboard is hidden, a crash / ANR fails the flow with a structured reason.
+#[tokio::test]
+async fn android_system_dialogs() {
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let _device = DEVICE.lock().await;
+    adb_shell("pm revoke com.fastpilot.demo android.permission.CAMERA; pm clear-permission-flags com.fastpilot.demo android.permission.CAMERA user-set user-fixed");
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "dlg", "platform": "android" })).await;
+    assert!(ok, "{out}");
+
+    // Keyboard: "Lupa password?" sits under the IME once the email field is focused.
+    let keyboard = "- launchApp: com.fastpilot.demo/.LoginActivity\n- inputText: { into: \"Email\", text: \"a@b.com\" }\n- tapOn: \"Lupa password?\"\n- assertVisible: \"Cek email Anda\"\n";
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": keyboard })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+
+    // Permission prompt, unrelated to the next tap: denied, then the tap goes through.
+    let flow = format!("{LOGIN_STEPS}- tapOn: \"Izin kamera\"\n- assertVisible: {{ id: permission_deny_button }}\n- tapOn: \"Bayar\"\n- assertVisible: \"Total Rp 150.000\"\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    assert!(adb_shell("dumpsys package com.fastpilot.demo").contains("android.permission.CAMERA: granted=false"));
+
+    let flow = format!("{LOGIN_STEPS}- tapOn: \"Crash\"\n- assertVisible: {{ text: \"Tidak ada\", timeout: 10000 }}\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(!ok && out.contains("app_crashed"), "{out}");
+
+    // An ANR needs pending input: the swipe is queued behind the blocked main thread.
+    let flow = format!("{LOGIN_STEPS}- tapOn: \"Freeze\"\n- swipe: {{ from: [360, 900], to: [360, 500] }}\n- assertVisible: {{ text: \"Tidak ada\", timeout: 25000 }}\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow, "stop_on_fail": false })).await;
+    println!("{out}");
+    assert!(!ok && out.contains("app_not_responding"), "{out}");
     client.cancel().await.expect("shutdown");
 }
