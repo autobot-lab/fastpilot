@@ -177,7 +177,21 @@ pub struct IosDriver {
     recording: tokio::sync::Mutex<Option<(Child, PathBuf)>>,
     /// `setLocale`: applied as launch arguments / environment on every launchApp.
     locale: Mutex<(Option<String>, Option<String>)>,
-    _runner: Child,
+    /// The runner process when this driver started it (kept alive for the next session).
+    _runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
+}
+
+/// Runners started by this process, by simulator: a session ending leaves its runner running
+/// (it exits by itself when idle), so the next session on that simulator skips xcodebuild.
+fn runners() -> &'static Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<Child>>>> {
+    static R: std::sync::OnceLock<Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<Child>>>>> = std::sync::OnceLock::new();
+    R.get_or_init(Mutex::default)
+}
+
+/// Fixed port per simulator, so a runner can be found again (22100–22599).
+fn runner_port(udid: &str) -> u16 {
+    let h = udid.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    22100 + (h % 500) as u16
 }
 
 impl IosDriver {
@@ -190,21 +204,25 @@ impl IosDriver {
                 None => boot(&std::env::var("FASTPILOT_IOS_DEVICE").unwrap_or_else(|_| "iPhone 16".into())).await?,
             },
         };
+        let port = runner_port(&udid);
+        if let Some(agent) = Agent::try_connect(port).await {
+            tracing::info!(udid, port, "reusing the running XCUITest runner");
+            let runner = lock(runners()).get(&udid).cloned();
+            return Self::connected(udid, std::sync::Arc::new(agent), runner).await;
+        }
         let xctestrun = xctestrun().ok_or(Error::Runner("runner not built: run ios-runner/build.sh".into()))?;
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|l| l.local_addr())
-            .map(|a| a.port())
-            .map_err(|e| Error::Runner(e.to_string()))?;
         let mut child = Command::new("xcodebuild")
             .arg("test-without-building")
             .arg("-xctestrun")
             .arg(&xctestrun)
             .args(["-destination", &format!("id={udid}")])
             .env("TEST_RUNNER_FASTPILOT_PORT", port.to_string())
+            .env("TEST_RUNNER_FASTPILOT_IDLE_EXIT", std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into()))
+            .env("TEST_RUNNER_FASTPILOT_QUIESCENCE", std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(false)
             .spawn()
             .map_err(|e| Error::Runner(format!("xcodebuild: {e}")))?;
         let stdout = child.stdout.take().ok_or(Error::Runner("no stdout".into()))?;
@@ -229,6 +247,16 @@ impl IosDriver {
         }
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
         let agent = std::sync::Arc::new(Agent::connect(port).await?);
+        let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
+        lock(runners()).insert(udid.clone(), child.clone());
+        Self::connected(udid, agent, Some(child)).await
+    }
+
+    async fn connected(
+        udid: String,
+        agent: std::sync::Arc<Agent>,
+        runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
+    ) -> std::result::Result<Self, Error> {
         let hello = agent.call("hello", json!({})).await?;
         let size = (hello["width"].as_f64().unwrap_or(390.0), hello["height"].as_f64().unwrap_or(844.0));
         Ok(Self {
@@ -241,7 +269,7 @@ impl IosDriver {
             notes: Mutex::default(),
             recording: tokio::sync::Mutex::new(None),
             locale: Mutex::default(),
-            _runner: child,
+            _runner: runner,
         })
     }
 
@@ -344,16 +372,8 @@ impl IosDriver {
     }
 }
 
-impl Drop for IosDriver {
-    fn drop(&mut self) {
-        let agent = self.agent.clone();
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                let _ = agent.call("quit", json!({})).await;
-            });
-        }
-    }
-}
+// No `quit` on drop: the runner stays up for the next session and exits when idle
+// (FASTPILOT_IOS_RUNNER_IDLE seconds, default 300).
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
@@ -665,8 +685,14 @@ impl Driver for IosDriver {
             .map_err(|e| CoreError::Driver(format!("screenshot decode: {e}")))
     }
 
-    async fn wait_idle(&self, _timeout: Duration) -> Result<()> {
-        self.call("idle", json!({})).await.map(|_| ())
+    /// The runner waits for two identical snapshots (XCTest's own animation wait is off).
+    async fn wait_idle(&self, timeout: Duration) -> Result<()> {
+        let cap = timeout.min(Duration::from_millis(1500)).as_millis() as u64;
+        let v = self.call("idle", json!({ "timeoutMs": cap })).await?;
+        if v["idle"].as_bool() == Some(false) {
+            return Err(CoreError::Timeout(format!("screen not idle after {cap}ms")));
+        }
+        Ok(())
     }
 
     async fn eval_script(&self, _js: &str) -> Result<Value> {

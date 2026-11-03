@@ -11,21 +11,71 @@ final class RunnerTests: XCTestCase {
     private var app: XCUIApplication?
     private var appId = "com.apple.springboard"
     private var running = true
+    /// XCTest's own wait for the app to be idle (animations included) after every action is
+    /// switched off unless FASTPILOT_QUIESCENCE=1; `idle` then waits for a stable screen instead.
+    private var quiescence = true
+
+    /// The quiescence wait is a private XCTest method; replace it with a no-op, as
+    /// WebDriverAgent does. Both known selector shapes are handled; if neither exists, nothing changes.
+    private func skipQuiescence() {
+        guard let cls = NSClassFromString("XCUIApplicationProcess") else { return }
+        let one: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
+        let two: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+        if let m = class_getInstanceMethod(cls, NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:")) {
+            method_setImplementation(m, imp_implementationWithBlock(one))
+            quiescence = false
+        }
+        if let m = class_getInstanceMethod(cls, NSSelectorFromString("waitForQuiescenceIncludingAnimationsIdle:isPreEvent:")) {
+            method_setImplementation(m, imp_implementationWithBlock(two))
+            quiescence = false
+        }
+    }
+
+    /// Cheap fingerprint of the current screen: element types, frames, labels and values.
+    private func fingerprint() -> Int {
+        guard let root = try? current().snapshot() else { return 0 }
+        var h = Hasher()
+        var budget = 2000
+        func walk(_ s: XCUIElementSnapshot) {
+            if budget <= 0 { return }
+            budget -= 1
+            h.combine(s.elementType.rawValue)
+            h.combine(Int(s.frame.minX)); h.combine(Int(s.frame.minY)); h.combine(Int(s.frame.width)); h.combine(Int(s.frame.height))
+            h.combine(s.label)
+            h.combine((s.value as? String) ?? "")
+            s.children.forEach(walk)
+        }
+        walk(root)
+        return h.finalize()
+    }
 
     func testRunner() throws {
         continueAfterFailure = true
-        let port = UInt16(ProcessInfo.processInfo.environment["FASTPILOT_PORT"] ?? "") ?? 22087
+        let env = ProcessInfo.processInfo.environment
+        let port = UInt16(env["FASTPILOT_PORT"] ?? "") ?? 22087
+        // A runner outlives its session so the next one reuses it (no xcodebuild start); it
+        // exits on its own after this long without a client.
+        let idleExit = Double(env["FASTPILOT_IDLE_EXIT"] ?? "") ?? 300
+        if env["FASTPILOT_QUIESCENCE"] != "1" { skipQuiescence() }
         let server = try listen(port: port)
-        print("FASTPILOT_RUNNER_READY port=\(port) version=1")
+        print("FASTPILOT_RUNNER_READY port=\(port) version=1 quiescence=\(quiescence)")
         fflush(stdout)
+        var lastClient = Date()
         while running {
+            var pfd = pollfd(fd: server, events: Int16(POLLIN), revents: 0)
+            if poll(&pfd, 1, 1000) <= 0 {
+                if Date().timeIntervalSince(lastClient) > idleExit { break }
+                continue
+            }
             let client = accept(server, nil, nil)
             if client < 0 { continue }
+            lastClient = Date()
             var one: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
             serve(client)
             close(client)
+            lastClient = Date()
         }
         close(server)
         print("FASTPILOT_RUNNER_EXIT")
@@ -219,8 +269,18 @@ final class RunnerTests: XCTestCase {
         case "hideKeyboard":
             return ["hidden": hideKeyboard()]
         case "idle":
-            // XCUI waits for app quiescence after every action; nothing extra to do.
-            return ["idle": true]
+            // With XCTest's own wait in place there is nothing to add; otherwise wait until two
+            // snapshots 50 ms apart agree (bounded by timeoutMs).
+            if quiescence { return ["idle": true] }
+            let deadline = Date().addingTimeInterval(try num("timeoutMs", 1500) / 1000)
+            var last = fingerprint()
+            while Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+                let now = fingerprint()
+                if now == last { return ["idle": true] }
+                last = now
+            }
+            return ["idle": false]
         case "quit":
             running = false
             return [:]

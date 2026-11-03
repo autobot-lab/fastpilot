@@ -21,6 +21,11 @@ socket is listening (about 23 s after starting xcodebuild on an already-booted s
 If the port can't be bound it prints `FASTPILOT_RUNNER_ERROR ...` and the test fails.
 `FASTPILOT_PORT` defaults to 22087. xcodebuild passes `TEST_RUNNER_<X>` to the runner as `<X>`.
 
+Lifetime: the runner outlives its session. It exits after `FASTPILOT_IDLE_EXIT` seconds (default
+300) without a client, so the host can reconnect to the same port (fixed per simulator) instead of
+starting xcodebuild again. XCTest's wait for app quiescence (animations included) around every action
+is replaced with a no-op (as WebDriverAgent does) unless `FASTPILOT_QUIESCENCE=1`.
+
 ## Framing
 
 Same as the Android agent. Every message in both directions is a 4-byte big-endian unsigned length
@@ -49,7 +54,11 @@ All coordinates are screen **points** (portrait origin top-left), not pixels.
 | `key` | `name`: `return`, `enter`, `delete`, `tab`, `escape`, `space` | typed into the focused field. Error `no focused text field` |
 | `back` | – | taps the first button of the first navigationBar. Error `no back button` |
 | `screenshot` | `quality` (80) | `jpeg`: base64 (no line wraps) |
-| `idle` | – | `idle: true`. XCUI already waits for app quiescence after every action |
+| `idle` | `timeoutMs` (1500) | `idle`: true once two snapshots 50 ms apart are identical (false at the timeout). With `FASTPILOT_QUIESCENCE=1` XCTest's own quiescence wait stays on and this returns true at once |
+| `longPress` / `doubleTap` | `x`, `y` (`ms` 800) | – |
+| `erase` | `count` (default: all) | `erased` |
+| `terminate` | `bundleId` | – |
+| `hideKeyboard` | – | `hidden` |
 | `quit` | – | replies `ok`, then the test method returns |
 
 ### Snapshot nodes

@@ -44,6 +44,15 @@ impl Agent {
         Err(last.unwrap_or(Error::Agent("agent not reachable".into())))
     }
 
+    /// One attempt (no retries): reuse an agent/runner that is already listening.
+    pub async fn try_connect(port: u16) -> Option<Self> {
+        let s = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(("127.0.0.1", port))).await.ok()?.ok()?;
+        s.set_nodelay(true).ok();
+        let agent = Self { stream: Arc::new(Mutex::new(s)), next: AtomicU64::new(1), broken: Arc::new(AtomicBool::new(false)) };
+        tokio::time::timeout(Duration::from_secs(3), agent.call("hello", json!({}))).await.ok()?.ok()?;
+        Some(agent)
+    }
+
     /// One request/response. The exchange runs on its own task, so a caller dropped mid-call
     /// (fail-fast parallel, retry timeout) never leaves half a frame on the wire.
     pub async fn call(&self, cmd: &str, args: Value) -> Result<Value, Error> {

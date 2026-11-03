@@ -87,6 +87,33 @@ pub async fn android(n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
+/// Needs a booted simulator with the demo app installed and `ios-runner/build.sh` artifacts.
+/// Session start is measured twice: cold (runner launched by xcodebuild) and again right after
+/// (a warm runner is reused when possible).
+pub async fn ios(n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let (d, cold) = timed(fastpilot_ios::IosDriver::start(None)).await?;
+    drop(d);
+    let (d, warm) = timed(fastpilot_ios::IosDriver::start(None)).await?;
+    let ((), open) = timed(d.launch_app("com.fastpilot.demo")).await?;
+    let _ = d.wait_idle(Duration::from_secs(3)).await;
+    let mut snap = Vec::with_capacity(n);
+    let mut lines = 0;
+    for _ in 0..n {
+        let (s, t) = timed(d.snapshot()).await?;
+        lines = s.entries.len();
+        snap.push(t);
+    }
+    let (taps, sample) = tap_diff(&d, n).await?;
+    header("ios", n, lines);
+    Stats(vec![cold]).row("session start (cold)", None);
+    Stats(vec![warm]).row("session start (warm)", Some(Duration::from_secs(2)));
+    Stats(vec![open]).row("launch app", None);
+    Stats(snap).row("snapshot", Some(Duration::from_millis(100)));
+    Stats(taps).row("tap -> diff", Some(Duration::from_millis(200)));
+    println!("\nlast diff: {}", sample.join(" | "));
+    Ok(())
+}
+
 pub async fn run(opts: LaunchOptions, n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
     let url = format!(
         "data:text/html;base64,{}",

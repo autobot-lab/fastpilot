@@ -15,7 +15,7 @@ const USAGE: &str = "usage: fastpilot <command> [--headful]
 
 commands:
   mcp     serve MCP over stdio (what MCP clients run)
-  bench [web|android]   print snapshot and tap->diff latency against the demo login
+  bench [web|android|ios]   print snapshot and tap->diff latency against the demo login
           [--iterations N]      (android: booted device with examples/demo-android installed)
   bench tokens [web|android|ios]   tokens per snapshot, per 1-step diff and per login run_flow
                                    (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
@@ -56,6 +56,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             match args.get(1).map(String::as_str) {
                 Some("tokens") => bench::tokens(args.get(2).filter(|a| !a.starts_with("--")).map_or("web", String::as_str), web).await,
                 Some("android") => bench::android(iterations.max(1)).await,
+                Some("ios") => bench::ios(iterations.max(1)).await,
                 _ => bench::run(web, iterations.max(1)).await,
             }
         }
