@@ -25,17 +25,40 @@ fn adb() -> String {
     format!("{home}/platform-tools/adb")
 }
 
+/// The device under test: FASTPILOT_ANDROID_SERIAL / ANDROID_SERIAL, else the first ready one.
+fn serial() -> Option<String> {
+    if let Some(s) = ["FASTPILOT_ANDROID_SERIAL", "ANDROID_SERIAL"].iter().find_map(|k| std::env::var(k).ok().filter(|s| !s.is_empty())) {
+        return Some(s);
+    }
+    let out = std::process::Command::new(adb()).arg("devices").output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().skip(1).find_map(|l| l.strip_suffix("\tdevice").map(str::to_owned))
+}
+
+/// `adb -s <serial> ...`, so a second attached phone never receives the commands.
+fn adb_s(args: &[&str]) -> std::process::Command {
+    let mut c = std::process::Command::new(adb());
+    if let Some(s) = serial() {
+        c.args(["-s", &s]);
+    }
+    c.args(args);
+    c
+}
+
+/// Screen size in pixels from `wm size` (override first).
+fn screen() -> (u32, u32) {
+    let text = adb_shell("wm size");
+    let line = text.lines().rev().find(|l| l.contains("size:")).unwrap_or("");
+    let (w, h) = line.rsplit(' ').next().and_then(|d| d.split_once('x')).unwrap_or(("720", "1280"));
+    (w.trim().parse().unwrap_or(720), h.trim().parse().unwrap_or(1280))
+}
+
 /// Installs the demo app; `None` when no device is attached.
 fn prepare() -> Option<()> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-    let devices = std::process::Command::new(adb()).arg("devices").output().ok()?;
-    let listed = String::from_utf8_lossy(&devices.stdout);
-    if !listed.lines().skip(1).any(|l| l.ends_with("\tdevice")) {
-        return None;
-    }
+    serial()?;
     let apk = format!("{root}/examples/demo-android/out/fastpilot-demo.apk");
     std::path::Path::new(&apk).exists().then_some(())?;
-    let out = std::process::Command::new(adb()).args(["install", "-r", &apk]).output().ok()?;
+    let out = adb_s(&["install", "-r", &apk]).output().ok()?;
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     Some(())
 }
@@ -43,7 +66,11 @@ fn prepare() -> Option<()> {
 fn server() -> TokioChildProcess {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(root).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS");
+        c.arg("mcp")
+            .current_dir(root)
+            .env("DEMO_PASS", "rahasia123")
+            .env("FASTPILOT_VARS", "DEMO_PASS")
+            .env("FASTPILOT_ANDROID_SERIAL", serial().unwrap_or_default());
     });
     TokioChildProcess::new(cmd).expect("spawn")
 }
@@ -109,7 +136,7 @@ async fn android_login_webview_and_cross_platform_over_mcp() {
 }
 
 fn adb_shell(cmd: &str) -> String {
-    let out = std::process::Command::new(adb()).args(["shell", cmd]).output().expect("adb");
+    let out = adb_s(&["shell", cmd]).output().expect("adb");
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -153,7 +180,9 @@ async fn android_system_dialogs() {
     assert!(!ok && out.contains("app_crashed"), "{out}");
 
     // An ANR needs pending input: the swipe is queued behind the blocked main thread.
-    let flow = format!("{LOGIN_STEPS}- tapOn: \"Freeze\"\n- swipe: {{ from: [360, 900], to: [360, 500] }}\n- assertVisible: {{ text: \"Tidak ada\", timeout: 25000 }}\n");
+    let (w, h) = screen();
+    let (x, y1, y2) = (w / 2, h * 7 / 10, h * 4 / 10);
+    let flow = format!("{LOGIN_STEPS}- tapOn: \"Freeze\"\n- swipe: {{ from: [{x}, {y1}], to: [{x}, {y2}] }}\n- assertVisible: {{ text: \"Tidak ada\", timeout: 25000 }}\n");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow, "stop_on_fail": false })).await;
     println!("{out}");
     assert!(!ok && out.contains("app_not_responding"), "{out}");
@@ -227,7 +256,7 @@ async fn android_reads_otp_from_sms() {
         return eprintln!("skipping: no Android device or demo APK");
     }
     let code = format!("{}", 100_000 + std::process::id() % 900_000);
-    let sent = std::process::Command::new(adb()).args(["emu", "sms", "send", "5551234", &format!("Kode masuk Anda {code}")]).output().expect("adb emu");
+    let sent = adb_s(&["emu", "sms", "send", "5551234", &format!("Kode masuk Anda {code}")]).output().expect("adb emu");
     if !String::from_utf8_lossy(&sent.stdout).contains("OK") {
         return eprintln!("skipping: not an emulator (no console to send an SMS)");
     }
