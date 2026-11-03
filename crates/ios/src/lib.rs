@@ -5,6 +5,7 @@
 
 pub mod device;
 pub mod runner;
+pub mod usbmux;
 
 use std::path::PathBuf;
 use std::process::Stdio;
