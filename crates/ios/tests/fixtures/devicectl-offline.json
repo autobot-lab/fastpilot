@@ -1,0 +1,44 @@
+{
+ "info": {
+  "jsonVersion": 2
+ },
+ "result": {
+  "devices": [
+   {
+    "identifier": "D04458AD-70FF-4356-82B3-7CFAC2B9A181",
+    "connectionProperties": {
+     "authenticationType": "manualPairing",
+     "isMobileDeviceOnly": false,
+     "pairingState": "paired",
+     "potentialHostnames": [
+      "00008110-001C5C9E0AC0A01E.coredevice.local",
+      "D04458AD-70FF-4356-82B3-7CFAC2B9A181.coredevice.local"
+     ],
+     "tunnelState": "unavailable"
+    },
+    "deviceProperties": {
+     "ddiServicesAvailable": false,
+     "name": "Yogi’s iPhone",
+     "osBuildUpdate": "23G83",
+     "osVersionNumber": "26.6.1"
+    },
+    "hardwareProperties": {
+     "cpuType": {
+      "name": "arm64e",
+      "subType": 2,
+      "type": 16777228
+     },
+     "deviceType": "iPhone",
+     "ecid": 7983133202882590,
+     "hardwareModel": "D28AP",
+     "platform": "iOS",
+     "productType": "iPhone14,8",
+     "supportedDeviceFamilies": [
+      1
+     ],
+     "udid": "00008110-001C5C9E0AC0A01E"
+    }
+   }
+  ]
+ }
+}

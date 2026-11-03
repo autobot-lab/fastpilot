@@ -717,20 +717,18 @@ async fn devices() -> String {
     if let Ok((_, avds)) = fastpilot_android::devices().await {
         out.extend(avds.into_iter().map(|a| format!("android avd: {a} (start_device to boot)")));
     }
-    match fastpilot_ios::devices().await {
-        Ok(sims) => out.extend(
-            sims.into_iter()
-                .filter(|(_, n, _)| n.starts_with("iPhone") || n.starts_with("iPad"))
-                .map(|(u, n, st)| format!("ios: {n} {u} ({st})")),
-        ),
-        Err(e) => out.push(format!("ios: unavailable ({e})")),
-    }
-    out.extend(fastpilot_ios::real_devices().await.into_iter().map(|u| format!("ios device: {u} (USB, via go-ios; endpoint: {u})")));
+    // Simulators and paired iPhones (physical ones are used only when named: device: ios-device:<udid>).
+    out.extend(fastpilot_ios::device_infos().await.iter().map(fastpilot_core::DeviceInfo::line));
     out.join("\n")
 }
 
 /// Boot a device: `platform: android, endpoint: <AVD name>`.
 async fn start_device(platform: Option<&str>, name: Option<&str>) -> fastpilot_core::Result<String> {
+    if let Some(spec) = name.and_then(|n| fastpilot_core::DeviceSpec::parse(n).ok())
+        && spec.kind.is_some_and(fastpilot_core::DeviceKind::physical)
+    {
+        return Err(Error::Unsupported("physical devices cannot be started; connect and unlock one".into()));
+    }
     match (platform.unwrap_or("android"), name) {
         ("android", Some(avd)) => {
             let serial = fastpilot_android::start_emulator(avd).await?;

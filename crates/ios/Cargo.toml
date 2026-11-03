@@ -8,6 +8,7 @@ license.workspace = true
 fastpilot-core.workspace = true
 fastpilot-android.workspace = true
 async-trait.workspace = true
+plist = "1"
 base64.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -3,6 +3,8 @@
 //! framed-JSON protocol as the Android agent. The simulator shares the host network, so no
 //! port forwarding is needed.
 
+pub mod device;
+
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
@@ -68,6 +70,28 @@ pub async fn devices() -> std::result::Result<Vec<(String, String, String)>, Err
         }
     }
     Ok(out)
+}
+
+/// Simulators (iPhone/iPad) and paired physical devices, tagged, for `devices` and selection.
+pub async fn device_infos() -> Vec<fastpilot_core::DeviceInfo> {
+    use fastpilot_core::{DeviceInfo, DeviceKind};
+    let mut out: Vec<DeviceInfo> = devices()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, n, _)| n.starts_with("iPhone") || n.starts_with("iPad"))
+        .map(|(id, name, state)| DeviceInfo { id, kind: DeviceKind::Simulator, name, state, detail: vec![] })
+        .collect();
+    let profiles = device::runner_profiles(&device::device_build_dir());
+    for d in device::list().await {
+        let mut detail = vec![format!("iOS {}", d.os_version), format!("tunnel {}", d.tunnel)];
+        match profiles.iter().filter(|p| p.devices.is_empty() || p.devices.contains(&d.udid)).map(device::days_left).min() {
+            Some(days) => detail.push(format!("runner profile {days}d left")),
+            None => detail.push("runner not built for it (fastpilot ios doctor)".into()),
+        }
+        out.push(DeviceInfo { id: d.udid, kind: DeviceKind::IosDevice, name: d.name, state: d.pairing, detail });
+    }
+    out
 }
 
 /// Boot a simulator by name or UDID and wait until it is ready; returns its UDID.

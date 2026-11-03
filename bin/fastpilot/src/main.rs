@@ -21,6 +21,8 @@ commands:
                                    (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
   stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
                                      95% upper bound of the failure rate
+  ios doctor [udid]   why a physical iPhone can or cannot run tests yet (Xcode, signing,
+                      Developer Mode, pairing, profile expiry), each with the fix
   run <tests dir|file.md> [--workers N] [--record] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless CI: Claude drives each natural-language test case over the same tools;
           exits non-zero when a test outside quarantine fails (needs ANTHROPIC_API_KEY)
@@ -90,6 +92,18 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 web,
             };
             run::run(std::path::Path::new(path), opts).await
+        }
+        Some("ios") if args.get(1).map(String::as_str) == Some("doctor") => {
+            match fastpilot_ios::device::doctor(args.get(2).map(String::as_str)).await {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(report) => {
+                    println!("{report}");
+                    std::process::exit(1);
+                }
+            }
         }
         Some("--version" | "-V") => {
             println!("fastpilot {}", env!("CARGO_PKG_VERSION"));
