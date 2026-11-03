@@ -336,15 +336,13 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 - **Chrome sehari-hari tanpa restart**: muat `extension-chrome/` (chrome://extensions → Developer mode →
   Load unpacked), minta `session { action: start, mode: attach, endpoint: extension }`, lalu klik tombol
   extension di tab yang mau dikendalikan. Detail di [extension-chrome/README.md](extension-chrome/README.md).
-- **iPhone/iPad fisik (USB)**: pasang [go-ios](https://github.com/danielpaulus/go-ios), build runner untuk
-  device, lalu mulai sesi dengan UDID device:
+- **iPhone/iPad dan ponsel Android fisik**: lihat [docs/real-devices.md](docs/real-devices.md). Ringkasnya:
+  cek kesiapan dengan `fastpilot ios doctor`, build runner untuk iPhone, lalu mulai sesi dengan
+  `device: ios-device:<udid>` atau `device: android-device:<serial>`.
 
 ```bash
-FASTPILOT_TEAM=<apple team id> ios-runner/build.sh --device
+FASTPILOT_IOS_TEAM=<team id> FASTPILOT_IOS_BUNDLE_PREFIX=com.<nama>.fastpilot ios-runner/build.sh --device <udid>
 ```
-
-  `session { action: devices }` menampilkan device yang terhubung. Device harus terbuka kuncinya, Developer
-  Mode aktif, dan sertifikat developer sudah dipercaya. Lihat `docs` topic `devices`.
 
 ## Bench
 

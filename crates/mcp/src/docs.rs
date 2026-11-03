@@ -221,9 +221,11 @@ const DEVICES: &str = r#"# Devices and attach modes
   platform: android, endpoint: <AVD> }` boots an emulator. setLocation / network throttling need an emulator.
 - iOS simulator: `platform: ios` (booted simulator, else "iPhone 16"); runner from `ios-runner/build.sh`.
   The runner stays up between sessions (exits after 5 idle minutes), so later sessions start fast.
-- iOS real device (USB): `platform: ios, endpoint: <device UDID>` (see `session { action: devices }`).
-  Needs go-ios (`ios` on PATH or `FASTPILOT_GO_IOS`) and the runner built for devices:
-  `FASTPILOT_TEAM=<team id> ios-runner/build.sh --device`; the device must be unlocked with Developer
-  Mode on and the developer certificate trusted. simctl-only steps (setPermissions, pushNotification,
-  clearState, clearKeychain, recording) are unsupported there; setLocation uses go-ios.
+- iOS real device: `platform: ios, device: ios-device:<udid>` (never picked unless named). Needs the
+  Xcode matching the phone's iOS, a signing team, and the runner built for it:
+  `FASTPILOT_IOS_TEAM=<team> FASTPILOT_IOS_BUNDLE_PREFIX=com.<you>.fastpilot ios-runner/build.sh --device <udid>`.
+  `fastpilot ios doctor` lists every blocker with its fix. Reached over USB (usbmux) or the CoreDevice
+  tunnel. Simulator-only there: clearKeychain, setLocation, pushNotification, allow/deny permissions,
+  recording. Setup guide: docs/real-devices.md.
+- Android phone: `device: android-device:<serial>`; unauthorized/offline phones are listed with the fix.
 "#;
