@@ -11,8 +11,8 @@ const USAGE: &str = "usage: fastpilot <command> [--headful]
 
 commands:
   mcp     serve MCP over stdio (what MCP clients run)
-  bench   print snapshot and tap->diff latency against the demo page
-          [--iterations N]
+  bench [web|android]   print snapshot and tap->diff latency against the demo login
+          [--iterations N]      (android: booted device with examples/demo-android installed)
 
 env:
   FASTPILOT_CHROME   Chrome/Chromium executable
@@ -42,7 +42,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .map(|n| n.parse::<usize>())
                 .transpose()?
                 .unwrap_or(30);
-            bench::run(web, iterations.max(1)).await
+            match args.get(1).map(String::as_str) {
+                Some("android") => bench::android(iterations.max(1)).await,
+                _ => bench::run(web, iterations.max(1)).await,
+            }
         }
         Some("--version" | "-V") => {
             println!("fastpilot {}", env!("CARGO_PKG_VERSION"));

@@ -519,3 +519,19 @@ fastpilot/
 - CDP browser contexts: https://pydoll.tech/docs/guides/browser-contexts/
 - Preinstalled WDA: https://appium.github.io/appium-xcuitest-driver/latest/guides/run-preinstalled-wda
 - Tool AI testing 2026 (self-healing, QA Wolf, Momentic, Autify): https://qa.tech/blog/the-13-best-ai-testing-tools-in-2026.md
+
+## 21. Catatan implementasi (2026-11-03)
+
+Status: Phase 1–5 terimplementasi. Phase 6 tetap roadmap. Penyimpangan dari draf ini dan alasannya
+(detail di [research-improvements.md](research-improvements.md)):
+
+| Bagian | Draf | Implementasi | Alasan |
+|---|---|---|---|
+| §7.4 agent | Kotlin, wire postcard/msgpack | Java (tanpa Gradle, dibangun dengan SDK build-tools), frame 4-byte + JSON (`org.json` bawaan) | build offline yang reproducible tanpa dependency; JSON cukup cepat (snapshot Android p50 9 ms) |
+| §7.4 adb | crate `adb_client` | klien protokol adb server sendiri (smart socket + sync) | dukungan forward/install di `adb_client` tidak terkonfirmasi; ±200 baris |
+| §7.5 iOS | WDA prebuilt via Appium | runner XCUITest milik fastpilot (`ios-runner/`), protokol sama dengan Android | tanpa download/Appium; pendekatan yang sama dengan Maestro |
+| §7.3 attach | extension + relay | endpoint `--remote-debugging-port` atau Chrome M144+ `autoConnect` (`DevToolsActivePort`) | sejak Chrome 136 port debugging di profil default diblokir; extension relay ditunda |
+| §8.3 / §15 `${ENV}` | semua env | hanya nama di `FASTPILOT_VARS`; nilai disamarkan `***` di semua output | mencegah eksfiltrasi secret lewat flow/prompt injection |
+| §9.2 diff | di Phase 3 | sejak Phase 1; full snapshot hanya jika URL/lokasi berubah | `run_flow` perlu state per sesi |
+| §11.1 DSL | — | tambahan `assertNotVisible`, `swipe`, `pressKey`, `selectOption`, `uploadFile`, `launchApp`, `session.reset` | kebutuhan QA umum |
+| G6 | ≥99% dari 20 run | metrik pass^k + flake rate | 20/20 hanya membuktikan failure rate <15% (95% CI); klaim 99% butuh ±300 run |

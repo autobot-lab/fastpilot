@@ -117,6 +117,8 @@ pub struct StepRecord {
     pub elapsed: Duration,
     pub output: Option<String>,
     pub error: Option<Error>,
+    /// For steps that targeted a ref: the role+name (or id) it resolved to, for path memory.
+    pub durable: Option<Selector>,
     timeout: Option<Duration>,
     target: Option<(Selector, Intent)>,
 }
@@ -216,9 +218,12 @@ pub async fn run_flow(
 
     for fs in &flow.steps {
         let ok = match &fs.step {
-            Step::StartSession { id, platform, target } => {
+            Step::StartSession { id, platform, target, reset } => {
                 index += 1;
                 let t0 = Instant::now();
+                if *reset {
+                    reg.remove(id);
+                }
                 let res = start_session(reg, launcher, id, *platform, target.as_deref()).await;
                 if res.is_ok() {
                     active = Some(id.clone());
@@ -382,20 +387,56 @@ async fn run_branch(
     if failed { Err(()) } else { Ok(()) }
 }
 
+fn step_ref(step: &Step) -> Option<&Selector> {
+    let sel = match step {
+        Step::TapOn(s) | Step::InputText { into: s, .. } | Step::UploadFile { into: s, .. } => s,
+        Step::SelectOption { from: s, .. } => s,
+        Step::AssertVisible { selector: s, .. } | Step::AssertNotVisible { selector: s, .. } => s,
+        Step::Scroll { within: Some(s), .. } => s,
+        _ => return None,
+    };
+    matches!(sel, Selector::Ref(_)).then_some(sel)
+}
+
+/// Refs are only valid in this session; path memory needs what they pointed at.
+async fn durable(d: &dyn Driver, sel: &Selector) -> Option<Selector> {
+    let snap = d.snapshot().await.ok()?;
+    let node = &snap.resolve(sel, Intent::Find).ok()?.node;
+    if !node.name.is_empty() {
+        Some(Selector::Role { role: node.role.clone(), name: Some(node.name.clone()) })
+    } else {
+        node.id.clone().map(Selector::Id)
+    }
+}
+
 async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx) -> bool {
     let t0 = Instant::now();
+    let stable = match step_ref(step) {
+        Some(sel) => durable(d, sel).await,
+        None => None,
+    };
     let res = exec(d, step).await;
     if let Err(e) = &res {
         tracing::debug!(session = sid, step = %step.label(), error = %e, "step failed");
     }
-    record(ctx, index, Some(sid), step, t0, res)
+    let ok = record(ctx, index, Some(sid), step, t0, res);
+    if stable.is_some() {
+        let mut records = ctx.records.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(r) = records.iter_mut().rev().find(|r| r.index == index) {
+            r.durable = stable;
+        }
+    }
+    ok
 }
 
 fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Instant, res: Result<Option<String>>) -> bool {
     let ok = res.is_ok();
     let (timeout, target) = match step {
         Step::TapOn(s) => (Some(ACTION_TIMEOUT), Some((s.clone(), Intent::Tap))),
-        Step::InputText { into, .. } => (Some(ACTION_TIMEOUT), Some((into.clone(), Intent::Type))),
+        Step::InputText { into, .. } | Step::UploadFile { into, .. } => {
+            (Some(ACTION_TIMEOUT), Some((into.clone(), Intent::Type)))
+        }
+        Step::SelectOption { from, .. } => (Some(ACTION_TIMEOUT), Some((from.clone(), Intent::Tap))),
         Step::AssertVisible { selector, timeout } => {
             (Some(timeout.unwrap_or(ASSERT_TIMEOUT)), Some((selector.clone(), Intent::Find)))
         }
@@ -411,6 +452,7 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
         label: step.label(),
         elapsed: t0.elapsed(),
         output,
+        durable: None,
         // Retry exhaustion is the only case where the timeout is the relevant detail.
         timeout: timeout.filter(|_| error.as_ref().is_some_and(Error::is_retryable)),
         error,
@@ -437,6 +479,24 @@ async fn exec(d: &dyn Driver, step: &Step) -> Result<Option<String>> {
         }
         Step::Scroll { direction, within } => retry(ACTION_TIMEOUT, || d.scroll(*direction, within.as_ref())).await?,
         Step::Back => d.back().await?,
+        Step::AssertNotVisible { selector, timeout } => {
+            let timeout = timeout.unwrap_or(ACTION_TIMEOUT);
+            let deadline = Instant::now() + timeout;
+            loop {
+                match d.snapshot().await?.resolve(selector, Intent::Find) {
+                    Err(Error::NotFound(_)) => return Ok(None),
+                    _ if Instant::now() >= deadline => {
+                        return Err(Error::Timeout(format!("{selector} still visible after {}ms", timeout.as_millis())));
+                    }
+                    _ => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            }
+        }
+        Step::PressKey(k) => d.press_key(k).await?,
+        Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
+        Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
+        Step::LaunchApp(app) => d.launch_app(&subst(app)?).await?,
+        Step::Swipe { from, to } => d.swipe(*from, *to).await?,
         Step::EvalScript(js) => {
             let v = d.eval_script(&subst(js)?).await?;
             let mut s = v.to_string();
@@ -453,6 +513,53 @@ async fn exec(d: &dyn Driver, step: &Step) -> Result<Option<String>> {
     }
     settle(d).await;
     Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssertKind {
+    Visible,
+    NotVisible,
+    TextEquals(String),
+    Contains(String),
+    Enabled,
+}
+
+/// Property assertion with auto-retry until `timeout` (PRD §10 `assert`). Deterministic:
+/// evaluated on the snapshot, never by a model.
+pub async fn assert(d: &dyn Driver, sel: &Selector, kind: &AssertKind, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snap = d.snapshot().await?;
+        let res = match (kind, snap.resolve(sel, Intent::Find)) {
+            (AssertKind::NotVisible, Err(Error::NotFound(_))) => Ok(()),
+            (AssertKind::NotVisible, _) => Err(Error::Assertion(format!("{sel} is still visible"))),
+            (_, Err(e)) => Err(e),
+            (AssertKind::Visible, Ok(_)) => Ok(()),
+            (AssertKind::Enabled, Ok(e)) if e.node.disabled => Err(Error::Assertion(format!("{sel} is disabled"))),
+            (AssertKind::Enabled, Ok(_)) => Ok(()),
+            (AssertKind::TextEquals(want) | AssertKind::Contains(want), Ok(e)) => {
+                let actual = match &e.node.value {
+                    Some(v) if !e.node.secure && !v.is_empty() => v.as_str(),
+                    _ => e.node.name.as_str(),
+                };
+                let pass = match kind {
+                    AssertKind::TextEquals(_) => actual == want,
+                    _ => actual.contains(want.as_str()),
+                };
+                if pass {
+                    Ok(())
+                } else {
+                    let shown = if e.node.secure { "(secure)" } else { actual };
+                    Err(Error::Assertion(format!("{sel} text is {shown:?}, expected {want:?}")))
+                }
+            }
+        };
+        match res {
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() >= deadline => return Err(e),
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
 }
 
 /// Post-action auto-wait. Not fatal: a page that never goes idle (polling) still gets asserted on.

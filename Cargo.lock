@@ -229,6 +229,7 @@ name = "fastpilot"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "fastpilot-android",
  "fastpilot-core",
  "fastpilot-mcp",
  "fastpilot-web",
@@ -242,6 +243,16 @@ dependencies = [
 [[package]]
 name = "fastpilot-android"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "fastpilot-core",
+ "fastpilot-web",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "fastpilot-core"
@@ -260,6 +271,16 @@ dependencies = [
 [[package]]
 name = "fastpilot-ios"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "fastpilot-android",
+ "fastpilot-core",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "fastpilot-mcp"
@@ -267,7 +288,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "fastpilot-android",
  "fastpilot-core",
+ "fastpilot-ios",
+ "fastpilot-memory",
  "fastpilot-web",
  "rmcp",
  "schemars",
@@ -280,6 +304,13 @@ dependencies = [
 [[package]]
 name = "fastpilot-memory"
 version = "0.1.0"
+dependencies = [
+ "fastpilot-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "fastpilot-web"

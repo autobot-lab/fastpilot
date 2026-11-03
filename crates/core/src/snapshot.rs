@@ -7,7 +7,7 @@ use crate::{Error, Result, Selector};
 
 const INTERACTIVE: &[&str] = &[
     "button", "link", "textfield", "checkbox", "radio", "combobox", "listbox", "option",
-    "menuitem", "tab", "switch", "slider", "spinbutton",
+    "menuitem", "tab", "switch", "slider", "spinbutton", "clickable",
 ];
 const EDITABLE: &[&str] = &["textfield", "combobox", "spinbutton"];
 /// Non-interactive roles that survive pruning; every other role is a container and gets folded.
@@ -16,6 +16,21 @@ const MAX_NAME: usize = 80;
 const MAX_VALUE: usize = 40;
 pub const DEFAULT_MAX_LINES: usize = 120;
 const MAX_DIFF_LINES: usize = 40;
+
+/// Element box in screen (mobile) or document (web) pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Rect {
+    pub fn center(&self) -> crate::Point {
+        crate::Point { x: self.x + self.w / 2.0, y: self.y + self.h / 2.0 }
+    }
+}
 
 /// Raw node as produced by a driver. Drivers drop invisible nodes and map roles onto the
 /// canonical vocabulary (`textfield`, `button`, `text`, ...); core does the rest.
@@ -30,9 +45,14 @@ pub struct Node {
     pub checked: bool,
     pub selected: bool,
     pub expanded: bool,
+    pub pressed: bool,
+    pub invalid: bool,
+    pub required: bool,
+    pub readonly: bool,
     pub focused: bool,
     /// Driver-specific handle (CDP backendNodeId, Android node id, ...).
     pub handle: Option<i64>,
+    pub bounds: Option<Rect>,
     pub children: Vec<Node>,
 }
 
@@ -52,21 +72,47 @@ pub struct Snapshot {
     pub entries: Vec<Entry>,
 }
 
-/// Per-session `hash(role, name, path) -> eN` allocation, so refs survive across snapshots.
+/// Per-session ref allocation. A node keeps its ref while its driver handle lives (so text
+/// changes show up as `~`); a re-rendered node (new handle) inherits the ref of its
+/// `hash(role, name, path)` key only if the previous holder is gone, so refs never silently
+/// jump to a different element.
 // ponytail: grows for the session's lifetime; evict unseen keys if sessions get very long.
 #[derive(Debug, Default)]
 pub struct RefRegistry {
-    ids: HashMap<u64, u32>,
+    by_key: HashMap<u64, u32>,
+    by_handle: HashMap<i64, u32>,
+    holder: HashMap<u32, Option<i64>>,
     next: u32,
 }
 
 impl RefRegistry {
-    fn get(&mut self, key: u64) -> String {
-        let n = *self.ids.entry(key).or_insert_with(|| {
-            self.next += 1;
-            self.next
-        });
-        format!("e{n}")
+    fn assign(&mut self, items: &[(u64, Option<i64>)]) -> Vec<String> {
+        let live: std::collections::HashSet<i64> = items.iter().filter_map(|(_, h)| *h).collect();
+        let mut used = std::collections::HashSet::new();
+        items
+            .iter()
+            .map(|&(key, handle)| {
+                let by_handle = handle.and_then(|h| self.by_handle.get(&h).copied());
+                let by_key = self.by_key.get(&key).copied().filter(|n| {
+                    // Reuse a key's ref only when its previous holder left the screen.
+                    !matches!(self.holder.get(n), Some(Some(h)) if live.contains(h) && Some(*h) != handle)
+                });
+                let n = match by_handle.or(by_key) {
+                    Some(n) if !used.contains(&n) => n,
+                    _ => {
+                        self.next += 1;
+                        self.next
+                    }
+                };
+                used.insert(n);
+                self.by_key.insert(key, n);
+                if let Some(h) = handle {
+                    self.by_handle.insert(h, n);
+                }
+                self.holder.insert(n, handle);
+                format!("e{n}")
+            })
+            .collect()
     }
 }
 
@@ -108,12 +154,13 @@ impl Snapshot {
                 e.node.role == "text" && (twin(i + 1) || (i > 0 && twin(i - 1)))
             })
             .collect();
-        let entries = out
+        let kept: Vec<Pending> = out.into_iter().zip(redundant).filter(|(_, r)| !r).map(|(p, _)| p).collect();
+        let ids = refs.assign(&kept.iter().map(|p| (p.key, p.node.handle)).collect::<Vec<_>>());
+        let entries = kept
             .into_iter()
-            .zip(redundant)
-            .filter(|(_, r)| !r)
-            .map(|(p, _)| Entry {
-                r#ref: refs.get(p.key),
+            .zip(ids)
+            .map(|(p, r#ref)| Entry {
+                r#ref,
                 depth: p.depth,
                 node: p.node,
             })
@@ -131,6 +178,11 @@ impl Snapshot {
 
     /// Render with an optional case-insensitive role/name filter and a hard line cap.
     pub fn render(&self, filter: Option<&str>, max_lines: usize) -> String {
+        self.render_with(filter, max_lines, false)
+    }
+
+    /// `coords` appends ` @x,y wxh` (PRD §9.1 `snapshot(coords: true)`).
+    pub fn render_with(&self, filter: Option<&str>, max_lines: usize, coords: bool) -> String {
         let filter = filter.map(str::to_lowercase);
         let lines: Vec<String> = self
             .entries
@@ -140,7 +192,13 @@ impl Snapshot {
                     e.node.role.contains(f) || e.node.name.to_lowercase().contains(f)
                 })
             })
-            .map(|e| line(e, filter.is_none()))
+            .map(|e| {
+                let l = line(e, filter.is_none());
+                match (coords, e.node.bounds) {
+                    (true, Some(b)) => format!("{l} @{:.0},{:.0} {:.0}x{:.0}", b.x, b.y, b.w, b.h),
+                    _ => l,
+                }
+            })
             .collect();
         let mut out = self.header();
         for l in lines.iter().take(max_lines) {
@@ -229,7 +287,7 @@ fn walk(
     dups: &mut HashMap<u64, u32>,
     out: &mut Vec<Pending>,
 ) {
-    node.name = clip(&node.name.split_whitespace().collect::<Vec<_>>().join(" "), MAX_NAME);
+    node.name = node.name.split_whitespace().collect::<Vec<_>>().join(" ");
     let children = std::mem::take(&mut node.children);
     if !keep(&node, parent) {
         for c in children {
@@ -300,8 +358,8 @@ fn pick<'a>(
         Intent::Find => &[],
     };
     let prefer_passes: &[bool] = if preferred.is_empty() { &[false] } else { &[true, false] };
-    for &only_preferred in prefer_passes {
-        for (tier, matches) in tiers.iter().enumerate() {
+    for (tier, matches) in tiers.iter().enumerate() {
+        for &only_preferred in prefer_passes {
             let hits: Vec<&Entry> = pool
                 .iter()
                 .copied()
@@ -326,12 +384,11 @@ fn pick<'a>(
 
 fn line(e: &Entry, indent: bool) -> String {
     let pad = if indent { "  ".repeat(e.depth) } else { String::new() };
-    let name = if e.node.name.is_empty() {
-        String::new()
-    } else {
-        format!(" {:?}", e.node.name)
-    };
-    format!("{pad}{} {}{name}{}", e.r#ref, e.node.role, attrs(&e.node))
+    format!("{pad}{} {}{}{}", e.r#ref, e.node.role, quoted_name(&e.node), attrs(&e.node))
+}
+
+fn quoted_name(n: &Node) -> String {
+    if n.name.is_empty() { String::new() } else { format!(" {:?}", clip(&n.name, MAX_NAME)) }
 }
 
 fn attrs(n: &Node) -> String {
@@ -348,6 +405,10 @@ fn attrs(n: &Node) -> String {
         (n.checked, " checked"),
         (n.selected, " selected"),
         (n.expanded, " expanded"),
+        (n.pressed, " pressed"),
+        (n.invalid, " invalid"),
+        (n.required, " required"),
+        (n.readonly, " readonly"),
     ] {
         if on {
             s.push_str(label);
@@ -363,10 +424,17 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
+/// Everything a `~` line reports, compared unclipped so a change past the render cap still shows.
+fn state(n: &Node) -> (&str, Option<&str>, bool, [bool; 8]) {
+    let value = if n.secure { None } else { n.value.as_deref() };
+    let flags = [n.disabled, n.checked, n.selected, n.expanded, n.pressed, n.invalid, n.required, n.readonly];
+    (&n.name, value, n.secure, flags)
+}
+
 /// Changes from `prev` to `next` as `+`/`-`/`~` lines. `None` means "send the full snapshot":
 /// the screen changed or the diff is too long to be useful (PRD §9.2).
 pub fn diff(prev: &Snapshot, next: &Snapshot) -> Option<Vec<String>> {
-    if prev.title != next.title || prev.location != next.location {
+    if prev.location != next.location {
         return None;
     }
     let old: HashMap<&str, &Entry> = prev.entries.iter().map(|e| (e.r#ref.as_str(), e)).collect();
@@ -375,14 +443,16 @@ pub fn diff(prev: &Snapshot, next: &Snapshot) -> Option<Vec<String>> {
     for e in &next.entries {
         match old.get(e.r#ref.as_str()) {
             None => lines.push(format!("+ {}", line(e, false))),
-            Some(o) => {
+            Some(o) if state(&o.node) != state(&e.node) => {
+                let show = |s: String| if s.is_empty() { " (none)".to_string() } else { s };
                 let (a, b) = (attrs(&o.node), attrs(&e.node));
-                if a != b {
-                    let show = |s: &str| if s.is_empty() { " (none)".to_string() } else { s.to_string() };
-                    let name = if e.node.name.is_empty() { String::new() } else { format!(" {:?}", e.node.name) };
-                    lines.push(format!("~ {} {}{name}{} ->{}", e.r#ref, e.node.role, show(&a), show(&b)));
-                }
+                lines.push(if o.node.name != e.node.name {
+                    format!("~ {} {}{}{a} ->{}{b}", e.r#ref, e.node.role, quoted_name(&o.node), quoted_name(&e.node))
+                } else {
+                    format!("~ {} {}{}{} ->{}", e.r#ref, e.node.role, quoted_name(&e.node), show(a), show(b))
+                });
             }
+            Some(_) => {}
         }
     }
     for e in &prev.entries {
@@ -460,8 +530,36 @@ mod tests {
                 "+ e6 text \"Email atau password salah\"".to_string(),
             ])
         );
-        let c = Snapshot::build("Dashboard", "u", vec![], &mut refs);
+        let c = Snapshot::build("Dashboard", "u/home", vec![], &mut refs);
         assert_eq!(diff(&b, &c), None);
+    }
+
+    #[test]
+    fn refs_follow_handles_and_never_jump_to_another_element() {
+        let row = |h: i64, name: &str| Node { handle: Some(h), ..n("button", name) };
+        let mut refs = RefRegistry::default();
+        let a = Snapshot::build("t", "u", vec![row(1, "Hapus"), row(2, "Hapus")], &mut refs);
+        assert_eq!(a.entries.iter().map(|e| e.r#ref.as_str()).collect::<Vec<_>>(), ["e1", "e2"]);
+        // Row 1 deleted: row 2 keeps e2, and e1 is gone instead of re-binding to row 2.
+        let b = Snapshot::build("t", "u", vec![row(2, "Hapus")], &mut refs);
+        assert_eq!(b.entries[0].r#ref, "e2");
+        // Re-rendered node (new handle, same role/name/path) inherits the ref; renames are `~`.
+        let c = Snapshot::build("t", "u", vec![row(9, "Hapus")], &mut refs);
+        assert_eq!(c.entries[0].r#ref, "e2");
+        let d = Snapshot::build("t", "u", vec![row(9, "Dihapus")], &mut refs);
+        assert_eq!(diff(&c, &d), Some(vec!["~ e2 button \"Hapus\" -> \"Dihapus\"".to_string()]));
+    }
+
+    #[test]
+    fn long_names_match_in_full_and_clip_only_when_rendered() {
+        let msg = "Sesi Anda telah berakhir karena tidak ada aktivitas selama tiga puluh menit, silakan masuk kembali";
+        let mut refs = RefRegistry::default();
+        let s = Snapshot::build("t", "u", vec![n("text", msg)], &mut refs);
+        assert!(s.resolve(&Selector::Text(msg.into()), Intent::Find).is_ok());
+        assert!(s.render(None, 120).contains("…"));
+        // Exact non-interactive beats fuzzy interactive.
+        let s = Snapshot::build("t", "u", vec![n("link", "Account Settings"), n("text", "Settings")], &mut refs);
+        assert_eq!(s.resolve(&Selector::Text("Settings".into()), Intent::Tap).map(|e| e.node.role.as_str()).ok(), Some("text"));
     }
 
     #[test]

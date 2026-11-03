@@ -13,11 +13,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub use dsl::{Branch, Flow, FlowError, FlowStep, Step, check_flow, parse_flow};
-pub use engine::{FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, run_flow};
+pub use dsl::{Branch, Flow, FlowError, FlowStep, Step, check_flow, flow_to_yaml, parse_flow, redact};
+pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow};
 pub use error::{Error, Result};
 pub use selector::Selector;
-pub use snapshot::{Entry, Intent, Node, RefRegistry, Snapshot, diff};
+pub use snapshot::{Entry, Intent, Node, Rect, RefRegistry, Snapshot, diff};
 
 pub type Value = serde_json::Value;
 pub type SessionId = String;
@@ -89,4 +89,20 @@ pub trait Driver: Send + Sync {
     async fn screenshot(&self) -> Result<Vec<u8>>; // JPEG
     async fn wait_idle(&self, timeout: Duration) -> Result<()>;
     async fn eval_script(&self, js: &str) -> Result<Value>; // web/WebView only; others Unsupported
+
+    // Beyond §7.1: optional capabilities; drivers that lack them report `unsupported`.
+    /// Key name: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space.
+    async fn press_key(&self, key: &str) -> Result<()> {
+        Err(Error::Unsupported(format!("pressKey {key} is not supported by this driver")))
+    }
+    async fn select_option(&self, _sel: &Selector, _option: &str) -> Result<()> {
+        Err(Error::Unsupported("selectOption is not supported by this driver".into()))
+    }
+    async fn upload(&self, _sel: &Selector, _files: &[String]) -> Result<()> {
+        Err(Error::Unsupported("uploadFile is not supported by this driver".into()))
+    }
+    /// Maestro `launchApp`: package / package/activity / bundleId.
+    async fn launch_app(&self, app: &str) -> Result<()> {
+        self.open(app).await
+    }
 }

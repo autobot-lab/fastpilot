@@ -8,6 +8,7 @@ license.workspace = true
 fastpilot-core.workspace = true
 fastpilot-web.workspace = true
 fastpilot-mcp.workspace = true
+fastpilot-android.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fastpilot.agent"
+    android:versionCode="1"
+    android:versionName="1">
+    <!-- Needed for the 127.0.0.1 ServerSocket. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="fastpilot agent" android:hasCode="true" />
+    <instrumentation
+        android:name=".Agent"
+        android:targetPackage="com.fastpilot.agent"
+        android:label="fastpilot agent" />
+</manifest>

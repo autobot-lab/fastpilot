@@ -1,37 +1,60 @@
 # fastpilot
 
-MCP server berupa **satu binary Rust** untuk QA automation full-AI di Web (Android dan iOS menyusul). AI agent
+MCP server berupa **satu binary Rust** untuk QA automation full-AI di **Web, Android, dan iOS**. AI agent
 (Claude Code, Claude Desktop, Cursor, dll.) membaca test case bahasa natural, lalu menjalankan banyak langkah
-dalam **satu** `run_flow`. Hasilnya berupa snapshot teks ringkas dan diff, bukan view hierarchy mentah.
+dalam **satu** `run_flow`, juga lintas platform dalam satu skenario. Hasilnya berupa snapshot teks ringkas
+dan diff, bukan view hierarchy mentah.
 
-- CDP langsung lewat satu WebSocket. Tanpa Node, JVM, Appium, chromedriver, atau XPath.
-- DSL YAML kompatibel Maestro (`tapOn`, `inputText`, `assertVisible`, `scroll`, `back`) ditambah `openUrl`,
-  `evalScript`, `session`, `parallel`.
-- Multi-sesi dalam satu `run_flow`: satu proses Chrome, satu `BrowserContext` terisolasi per sesi, blok `parallel:`.
-- Auto-wait (actionability, DOM quiet, request yang dipicu aksi), tanpa `sleep`. Stop-early pada langkah gagal
-  dengan alasan, kandidat ref, dan snapshot.
+- **Web:** CDP langsung lewat satu WebSocket (tanpa Node/chromedriver). Mode *launch* (Chrome milik
+  fastpilot, satu `BrowserContext` per sesi) atau *attach* (Chrome milik user).
+- **Android:** protokol adb server ditulis di Rust, plus agent instrumentation (UiAutomation) yang
+  di-embed di binary. Konten WebView digabung ke snapshot dan dikendalikan lewat CDP.
+- **iOS (simulator):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari source,
+  tanpa Appium/WebDriverAgent.
+- DSL YAML kompatibel Maestro, ditambah `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
+  `selectOption`, `uploadFile`.
+- **Andal:**
+  - Auto-wait tanpa `sleep` (actionability, DOM/a11y quiet, navigasi, dan request yang dipicu aksi).
+  - Ref stabil: ref mengikuti elemen dan tidak pernah pindah ke elemen lain.
+  - Stop-early dengan alasan, kategori, dan kandidat.
+  - Dialog JS ditangani otomatis.
+- **Path memory:** flow yang lolos disimpan sebagai *hint* untuk replay dalam 1 round-trip berikutnya.
+  Evidence tiap run tersimpan di `.fastpilot/runs/`.
 
-Spesifikasi lengkap: [docs/PRD.md](docs/PRD.md). Status: **Phase 1** (core + mcp + web launch mode).
+Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-improvements.md](docs/research-improvements.md).
 
 ## Build
 
-Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium (atau set `FASTPILOT_CHROME`).
+Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium (atau set `FASTPILOT_CHROME`). Untuk Android
+dan iOS, artefak on-device dibangun dari source (tanpa download):
+
+```bash
+agent-android/build.sh
+```
+
+```bash
+ios-runner/build.sh
+```
 
 ```bash
 cargo build --release
 ```
 
-Binary ada di `target/release/fastpilot` (~5 MB).
+- `agent-android/build.sh` butuh Android SDK (build-tools + platform 35) dan JDK 17. Hasilnya adalah agent
+  APK (di-embed ke binary saat `cargo build`) dan demo APK.
+- `ios-runner/build.sh` butuh Xcode 16+. Hasilnya adalah runner XCUITest dan demo app.
+
+Binary ada di `target/release/fastpilot`.
 
 ## Konfigurasi MCP
 
 **Claude Code** (dari root proyek yang mau dites):
 
 ```bash
-claude mcp add fastpilot -- /path/to/fastpilot mcp
+claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- /path/to/fastpilot mcp
 ```
 
-atau `.mcp.json` di root proyek:
+atau `.mcp.json`:
 
 ```json
 {
@@ -39,7 +62,7 @@ atau `.mcp.json` di root proyek:
     "fastpilot": {
       "command": "/path/to/fastpilot",
       "args": ["mcp"],
-      "env": { "DEMO_PASS": "rahasia123" }
+      "env": { "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123" }
     }
   }
 }
@@ -47,30 +70,37 @@ atau `.mcp.json` di root proyek:
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` di macOS,
 `%APPDATA%\Claude\claude_desktop_config.json` di Windows): blok `mcpServers` yang sama. Claude Desktop tidak
-menjalankan server dari folder proyek, jadi pakai URL atau path absolut di `target`/`openUrl`.
+menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`openUrl`.
 
 | Env | Fungsi |
 |---|---|
+| `FASTPILOT_VARS` | daftar variabel (dipisah koma) yang boleh dipakai flow lewat `${NAMA}`; nilainya selalu disamarkan `***` di output |
 | `FASTPILOT_CHROME` | path executable Chrome/Chromium |
-| `FASTPILOT_HEADFUL=1` | tampilkan jendela browser (default headless); sama dengan `fastpilot mcp --headful` |
+| `FASTPILOT_HEADFUL=1` | tampilkan jendela browser (sama dengan `fastpilot mcp --headful`) |
+| `FASTPILOT_ANDROID_SERIAL` / `FASTPILOT_IOS_UDID` | device default untuk `session: { start, platform }` di flow |
+| `FASTPILOT_IOS_DEVICE` | simulator yang di-boot jika belum ada yang menyala (default `iPhone 16`) |
+| `FASTPILOT_IOS_RUNNER` | folder build runner iOS (default `ios-runner/build`) |
+| `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
+| `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
-| variabel lain | dipakai flow lewat `${NAMA}`; nilainya tidak pernah dikirim balik ke AI |
 
-## Tools
+## Tools (8)
 
 | Tool | Fungsi |
 |---|---|
-| `session` | `start` / `stop` / `list` / `devices`; `start` dengan `target` langsung mengembalikan snapshot |
-| `run_flow` | jalankan flow YAML (multi-langkah, multi-sesi, `parallel:`); kembalikan timing per langkah + diff per sesi |
-| `check_flow` | validasi tanpa eksekusi: syntax, step belum didukung, sesi tak dikenal, aturan parallel, `${ENV}` hilang |
-| `snapshot` | snapshot ringkas (`filter`, `full`); jarang dibutuhkan karena `run_flow` sudah mengembalikan state |
-| `screenshot` | JPEG base64 |
-| `docs` | referensi DSL on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors` |
+| `session` | `start` / `stop` / `list` / `devices` / `start_device`. `start` mengembalikan snapshot pertama, dan hint path memory jika `test_id` diberikan. Web: `mode: launch\|attach` (+`endpoint`). Android/iOS: `endpoint` = serial/UDID (untuk `start_device`: nama AVD/simulator) |
+| `run_flow` | Jalankan flow YAML (multi-langkah, multi-sesi, lintas platform, `parallel:`). Mengembalikan timing per langkah dan diff per sesi. Dengan `test_id`, flow dan evidence direkam |
+| `check_flow` | Validasi tanpa eksekusi: syntax, step belum didukung, sesi tak dikenal, aturan parallel, `${VAR}` tidak diizinkan |
+| `snapshot` | Snapshot ringkas (`filter`, `full`). Jarang dibutuhkan |
+| `screenshot` | JPEG |
+| `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
+| `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
+| `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 
-## Contoh: login demo dalam satu round-trip
+## Contoh
 
-Test case: [tests/login.md](tests/login.md). Halaman demo: [examples/demo/login.html](examples/demo/login.html)
-(path relatif di-resolve dari working directory server).
+Login web dalam satu round-trip ([tests/login.md](tests/login.md),
+[examples/demo/login.html](examples/demo/login.html)):
 
 ```yaml
 - session: { start: web1, platform: web, target: "examples/demo/login.html" }
@@ -79,8 +109,6 @@ Test case: [tests/login.md](tests/login.md). Halaman demo: [examples/demo/login.
 - tapOn: "Masuk"
 - assertVisible: "Budi"
 ```
-
-Respons `run_flow`:
 
 ```
 ok 5/5 steps 1.70s
@@ -96,6 +124,43 @@ e9 text "Budi"
 e10 button "Keluar"
 ```
 
+Android + WebView ([tests/login-android.md](tests/login-android.md)). Langkah di halaman WebView
+dijalankan lewat CDP:
+
+```yaml
+- session: { start: and1, platform: android }
+- launchApp: com.fastpilot.demo/.LoginActivity
+- inputText: { into: "Email", text: "a@b.com" }
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- tapOn: "Masuk"
+- assertVisible: "Selamat datang, Budi"
+- tapOn: "Bayar"
+- tapOn: "Bayar sekarang"
+- assertVisible: "Pembayaran berhasil"
+```
+
+Lintas platform dalam satu `run_flow` ([tests/login-cross-platform.md](tests/login-cross-platform.md)):
+
+```yaml
+- session: { start: web1, target: "examples/demo/login.html" }
+- session: { start: and1, platform: android }
+- session: and1
+- launchApp: com.fastpilot.demo/.LoginActivity
+- parallel:
+    - session: web1
+      steps:
+        - inputText: { into: "Email", text: "a@b.com" }
+        - inputText: { into: "Password", text: "${DEMO_PASS}" }
+        - tapOn: "Masuk"
+        - assertVisible: "Budi"
+    - session: and1
+      steps:
+        - inputText: { into: "Email", text: "a@b.com" }
+        - inputText: { into: "Password", text: "${DEMO_PASS}" }
+        - tapOn: "Masuk"
+        - assertVisible: "Selamat datang, Budi"
+```
+
 Langkah gagal berhenti dini dan mengembalikan kandidat:
 
 ```
@@ -103,24 +168,8 @@ fail step 1/1 [web1] tapOn "Hapus Akun": not_found: no element matches "Hapus Ak
 candidates: e10 button "Keluar"
 ```
 
-Dua sesi paralel (contoh lain di `docs` topic `parallel`):
-
-```yaml
-- session: { start: a, target: "examples/demo/login.html" }
-- session: { start: b, target: "examples/demo/login.html" }
-- parallel:
-    - session: a
-      steps:
-        - inputText: { into: "Email", text: "a@b.com" }
-        - inputText: { into: "Password", text: "${DEMO_PASS}" }
-        - tapOn: "Masuk"
-        - assertVisible: "Dashboard"
-    - session: b
-      steps:
-        - inputText: { into: "Email", text: "salah@b.com" }
-        - tapOn: "Masuk"
-        - assertVisible: "Email atau password salah"
-```
+Path memory: `session start` dengan `test_id` mengembalikan hint YAML dari run lolos terakhir. Kirim hint
+itu sebagai satu `run_flow` dengan `test_id` yang sama, lalu tutup dengan `report`. Lihat `docs` topic `memory`.
 
 ## Bench
 
@@ -128,9 +177,19 @@ Dua sesi paralel (contoh lain di `docs` topic `parallel`):
 ./target/release/fastpilot bench --iterations 30
 ```
 
-Contoh hasil (M1 Pro, Chrome headless): snapshot p50 1.5 ms, tap→diff p50 83 ms, session start warm 167 ms.
-Bench ini mencetak latensi launch Chrome, session start, snapshot, dan tap→diff terhadap halaman demo, lalu
-membandingkannya dengan target PRD §14 (snapshot <50 ms, tap→diff <200 ms, session start warm <1 s).
+```bash
+./target/release/fastpilot bench android --iterations 20
+```
+
+Hasil di M1 Pro (Chrome headless; emulator Android API 35; simulator iPhone 16 iOS 18.1):
+
+| Metrik | Web | Android | iOS | Target PRD |
+|---|---|---|---|---|
+| Session start | 202 ms (warm) | 957 ms | ±23 s (xcodebuild menyalakan runner) | <1 s / <2 s |
+| Snapshot p50 | 1.1 ms | 9.2 ms | 16–55 ms | <50 / <100 ms |
+| Tap → diff p50 | 117 ms | 165 ms | ±0.4–1.4 s (XCUITest menunggu animasi) | <200 ms |
+
+iOS diukur manual lewat klien protokol; belum ada `bench ios`.
 
 ## Test
 
@@ -138,26 +197,39 @@ membandingkannya dengan target PRD §14 (snapshot <50 ms, tap→diff <200 ms, se
 cargo test
 ```
 
-Unit test ada di `crates/core` (DSL, `check_flow`, prune/ref/diff, resolusi selector, engine dengan driver palsu).
-`bin/fastpilot/tests/mcp_login.rs` menjalankan `fastpilot mcp` lewat stdio dan menguji login, stop-early, dua sesi
-paralel, `check_flow`, `snapshot`, dan `screenshot` terhadap Chrome sungguhan. Test ini di-skip kalau Chrome
-tidak ditemukan.
+- Unit test: `crates/core` (DSL, `check_flow`, prune/ref/diff, resolusi selector, engine), `crates/memory`,
+  dan konversi node di `crates/android` serta `crates/ios`.
+- `bin/fastpilot/tests/mcp_login.rs` menjalankan `fastpilot mcp` lewat stdio dengan Chrome sungguhan:
+  - login, stop-early, dua sesi paralel;
+  - widget (select, klik div, confirm dialog, pressKey, upload, iframe, shadow DOM);
+  - assert, report, dan path memory;
+  - attach ke Chrome yang sudah berjalan.
+- `bin/fastpilot/tests/android.rs` menguji login Android, WebView, dan skenario web+Android paralel di
+  device/emulator yang menyala.
+- `bin/fastpilot/tests/ios.rs` menguji login di iOS simulator.
+- Test yang butuh Chrome, device, atau simulator otomatis di-skip kalau tidak tersedia.
 
 ## Layout
 
 ```
-crates/core      Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, SessionRegistry
-crates/web       CDP client, launch Chrome, WebPage (Driver) per BrowserContext
-crates/mcp       rmcp stdio server + tools + docs
-crates/android   stub (Phase 2)
-crates/ios       stub (Phase 5)
-crates/memory    stub (Phase 3: path memory + run reports)
-bin/fastpilot    entrypoint: `mcp`, `bench`
-examples/demo    halaman login lokal
-tests            test case bahasa natural
+crates/core      Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, assert, SessionRegistry
+crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserContext
+crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
+crates/ios       simctl + XCUITest runner client, IosDriver
+crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
+crates/mcp       rmcp stdio server, 8 tools, docs
+bin/fastpilot    entrypoint: `mcp`, `bench [web|android]`
+agent-android/   instrumentation APK (Java, UiAutomation), dibangun tanpa Gradle
+ios-runner/      XCUITest runner + demo app iOS
+examples/        demo web (login, widgets), demo Android
+tests/           test case bahasa natural
 ```
 
-## Belum ada di Phase 1
+## Batasan yang diketahui
 
-`launchApp`, `assertNotVisible`, `swipe` (mobile), tool `assert` dan `report`, path memory, attach mode,
-`snapshot(coords:)`, screenshot Set-of-Mark, Android, dan iOS. Lihat roadmap di PRD §16.
+- Web: iframe cross-site (OOPIF), popup/tab baru, dan download belum ditangani.
+- Web attach: hanya Chrome M144+ `autoConnect` atau endpoint `--remote-debugging-port`. Extension relay belum ada.
+- Android: belum ada fallback Set-of-Mark untuk tree a11y yang miskin label.
+- iOS: simulator saja (real device belum). `evalScript` di WKWebView belum. Start runner dan aksi lambat
+  karena XCUITest menunggu app idle setiap aksi; mempercepatnya perlu hook privat seperti yang dipakai Maestro.
+- Registry sesi dikunci selama satu `run_flow` berjalan, sehingga tool lain menunggu.

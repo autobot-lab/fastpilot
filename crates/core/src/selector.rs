@@ -20,11 +20,38 @@ pub enum Selector {
 }
 
 impl Selector {
+    /// Parse a selector written in DSL syntax: `Login`, `e3`, `{ role: button, name: Login }`.
+    pub fn parse_yaml(src: &str) -> Result<Self, String> {
+        let v: Yaml = serde_yaml::from_str(src).map_err(|e| e.to_string())?;
+        Self::from_yaml(&v, &[])
+    }
+
+    /// Back to DSL YAML (used when saving path memory).
+    pub(crate) fn to_yaml(&self) -> Yaml {
+        let map = |pairs: Vec<(&str, Yaml)>| {
+            Yaml::Mapping(pairs.into_iter().map(|(k, v)| (Yaml::String(k.into()), v)).collect())
+        };
+        match self {
+            Self::Text(t) => Yaml::String(t.clone()),
+            Self::Ref(r) => map(vec![("ref", Yaml::String(r.clone()))]),
+            Self::Id(id) => map(vec![("id", Yaml::String(id.clone()))]),
+            Self::Role { role, name } => {
+                let mut pairs = vec![("role", Yaml::String(role.clone()))];
+                if let Some(n) = name {
+                    pairs.push(("name", Yaml::String(n.clone())));
+                }
+                map(pairs)
+            }
+            Self::Point(p) => map(vec![("point", Yaml::Sequence(vec![p.x.into(), p.y.into()]))]),
+            Self::Focused => Yaml::Null,
+        }
+    }
+
     /// Parse a DSL selector. Strings shaped like `e12` are refs; other strings are text.
     pub(crate) fn from_yaml(v: &Yaml, extra_keys: &[&str]) -> Result<Self, String> {
         match v {
             Yaml::String(s) => Ok(Self::from_str_value(s)),
-            Yaml::Number(n) => Ok(Self::Text(n.to_string())),
+            Yaml::Number(_) => Err(QUOTE.into()),
             Yaml::Mapping(map) => {
                 let mut found = Vec::new();
                 let mut name = None;
@@ -76,11 +103,13 @@ impl Selector {
     }
 }
 
+/// YAML rewrites unquoted numbers (`+62812` -> 62812, `1.10` -> 1.1), so text must be quoted.
+pub(crate) const QUOTE: &str = "quote numeric text (YAML rewrites +62812 or 1.10): write \"...\"";
+
 fn scalar(v: &Yaml, key: &str) -> Result<String, String> {
     match v {
         Yaml::String(s) => Ok(s.clone()),
-        Yaml::Number(n) => Ok(n.to_string()),
-        Yaml::Bool(b) => Ok(b.to_string()),
+        Yaml::Number(_) => Err(QUOTE.into()),
         _ => Err(format!("`{key}` must be a string")),
     }
 }

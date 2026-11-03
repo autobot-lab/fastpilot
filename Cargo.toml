@@ -11,6 +11,9 @@ license = "Apache-2.0"
 fastpilot-core = { path = "crates/core" }
 fastpilot-web = { path = "crates/web" }
 fastpilot-mcp = { path = "crates/mcp" }
+fastpilot-memory = { path = "crates/memory" }
+fastpilot-android = { path = "crates/android" }
+fastpilot-ios = { path = "crates/ios" }
 async-trait = "0.1"
 base64 = "0.22"
 futures-util = "0.3"

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>Widgets</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 32px auto; display: grid; gap: 10px; }
+    .card { border: 1px solid #ccc; padding: 8px; cursor: pointer; }
+    iframe { height: 60px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>Widgets</h1>
+  <label for="country">Negara</label>
+  <select id="country"><option>Pilih</option><option value="id">Indonesia</option><option value="my">Malaysia</option></select>
+  <div class="card" onclick="out('Detail terbuka')"><span>Buka detail</span></div>
+  <button id="del" onclick="if (confirm('Hapus data?')) out('Data dihapus')">Hapus</button>
+  <form id="search"><label for="q">Cari</label> <input id="q"></form>
+  <label for="file">Lampiran</label>
+  <input id="file" type="file">
+  <iframe srcdoc="<button onclick=&quot;this.textContent='Diklik'&quot;>Tombol dalam frame</button>"></iframe>
+  <my-widget></my-widget>
+  <p id="out" role="status"></p>
+  <script>
+    const out = (t) => { document.getElementById('out').textContent = t; };
+    document.getElementById('country').addEventListener('change', (e) => out('Dipilih: ' + e.target.value));
+    document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); out('Hasil untuk: ' + document.getElementById('q').value); });
+    document.getElementById('file').addEventListener('change', (e) => out('File: ' + e.target.files[0].name));
+    customElements.define('my-widget', class extends HTMLElement {
+      connectedCallback() {
+        const root = this.attachShadow({ mode: 'open' });
+        root.innerHTML = '<button>Tombol shadow</button>';
+        root.querySelector('button').addEventListener('click', () => out('Shadow diklik'));
+      }
+    });
+  </script>
+</body>
+</html>

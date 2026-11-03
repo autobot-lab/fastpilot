@@ -42,6 +42,51 @@ async fn timed<T, E>(f: impl Future<Output = Result<T, E>>) -> Result<(T, Durati
     Ok((v, t.elapsed()))
 }
 
+/// tap -> auto-wait -> snapshot -> diff on a checkbox, so every iteration changes state.
+async fn tap_diff(d: &dyn Driver, n: usize) -> Result<(Vec<Duration>, Vec<String>), Box<dyn Error + Send + Sync>> {
+    let checkbox = Selector::Text("Ingat saya".into());
+    let mut before = d.snapshot().await?;
+    let mut times = Vec::with_capacity(n);
+    let mut sample = Vec::new();
+    for _ in 0..n {
+        let t = Instant::now();
+        d.tap(&checkbox).await?;
+        let _ = d.wait_idle(Duration::from_secs(3)).await;
+        let after = d.snapshot().await?;
+        sample = diff(&before, &after).unwrap_or_default();
+        times.push(t.elapsed());
+        before = after;
+    }
+    Ok((times, sample))
+}
+
+fn header(what: &str, n: usize, lines: usize) {
+    println!("fastpilot bench ({what}, {n} iterations, demo login: {lines} snapshot lines)\n");
+    println!("{:<22} {:>8} {:>8} {:>8} {:>5}  target", "metric (ms)", "min", "p50", "p95", "n");
+}
+
+/// Needs a booted device with the demo app (`examples/demo-android`) installed.
+pub async fn android(n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let (d, start) = timed(fastpilot_android::AndroidDriver::start(None)).await?;
+    let ((), open) = timed(d.launch_app("com.fastpilot.demo/.LoginActivity")).await?;
+    let _ = d.wait_idle(Duration::from_secs(3)).await;
+    let mut snap = Vec::with_capacity(n);
+    let mut lines = 0;
+    for _ in 0..n {
+        let (s, t) = timed(d.snapshot()).await?;
+        lines = s.entries.len();
+        snap.push(t);
+    }
+    let (taps, sample) = tap_diff(&d, n).await?;
+    header("android", n, lines);
+    Stats(vec![start]).row("session start", Some(Duration::from_secs(2)));
+    Stats(vec![open]).row("launch app", None);
+    Stats(snap).row("snapshot", Some(Duration::from_millis(100)));
+    Stats(taps).row("tap -> diff", Some(Duration::from_millis(200)));
+    println!("\nlast diff: {}", sample.join(" | "));
+    Ok(())
+}
+
 pub async fn run(opts: LaunchOptions, n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
     let url = format!(
         "data:text/html;base64,{}",
@@ -66,30 +111,14 @@ pub async fn run(opts: LaunchOptions, n: usize) -> Result<(), Box<dyn Error + Se
         snap.push(d);
     }
 
-    // tap -> auto-wait -> snapshot -> diff, toggling a checkbox so every iteration changes state.
-    let checkbox = Selector::Text("Ingat saya".into());
-    let mut before = page.snapshot().await?;
-    let mut tap_diff = Vec::with_capacity(n);
-    let mut sample = Vec::new();
-    for _ in 0..n {
-        let t = Instant::now();
-        page.tap(&checkbox).await?;
-        page.wait_idle(Duration::from_secs(3)).await?;
-        let after = page.snapshot().await?;
-        let d = diff(&before, &after).unwrap_or_default();
-        tap_diff.push(t.elapsed());
-        sample = d;
-        before = after;
-    }
-
-    println!("fastpilot bench (web, {n} iterations, demo login page: {lines} snapshot lines)\n");
-    println!("{:<22} {:>8} {:>8} {:>8} {:>5}  target", "metric (ms)", "min", "p50", "p95", "n");
+    let (taps, sample) = tap_diff(&page, n).await?;
+    header("web", n, lines);
     Stats(vec![launch]).row("chrome launch", None);
     Stats(start[..1].to_vec()).row("session start (cold)", None);
     Stats(start[1..].to_vec()).row("session start (warm)", Some(Duration::from_secs(1)));
     Stats(vec![open]).row("open page", None);
     Stats(snap).row("snapshot", Some(Duration::from_millis(50)));
-    Stats(tap_diff).row("tap -> diff", Some(Duration::from_millis(200)));
+    Stats(taps).row("tap -> diff", Some(Duration::from_millis(200)));
     println!("\nlast diff: {}", sample.join(" | "));
     Ok(())
 }

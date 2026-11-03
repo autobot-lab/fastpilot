@@ -5,7 +5,7 @@ mod browser;
 mod cdp;
 mod page;
 
-pub use browser::{Browser, LaunchOptions};
+pub use browser::{Browser, LaunchOptions, http_get};
 pub use page::WebPage;
 
 #[derive(Debug, thiserror::Error)]
@@ -26,8 +26,25 @@ pub enum Error {
     Unexpected(&'static str),
 }
 
+/// Protocol errors Chrome returns while a page is mid-navigation; the step can safely retry.
+const TRANSIENT: &[&str] = &[
+    "Cannot find context",
+    "Execution context was destroyed",
+    "Inspected target navigated or closed",
+    "Could not find node",
+    "No node with given id",
+    "Node with given id does not belong to the document",
+    "Cannot find default execution context",
+    "Frame with the given id was not found",
+];
+
 impl From<Error> for fastpilot_core::Error {
     fn from(e: Error) -> Self {
-        Self::Driver(e.to_string())
+        match &e {
+            Error::Protocol { message, .. } if TRANSIENT.iter().any(|t| message.contains(t)) => {
+                Self::Transient(e.to_string())
+            }
+            _ => Self::Driver(e.to_string()),
+        }
     }
 }
