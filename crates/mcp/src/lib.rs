@@ -160,6 +160,9 @@ pub struct ReportArgs {
     /// pass | fail
     pub status: String,
     pub notes: Option<String>,
+    /// true: quarantine this test (notes = reason); false: release it. Quarantined tests still
+    /// run and are reported, but do not fail a suite.
+    pub quarantine: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -502,15 +505,31 @@ impl FastPilot {
         let Some(run) = self.state.runs.lock().await.remove(&args.test_id) else {
             return fail(format!("no open run for `{}`; pass test_id to run_flow/assert first", args.test_id));
         };
+        if let Some(q) = args.quarantine {
+            let reason = args.notes.as_deref().filter(|n| !n.is_empty()).unwrap_or("quarantined by the agent");
+            if let Err(e) = self.state.memory.set_quarantine(&args.test_id, q.then_some(reason)) {
+                return fail(format!("quarantine failed: {e}"));
+            }
+        }
         match run.finish(&self.state.memory, passed, args.notes.as_deref().unwrap_or("")) {
-            Ok(path) => {
+            Ok(done) => {
                 let memo = match (passed, self.state.memory.mode) {
                     (_, fastpilot_memory::Mode::Off) => "path memory off",
                     (_, fastpilot_memory::Mode::ReadOnly) => "path memory read-only (not updated)",
                     (true, _) => "path memory updated",
                     (false, _) => "failure recorded; previous hint kept",
                 };
-                ok(format!("report {} ({memo})", path.display()))
+                let mut text = format!("report {} ({memo})", done.report.display());
+                if let Some(c) = done.class {
+                    text.push_str(&format!("\nfailure class: {}", c.as_str()));
+                }
+                if let Some(st) = done.stats {
+                    text.push_str(&format!("\nhistory: {st}"));
+                }
+                if let Some(q) = done.quarantine {
+                    text.push_str(&format!("\nQUARANTINED since {}: {}", q.since, q.reason));
+                }
+                ok(text)
             }
             Err(e) => fail(format!("report failed: {e}")),
         }

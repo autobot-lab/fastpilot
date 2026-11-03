@@ -11,20 +11,12 @@ use fastpilot_web::LaunchOptions;
 
 /// 95% Wilson score upper bound of the failure rate for `fails` out of `n`.
 pub fn failure_upper_bound(fails: usize, n: usize) -> f64 {
-    if n == 0 {
-        return 1.0;
-    }
-    let (n, p, z) = (n as f64, fails as f64 / n as f64, 1.96_f64);
-    let z2 = z * z;
-    (p + z2 / (2.0 * n) + z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt()) / (1.0 + z2 / n)
+    1.0 - fastpilot_memory::wilson(n - fails.min(n), n).0
 }
 
 /// τ-bench pass^k: chance that k independent runs all pass, estimated from c passes of n.
 pub fn pass_hat_k(c: usize, n: usize, k: usize) -> f64 {
-    if k > n {
-        return f64::NAN;
-    }
-    (0..k).map(|i| (c.saturating_sub(i)) as f64 / (n - i) as f64).product()
+    fastpilot_memory::pass_hat_k(c, n, k).unwrap_or(f64::NAN)
 }
 
 pub async fn run(path: &str, runs: usize, web: LaunchOptions) -> Result<(), Box<dyn Error + Send + Sync>> {

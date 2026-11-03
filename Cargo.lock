@@ -250,6 +250,7 @@ dependencies = [
  "fastpilot-core",
  "fastpilot-llm",
  "fastpilot-mcp",
+ "fastpilot-memory",
  "fastpilot-web",
  "rmcp",
  "serde_json",

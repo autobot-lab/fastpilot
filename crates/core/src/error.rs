@@ -77,9 +77,10 @@ impl Error {
         }
     }
 
-    /// Who most likely has to act (Phase 3 taxonomy): `app` (the screen is not as the test
-    /// expects: product bug or changed UI), `infra` (browser/device/transport), `flow` (the
-    /// flow itself is wrong or uses something unsupported).
+    /// Who most likely has to act (failure taxonomy): `product` (the app is not as the test
+    /// expects: a bug, a changed UI, a crash), `infra` (browser/device/transport), `agent` (the
+    /// flow the AI wrote is wrong or uses something unsupported). Flakiness is judged over
+    /// runs, not from one error (see fastpilot-memory).
     pub fn category(&self) -> &'static str {
         match self {
             Self::NotFound(_)
@@ -89,9 +90,9 @@ impl Error {
             | Self::Script(_)
             | Self::Assertion(_)
             | Self::AppCrashed(_)
-            | Self::AppNotResponding(_) => "app",
+            | Self::AppNotResponding(_) => "product",
             Self::Transient(_) | Self::Driver(_) | Self::Session(_) => "infra",
-            Self::Flow(_) | Self::Unsupported(_) => "flow",
+            Self::Flow(_) | Self::Unsupported(_) => "agent",
         }
     }
 

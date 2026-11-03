@@ -5,6 +5,9 @@
 //! - `memory/<test_id>.json`: the last passing flow as a *hint* (durable selectors, never refs).
 //!   Written only after a run reported as passed; a failed run only updates statistics.
 
+mod triage;
+
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastpilot_core::FlowReport;
 use serde::{Deserialize, Serialize};
+
+pub use triage::{Breaker, Class, RetryBudget, Stats, classify, pass_hat_k, wilson};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -60,6 +65,39 @@ pub struct PathMemory {
     /// Three failed runs in a row: the hint is withheld until a run passes again.
     #[serde(default)]
     pub stale: bool,
+    /// Failure classes of the most recent failed runs, newest last, capped at 10.
+    #[serde(default)]
+    pub classes: Vec<Class>,
+}
+
+/// A test kept out of the suite verdict: it still runs and is reported, but its failure
+/// does not fail the suite. `auto` entries come from flakiness and leave by themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Quarantine {
+    pub reason: String,
+    pub since: String,
+    pub auto: bool,
+}
+
+/// What `Run::finish` decided.
+#[derive(Debug, Clone)]
+pub struct Finished {
+    pub report: PathBuf,
+    /// Failure class; `None` for a pass.
+    pub class: Option<Class>,
+    /// History statistics including this run (`None` with `FASTPILOT_MEMORY=off`).
+    pub stats: Option<Stats>,
+    pub quarantine: Option<Quarantine>,
+}
+
+/// Auto-quarantine: ≥ 5 runs, ≥ 2 failures and ≥ 2 flips in the last 10. Released after 10
+/// clean runs in a row.
+fn auto_quarantine(m: &PathMemory) -> Option<String> {
+    let recent = &m.history[m.history.len().saturating_sub(10)..];
+    let fails = recent.iter().filter(|p| !**p).count();
+    let flips = recent.windows(2).filter(|w| w[0] != w[1]).count();
+    (recent.len() >= 5 && fails >= 2 && flips >= 2)
+        .then(|| format!("auto: {fails}/{} recent runs failed, {flips} flips", recent.len()))
 }
 
 impl PathMemory {
@@ -108,6 +146,37 @@ impl Memory {
         self.root.join("memory").join(format!("{test_id}.json"))
     }
 
+    fn quarantine_path(&self) -> PathBuf {
+        self.root.join("quarantine.json")
+    }
+
+    /// Quarantined tests (`.fastpilot/quarantine.json`), visible in every report.
+    pub fn quarantined(&self) -> BTreeMap<String, Quarantine> {
+        fs::read_to_string(self.quarantine_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    fn save_quarantine(&self, q: &BTreeMap<String, Quarantine>) -> Result<()> {
+        let path = self.quarantine_path();
+        fs::create_dir_all(&self.root).map_err(io(&self.root))?;
+        let json = serde_json::to_string_pretty(q).map_err(|source| Error::Json { path: path.clone(), source })?;
+        fs::write(&path, json).map_err(io(&path))
+    }
+
+    /// Quarantine (`Some(reason)`) or release (`None`) a test by hand.
+    pub fn set_quarantine(&self, test_id: &str, reason: Option<&str>) -> Result<()> {
+        check_id(test_id)?;
+        let mut q = self.quarantined();
+        match reason {
+            Some(r) => {
+                q.insert(test_id.to_owned(), Quarantine { reason: r.to_owned(), since: utc_stamp(now_secs(), false), auto: false });
+            }
+            None => {
+                q.remove(test_id);
+            }
+        }
+        self.save_quarantine(&q)
+    }
+
     pub fn load(&self, test_id: &str) -> Option<PathMemory> {
         if self.mode == Mode::Off || check_id(test_id).is_err() {
             return None;
@@ -134,6 +203,9 @@ impl Memory {
             notes.push(format!("recorded from {}, now on {} — the hint may not apply", location(&m.start), location(cur)));
         }
         notes.extend(m.flakiness());
+        if let Some(q) = self.quarantined().get(test_id) {
+            notes.push(format!("QUARANTINED since {}: {}", q.since, q.reason));
+        }
         let notes = if notes.is_empty() { String::new() } else { format!("\n{}", notes.join("\n")) };
         Some(format!(
             "path memory for {test_id}: passed {}x, failed {}x, last pass {}, recorded from {} ({} ms).{notes}\n\
@@ -144,9 +216,19 @@ impl Memory {
 
     pub fn begin_run(&self, test_id: &str) -> Result<Run> {
         check_id(test_id)?;
-        let id = format!("{}-{test_id}", utc_stamp(now_secs(), true));
-        let dir = self.root.join("runs").join(&id);
-        fs::create_dir_all(&dir).map_err(io(&dir))?;
+        let stamp = utc_stamp(now_secs(), true);
+        let runs = self.root.join("runs");
+        fs::create_dir_all(&runs).map_err(io(&runs))?;
+        // Unique even for runs started in the same second (create_dir fails if it exists).
+        let (id, dir) = (1..)
+            .map(|n| if n == 1 { format!("{stamp}-{test_id}") } else { format!("{stamp}-{test_id}-{n}") })
+            .map(|id| (runs.join(&id), id))
+            .find_map(|(dir, id)| match fs::create_dir(&dir) {
+                Ok(()) => Some(Ok((id, dir))),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(e) => Some(Err(io(&dir)(e))),
+            })
+            .unwrap_or_else(|| Err(Error::TestId(test_id.to_owned())))?;
         Ok(Run { id, test_id: test_id.to_owned(), dir, ..Run::default() })
     }
 }
@@ -169,11 +251,24 @@ pub struct Run {
     assertions: Vec<Assertion>,
     steps: usize,
     failures: usize,
+    /// `(reason, category)` of the first failure, for classification.
+    first_failure: Option<(String, String)>,
+    passed_on_retry: bool,
 }
 
 impl Run {
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// An earlier attempt of this test failed and this one passed (suite retry): the
+    /// earlier failure is classified flaky.
+    pub fn passed_on_retry(&mut self) {
+        self.passed_on_retry = true;
+    }
+
+    fn note_failure(&mut self, reason: &str, category: &str) {
+        self.first_failure.get_or_insert_with(|| (reason.to_owned(), category.to_owned()));
     }
 
     /// Record a `run_flow`: its durable YAML (refs already replaced), per-step results, and on
@@ -206,6 +301,9 @@ impl Run {
                 }
             }
         }
+        if let Some(e) = report.records.iter().find_map(|r| r.error.as_ref()) {
+            self.note_failure(e.reason(), e.category());
+        }
         if report.passed() {
             self.flows.push(durable_yaml);
             self.duration_ms += report.elapsed.as_millis() as u64;
@@ -225,23 +323,61 @@ impl Run {
     pub fn record_assertion(&mut self, a: Assertion) {
         if !a.pass {
             self.failures += 1;
+            self.note_failure("assertion_failed", "product");
         }
         self.assertions.push(a);
     }
 
-    /// Close the run: `report.md`, `assertions.json`, and the path memory update.
-    pub fn finish(self, memory: &Memory, passed: bool, notes: &str) -> Result<PathBuf> {
+    /// Close the run: `report.md`, `assertions.json`, the path memory update, the failure
+    /// class and the quarantine decision.
+    pub fn finish(self, memory: &Memory, passed: bool, notes: &str) -> Result<Finished> {
         let previous = memory.load(&self.test_id);
+        let class = (!passed || self.passed_on_retry).then(|| {
+            let category = self.first_failure.as_ref().map(|(_, c)| c.as_str());
+            classify(category, self.passed_on_retry, previous.as_ref())
+        });
+        // Statistics and quarantine include this run (only when memory is written).
+        let mut updated = previous.clone().unwrap_or_else(|| PathMemory { test_id: self.test_id.clone(), ..PathMemory::default() });
+        let clean = passed && self.failures == 0;
+        updated.history.push(clean);
+        let extra = updated.history.len().saturating_sub(20);
+        updated.history.drain(..extra);
+        let mut quarantine = memory.quarantined();
+        if memory.mode == Mode::ReadWrite {
+            let recent_clean = updated.history.len() >= 10 && updated.history.iter().rev().take(10).all(|p| *p);
+            match (quarantine.get(&self.test_id), auto_quarantine(&updated)) {
+                (None, Some(reason)) => {
+                    quarantine.insert(self.test_id.clone(), Quarantine { reason, since: utc_stamp(now_secs(), false), auto: true });
+                    memory.save_quarantine(&quarantine)?;
+                }
+                (Some(q), _) if q.auto && recent_clean => {
+                    quarantine.remove(&self.test_id);
+                    memory.save_quarantine(&quarantine)?;
+                }
+                _ => {}
+            }
+        }
+        let quarantine = quarantine.get(&self.test_id).cloned();
+        let stats = (memory.mode != Mode::Off).then(|| updated.stats());
         let stamp = utc_stamp(now_secs(), false);
         let assertions = self.dir.join("assertions.json");
         let json = serde_json::to_string_pretty(&self.assertions).map_err(|source| Error::Json { path: assertions.clone(), source })?;
         fs::write(&assertions, json).map_err(io(&assertions))?;
 
         let status = if passed { "pass" } else { "fail" };
-        let mut md = format!(
-            "# {} — {status}\n\nrun: {}\nfinished: {stamp} UTC\nsteps: {}, failures: {}\n\n",
-            self.test_id, self.id, self.steps, self.failures
-        );
+        let mut md = format!("# {} — {status}\n\n", self.test_id);
+        if let Some(q) = &quarantine {
+            md.push_str(&format!("> **QUARANTINED** since {}: {} (its result does not fail the suite)\n\n", q.since, q.reason));
+        }
+        md.push_str(&format!("run: {}\nfinished: {stamp} UTC\nsteps: {}, failures: {}\n", self.id, self.steps, self.failures));
+        if let Some(c) = class {
+            let why = self.first_failure.as_ref().map(|(r, _)| format!(" (first failure: {r})")).unwrap_or_default();
+            md.push_str(&format!("failure class: {}{why}\n", c.as_str()));
+        }
+        if let Some(st) = &stats {
+            md.push_str(&format!("history: {st}\n"));
+        }
+        md.push('\n');
         if !notes.is_empty() {
             md.push_str(&format!("## Notes\n\n{}\n\n", fastpilot_core::redact(notes)));
         }
@@ -259,18 +395,14 @@ impl Run {
             }
             md.push('\n');
         }
-        if let Some(f) = previous.as_ref().and_then(PathMemory::flakiness) {
-            md.push_str(&format!("History: {f} (before this run)\n\n"));
-        }
         md.push_str("Evidence: `steps.jsonl`, `assertions.json`, `fail-*.txt|jpg`.\n");
         let report = self.dir.join("report.md");
         fs::write(&report, fastpilot_core::redact(&md)).map_err(io(&report))?;
 
         if memory.mode == Mode::ReadWrite {
             let path = memory.memory_path(&self.test_id);
-            let mut m = memory.load(&self.test_id).unwrap_or_else(|| PathMemory { test_id: self.test_id.clone(), ..PathMemory::default() });
+            let mut m = updated;
             // Only a fully passing run becomes the hint; a failed run never overwrites it.
-            let clean = passed && self.failures == 0;
             if clean && !self.flows.is_empty() {
                 m.flow = self.flows.concat();
                 m.start = self.start.clone().unwrap_or_default();
@@ -288,16 +420,18 @@ impl Run {
                 m.consecutive_failures += 1;
                 m.stale = m.consecutive_failures >= 3;
             }
-            m.history.push(clean);
-            let extra = m.history.len().saturating_sub(20);
-            m.history.drain(..extra);
+            if let Some(c) = class {
+                m.classes.push(c);
+                let extra = m.classes.len().saturating_sub(10);
+                m.classes.drain(..extra);
+            }
             if let Some(dir) = path.parent() {
                 fs::create_dir_all(dir).map_err(io(dir))?;
             }
             let json = serde_json::to_string_pretty(&m).map_err(|source| Error::Json { path: path.clone(), source })?;
             fs::write(&path, json).map_err(io(&path))?;
         }
-        Ok(report)
+        Ok(Finished { report, class, stats, quarantine })
     }
 }
 
@@ -361,7 +495,18 @@ mod tests {
             mem.begin_run("login-ok").expect("run").finish(&mem, false, "").expect("finish");
         }
         assert!(mem.hint("login-ok", None).expect("stale note").contains("stale"));
-        assert!(md.ends_with("report.md") && md.exists());
+        assert!(md.report.ends_with("report.md") && md.report.exists());
+        assert_eq!(md.class, None);
+        // 1 pass + 4 failures: classes recorded, auto-quarantined (2 flips? no: f,p,f,f,f = 2 flips).
+        let m = mem.load("login-ok").expect("memory");
+        assert_eq!(m.classes, vec![Class::Product; 4]);
+        let q = mem.quarantined();
+        assert!(q.get("login-ok").is_some_and(|q| q.auto), "{q:?}");
+        assert!(mem.hint("login-ok", None).is_some());
+        let text = fs::read_to_string(&md.report).expect("report");
+        assert!(text.contains("history: pass 1/2"), "{text}");
+        mem.set_quarantine("login-ok", None).expect("release");
+        assert!(mem.quarantined().is_empty());
         assert!(mem.begin_run("../evil").is_err());
         let _ = fs::remove_dir_all(dir);
     }

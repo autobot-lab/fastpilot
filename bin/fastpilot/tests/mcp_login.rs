@@ -170,7 +170,7 @@ async fn assert_report_and_path_memory_over_mcp() {
     let (ok, out) = call(&client, "assert", json!({ "kind": "contains", "selector": "{ role: text, name: Budi }", "text": "Bud", "test_id": "login-ok" })).await;
     assert!(ok, "{out}");
     let (ok, out) = call(&client, "assert", json!({ "kind": "text_equals", "selector": "Dashboard", "text": "Nope", "timeout": 300 })).await;
-    assert!(!ok && out.contains("assertion_failed") && out.contains("[app]"), "{out}");
+    assert!(!ok && out.contains("assertion_failed") && out.contains("[product]"), "{out}");
     let (ok, out) = call(&client, "report", json!({ "test_id": "login-ok", "status": "pass", "notes": "first run" })).await;
     assert!(ok && out.contains("path memory updated"), "{out}");
     client.cancel().await.expect("shutdown");
@@ -186,11 +186,20 @@ async fn assert_report_and_path_memory_over_mcp() {
     let hint = out.split("```yaml\n").nth(1).and_then(|h| h.split("```").next()).expect("yaml hint").to_owned();
     let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("{hint}- assertVisible: Budi\n"), "test_id": "login-ok" })).await;
     assert!(ok, "{out}");
-    let (ok, _) = call(&client, "report", json!({ "test_id": "login-ok", "status": "pass" })).await;
-    assert!(ok);
+    let (ok, out) = call(&client, "report", json!({ "test_id": "login-ok", "status": "pass" })).await;
+    assert!(ok && out.contains("history: pass 2/2 (100%"), "{out}");
+
+    // Failure taxonomy: a failing step classifies the run; quarantine is visible until released.
+    let (ok, _) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: Nope, timeout: 300 }\n", "test_id": "login-ok" })).await;
+    assert!(!ok);
+    let (ok, out) = call(&client, "report", json!({ "test_id": "login-ok", "status": "fail", "quarantine": true, "notes": "waiting for fix" })).await;
+    assert!(ok && out.contains("failure class: product") && out.contains("history: pass 2/3"), "{out}");
+    assert!(out.contains("QUARANTINED since") && out.contains("waiting for fix"), "{out}");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "w2", "target": "examples/demo/login.html", "test_id": "login-ok" })).await;
+    assert!(ok && out.contains("QUARANTINED"), "{out}");
     client.cancel().await.expect("shutdown");
     let runs = std::fs::read_dir(dir.join("runs")).expect("runs").count();
-    assert_eq!(runs, 2);
+    assert_eq!(runs, 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

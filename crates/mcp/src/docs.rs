@@ -149,12 +149,21 @@ const MEMORY: &str = r#"# Test runs and path memory
    role+name selectors. A failed run only adds to the statistics.
 
 `FASTPILOT_MEMORY=readonly` (CI: replay reviewed hints, never rewrite) or `off`. `FASTPILOT_DIR` moves `.fastpilot/`.
+
+Statistics and triage (from the last 20 runs of the test):
+- `report` returns the failure class (product | infra | agent | flaky) and `history: pass 18/20 (90%,
+  95% CI 70–97%), pass^3 0.72, flake rate 11%` (flake rate = outcome flips between consecutive runs).
+- A test whose last 10 runs hold ≥ 2 failures and ≥ 2 flips is auto-quarantined (released after 10
+  clean runs). `report { ..., quarantine: true, notes: "why" }` quarantines by hand, `false` releases.
+  Quarantined tests still run; the hint and report.md say so; their failures do not fail a suite.
 "#;
 
 const ERRORS: &str = r#"# Failure reasons
 
-Every failure also has a category: `app` (screen not as expected: product bug or changed UI),
-`infra` (browser/device/transport), `flow` (the flow is wrong or uses an unsupported step).
+Every failure also has a category: `product` (screen not as expected: product bug, changed UI,
+crash), `infra` (browser/device/transport), `agent` (the flow is wrong or uses an unsupported step).
+Over runs a failure can also be classified `flaky` (passed on retry, or the test's history flips);
+see docs(topic: memory).
 
 | Reason | Meaning | What to do |
 |---|---|---|
