@@ -181,19 +181,47 @@ impl Snapshot {
         self.render_with(filter, max_lines, false)
     }
 
-    /// `coords` appends ` @x,y wxh` (PRD §9.1 `snapshot(coords: true)`).
+    /// Few labeled nodes on a non-empty screen (Compose/Flutter/canvas without semantics,
+    /// PRD §9.1): selectors by text will not work, coordinates must.
+    pub fn low_label_coverage(&self) -> bool {
+        let labeled = self.entries.iter().filter(|e| !e.node.name.is_empty()).count();
+        self.entries.len() >= 3 && labeled < 3 && labeled * 2 < self.entries.len()
+    }
+
+    /// `coords` appends ` @x,y wxh` (PRD §9.1 `snapshot(coords: true)`); forced on when
+    /// label coverage is low.
     pub fn render_with(&self, filter: Option<&str>, max_lines: usize, coords: bool) -> String {
+        let low = self.low_label_coverage();
+        let coords = coords || low;
         let filter = filter.map(str::to_lowercase);
+        // A filter keeps matches plus their ancestors, so a match is shown in context (a "find").
+        let mut keep = vec![filter.is_none(); self.entries.len()];
+        if let Some(f) = filter.as_deref() {
+            for (i, e) in self.entries.iter().enumerate() {
+                if !(e.node.role.contains(f) || e.node.name.to_lowercase().contains(f)) {
+                    continue;
+                }
+                keep[i] = true;
+                let mut depth = e.depth;
+                for j in (0..i).rev() {
+                    if depth == 0 {
+                        break;
+                    }
+                    if self.entries[j].depth < depth {
+                        keep[j] = true;
+                        depth = self.entries[j].depth;
+                    }
+                }
+            }
+        }
         let lines: Vec<String> = self
             .entries
             .iter()
-            .filter(|e| {
-                filter.as_deref().is_none_or(|f| {
-                    e.node.role.contains(f) || e.node.name.to_lowercase().contains(f)
-                })
-            })
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(e, _)| e)
             .map(|e| {
-                let l = line(e, filter.is_none());
+                let l = line(e, true);
                 match (coords, e.node.bounds) {
                     (true, Some(b)) => format!("{l} @{:.0},{:.0} {:.0}x{:.0}", b.x, b.y, b.w, b.h),
                     _ => l,
@@ -210,6 +238,9 @@ impl Snapshot {
                 "\n... +{} nodes (scroll or snapshot(filter:) to see more)",
                 lines.len() - max_lines
             ));
+        }
+        if low {
+            out.push_str("\nlow_label_coverage: few labeled nodes; tap by ref or { point: [x, y] } (coords shown), or take a screenshot (annotate: som)");
         }
         out
     }
@@ -578,6 +609,14 @@ mod tests {
         // Secure values are never matched or shown.
         assert!(s.resolve(&text("hunter2"), Intent::Find).is_err());
         assert!(!s.render(None, 120).contains("hunter2"));
+    }
+
+    #[test]
+    fn filter_shows_matches_with_their_ancestors() {
+        let mut refs = RefRegistry::default();
+        let dialog = with(n("dialog", "Hapus?"), vec![n("text", "Yakin?"), n("button", "Ya"), n("button", "Batal")]);
+        let s = Snapshot::build("t", "u", vec![n("button", "Menu"), dialog], &mut refs);
+        assert_eq!(s.render(Some("batal"), 120), "screen \"t\" (u)\ne2 dialog \"Hapus?\"\n  e5 button \"Batal\"");
     }
 
     #[test]

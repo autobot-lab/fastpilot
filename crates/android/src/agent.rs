@@ -1,7 +1,8 @@
 //! Client for on-device agents (agent-android/PROTOCOL.md, ios-runner/PROTOCOL.md): 4-byte BE
 //! length + JSON frames. Shared by the Android and iOS drivers.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -12,8 +13,10 @@ use tokio::sync::Mutex;
 use crate::Error;
 
 pub struct Agent {
-    stream: Mutex<TcpStream>,
+    stream: Arc<Mutex<TcpStream>>,
     next: AtomicU64,
+    /// Set when an exchange timed out mid-frame: the byte stream can no longer be trusted.
+    broken: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -23,7 +26,11 @@ impl Agent {
             match TcpStream::connect(("127.0.0.1", port)).await {
                 Ok(s) => {
                     s.set_nodelay(true).ok();
-                    let agent = Self { stream: Mutex::new(s), next: AtomicU64::new(1) };
+                    let agent = Self {
+                        stream: Arc::new(Mutex::new(s)),
+                        next: AtomicU64::new(1),
+                        broken: Arc::new(AtomicBool::new(false)),
+                    };
                     // adb accepts forwarded connections before the device side answers.
                     match agent.call("hello", json!({})).await {
                         Ok(_) => return Ok(agent),
@@ -37,33 +44,45 @@ impl Agent {
         Err(last.unwrap_or(Error::Agent("agent not reachable".into())))
     }
 
+    /// One request/response. The exchange runs on its own task, so a caller dropped mid-call
+    /// (fail-fast parallel, retry timeout) never leaves half a frame on the wire.
     pub async fn call(&self, cmd: &str, args: Value) -> Result<Value, Error> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(Error::Agent("agent connection broken after a timeout; restart the session".into()));
+        }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let mut msg = args;
         msg["id"] = id.into();
         msg["cmd"] = cmd.into();
         let body = msg.to_string();
-        let mut s = self.stream.lock().await;
-        let exchange = async {
-            let mut frame = (body.len() as u32).to_be_bytes().to_vec();
-            frame.extend_from_slice(body.as_bytes());
-            s.write_all(&frame).await?;
-            // Skip replies of earlier calls whose futures were dropped mid-flight.
-            loop {
-                let mut len = [0u8; 4];
-                s.read_exact(&mut len).await?;
-                let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
-                s.read_exact(&mut buf).await?;
-                let v: Value = serde_json::from_slice(&buf).unwrap_or_default();
-                if v["id"].as_u64() == Some(id) {
-                    return Ok::<_, std::io::Error>(v);
+        let (stream, broken, name) = (self.stream.clone(), self.broken.clone(), cmd.to_owned());
+        let task = tokio::spawn(async move {
+            let mut s = stream.lock().await;
+            let exchange = async {
+                let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+                frame.extend_from_slice(body.as_bytes());
+                s.write_all(&frame).await?;
+                // Skip replies to earlier requests (only possible after a broken exchange).
+                loop {
+                    let mut len = [0u8; 4];
+                    s.read_exact(&mut len).await?;
+                    let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+                    s.read_exact(&mut buf).await?;
+                    let v: Value = serde_json::from_slice(&buf).unwrap_or_default();
+                    if v["id"].as_u64() == Some(id) {
+                        return Ok::<_, std::io::Error>(v);
+                    }
+                }
+            };
+            match tokio::time::timeout(Duration::from_secs(30), exchange).await {
+                Ok(r) => r.map_err(Error::io),
+                Err(_) => {
+                    broken.store(true, Ordering::SeqCst);
+                    Err(Error::Agent(format!("{name} timed out")))
                 }
             }
-        };
-        let v = tokio::time::timeout(Duration::from_secs(30), exchange)
-            .await
-            .map_err(|_| Error::Agent(format!("{cmd} timed out")))?
-            .map_err(Error::io)?;
+        });
+        let v = task.await.map_err(|e| Error::Agent(e.to_string()))??;
         if v["ok"].as_bool() == Some(true) {
             Ok(v)
         } else {

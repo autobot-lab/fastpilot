@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use dsl::{Branch, Flow, FlowError, FlowStep, Step, check_flow, flow_to_yaml, parse_flow, redact};
-pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow};
+pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
 pub use error::{Error, Result};
 pub use selector::Selector;
 pub use snapshot::{Entry, Intent, Node, Rect, RefRegistry, Snapshot, diff};
@@ -100,6 +100,15 @@ pub trait Driver: Send + Sync {
     }
     async fn upload(&self, _sel: &Selector, _files: &[String]) -> Result<()> {
         Err(Error::Unsupported("uploadFile is not supported by this driver".into()))
+    }
+    /// Screenshot with numbered boxes (Set-of-Mark) drawn at `marks` (ref, box); drivers that
+    /// cannot draw return a plain screenshot.
+    async fn screenshot_annotated(&self, _marks: &[(String, Rect)]) -> Result<Vec<u8>> {
+        self.screenshot().await
+    }
+    /// Console errors, failed requests and similar, newest last (attached to failures).
+    async fn diagnostics(&self) -> Vec<String> {
+        Vec::new()
     }
     /// Maestro `launchApp`: package / package/activity / bundleId.
     async fn launch_app(&self, app: &str) -> Result<()> {

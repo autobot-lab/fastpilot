@@ -1,0 +1,8 @@
+# Reference scenario for `fastpilot stability` (needs FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123).
+- session: { start: web1, platform: web, target: "examples/demo/login.html" }
+- inputText: { into: "Email", text: "a@b.com" }
+- inputText: { into: "Password", text: "${DEMO_PASS}" }
+- tapOn: "Masuk"
+- assertVisible: "Budi"
+- tapOn: "Keluar"
+- assertVisible: "Masuk ke Akun"

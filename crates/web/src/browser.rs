@@ -28,6 +28,7 @@ pub struct Browser {
 impl Browser {
     pub async fn launch(opts: LaunchOptions) -> Result<Arc<Self>, Error> {
         let exe = opts.executable.or_else(find_chrome).ok_or(Error::ChromeNotFound)?;
+        reap_orphans();
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let profile = std::env::temp_dir().join(format!("fastpilot-{}-{nanos}", std::process::id()));
         let mut cmd = Command::new(&exe);
@@ -83,6 +84,8 @@ impl Browser {
             while matches!(rest.read(&mut buf).await, Ok(n) if n > 0) {}
         });
         let cdp = Cdp::connect(&ws).await?;
+        // Popups (window.open) of our pages are attached as they appear.
+        let _ = cdp.call(None, "Target.setDiscoverTargets", json!({ "discover": true })).await;
         Ok(Arc::new(Self { cdp, child: Some(child), profile: Some(profile) }))
     }
 
@@ -103,13 +106,15 @@ impl Browser {
                 "no DevToolsActivePort found; enable chrome://inspect/#remote-debugging in Chrome (M144+) or pass a cdp endpoint".into(),
             ))?,
         };
-        Ok(Arc::new(Self { cdp: Cdp::connect(&ws).await?, child: None, profile: None }))
+        let cdp = Cdp::connect(&ws).await?;
+        let _ = cdp.call(None, "Target.setDiscoverTargets", json!({ "discover": true })).await;
+        Ok(Arc::new(Self { cdp, child: None, profile: None }))
     }
 
     /// A page-level endpoint (e.g. an Android WebView's `/json/list` entry): no Target domain.
     pub async fn connect_page(ws_url: &str, target_id: &str) -> Result<WebPage, Error> {
         let browser = Arc::new(Self { cdp: Cdp::connect(ws_url).await?, child: None, profile: None });
-        WebPage::init(browser, None, target_id.to_owned(), None).await
+        WebPage::init(browser, None, target_id.to_owned(), None, None).await
     }
 
     pub fn is_closed(&self) -> bool {
@@ -137,7 +142,7 @@ impl Browser {
         };
         let a = self.cdp.call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true })).await?;
         let session = a["sessionId"].as_str().ok_or(Error::Unexpected("sessionId"))?.to_owned();
-        WebPage::init(self.clone(), Some(session), target, None).await
+        WebPage::init(self.clone(), Some(session), target, None, None).await
     }
 }
 
@@ -151,6 +156,36 @@ impl Drop for Browser {
         }
     }
 }
+
+/// Chrome processes left by a fastpilot that was killed (SIGKILL skips `kill_on_drop`):
+/// profiles are `fastpilot-<pid>-<nanos>`; when `<pid>` is gone, kill its Chrome and delete it.
+#[cfg(unix)]
+fn reap_orphans() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("fastpilot-") else { continue };
+        let parts: Vec<&str> = rest.split('-').collect();
+        let [pid, nanos] = parts.as_slice() else { continue };
+        if !pid.bytes().all(|b| b.is_ascii_digit()) || !nanos.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !alive {
+            let dir = e.path();
+            tracing::debug!(dir = %dir.display(), "reaping orphaned chrome profile");
+            let _ = std::process::Command::new("pkill").arg("-f").arg(format!("--user-data-dir={}", dir.display())).status();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn reap_orphans() {}
 
 /// Plain HTTP/1.1 GET against a local DevTools endpoint (`/json/version`, `/json/list`).
 /// Reads by Content-Length: Chrome keeps the connection open despite `Connection: close`.

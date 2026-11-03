@@ -52,6 +52,28 @@ pub struct PathMemory {
     pub last_pass: String,
     /// Most recent failures (UTC), newest last, capped at 10.
     pub failed_at: Vec<String>,
+    /// Pass/fail of the last 20 runs, newest last (flake statistics).
+    #[serde(default)]
+    pub history: Vec<bool>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Three failed runs in a row: the hint is withheld until a run passes again.
+    #[serde(default)]
+    pub stale: bool,
+}
+
+impl PathMemory {
+    /// `flaky: 2/10 recent runs failed`, when recent runs both passed and failed.
+    pub fn flakiness(&self) -> Option<String> {
+        let fails = self.history.iter().filter(|p| !**p).count();
+        (fails > 0 && fails < self.history.len())
+            .then(|| format!("flaky: {fails}/{} recent runs failed", self.history.len()))
+    }
+}
+
+/// The `(...)` part of a `screen "T" (location)` header.
+fn location(header: &str) -> &str {
+    header.rsplit_once('(').map(|(_, l)| l.trim_end_matches(')')).unwrap_or(header)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,16 +116,30 @@ impl Memory {
         serde_json::from_str(&text).ok()
     }
 
-    /// Text shown to the AI when it starts a session for `test_id`.
-    pub fn hint(&self, test_id: &str) -> Option<String> {
+    /// Text shown to the AI when it starts a session for `test_id`. `current` is the header of
+    /// the screen the session starts on, to flag a hint recorded somewhere else.
+    pub fn hint(&self, test_id: &str, current: Option<&str>) -> Option<String> {
         let m = self.load(test_id)?;
-        (!m.flow.is_empty()).then(|| {
-            format!(
-                "path memory for {test_id}: passed {}x, failed {}x, last pass {}, recorded from {} ({} ms).\n\
-                 Hint (send as one run_flow; if a step fails, explore from there):\n```yaml\n{}```",
-                m.pass_count, m.fail_count, m.last_pass, m.start, m.duration_ms, m.flow
-            )
-        })
+        if m.flow.is_empty() {
+            return None;
+        }
+        if m.stale {
+            return Some(format!(
+                "path memory for {test_id} is stale ({} failed runs in a row); explore, then report pass to refresh it",
+                m.consecutive_failures
+            ));
+        }
+        let mut notes = Vec::new();
+        if let Some(cur) = current.filter(|c| !m.start.is_empty() && location(c) != location(&m.start)) {
+            notes.push(format!("recorded from {}, now on {} — the hint may not apply", location(&m.start), location(cur)));
+        }
+        notes.extend(m.flakiness());
+        let notes = if notes.is_empty() { String::new() } else { format!("\n{}", notes.join("\n")) };
+        Some(format!(
+            "path memory for {test_id}: passed {}x, failed {}x, last pass {}, recorded from {} ({} ms).{notes}\n\
+             Hint (send as one run_flow; if a step fails, explore from there):\n```yaml\n{}```",
+            m.pass_count, m.fail_count, m.last_pass, m.start, m.duration_ms, m.flow
+        ))
     }
 
     pub fn begin_run(&self, test_id: &str) -> Result<Run> {
@@ -195,6 +231,7 @@ impl Run {
 
     /// Close the run: `report.md`, `assertions.json`, and the path memory update.
     pub fn finish(self, memory: &Memory, passed: bool, notes: &str) -> Result<PathBuf> {
+        let previous = memory.load(&self.test_id);
         let stamp = utc_stamp(now_secs(), false);
         let assertions = self.dir.join("assertions.json");
         let json = serde_json::to_string_pretty(&self.assertions).map_err(|source| Error::Json { path: assertions.clone(), source })?;
@@ -222,6 +259,9 @@ impl Run {
             }
             md.push('\n');
         }
+        if let Some(f) = previous.as_ref().and_then(PathMemory::flakiness) {
+            md.push_str(&format!("History: {f} (before this run)\n\n"));
+        }
         md.push_str("Evidence: `steps.jsonl`, `assertions.json`, `fail-*.txt|jpg`.\n");
         let report = self.dir.join("report.md");
         fs::write(&report, fastpilot_core::redact(&md)).map_err(io(&report))?;
@@ -230,19 +270,27 @@ impl Run {
             let path = memory.memory_path(&self.test_id);
             let mut m = memory.load(&self.test_id).unwrap_or_else(|| PathMemory { test_id: self.test_id.clone(), ..PathMemory::default() });
             // Only a fully passing run becomes the hint; a failed run never overwrites it.
-            if passed && self.failures == 0 && !self.flows.is_empty() {
+            let clean = passed && self.failures == 0;
+            if clean && !self.flows.is_empty() {
                 m.flow = self.flows.concat();
                 m.start = self.start.clone().unwrap_or_default();
                 m.screens = self.screens.clone();
                 m.duration_ms = self.duration_ms;
                 m.pass_count += 1;
                 m.last_pass = stamp;
-            } else {
+                m.consecutive_failures = 0;
+                m.stale = false;
+            } else if !clean {
                 m.fail_count += 1;
                 m.failed_at.push(stamp);
                 let extra = m.failed_at.len().saturating_sub(10);
                 m.failed_at.drain(..extra);
+                m.consecutive_failures += 1;
+                m.stale = m.consecutive_failures >= 3;
             }
+            m.history.push(clean);
+            let extra = m.history.len().saturating_sub(20);
+            m.history.drain(..extra);
             if let Some(dir) = path.parent() {
                 fs::create_dir_all(dir).map_err(io(dir))?;
             }
@@ -299,13 +347,20 @@ mod tests {
         run.record_flow("- tapOn: Masuk\n".into(), &report, None).expect("record");
         run.record_assertion(Assertion { session: "w".into(), what: "visible Budi".into(), pass: false, detail: String::new() });
         run.finish(&mem, false, "").expect("finish");
-        assert!(mem.hint("login-ok").is_none(), "failed run must not create a hint");
+        assert!(mem.hint("login-ok", None).is_none(), "failed run must not create a hint");
 
         let mut run = mem.begin_run("login-ok").expect("run");
         run.record_flow("- tapOn: Masuk\n".into(), &report, None).expect("record");
         let md = run.finish(&mem, true, "ok").expect("finish");
-        let hint = mem.hint("login-ok").expect("hint");
+        let hint = mem.hint("login-ok", Some("[w] screen \"Login\" (u)")).expect("hint");
         assert!(hint.contains("passed 1x, failed 1x") && hint.contains("- tapOn: Masuk"), "{hint}");
+        assert!(hint.contains("flaky: 1/2") && !hint.contains("may not apply"), "{hint}");
+        let moved = mem.hint("login-ok", Some("screen \"X\" (other)")).expect("hint");
+        assert!(moved.contains("now on other"), "{moved}");
+        for _ in 0..3 {
+            mem.begin_run("login-ok").expect("run").finish(&mem, false, "").expect("finish");
+        }
+        assert!(mem.hint("login-ok", None).expect("stale note").contains("stale"));
         assert!(md.ends_with("report.md") && md.exists());
         assert!(mem.begin_run("../evil").is_err());
         let _ = fs::remove_dir_all(dir);

@@ -1,9 +1,9 @@
 //! Flow engine: multi-session registry, auto-wait, lookup retry, stop-early, per-session diffs.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -17,10 +17,12 @@ const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
 const ASSERT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Live sessions of one fastpilot process, across platforms (PRD §8.1).
-#[derive(Default)]
+/// Live sessions of one fastpilot process, across platforms (PRD §8.1). Drivers are shared
+/// (`Arc`) so a flow can run on a cloned registry while other tools keep using the original;
+/// `absorb` merges the flow's session changes back.
+#[derive(Default, Clone)]
 pub struct SessionRegistry {
-    sessions: HashMap<SessionId, Box<dyn Driver>>,
+    sessions: HashMap<SessionId, Arc<dyn Driver>>,
     active: Option<SessionId>,
 }
 
@@ -29,12 +31,36 @@ impl SessionRegistry {
         if self.sessions.contains_key(&id) {
             return Err(Error::Session(format!("session `{id}` already exists")));
         }
-        self.sessions.insert(id.clone(), driver);
+        self.sessions.insert(id.clone(), Arc::from(driver));
         self.active = Some(id);
         Ok(())
     }
 
-    pub fn remove(&mut self, id: &str) -> Option<Box<dyn Driver>> {
+    pub fn shared(&self, id: &str) -> Option<Arc<dyn Driver>> {
+        self.sessions.get(id).cloned()
+    }
+
+    /// Apply what a flow did on `after` (a clone taken as `before`): sessions it started,
+    /// replaced or stopped, and the new active session. Sessions other tools changed meanwhile
+    /// are left alone.
+    pub fn absorb(&mut self, before: &SessionRegistry, after: SessionRegistry) {
+        for (id, d) in &before.sessions {
+            let still_same = self.sessions.get(id).is_some_and(|cur| Arc::ptr_eq(cur, d));
+            if !after.sessions.contains_key(id) && still_same {
+                self.sessions.remove(id);
+            }
+        }
+        for (id, d) in after.sessions {
+            if !before.sessions.get(&id).is_some_and(|b| Arc::ptr_eq(b, &d)) {
+                self.sessions.insert(id, d);
+            }
+        }
+        if let Some(a) = after.active.filter(|a| self.sessions.contains_key(a)) {
+            self.active = Some(a);
+        }
+    }
+
+    pub fn remove(&mut self, id: &str) -> Option<Arc<dyn Driver>> {
         if self.active.as_deref() == Some(id) {
             self.active = None;
         }
@@ -97,15 +123,34 @@ pub struct RunOptions {
     /// Initial active session; defaults to the registry's active session.
     pub session: Option<SessionId>,
     pub stop_on_fail: bool,
+    /// Whole-flow budget; remaining steps fail with `timeout` once it is spent.
+    pub deadline: Duration,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
+        let secs = std::env::var("FASTPILOT_FLOW_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(300);
         Self {
             session: None,
             stop_on_fail: true,
+            deadline: Duration::from_secs(secs),
         }
     }
+}
+
+/// Existing sessions a flow will touch, known before running it (for per-session locking).
+pub fn sessions_used(flow: &Flow, initial: Option<&str>) -> BTreeSet<SessionId> {
+    let mut out: BTreeSet<SessionId> = initial.map(str::to_owned).into_iter().collect();
+    for s in &flow.steps {
+        match &s.step {
+            Step::UseSession(id) | Step::StartSession { id, reset: true, .. } => {
+                out.insert(id.clone());
+            }
+            Step::Parallel(b) => out.extend(b.iter().map(|b| b.session.clone())),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +226,7 @@ fn prefix(session: &Option<SessionId>) -> String {
 struct Ctx {
     records: Mutex<Vec<StepRecord>>,
     stop_on_fail: bool,
+    deadline: Instant,
 }
 
 impl Ctx {
@@ -211,12 +257,19 @@ pub async fn run_flow(
     let ctx = Ctx {
         records: Mutex::new(Vec::new()),
         stop_on_fail: opts.stop_on_fail,
+        deadline: started + opts.deadline,
     };
     let mut baselines: Vec<(SessionId, Option<Snapshot>)> = Vec::new();
     let mut active = opts.session.clone().or_else(|| reg.active().map(str::to_owned));
     let mut index = 0;
 
     for fs in &flow.steps {
+        if Instant::now() >= ctx.deadline {
+            index += 1;
+            let msg = format!("flow exceeded its {}s budget (FASTPILOT_FLOW_TIMEOUT)", opts.deadline.as_secs());
+            record(&ctx, index, active.as_deref(), &fs.step, Instant::now(), Err(Error::Timeout(msg)));
+            break;
+        }
         let ok = match &fs.step {
             Step::StartSession { id, platform, target, reset } => {
                 index += 1;
@@ -315,11 +368,18 @@ pub async fn run_flow(
             (None, Some(base)) => diff(base, &snap),
             _ => None,
         };
-        states.push(match lines {
+        let mut block = match lines {
             Some(l) if l.is_empty() => format!("[{sid}] {}\n  (no changes)", snap.header()),
             Some(l) => format!("[{sid}] {}\n  {}", snap.header(), l.join("\n  ")),
             None => format!("[{sid}] {}", snap.render(None, DEFAULT_MAX_LINES)),
-        });
+        };
+        if failed_here.is_some() {
+            let diag = d.diagnostics().await;
+            if !diag.is_empty() {
+                block.push_str(&format!("\n[{sid}] recent errors:\n  {}", diag.join("\n  ")));
+            }
+        }
+        states.push(block);
     }
     FlowReport {
         total: leaf_count(&flow.steps),
@@ -377,6 +437,11 @@ async fn run_branch(
     };
     let mut failed = false;
     for (i, s) in steps.iter().enumerate() {
+        if Instant::now() >= ctx.deadline {
+            let msg = "flow exceeded its time budget (FASTPILOT_FLOW_TIMEOUT)".to_owned();
+            record(ctx, before + i + 1, Some(sid), &s.step, Instant::now(), Err(Error::Timeout(msg)));
+            return Err(());
+        }
         if !run_one(d, sid, &s.step, before + i + 1, ctx).await {
             failed = true;
             if ctx.stop_on_fail {

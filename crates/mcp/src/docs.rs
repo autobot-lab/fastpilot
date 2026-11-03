@@ -55,7 +55,15 @@ Never XPath.
 - tapOn prefers interactive nodes, inputText prefers text fields.
 - Several exact matches: the first (topmost) wins. Several fuzzy matches: the step fails `ambiguous`
   and lists candidates; pick one by ref.
-- Refs are stable hashes of role + name + path, valid for the session while the node exists.
+- Refs follow the element while it exists (session-scoped); a ref never jumps to another element.
+- `snapshot { filter: "batal" }` finds nodes with their ancestors; `coords: true` adds boxes.
+
+Apps without accessibility labels (`low_label_coverage` in the snapshot):
+- Jetpack Compose: set `Modifier.semantics { testTagsAsResourceId = true }` on the root and
+  `Modifier.testTag("login")`, then use `{ id: login }`.
+- Flutter: wrap widgets in `Semantics(label: ...)` / set `identifier`; Flutter builds semantics only
+  while an accessibility client is connected (the agent's UiAutomation counts as one).
+- Otherwise: `screenshot { annotate: som }` lists every target box; tap with `{ point: [x, y] }`.
 "#;
 
 const PARALLEL: &str = r#"# Multi-session and parallel

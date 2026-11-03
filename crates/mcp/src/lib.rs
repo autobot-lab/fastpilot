@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use fastpilot_core::{
     AssertKind, Driver, Error, FlowReport, Launcher, Platform, RunOptions, Selector, SessionRegistry, assert, check_flow,
-    flow_to_yaml, redact, run_flow,
+    flow_to_yaml, redact, run_flow, sessions_used,
 };
 use fastpilot_memory::{Assertion, Memory, Run};
 use fastpilot_web::{Browser, LaunchOptions};
@@ -20,7 +20,7 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Starts drivers for `session start` and `session: { start: ... }` steps. One Chrome process
 /// is launched lazily, shared by every web session, and relaunched if it died.
@@ -70,6 +70,9 @@ struct State {
     memory: Memory,
     /// Open runs by test id, closed by `report`.
     runs: Mutex<HashMap<String, Run>>,
+    /// One lock per session: a flow holds the sessions it touches, so tools on *other*
+    /// sessions never wait for it (the registry lock itself is only held briefly).
+    busy: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Clone)]
@@ -119,15 +122,21 @@ pub struct CheckFlowArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SnapshotArgs {
     pub session: Option<String>,
-    /// Only nodes whose role or name contains this text (case-insensitive).
+    /// Find: only nodes whose role or name contains this text (case-insensitive), with their ancestors.
     pub filter: Option<String>,
     /// Lift the 120-line cap.
     pub full: Option<bool>,
+    /// Append ` @x,y wxh` boxes.
+    pub coords: Option<bool>,
+    /// Write the full snapshot to `.fastpilot/snapshots/` and return only its path and size.
+    pub file: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ScreenshotArgs {
     pub session: Option<String>,
+    /// `som`: Set-of-Mark — numbered boxes per target (drawn on web) plus a ref -> coordinates list.
+    pub annotate: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -173,15 +182,48 @@ fn err(e: &Error) -> Result<CallToolResult, ErrorData> {
 }
 
 impl FastPilot {
-    async fn start_session(&self, reg: &mut SessionRegistry, args: &SessionArgs) -> fastpilot_core::Result<String> {
+    /// Lock sessions in a fixed (sorted) order, so two flows can never deadlock.
+    async fn lock_sessions(&self, ids: impl IntoIterator<Item = String>) -> Vec<OwnedMutexGuard<()>> {
+        let mut ids: Vec<String> = ids.into_iter().collect();
+        ids.sort();
+        ids.dedup();
+        let locks: Vec<Arc<Mutex<()>>> = {
+            let mut busy = self.state.busy.lock().await;
+            ids.into_iter().map(|id| busy.entry(id).or_default().clone()).collect()
+        };
+        let mut guards = Vec::with_capacity(locks.len());
+        for l in locks {
+            guards.push(l.lock_owned().await);
+        }
+        guards
+    }
+
+    /// The session's driver plus its lock, without holding the registry lock.
+    async fn session_driver(&self, id: Option<&str>) -> fastpilot_core::Result<(String, Arc<dyn Driver>, Vec<OwnedMutexGuard<()>>)> {
+        let (id, driver) = {
+            let reg = self.state.registry.lock().await;
+            let (id, _) = reg.pick(id)?;
+            let id = id.to_owned();
+            let driver = reg.shared(&id).ok_or_else(|| Error::Session(format!("unknown session `{id}`")))?;
+            (id, driver)
+        };
+        let guards = self.lock_sessions([id.clone()]).await;
+        Ok((id, driver, guards))
+    }
+
+    async fn start_session(&self, args: &SessionArgs) -> fastpilot_core::Result<String> {
         let name = args.platform.as_deref().unwrap_or("web");
         let platform =
             Platform::parse(name).ok_or_else(|| Error::Flow(format!("unknown platform `{name}` (web, android, ios)")))?;
-        let id = match &args.id {
-            Some(id) if reg.contains(id) => return Err(Error::Session(format!("session `{id}` already exists"))),
-            Some(id) => id.clone(),
-            None => (1..).map(|n| format!("{platform}{n}")).find(|id| !reg.contains(id)).unwrap_or_default(),
+        let id = {
+            let reg = self.state.registry.lock().await;
+            match &args.id {
+                Some(id) if reg.contains(id) => return Err(Error::Session(format!("session `{id}` already exists"))),
+                Some(id) => id.clone(),
+                None => (1..).map(|n| format!("{platform}{n}")).find(|id| !reg.contains(id)).unwrap_or_default(),
+            }
         };
+        let _busy = self.lock_sessions([id.clone()]).await;
         let driver: Box<dyn Driver> = match (platform, args.mode.as_deref().unwrap_or("launch")) {
             (Platform::Web, "attach") => {
                 let browser = Browser::connect(args.endpoint.as_deref()).await?;
@@ -197,16 +239,20 @@ impl FastPilot {
             driver.open(target).await?;
             let _ = driver.wait_idle(Duration::from_secs(3)).await;
         }
-        if args.target.is_some() || args.mode.as_deref() == Some("attach") {
+        let mut header = None;
+        if args.target.is_some() || args.mode.as_deref() == Some("attach") || args.test_id.is_some() {
             match driver.snapshot().await {
-                Ok(s) => text = format!("{text}\n{}", s.render(None, 120)),
+                Ok(s) => {
+                    header = Some(s.header());
+                    text = format!("{text}\n{}", s.render(None, 120));
+                }
                 Err(e) => text = format!("{text}\nsnapshot failed: {e}"),
             }
         }
-        if let Some(hint) = args.test_id.as_deref().and_then(|t| self.state.memory.hint(t)) {
+        if let Some(hint) = args.test_id.as_deref().and_then(|t| self.state.memory.hint(t, header.as_deref())) {
             text = format!("{text}\n\n{hint}");
         }
-        reg.insert(id, driver)?;
+        self.state.registry.lock().await.insert(id, driver)?;
         Ok(text)
     }
 
@@ -253,6 +299,7 @@ impl FastPilot {
                 launcher: PlatformLauncher::new(web),
                 memory: Memory::from_env(),
                 runs: Mutex::new(HashMap::new()),
+                busy: Mutex::new(HashMap::new()),
             }),
             tool_router: Self::tool_router(),
         }
@@ -260,22 +307,27 @@ impl FastPilot {
 
     #[tool(description = "Session lifecycle: start (returns the first snapshot, and the path-memory hint when test_id is given), stop, list, devices, start_device. Web sessions launch their own Chrome or attach to yours (mode: attach).")]
     async fn session(&self, Parameters(args): Parameters<SessionArgs>) -> Result<CallToolResult, ErrorData> {
-        let mut reg = self.state.registry.lock().await;
         match args.action.as_str() {
-            "start" => match self.start_session(&mut reg, &args).await {
+            "start" => match self.start_session(&args).await {
                 Ok(text) => ok(text),
                 Err(e) => err(&e),
             },
             "stop" => {
-                let Some(id) = args.id.or_else(|| reg.active().map(str::to_owned)) else {
+                let id = match args.id.clone() {
+                    Some(id) => Some(id),
+                    None => self.state.registry.lock().await.active().map(str::to_owned),
+                };
+                let Some(id) = id else {
                     return fail("no session to stop");
                 };
-                match reg.remove(&id) {
+                let _busy = self.lock_sessions([id.clone()]).await;
+                match self.state.registry.lock().await.remove(&id) {
                     Some(_) => ok(format!("session {id} stopped")),
                     None => fail(format!("unknown session `{id}`")),
                 }
             }
             "list" => {
+                let reg = self.state.registry.lock().await;
                 let active = reg.active().map(str::to_owned);
                 let lines: Vec<String> = reg
                     .ids()
@@ -295,23 +347,31 @@ impl FastPilot {
 
     #[tool(description = "Run a YAML flow (batch of steps, may span sessions and `parallel:` blocks). Auto-waits, stops at the first failure, and returns per-step timing plus a diff (or full snapshot) per touched session. Pass test_id to record evidence for `report`.")]
     async fn run_flow(&self, Parameters(args): Parameters<RunFlowArgs>) -> Result<CallToolResult, ErrorData> {
-        let mut reg = self.state.registry.lock().await;
-        let flow = match check_flow(&args.flow, &reg.ids()) {
-            Ok(f) => f,
-            Err(errors) => return fail(errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")),
+        let (flow, before) = {
+            let reg = self.state.registry.lock().await;
+            let flow = match check_flow(&args.flow, &reg.ids()) {
+                Ok(f) => f,
+                Err(errors) => return fail(errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")),
+            };
+            if let Some(s) = args.session.as_deref().filter(|s| !reg.contains(s)) {
+                return fail(format!("unknown session `{s}`"));
+            }
+            (flow, reg.clone())
         };
-        if let Some(s) = args.session.as_deref().filter(|s| !reg.contains(s)) {
-            return fail(format!("unknown session `{s}`"));
-        }
+        let initial = args.session.clone().or_else(|| before.active().map(str::to_owned));
+        let _busy = self.lock_sessions(sessions_used(&flow, initial.as_deref())).await;
         let opts = RunOptions {
             session: args.session,
             stop_on_fail: args.stop_on_fail.unwrap_or(true),
+            ..RunOptions::default()
         };
-        let report = run_flow(&mut reg, &self.state.launcher, &flow, &opts).await;
+        let mut local = before.clone();
+        let report = run_flow(&mut local, &self.state.launcher, &flow, &opts).await;
         let mut text = report.to_string();
         if let Some(t) = &args.test_id {
-            text.push_str(&self.record(t, &flow, &report, &reg).await);
+            text.push_str(&self.record(t, &flow, &report, &local).await);
         }
+        self.state.registry.lock().await.absorb(&before, local);
         if report.passed() { ok(text) } else { fail(text) }
     }
 
@@ -326,30 +386,60 @@ impl FastPilot {
 
     #[tool(description = "Compact text snapshot of a session (one node per line, stable refs eN). Rarely needed: run_flow already returns state.")]
     async fn snapshot(&self, Parameters(args): Parameters<SnapshotArgs>) -> Result<CallToolResult, ErrorData> {
-        let reg = self.state.registry.lock().await;
-        let (id, driver) = match reg.pick(args.session.as_deref()) {
+        let (id, driver, _busy) = match self.session_driver(args.session.as_deref()).await {
             Ok(p) => p,
             Err(e) => return err(&e),
         };
-        let max = if args.full == Some(true) { usize::MAX } else { 120 };
-        match driver.snapshot().await {
-            Ok(s) => ok(format!("[{id}] {}", s.render(args.filter.as_deref(), max))),
-            Err(e) => err(&e),
+        let max = if args.full == Some(true) || args.file == Some(true) { usize::MAX } else { 120 };
+        let snap = match driver.snapshot().await {
+            Ok(s) => s,
+            Err(e) => return err(&e),
+        };
+        let text = redact(&format!("[{id}] {}", snap.render_with(args.filter.as_deref(), max, args.coords == Some(true))));
+        if args.file != Some(true) {
+            return ok(text);
+        }
+        let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("snapshots");
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = dir.join(format!("{id}-{ms}.txt"));
+        match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &text)) {
+            Ok(()) => ok(format!("[{id}] {} — {} lines written to {}", snap.header(), text.lines().count(), path.display())),
+            Err(e) => fail(format!("cannot write {}: {e}", path.display())),
         }
     }
 
     #[tool(description = "JPEG screenshot of a session, for visual fallback and evidence.")]
     async fn screenshot(&self, Parameters(args): Parameters<ScreenshotArgs>) -> Result<CallToolResult, ErrorData> {
-        let reg = self.state.registry.lock().await;
-        let (_, driver) = match reg.pick(args.session.as_deref()) {
+        let (_, driver, _busy) = match self.session_driver(args.session.as_deref()).await {
             Ok(p) => p,
             Err(e) => return err(&e),
         };
-        match driver.screenshot().await {
-            Ok(jpeg) => Ok(CallToolResult::success(vec![ContentBlock::image(
-                base64::engine::general_purpose::STANDARD.encode(jpeg),
-                "image/jpeg",
-            )])),
+        let image = |jpeg: Vec<u8>| ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(jpeg), "image/jpeg");
+        if args.annotate.as_deref() != Some("som") {
+            return match driver.screenshot().await {
+                Ok(jpeg) => Ok(CallToolResult::success(vec![image(jpeg)])),
+                Err(e) => err(&e),
+            };
+        }
+        let snap = match driver.snapshot().await {
+            Ok(s) => s,
+            Err(e) => return err(&e),
+        };
+        let marks: Vec<(String, fastpilot_core::Rect)> = snap
+            .entries
+            .iter()
+            .filter(|e| !matches!(e.node.role.as_str(), "text" | "heading" | "image"))
+            .filter_map(|e| e.node.bounds.filter(|b| b.w > 0.0 && b.h > 0.0).map(|b| (e.r#ref.clone(), b)))
+            .collect();
+        let list: Vec<String> = marks
+            .iter()
+            .map(|(r, b)| format!("{r} @{:.0},{:.0} {:.0}x{:.0}", b.x, b.y, b.w, b.h))
+            .collect();
+        match driver.screenshot_annotated(&marks).await {
+            Ok(jpeg) => Ok(CallToolResult::success(vec![
+                image(jpeg),
+                ContentBlock::text(redact(&format!("marks (tapOn: eN, or {{ point: [x, y] }} at the box center):\n{}", list.join("\n")))),
+            ])),
             Err(e) => err(&e),
         }
     }
@@ -369,13 +459,13 @@ impl FastPilot {
             "enabled" => AssertKind::Enabled,
             other => return fail(format!("unknown kind `{other}` (visible, not_visible, text_equals, contains, enabled)")),
         };
-        let reg = self.state.registry.lock().await;
-        let (id, driver) = match reg.pick(args.session.as_deref()) {
+        let (id, driver, _busy) = match self.session_driver(args.session.as_deref()).await {
             Ok(p) => p,
             Err(e) => return err(&e),
         };
+        let id = id.as_str();
         let timeout = Duration::from_millis(args.timeout.unwrap_or(5000));
-        let res = assert(driver, &sel, &kind, timeout).await;
+        let res = assert(&*driver, &sel, &kind, timeout).await;
         let what = format!("{} {sel}{}", args.kind, args.text.as_deref().map(|t| format!(" {t:?}")).unwrap_or_default());
         if let Some(t) = &args.test_id {
             let mut runs = self.state.runs.lock().await;
@@ -484,9 +574,29 @@ impl ServerHandler for FastPilot {
     }
 }
 
-/// Serve MCP over stdin/stdout until the client disconnects.
+/// Serve MCP over stdin/stdout until the client disconnects or SIGINT/SIGTERM arrives; either
+/// way sessions are dropped, so Chrome, agents and runners are shut down cleanly.
 pub async fn serve_stdio(web: LaunchOptions) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let service = FastPilot::new(web).serve(rmcp::transport::stdio()).await?;
-    service.waiting().await?;
+    tokio::select! {
+        r = service.waiting() => { r?; }
+        () = shutdown_signal() => tracing::info!("signal received, shutting down"),
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => return std::future::pending().await,
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }

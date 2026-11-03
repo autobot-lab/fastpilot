@@ -82,6 +82,7 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `FASTPILOT_IOS_RUNNER` | folder build runner iOS (default `ios-runner/build`) |
 | `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
+| `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 
 ## Tools (8)
@@ -91,8 +92,8 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `session` | `start` / `stop` / `list` / `devices` / `start_device`. `start` mengembalikan snapshot pertama, dan hint path memory jika `test_id` diberikan. Web: `mode: launch\|attach` (+`endpoint`). Android/iOS: `endpoint` = serial/UDID (untuk `start_device`: nama AVD/simulator) |
 | `run_flow` | Jalankan flow YAML (multi-langkah, multi-sesi, lintas platform, `parallel:`). Mengembalikan timing per langkah dan diff per sesi. Dengan `test_id`, flow dan evidence direkam |
 | `check_flow` | Validasi tanpa eksekusi: syntax, step belum didukung, sesi tak dikenal, aturan parallel, `${VAR}` tidak diizinkan |
-| `snapshot` | Snapshot ringkas (`filter`, `full`). Jarang dibutuhkan |
-| `screenshot` | JPEG |
+| `snapshot` | Snapshot ringkas. `filter` = find (hasil + ancestor), `coords`, `full`, `file` (tulis ke `.fastpilot/snapshots/`). Jarang dibutuhkan |
+| `screenshot` | JPEG. `annotate: som` = kotak bernomor per target (digambar di web) + daftar ref → koordinat |
 | `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
 | `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
 | `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
@@ -185,11 +186,25 @@ Hasil di M1 Pro (Chrome headless; emulator Android API 35; simulator iPhone 16 i
 
 | Metrik | Web | Android | iOS | Target PRD |
 |---|---|---|---|---|
-| Session start | 202 ms (warm) | 957 ms | ±23 s (xcodebuild menyalakan runner) | <1 s / <2 s |
-| Snapshot p50 | 1.1 ms | 9.2 ms | 16–55 ms | <50 / <100 ms |
-| Tap → diff p50 | 117 ms | 165 ms | ±0.4–1.4 s (XCUITest menunggu animasi) | <200 ms |
+| Session start | 149 ms (warm) | 629 ms | ±23 s (xcodebuild menyalakan runner) | <1 s / <2 s |
+| Snapshot p50 | 1.1 ms | 4.3 ms | 16–55 ms | <50 / <100 ms |
+| Tap → diff p50 | 119 ms | 154 ms (dengan verifikasi tap) | ±0.4–1.4 s (XCUITest menunggu animasi) | <200 ms |
 
 iOS diukur manual lewat klien protokol; belum ada `bench ios`.
+
+Stabilitas (PRD G6) diukur dengan pass^k dan batas atas failure rate, bukan dari satu angka "lolos 20 kali":
+
+```bash
+FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123 ./target/release/fastpilot stability examples/flows/login-web.yaml --runs 30
+```
+
+```
+30/30 passed (100.0%), p50 1.11s
+pass^1: 1.000
+pass^3: 1.000
+pass^8: 1.000
+failure rate <= 11.4% (95% Wilson upper bound); a <=1% claim needs >= 381 runs without failure
+```
 
 ## Test
 
@@ -204,6 +219,9 @@ cargo test
   - widget (select, klik div, confirm dialog, pressKey, upload, iframe, shadow DOM);
   - assert, report, dan path memory;
   - attach ke Chrome yang sudah berjalan.
+- `bin/fastpilot/tests/web_advanced.rs` menguji iframe lintas situs (OOPIF), popup, download, elemen
+  `opacity:0`, error console/HTTP di laporan gagal, Set-of-Mark, snapshot find/file, dan tool di sesi lain
+  yang tidak ikut menunggu flow yang sedang berjalan.
 - `bin/fastpilot/tests/android.rs` menguji login Android, WebView, dan skenario web+Android paralel di
   device/emulator yang menyala.
 - `bin/fastpilot/tests/ios.rs` menguji login di iOS simulator.
@@ -218,7 +236,7 @@ crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via
 crates/ios       simctl + XCUITest runner client, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
 crates/mcp       rmcp stdio server, 8 tools, docs
-bin/fastpilot    entrypoint: `mcp`, `bench [web|android]`
+bin/fastpilot    entrypoint: `mcp`, `bench [web|android]`, `stability <flow> --runs N`
 agent-android/   instrumentation APK (Java, UiAutomation), dibangun tanpa Gradle
 ios-runner/      XCUITest runner + demo app iOS
 examples/        demo web (login, widgets), demo Android
@@ -227,9 +245,8 @@ tests/           test case bahasa natural
 
 ## Batasan yang diketahui
 
-- Web: iframe cross-site (OOPIF), popup/tab baru, dan download belum ditangani.
+- Web: OOPIF hanya satu level (iframe lintas situs di dalam OOPIF belum).
 - Web attach: hanya Chrome M144+ `autoConnect` atau endpoint `--remote-debugging-port`. Extension relay belum ada.
-- Android: belum ada fallback Set-of-Mark untuk tree a11y yang miskin label.
+- Set-of-Mark: kotak hanya digambar di web. Android/iOS mendapat daftar ref → koordinat, tanpa gambar kotak.
 - iOS: simulator saja (real device belum). `evalScript` di WKWebView belum. Start runner dan aksi lambat
   karena XCUITest menunggu app idle setiap aksi; mempercepatnya perlu hook privat seperti yang dipakai Maestro.
-- Registry sesi dikunci selama satu `run_flow` berjalan, sehingga tool lain menunggu.

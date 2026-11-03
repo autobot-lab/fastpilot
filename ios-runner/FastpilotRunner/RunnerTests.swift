@@ -213,14 +213,19 @@ final class RunnerTests: XCTestCase {
             return s.children.contains(where: find)
         }
         _ = find(root)
+        var budget = 2000
         return ["bundleId": appId,
                 "title": title,
-                "nodes": convert(root, screen)]
+                "nodes": convert(root, screen, 0, &budget)]
     }
 
     /// Returns the node, or (for an offscreen/zero-size node) its visible children promoted in its place.
-    private func convert(_ s: XCUIElementSnapshot, _ screen: CGRect) -> [[String: Any]] {
-        let kids = s.children.flatMap { convert($0, screen) }
+    /// Bounded (depth 60, 2000 nodes): pathological trees must not make snapshots unbounded.
+    private func convert(_ s: XCUIElementSnapshot, _ screen: CGRect, _ depth: Int, _ budget: inout Int) -> [[String: Any]] {
+        if depth > 60 || budget <= 0 { return [] }
+        budget -= 1
+        var kids: [[String: Any]] = []
+        for c in s.children { kids += convert(c, screen, depth + 1, &budget) }
         let f = s.frame
         if f.width <= 0 || f.height <= 0 || !f.intersects(screen) { return kids }
         let type = s.elementType

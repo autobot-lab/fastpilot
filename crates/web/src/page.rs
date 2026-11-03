@@ -1,8 +1,9 @@
 //! One web session: a page (inside its own BrowserContext when fastpilot launched Chrome),
 //! implementing the core `Driver`.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -101,23 +102,62 @@ struct Nav {
 
 #[derive(Default)]
 struct Live {
-    /// requestId -> start time, for "requests triggered by the last action".
-    inflight: HashMap<String, Instant>,
+    /// requestId -> (start time, url), for "requests triggered by the last action".
+    inflight: HashMap<String, (Instant, String)>,
     /// Main frame started loading and has not stopped yet.
     loading_since: Option<Instant>,
-    /// Auto-handled dialogs since the last action; shown as `alert` nodes in the snapshot.
+    /// Dialogs, popups, downloads since the last action; shown as `alert` nodes.
     notes: Vec<String>,
+    /// Recent console errors / exceptions / failed requests, newest last.
+    diag: VecDeque<String>,
+    downloads: HashMap<String, String>,
+}
+
+/// The page currently driven: the session's own tab, or a popup it opened.
+#[derive(Debug, Clone)]
+struct Tab {
+    /// `None` on a page-level endpoint (Android WebView), where commands need no session.
+    session: Option<String>,
+    target: String,
+}
+
+/// Out-of-process (cross-site) iframe attached to the current tab.
+#[derive(Debug, Clone)]
+struct Frame {
+    session: String,
+    target: String,
+    /// The `<iframe>` element in the parent page, learned at snapshot time.
+    owner: Option<i64>,
+}
+
+struct Shared {
+    live: Mutex<Live>,
+    tab: Mutex<Tab>,
+    /// Tabs to return to when popups close, with their OOPIFs (still attached meanwhile).
+    openers: Mutex<Vec<(Tab, HashMap<u32, Frame>)>>,
+    frames: Mutex<HashMap<u32, Frame>>,
+    next_frame: AtomicU32,
+    downloads_dir: Option<PathBuf>,
+}
+
+/// Handles of OOPIF nodes carry their frame id above this bit; main-page handles are plain
+/// backendNodeIds.
+const FRAME_SHIFT: u32 = 40;
+
+/// A remote object and the session it lives in.
+struct Obj {
+    session: Option<String>,
+    id: String,
+    /// `<iframe>` owner for OOPIF nodes: their coordinates are frame-local.
+    owner: Option<i64>,
 }
 
 pub struct WebPage {
     browser: Arc<Browser>,
-    /// `None` on a page-level endpoint (Android WebView), where commands need no session.
-    session: Option<String>,
-    target: String,
     /// Set when fastpilot created the BrowserContext and must dispose of it.
     context: Option<String>,
+    shared: Arc<Shared>,
     refs: Mutex<RefRegistry>,
-    live: Arc<Mutex<Live>>,
     nav: watch::Receiver<Nav>,
     last_action: Mutex<Instant>,
     events: JoinHandle<()>,
@@ -131,12 +171,37 @@ fn field(v: &Value, key: &'static str) -> std::result::Result<String, Error> {
     v[key].as_str().map(str::to_owned).ok_or(Error::Unexpected(key))
 }
 
+fn clip(s: &str) -> String {
+    let line = s.lines().next().unwrap_or("");
+    match line.char_indices().nth(200) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.to_owned(),
+    }
+}
+
 #[derive(Default)]
 struct DomInfo {
     id: Option<String>,
     secure: bool,
     pointer: bool,
+    /// opacity:0 / visibility:hidden — drawn as nothing, though still in the AX tree.
+    hidden: bool,
     bounds: Option<Rect>,
+}
+
+/// Domains every driven tab (own page, popup) needs.
+async fn enable(cdp: &crate::cdp::Cdp, session: Option<&str>) -> std::result::Result<(), Error> {
+    cdp.call(session, "Page.enable", json!({})).await?;
+    cdp.call(session, "Page.setLifecycleEventsEnabled", json!({ "enabled": true })).await?;
+    cdp.call(session, "Network.enable", json!({})).await?;
+    // Best-effort: absent on some endpoints (WebView) or experimental.
+    let _ = cdp.call(session, "Runtime.enable", json!({})).await;
+    let _ = cdp.call(session, "Page.setInterceptFileChooserDialog", json!({ "enabled": true })).await;
+    let _ = cdp.call(session, "Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await;
+    let _ = cdp
+        .call(session, "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }))
+        .await;
+    Ok(())
 }
 
 impl WebPage {
@@ -159,7 +224,15 @@ impl WebPage {
                 return Err(e);
             }
         };
-        let page = Self::init(browser, Some(session), target, Some(context)).await?;
+        let dir = std::env::temp_dir().join(format!("fastpilot-downloads-{}", std::process::id()));
+        let _ = cdp
+            .call(
+                None,
+                "Browser.setDownloadBehavior",
+                json!({ "behavior": "allow", "browserContextId": context, "downloadPath": dir.display().to_string(), "eventsEnabled": true }),
+            )
+            .await;
+        let page = Self::init(browser, Some(session), target, Some(context), Some(dir)).await?;
         // Deterministic layout for sessions we own (headless and headful agree).
         let _ = page
             .call(
@@ -175,90 +248,47 @@ impl WebPage {
         session: Option<String>,
         target: String,
         context: Option<String>,
+        downloads_dir: Option<PathBuf>,
     ) -> std::result::Result<Self, Error> {
-        let live: Arc<Mutex<Live>> = Arc::default();
-        let (nav_tx, nav) = watch::channel(Nav::default());
-        let mut rx = browser.cdp.subscribe();
-        let (sid, state, cdp, main) = (session.clone(), live.clone(), browser.cdp.clone(), target.clone());
-        let events = tokio::spawn(async move {
-            loop {
-                let ev = match rx.recv().await {
-                    Ok(ev) => ev,
-                    Err(RecvError::Lagged(_)) => {
-                        // Lost events: forget pending work rather than waiting on it forever.
-                        let mut l = lock(&state);
-                        l.inflight.clear();
-                        l.loading_since = None;
-                        nav_tx.send_modify(|n| n.count += 1);
-                        continue;
-                    }
-                    Err(RecvError::Closed) => break,
-                };
-                if ev.session != sid {
-                    continue;
-                }
-                let p = &ev.params;
-                let main_frame = p["frameId"].as_str() == Some(main.as_str());
-                match ev.method.as_str() {
-                    "Network.requestWillBeSent" => {
-                        // Long-lived channels never "finish"; they must not block idleness.
-                        let long_lived = matches!(p["type"].as_str(), Some("EventSource" | "WebSocket" | "Ping"));
-                        if let (false, Some(id)) = (long_lived, p["requestId"].as_str()) {
-                            lock(&state).inflight.insert(id.to_owned(), Instant::now());
-                        }
-                    }
-                    "Network.loadingFinished" | "Network.loadingFailed" => {
-                        if let Some(id) = p["requestId"].as_str() {
-                            lock(&state).inflight.remove(id);
-                        }
-                    }
-                    "Page.frameStartedLoading" if main_frame => lock(&state).loading_since = Some(Instant::now()),
-                    "Page.frameStoppedLoading" if main_frame => lock(&state).loading_since = None,
-                    "Page.lifecycleEvent" if main_frame && p["name"] == "load" => {
-                        let loader = p["loaderId"].as_str().unwrap_or("").to_owned();
-                        nav_tx.send_modify(|n| {
-                            n.count += 1;
-                            n.loader = loader;
-                        });
-                    }
-                    "Page.navigatedWithinDocument" if main_frame => nav_tx.send_modify(|n| n.count += 1),
-                    "Page.javascriptDialogOpening" => {
-                        let kind = p["type"].as_str().unwrap_or("dialog");
-                        lock(&state).notes.push(format!("{kind}: {}", p["message"].as_str().unwrap_or("")));
-                        // Policy: accept, so a flow never hangs on alert/confirm/beforeunload.
-                        let prompt = p["defaultPrompt"].as_str().unwrap_or("");
-                        cdp.send(sid.as_deref(), "Page.handleJavaScriptDialog", json!({ "accept": true, "promptText": prompt }));
-                    }
-                    _ => {}
-                }
-            }
+        let shared = Arc::new(Shared {
+            live: Mutex::default(),
+            tab: Mutex::new(Tab { session: session.clone(), target }),
+            openers: Mutex::default(),
+            frames: Mutex::default(),
+            next_frame: AtomicU32::new(1),
+            downloads_dir,
         });
+        let (nav_tx, nav) = watch::channel(Nav::default());
+        let rx = browser.cdp.subscribe();
+        let events = tokio::spawn(event_loop(rx, shared.clone(), browser.cdp.clone(), nav_tx));
         let page = Self {
             browser,
-            session,
-            target,
             context,
+            shared,
             refs: Mutex::default(),
-            live,
             nav,
             last_action: Mutex::new(Instant::now()),
             events,
         };
-        page.call("Page.enable", json!({})).await?;
-        page.call("Page.setLifecycleEventsEnabled", json!({ "enabled": true })).await?;
-        page.call("Network.enable", json!({})).await?;
-        // Keeps rAF/focus behaving in background windows; best-effort (experimental domain).
-        let _ = page.call("Emulation.setFocusEmulationEnabled", json!({ "enabled": true })).await;
+        enable(&page.browser.cdp, session.as_deref()).await?;
         Ok(page)
     }
 
+    fn tab(&self) -> Tab {
+        lock(&self.shared.tab).clone()
+    }
+
     async fn call(&self, method: &str, params: Value) -> std::result::Result<Value, Error> {
-        self.browser.cdp.call(self.session.as_deref(), method, params).await
+        self.browser.cdp.call(self.tab().session.as_deref(), method, params).await
+    }
+
+    async fn call_in(&self, session: Option<&str>, method: &str, params: Value) -> std::result::Result<Value, Error> {
+        self.browser.cdp.call(session, method, params).await
     }
 
     fn mark_action(&self) {
         *lock(&self.last_action) = Instant::now();
-        lock(&self.live).notes.clear();
+        lock(&self.shared.live).notes.clear();
     }
 
     async fn wait_nav(&self, what: &str, done: impl Fn(&Nav) -> bool) -> Result<()> {
@@ -274,7 +304,7 @@ impl WebPage {
     /// runs on its own task, so dropping the caller still completes the sequence.
     async fn dispatch(&self, events: Vec<(&'static str, Value)>) -> Result<()> {
         self.mark_action();
-        let (cdp, sid) = (self.browser.cdp.clone(), self.session.clone());
+        let (cdp, sid) = (self.browser.cdp.clone(), self.tab().session);
         let task = tokio::spawn(async move {
             for (method, params) in events {
                 cdp.call(sid.as_deref(), method, params).await?;
@@ -305,17 +335,43 @@ impl WebPage {
             .ok_or_else(|| CoreError::NotFound(format!("{sel} has no DOM node")))
     }
 
-    async fn object_for(&self, sel: &Selector, intent: Intent) -> Result<String> {
+    async fn object_for(&self, sel: &Selector, intent: Intent) -> Result<Obj> {
         let handle = self.resolve(sel, intent).await?;
         self.object_of(handle).await
     }
 
-    async fn call_on(&self, object: &str, function: &str, arg: Value) -> Result<Value> {
+    /// (session, backendNodeId, iframe owner) for a snapshot handle.
+    fn locate(&self, handle: i64) -> Result<(Option<String>, i64, Option<i64>)> {
+        let fid = (handle >> FRAME_SHIFT) as u32;
+        let backend = handle & ((1 << FRAME_SHIFT) - 1);
+        if fid == 0 {
+            return Ok((self.tab().session, backend, None));
+        }
+        let frames = lock(&self.shared.frames);
+        let f = frames.get(&fid).ok_or_else(|| CoreError::NotFound("its iframe was removed".into()))?;
+        Ok((Some(f.session.clone()), backend, f.owner))
+    }
+
+    async fn object_of(&self, handle: i64) -> Result<Obj> {
+        let (session, backend, owner) = self.locate(handle)?;
+        let obj = self
+            .call_in(session.as_deref(), "DOM.resolveNode", json!({ "backendNodeId": backend, "objectGroup": GROUP }))
+            .await
+            .map_err(|_| CoreError::NotFound("element was removed from the page".into()))?;
+        let id = obj["object"]["objectId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| CoreError::NotFound("element was removed from the page".into()))?;
+        Ok(Obj { session, id, owner })
+    }
+
+    async fn call_on(&self, obj: &Obj, function: &str, arg: Value) -> Result<Value> {
         let r = self
-            .call(
+            .call_in(
+                obj.session.as_deref(),
                 "Runtime.callFunctionOn",
                 json!({
-                    "objectId": object,
+                    "objectId": obj.id,
                     "functionDeclaration": function,
                     "arguments": [{ "value": arg }],
                     "awaitPromise": true,
@@ -323,9 +379,7 @@ impl WebPage {
                 }),
             )
             .await;
-        self.browser
-            .cdp
-            .send(self.session.as_deref(), "Runtime.releaseObjectGroup", json!({ "objectGroup": GROUP }));
+        self.browser.cdp.send(obj.session.as_deref(), "Runtime.releaseObjectGroup", json!({ "objectGroup": GROUP }));
         let mut r = r?;
         if let Some(ex) = r.get("exceptionDetails") {
             return Err(CoreError::NotActionable(ex["text"].as_str().unwrap_or("script error").to_owned()));
@@ -333,15 +387,26 @@ impl WebPage {
         Ok(r["result"]["value"].take())
     }
 
-    async fn actionable(&self, object: &str, focus: bool) -> Result<(f64, f64)> {
-        let v = self.call_on(object, ACTION_JS, json!(focus)).await?;
-        match (v["ok"].as_bool(), v["x"].as_f64(), v["y"].as_f64()) {
-            (Some(true), Some(x), Some(y)) => Ok((x, y)),
-            _ => match v["reason"].as_str() {
-                Some("detached") => Err(CoreError::NotFound("element was removed from the page".into())),
-                reason => Err(CoreError::NotActionable(reason.unwrap_or("unknown").to_owned())),
-            },
+    /// Top-level viewport point to click, after actionability checks.
+    async fn actionable(&self, obj: &Obj, focus: bool) -> Result<(f64, f64)> {
+        if let Some(owner) = obj.owner {
+            let _ = self.call("DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": owner })).await;
         }
+        let v = self.call_on(obj, ACTION_JS, json!(focus)).await?;
+        let (x, y) = match (v["ok"].as_bool(), v["x"].as_f64(), v["y"].as_f64()) {
+            (Some(true), Some(x), Some(y)) => (x, y),
+            _ => {
+                return match v["reason"].as_str() {
+                    Some("detached") => Err(CoreError::NotFound("element was removed from the page".into())),
+                    reason => Err(CoreError::NotActionable(reason.unwrap_or("unknown").to_owned())),
+                };
+            }
+        };
+        let Some(owner) = obj.owner else { return Ok((x, y)) };
+        // OOPIF: frame-local point + the iframe's content box in the page.
+        let model = self.call("DOM.getBoxModel", json!({ "backendNodeId": owner })).await?;
+        let quad = &model["model"]["content"];
+        Ok((x + quad[0].as_f64().unwrap_or(0.0), y + quad[1].as_f64().unwrap_or(0.0)))
     }
 
     async fn dom_quiet(&self) -> bool {
@@ -352,13 +417,14 @@ impl WebPage {
     }
 
     fn busy(&self, since: Instant) -> bool {
-        let l = lock(&self.live);
-        l.loading_since.is_some_and(|t| t >= since) || l.inflight.values().any(|t| *t >= since)
+        let l = lock(&self.shared.live);
+        l.loading_since.is_some_and(|t| t >= since) || l.inflight.values().any(|(t, _)| *t >= since)
     }
 
     async fn location(&self) -> std::result::Result<(String, String), Error> {
-        if self.session.is_some() {
-            let info = self.browser.cdp.call(None, "Target.getTargetInfo", json!({ "targetId": self.target })).await?;
+        let tab = self.tab();
+        if tab.session.is_some() {
+            let info = self.browser.cdp.call(None, "Target.getTargetInfo", json!({ "targetId": tab.target })).await?;
             let i = &info["targetInfo"];
             return Ok((i["title"].as_str().unwrap_or("").to_owned(), i["url"].as_str().unwrap_or("").to_owned()));
         }
@@ -369,8 +435,37 @@ impl WebPage {
         Ok((v[0].as_str().unwrap_or("").to_owned(), v[1].as_str().unwrap_or("").to_owned()))
     }
 
+    /// AX roots of OOPIFs (handles namespaced by frame id), keyed by their `<iframe>` element.
+    async fn oop_frames(&self) -> HashMap<i64, Vec<Node>> {
+        fn encode(nodes: &mut [Node], fid: u32) {
+            for n in nodes {
+                n.handle = n.handle.map(|h| (i64::from(fid) << FRAME_SHIFT) | h);
+                encode(&mut n.children, fid);
+            }
+        }
+        let frames: Vec<(u32, Frame)> = lock(&self.shared.frames).iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut out = HashMap::new();
+        for (fid, f) in frames {
+            let (owner, ax, dom) = tokio::join!(
+                self.call("DOM.getFrameOwner", json!({ "frameId": f.target })),
+                self.call_in(Some(&f.session), "Accessibility.getFullAXTree", json!({})),
+                self.call_in(Some(&f.session), "DOMSnapshot.captureSnapshot", json!({ "computedStyles": STYLES })),
+            );
+            let (Ok(owner), Ok(ax)) = (owner, ax) else { continue };
+            let Some(owner) = owner["backendNodeId"].as_i64() else { continue };
+            if let Some(slot) = lock(&self.shared.frames).get_mut(&fid) {
+                slot.owner = Some(owner);
+            }
+            let dom = dom.map(|d| dom_info(&d, false)).unwrap_or_default();
+            let mut roots = ax["nodes"].as_array().map(|n| ax_tree(n, &dom, &HashMap::new())).unwrap_or_default();
+            encode(&mut roots, fid);
+            out.insert(owner, roots);
+        }
+        out
+    }
+
     /// AX roots of same-process child frames, keyed by the iframe element's backendNodeId.
-    async fn frames(&self, tree: &Value, dom: &HashMap<i64, DomInfo>) -> HashMap<i64, Vec<Node>> {
+    async fn frames(&self, tree: &Value, dom: &HashMap<i64, DomInfo>, mut out: HashMap<i64, Vec<Node>>) -> HashMap<i64, Vec<Node>> {
         fn collect(t: &Value, out: &mut Vec<String>) {
             for c in t["childFrames"].as_array().into_iter().flatten() {
                 collect(c, out); // children first, so nested frames are spliced bottom-up
@@ -381,10 +476,8 @@ impl WebPage {
         }
         let mut ids = Vec::new();
         collect(&tree["frameTree"], &mut ids);
-        let mut out = HashMap::new();
         for fid in ids {
-            // Out-of-process (cross-site) frames fail here and are skipped.
-            // ponytail: OOPIFs need Target.setAutoAttach + per-target AX trees.
+            // Out-of-process frames fail here; `oop_frames` covers them.
             let (Ok(owner), Ok(ax)) = (
                 self.call("DOM.getFrameOwner", json!({ "frameId": fid })).await,
                 self.call("Accessibility.getFullAXTree", json!({ "frameId": fid })).await,
@@ -400,6 +493,157 @@ impl WebPage {
     }
 }
 
+/// Styles read in the DOMSnapshot, in this order.
+const STYLES: [&str; 4] = ["cursor", "-webkit-text-security", "opacity", "visibility"];
+
+async fn event_loop(
+    mut rx: tokio::sync::broadcast::Receiver<Arc<crate::cdp::Event>>,
+    shared: Arc<Shared>,
+    cdp: Arc<crate::cdp::Cdp>,
+    nav_tx: watch::Sender<Nav>,
+) {
+    let note = |s: String| lock(&shared.live).notes.push(s);
+    let diag = |s: String| {
+        let mut l = lock(&shared.live);
+        l.diag.push_back(clip(&s));
+        if l.diag.len() > 10 {
+            l.diag.pop_front();
+        }
+    };
+    loop {
+        let ev = match rx.recv().await {
+            Ok(ev) => ev,
+            Err(RecvError::Lagged(_)) => {
+                // Lost events: forget pending work rather than waiting on it forever.
+                let mut l = lock(&shared.live);
+                l.inflight.clear();
+                l.loading_since = None;
+                nav_tx.send_modify(|n| n.count += 1);
+                continue;
+            }
+            Err(RecvError::Closed) => break,
+        };
+        let tab = lock(&shared.tab).clone();
+        let p = &ev.params;
+        // Browser-level events (only on browser endpoints, where the tab has a session).
+        if ev.session.is_none() && tab.session.is_some() {
+            match ev.method.as_str() {
+                "Target.targetCreated" if p["targetInfo"]["openerId"].as_str() == Some(tab.target.as_str()) && p["targetInfo"]["type"] == "page" => {
+                    let Some(target) = p["targetInfo"]["targetId"].as_str().map(str::to_owned) else { continue };
+                    let Ok(a) = cdp.call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true })).await else { continue };
+                    let Some(session) = a["sessionId"].as_str().map(str::to_owned) else { continue };
+                    if enable(&cdp, Some(&session)).await.is_ok() {
+                        let frames = std::mem::take(&mut *lock(&shared.frames));
+                        lock(&shared.openers).push((tab.clone(), frames));
+                        *lock(&shared.tab) = Tab { session: Some(session), target };
+                        let url = p["targetInfo"]["url"].as_str().unwrap_or("");
+                        note(if url.is_empty() { "popup opened".into() } else { format!("popup opened: {url}") });
+                        nav_tx.send_modify(|n| n.count += 1);
+                    }
+                }
+                "Target.targetDestroyed" if p["targetId"].as_str() == Some(tab.target.as_str()) => {
+                    let back = lock(&shared.openers).pop();
+                    if let Some((opener, frames)) = back {
+                        *lock(&shared.tab) = opener;
+                        *lock(&shared.frames) = frames;
+                        note("popup closed".into());
+                        nav_tx.send_modify(|n| n.count += 1);
+                    }
+                }
+                "Browser.downloadWillBegin" if p["frameId"].as_str() == Some(tab.target.as_str()) => {
+                    let name = p["suggestedFilename"].as_str().unwrap_or("").to_owned();
+                    if let Some(guid) = p["guid"].as_str() {
+                        lock(&shared.live).downloads.insert(guid.to_owned(), name.clone());
+                    }
+                    note(format!("download started: {name}"));
+                }
+                "Browser.downloadProgress" if p["state"] == "completed" || p["state"] == "canceled" => {
+                    let name = p["guid"].as_str().and_then(|g| lock(&shared.live).downloads.remove(g));
+                    if let Some(name) = name {
+                        let dir = shared.downloads_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+                        let bytes = p["receivedBytes"].as_u64().unwrap_or(0);
+                        note(format!("download {}: {name} ({bytes} bytes) in {dir}", p["state"].as_str().unwrap_or("")));
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if ev.session != tab.session {
+            continue;
+        }
+        let main_frame = p["frameId"].as_str() == Some(tab.target.as_str());
+        match ev.method.as_str() {
+            "Network.requestWillBeSent" => {
+                // Long-lived channels never "finish"; they must not block idleness.
+                let long_lived = matches!(p["type"].as_str(), Some("EventSource" | "WebSocket" | "Ping"));
+                if let (false, Some(id)) = (long_lived, p["requestId"].as_str()) {
+                    let url = p["request"]["url"].as_str().unwrap_or("").to_owned();
+                    lock(&shared.live).inflight.insert(id.to_owned(), (Instant::now(), url));
+                }
+            }
+            "Network.loadingFinished" => {
+                if let Some(id) = p["requestId"].as_str() {
+                    lock(&shared.live).inflight.remove(id);
+                }
+            }
+            "Network.loadingFailed" => {
+                let url = p["requestId"].as_str().and_then(|id| lock(&shared.live).inflight.remove(id)).map(|(_, u)| u);
+                let err = p["errorText"].as_str().unwrap_or("");
+                if p["canceled"].as_bool() != Some(true) && err != "net::ERR_ABORTED" {
+                    diag(format!("request failed: {err} {}", url.unwrap_or_default()));
+                }
+            }
+            "Network.responseReceived" => {
+                let status = p["response"]["status"].as_u64().unwrap_or(0);
+                let url = p["response"]["url"].as_str().unwrap_or("");
+                if status >= 400 && !url.ends_with("/favicon.ico") {
+                    diag(format!("HTTP {status} {url}"));
+                }
+            }
+            "Runtime.exceptionThrown" => {
+                let d = &p["exceptionDetails"];
+                diag(format!("exception: {}", d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("")));
+            }
+            "Runtime.consoleAPICalled" if matches!(p["type"].as_str(), Some("error" | "assert")) => {
+                let a = &p["args"][0];
+                let text = a["value"].as_str().map(str::to_owned).or_else(|| a["description"].as_str().map(str::to_owned)).unwrap_or_default();
+                diag(format!("console.error: {text}"));
+            }
+            "Page.frameStartedLoading" if main_frame => lock(&shared.live).loading_since = Some(Instant::now()),
+            "Page.frameStoppedLoading" if main_frame => lock(&shared.live).loading_since = None,
+            "Page.lifecycleEvent" if main_frame && p["name"] == "load" => {
+                let loader = p["loaderId"].as_str().unwrap_or("").to_owned();
+                nav_tx.send_modify(|n| {
+                    n.count += 1;
+                    n.loader = loader;
+                });
+            }
+            "Page.navigatedWithinDocument" if main_frame => nav_tx.send_modify(|n| n.count += 1),
+            "Page.javascriptDialogOpening" => {
+                let kind = p["type"].as_str().unwrap_or("dialog");
+                note(format!("{kind}: {}", p["message"].as_str().unwrap_or("")));
+                // Policy: accept, so a flow never hangs on alert/confirm/beforeunload.
+                let prompt = p["defaultPrompt"].as_str().unwrap_or("");
+                cdp.send(tab.session.as_deref(), "Page.handleJavaScriptDialog", json!({ "accept": true, "promptText": prompt }));
+            }
+            "Page.fileChooserOpened" => note("file chooser opened (use uploadFile)".into()),
+            "Target.attachedToTarget" if p["targetInfo"]["type"] == "iframe" => {
+                if let (Some(session), Some(target)) = (p["sessionId"].as_str(), p["targetInfo"]["targetId"].as_str()) {
+                    let id = shared.next_frame.fetch_add(1, Ordering::Relaxed);
+                    lock(&shared.frames).insert(id, Frame { session: session.to_owned(), target: target.to_owned(), owner: None });
+                }
+            }
+            "Target.detachedFromTarget" => {
+                if let Some(session) = p["sessionId"].as_str() {
+                    lock(&shared.frames).retain(|_, f| f.session != session);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl WebPage {
     /// Title, URL and unpruned nodes (handles = backendNodeIds); used by `snapshot` and by
     /// hosts that embed this page in a larger tree (Android WebView).
@@ -407,30 +651,20 @@ impl WebPage {
         let (ax, loc, dom, tree) = tokio::join!(
             self.call("Accessibility.getFullAXTree", json!({})),
             self.location(),
-            self.call("DOMSnapshot.captureSnapshot", json!({ "computedStyles": ["cursor", "-webkit-text-security"] })),
+            self.call("DOMSnapshot.captureSnapshot", json!({ "computedStyles": STYLES })),
             self.call("Page.getFrameTree", json!({})),
         );
         let (ax, (title, url), dom, tree) = (ax?, loc?, dom?, tree?);
-        let dom = dom_info(&dom);
-        let frames = self.frames(&tree, &dom).await;
+        let dom = dom_info(&dom, true);
+        let oop = self.oop_frames().await;
+        let frames = self.frames(&tree, &dom, oop).await;
         let mut roots = ax["nodes"].as_array().map(|n| ax_tree(n, &dom, &frames)).unwrap_or_default();
-        roots.extend(lock(&self.live).notes.iter().map(|note| Node {
+        roots.extend(lock(&self.shared.live).notes.iter().map(|note| Node {
             role: "alert".into(),
             name: note.clone(),
             ..Node::default()
         }));
         Ok((title, url, roots))
-    }
-
-    async fn object_of(&self, handle: i64) -> Result<String> {
-        let obj = self
-            .call("DOM.resolveNode", json!({ "backendNodeId": handle, "objectGroup": GROUP }))
-            .await
-            .map_err(|_| CoreError::NotFound("element was removed from the page".into()))?;
-        obj["object"]["objectId"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| CoreError::NotFound("element was removed from the page".into()))
     }
 
     /// Tap a node by backendNodeId with full actionability checks.
@@ -462,7 +696,8 @@ impl WebPage {
 impl Drop for WebPage {
     fn drop(&mut self) {
         self.events.abort();
-        match (&self.context, &self.session) {
+        let tab = self.tab();
+        match (&self.context, &tab.session) {
             (Some(ctx), _) => {
                 self.browser.cdp.send(None, "Target.disposeBrowserContext", json!({ "browserContextId": ctx }));
             }
@@ -491,13 +726,15 @@ fn to_url(target: &str) -> String {
     }
 }
 
-/// Element ids, secure inputs and `cursor:pointer` per backendNodeId, from one DOMSnapshot
-/// (covers shadow roots and same-process frames, which a `querySelectorAll` would miss).
-fn dom_info(snap: &Value) -> HashMap<i64, DomInfo> {
+/// Element ids, secure inputs, `cursor:pointer`, invisibility and boxes per backendNodeId, from
+/// one DOMSnapshot (covers shadow roots and same-process frames, which a `querySelectorAll`
+/// would miss). Boxes are kept for the first document only when `main_bounds` (frame
+/// documents use their own coordinates).
+fn dom_info(snap: &Value, main_bounds: bool) -> HashMap<i64, DomInfo> {
     let strings: Vec<&str> = snap["strings"].as_array().into_iter().flatten().map(|s| s.as_str().unwrap_or("")).collect();
     let s = |i: &Value| i.as_u64().and_then(|i| strings.get(i as usize).copied()).unwrap_or("");
     let mut out: HashMap<i64, DomInfo> = HashMap::new();
-    for doc in snap["documents"].as_array().into_iter().flatten() {
+    for (di, doc) in snap["documents"].as_array().into_iter().flatten().enumerate() {
         let nodes = &doc["nodes"];
         let Some(backend) = nodes["backendNodeId"].as_array() else { continue };
         let names = nodes["nodeName"].as_array();
@@ -533,9 +770,17 @@ fn dom_info(snap: &Value) -> HashMap<i64, DomInfo> {
             let style = styles.get(li).and_then(Value::as_array);
             let at = |k: usize| style.and_then(|st| st.get(k)).map(&s).unwrap_or("");
             let (pointer, masked) = (at(0) == "pointer", !matches!(at(1), "" | "none"));
+            let hidden = at(2) == "0" || matches!(at(3), "hidden" | "collapse");
+            if !(pointer || masked || hidden || di == 0 || !main_bounds) {
+                continue;
+            }
             let e = out.entry(b).or_default();
             e.pointer |= pointer;
             e.secure |= masked;
+            e.hidden |= hidden;
+            if di > 0 && main_bounds {
+                continue;
+            }
             if let Some([x, y, w, h]) = rects.and_then(|r| r.get(li)).and_then(Value::as_array).map(|r| {
                 [0, 1, 2, 3].map(|i| r.get(i).and_then(Value::as_f64).unwrap_or(0.0))
             }) {
@@ -577,6 +822,10 @@ fn ax_node(n: &Value, ctx: &AxCtx, depth: usize, pointer_above: bool) -> Option<
     }
     let handle = n["backendDOMNodeId"].as_i64();
     let info = handle.and_then(|h| ctx.dom.get(&h));
+    // opacity:0 / visibility:hidden subtrees are not visible, whatever the AX tree says.
+    if info.is_some_and(|i| i.hidden) {
+        return None;
+    }
     let pointer = info.is_some_and(|i| i.pointer);
     let mut children: Vec<Node> = n["childIds"]
         .as_array()
@@ -840,8 +1089,32 @@ impl Driver for WebPage {
             })
             .collect::<Result<Vec<_>>>()?;
         let handle = self.resolve(sel, Intent::Tap).await?;
+        let (session, backend, _) = self.locate(handle)?;
         self.mark_action();
-        self.call("DOM.setFileInputFiles", json!({ "files": paths, "backendNodeId": handle })).await?;
+        self.call_in(session.as_deref(), "DOM.setFileInputFiles", json!({ "files": paths, "backendNodeId": backend })).await?;
         Ok(())
+    }
+
+    async fn diagnostics(&self) -> Vec<String> {
+        lock(&self.shared.live).diag.iter().cloned().collect()
+    }
+
+    async fn screenshot_annotated(&self, marks: &[(String, Rect)]) -> Result<Vec<u8>> {
+        let marks: Vec<Value> = marks.iter().map(|(r, b)| json!({ "r": r, "x": b.x, "y": b.y, "w": b.w, "h": b.h })).collect();
+        let draw = format!(
+            "(() => {{ const root = document.createElement('div'); root.id = '__fastpilot_som';
+              root.style = 'position:absolute;left:0;top:0;pointer-events:none;z-index:2147483647';
+              for (const m of {}) {{ const b = document.createElement('div');
+                b.style = `position:absolute;left:${{m.x}}px;top:${{m.y}}px;width:${{m.w}}px;height:${{m.h}}px;outline:2px solid #e00`;
+                const l = document.createElement('span'); l.textContent = m.r;
+                l.style = 'position:absolute;left:0;top:-14px;background:#e00;color:#fff;font:11px monospace;padding:0 2px';
+                b.appendChild(l); root.appendChild(b); }}
+              document.documentElement.appendChild(root); }})()",
+            Value::Array(marks)
+        );
+        self.call("Runtime.evaluate", json!({ "expression": draw })).await?;
+        let shot = self.screenshot().await;
+        let _ = self.call("Runtime.evaluate", json!({ "expression": "document.getElementById('__fastpilot_som')?.remove()" })).await;
+        shot
     }
 }

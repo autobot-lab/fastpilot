@@ -121,6 +121,9 @@ pub struct AndroidDriver {
     _instrument: TcpStream,
     refs: Mutex<RefRegistry>,
     web: tokio::sync::Mutex<Option<Web>>,
+    /// The screen was seen idle after the last action (tap verification), so the engine's
+    /// post-action settle can skip a second idle wait.
+    settled: std::sync::atomic::AtomicBool,
 }
 
 impl AndroidDriver {
@@ -165,7 +168,16 @@ impl AndroidDriver {
                 json!({ "command": "settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0" }),
             )
             .await;
-        Ok(Self { adb, serial, agent, size, _instrument: instrument, refs: Mutex::default(), web: tokio::sync::Mutex::new(None) })
+        Ok(Self {
+            adb,
+            serial,
+            agent,
+            size,
+            _instrument: instrument,
+            refs: Mutex::default(),
+            web: tokio::sync::Mutex::new(None),
+            settled: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     async fn shell(&self, cmd: &str) -> Result<String> {
@@ -210,6 +222,7 @@ impl AndroidDriver {
     }
 
     async fn tap_at(&self, p: Point) -> Result<()> {
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
         self.agent.call("tap", json!({ "x": p.x, "y": p.y })).await?;
         Ok(())
     }
@@ -392,11 +405,24 @@ impl Driver for AndroidDriver {
         if let Selector::Point(p) = sel {
             return self.tap_at(*p).await;
         }
-        let node = self.resolve(sel, Intent::Tap).await?;
-        match node.handle {
-            Some(h) => self.web_page().await?.tap_handle(h).await,
-            None => self.tap_at(self.center(&node)?).await,
+        let snap = self.snapshot().await?;
+        let node = snap.resolve(sel, Intent::Tap)?.node.clone();
+        if let Some(h) = node.handle {
+            return self.web_page().await?.tap_handle(h).await;
         }
+        let p = self.center(&node)?;
+        self.tap_at(p).await?;
+        // Tap verification (as Maestro does): a tap that changed nothing on screen was most
+        // likely swallowed by an animation or a re-layout; retry it once.
+        let idle = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 800 })).await;
+        let before = snap.render(None, usize::MAX);
+        if self.snapshot().await.is_ok_and(|after| after.render(None, usize::MAX) == before) {
+            tracing::debug!(%sel, "tap had no visible effect; retrying once");
+            self.tap_at(p).await?;
+        } else if idle.is_ok_and(|v| v["idle"].as_bool() == Some(true)) {
+            self.settled.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     async fn type_text(&self, sel: &Selector, text: &str) -> Result<()> {
@@ -413,6 +439,7 @@ impl Driver for AndroidDriver {
                 }
             }
         }
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
         self.agent.call("text", json!({ "text": text })).await?;
         Ok(())
     }
@@ -435,11 +462,13 @@ impl Driver for AndroidDriver {
     }
 
     async fn swipe(&self, from: Point, to: Point) -> Result<()> {
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
         self.agent.call("swipe", json!({ "x1": from.x, "y1": from.y, "x2": to.x, "y2": to.y, "ms": 300 })).await?;
         Ok(())
     }
 
     async fn back(&self) -> Result<()> {
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
         self.agent.call("key", json!({ "code": 4 })).await?;
         Ok(())
     }
@@ -453,6 +482,9 @@ impl Driver for AndroidDriver {
 
     /// Bounded settle (research Tier 3): 100 ms of accessibility-event quiet, capped at 1.5 s.
     async fn wait_idle(&self, timeout: Duration) -> Result<()> {
+        if self.settled.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         let cap = timeout.min(Duration::from_millis(1500)).as_millis() as u64;
         let v = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": cap })).await?;
         if v["idle"].as_bool() == Some(true) {
@@ -467,6 +499,7 @@ impl Driver for AndroidDriver {
     }
 
     async fn press_key(&self, key: &str) -> Result<()> {
+        self.settled.store(false, std::sync::atomic::Ordering::SeqCst);
         let code = keycode(key).ok_or_else(|| CoreError::Unsupported(format!("unknown key `{key}`")))?;
         self.agent.call("key", json!({ "code": code })).await?;
         Ok(())

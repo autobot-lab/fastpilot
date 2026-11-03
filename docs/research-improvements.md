@@ -4,6 +4,11 @@
 
 Catatan: angka latensi/benchmark vendor bersifat **self-reported** (SR). Klaim yang hanya punya satu sumber ditandai **[1-src]**. Nama method CDP untuk dialog/upload/download perlu dicek ulang ke spec resmi sebelum implementasi.
 
+> **Status implementasi (2026-11-03):** semua rekomendasi Tier 0–3 sudah dikerjakan, kecuali beberapa
+> hal yang sengaja ditunda: extension relay untuk attach, OOPIF bertingkat, gambar Set-of-Mark di
+> Android/iOS, dan hook privat XCUITest untuk mempercepat iOS. Untuk iOS dipakai runner XCUITest sendiri,
+> bukan WDA prebuilt.
+
 ## Ringkasan eksekutif
 
 1. Arsitektur Phase 1 sudah searah dengan state of the art. agent-browser, browser-use, Stagehand v3, dan Chrome DevTools MCP semuanya pindah ke **CDP langsung**, snapshot teks dengan ref, dan diff. Snapshot 1.5 ms dan tap→diff 83 ms juga sudah di bawah target.

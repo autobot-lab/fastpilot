@@ -1,6 +1,7 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod bench;
+mod stability;
 
 use std::error::Error;
 
@@ -13,6 +14,8 @@ commands:
   mcp     serve MCP over stdio (what MCP clients run)
   bench [web|android]   print snapshot and tap->diff latency against the demo login
           [--iterations N]      (android: booted device with examples/demo-android installed)
+  stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
+                                     95% upper bound of the failure rate
 
 env:
   FASTPILOT_CHROME   Chrome/Chromium executable
@@ -46,6 +49,20 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 Some("android") => bench::android(iterations.max(1)).await,
                 _ => bench::run(web, iterations.max(1)).await,
             }
+        }
+        Some("stability") => {
+            let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                eprintln!("usage: fastpilot stability <flow.yaml> [--runs N] [--headful]");
+                std::process::exit(2);
+            };
+            let runs = args
+                .iter()
+                .position(|a| a == "--runs")
+                .and_then(|i| args.get(i + 1))
+                .map(|n| n.parse::<usize>())
+                .transpose()?
+                .unwrap_or(20);
+            stability::run(path, runs.max(1), web).await
         }
         Some("--version" | "-V") => {
             println!("fastpilot {}", env!("CARGO_PKG_VERSION"));
