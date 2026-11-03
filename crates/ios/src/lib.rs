@@ -110,48 +110,6 @@ pub async fn boot(name_or_udid: &str) -> std::result::Result<String, Error> {
     Ok(udid.clone())
 }
 
-/// go-ios (`ios` CLI, github.com/danielpaulus/go-ios): the real-device path, so no Appium,
-/// WDA or Xcode is needed at test time. `FASTPILOT_GO_IOS` overrides the executable.
-fn go_ios() -> String {
-    std::env::var("FASTPILOT_GO_IOS").unwrap_or_else(|_| "ios".into())
-}
-
-async fn go(args: &[&str]) -> std::result::Result<String, Error> {
-    let out = Command::new(go_ios())
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| Error::Runner(format!("go-ios (`{}`): {e}; install it from github.com/danielpaulus/go-ios", go_ios())))?;
-    if !out.status.success() {
-        return Err(Error::Runner(format!("ios {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// UDIDs of USB-attached iPhones/iPads (`ios list`: `{"deviceList": [...]}`).
-pub async fn real_devices() -> Vec<String> {
-    let Ok(out) = go(&["list"]).await else { return Vec::new() };
-    out.lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .flat_map(|v| v["deviceList"].as_array().cloned().unwrap_or_default())
-        .filter_map(|d| d.as_str().map(str::to_owned))
-        .collect()
-}
-
-/// Runner and host apps built for devices by `ios-runner/build.sh --device` (signed).
-fn device_apps() -> Option<(PathBuf, PathBuf)> {
-    let dir = std::env::var_os("FASTPILOT_IOS_RUNNER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build")))
-        .join("Build/Products/Debug-iphoneos");
-    let runner = dir.join("FastpilotRunner-Runner.app");
-    let host = dir.join("FastpilotHost.app");
-    (runner.exists() && host.exists()).then_some((runner, host))
-}
-
-const RUNNER_BUNDLE: &str = "com.fastpilot.runner.uitests.xctrunner";
-const HOST_BUNDLE: &str = "com.fastpilot.runner";
-
 fn xctestrun() -> Option<PathBuf> {
     runner::xctestrun(runner::Target::Simulator)
 }
@@ -240,8 +198,30 @@ pub struct IosDriver {
     locale: Mutex<(Option<String>, Option<String>)>,
     /// The runner process when this driver started it (kept alive for the next session).
     _runner: Option<std::sync::Arc<tokio::sync::Mutex<Child>>>,
-    /// A USB device driven through go-ios rather than a simulator: simctl features are unavailable.
+    /// A physical device (xcodebuild + usbmux/tunnel): simctl features are unavailable.
     device: bool,
+    /// usbmux port forward to the device's runner, while this session lives.
+    forward: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// UDIDs of paired physical iPhones/iPads (`devicectl`).
+pub async fn physical_devices() -> Vec<String> {
+    device::list().await.into_iter().map(|d| d.udid).collect()
+}
+
+/// 128-bit token for the device runner (first request must carry it).
+fn token() -> std::result::Result<String, Error> {
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b))
+        .map_err(|e| Error::Runner(format!("random token: {e}")))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// `devicectl device info details`: the CoreDevice tunnel address (IPv6), when connected.
+async fn tunnel_address(udid: &str) -> Option<std::net::IpAddr> {
+    let v = device::devicectl_json(&["device", "info", "details", "--device", udid]).await?;
+    v["result"]["connectionProperties"]["tunnelIPAddress"].as_str()?.parse().ok()
 }
 
 /// Runners started by this process, by simulator: a session ending leaves its runner running
@@ -259,13 +239,20 @@ fn runner_port(udid: &str) -> u16 {
 
 impl IosDriver {
     /// Start the XCUITest runner on `udid` (or the booted simulator, booting "iPhone 16" if none).
+    /// `udid`: a device spec (`ios-device:<udid>`, `simulator:<udid>`, a plain UDID or name).
+    /// A physical device is used only when named; without a spec the booted simulator.
     pub async fn start(udid: Option<&str>) -> std::result::Result<Self, Error> {
-        if let Some(u) = udid
-            && !devices().await.unwrap_or_default().iter().any(|(id, name, _)| id == u || name == u)
-            && real_devices().await.iter().any(|d| d == u)
-        {
-            return Self::start_device(u).await;
+        let spec = udid.map(fastpilot_core::DeviceSpec::parse).transpose().map_err(Error::Runner)?;
+        if let Some(spec) = &spec {
+            let all = device_infos().await;
+            let picked = fastpilot_core::select(&all, Some(spec), fastpilot_core::Platform::Ios);
+            if let Ok(d) = picked
+                && d.kind == fastpilot_core::DeviceKind::IosDevice
+            {
+                return Self::start_device(&d.id).await;
+            }
         }
+        let udid = spec.as_ref().map(|s| s.id.as_str());
         let udid = match udid {
             Some(u) => boot(u).await?,
             None => match devices().await?.into_iter().find(|(_, _, st)| st == "Booted") {
@@ -321,68 +308,81 @@ impl IosDriver {
         Self::connected(udid, agent, Some(child)).await
     }
 
-    /// Real device over USB: go-ios forwards the runner port, installs the device-signed runner
-    /// and host app (`ios-runner/build.sh --device`), and runs the XCUITest runner. The protocol
-    /// is the same as on the simulator.
+    /// Physical device: preflight, the device build of the runner, xcodebuild with a token and
+    /// `bind=any`, then readiness by polling `hello` (raced against xcodebuild exiting, 240 s)
+    /// over usbmux, or the CoreDevice tunnel (`FASTPILOT_IOS_TRANSPORT=auto|usbmux|tunnel`).
     async fn start_device(udid: &str) -> std::result::Result<Self, Error> {
+        let facts = device::list().await.into_iter().find(|d| d.udid == udid).ok_or_else(|| Error::Runner(format!("no paired device {udid} (fastpilot ios doctor)")))?;
+        let blocking: Vec<String> = device::preflight(&facts, &device::host().await, std::time::SystemTime::now())
+            .into_iter()
+            .filter(|p| p.blocking)
+            .map(|p| format!("{} (fix: {})", p.what, p.fix))
+            .collect();
+        if !blocking.is_empty() {
+            return Err(Error::Runner(format!("{udid} cannot run tests yet: {}", blocking.join("; "))));
+        }
+        let xctestrun = runner::xctestrun(runner::Target::Device).ok_or_else(|| {
+            Error::Runner(format!("runner not built for devices: ios-runner/build.sh --device {udid}"))
+        })?;
         let port = runner_port(udid);
-        let udid_arg = format!("--udid={udid}");
-        // The device's loopback is not the Mac's: tunnel the port over usbmuxd.
-        let forward = Command::new(go_ios())
-            .args(["forward", &port.to_string(), &port.to_string(), &udid_arg])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(false)
-            .spawn()
-            .map_err(|e| Error::Runner(format!("go-ios forward: {e}; install go-ios from github.com/danielpaulus/go-ios")))?;
-        let key = format!("{udid}/forward");
-        lock(runners()).insert(key, std::sync::Arc::new(tokio::sync::Mutex::new(forward)));
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Some(agent) = Agent::try_connect(port).await {
-            tracing::info!(udid, port, "reusing the runner on the device");
-            let runner = lock(runners()).get(udid).cloned();
-            return Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), runner, true).await;
-        }
-        if std::env::var("FASTPILOT_IOS_SKIP_INSTALL").as_deref() != Ok("1") {
-            let (runner_app, host_app) = device_apps().ok_or(Error::Runner(
-                "runner not built for devices: run `FASTPILOT_TEAM=<team id> ios-runner/build.sh --device`".into(),
-            ))?;
-            for app in [&host_app, &runner_app] {
-                go(&["install", &format!("--path={}", app.display()), &udid_arg]).await?;
+        let token = token()?;
+        let env = [
+            ("FASTPILOT_PORT".to_owned(), port.to_string()),
+            ("FASTPILOT_BIND".to_owned(), "any".to_owned()),
+            ("FASTPILOT_TOKEN".to_owned(), token.clone()),
+            ("FASTPILOT_IDLE_EXIT".to_owned(), std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into())),
+            ("FASTPILOT_QUIESCENCE".to_owned(), std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default()),
+        ];
+        let mut spawned = runner::spawn(&xctestrun, udid, &env).map_err(|e| Error::Runner(format!("xcodebuild: {e}")))?;
+        let transport = std::env::var("FASTPILOT_IOS_TRANSPORT").unwrap_or_else(|_| "auto".into());
+        let started = std::time::Instant::now();
+        let mut forward: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+        loop {
+            if let Ok(Some(status)) = spawned.child.try_wait() {
+                let tail = spawned.tail_text();
+                let hint = runner::classify(&tail).map(|h| format!(" — {h}")).unwrap_or_default();
+                return Err(Error::Runner(format!("xcodebuild exited ({status}) before the runner answered{hint}: {tail}")));
             }
-        }
-        let idle = std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into());
-        let quiescence = std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default();
-        let child = Command::new(go_ios())
-            .args([
-                "runtest",
-                &format!("--bundle-id={HOST_BUNDLE}"),
-                &format!("--test-runner-bundle-id={RUNNER_BUNDLE}"),
-                "--xctest-config=FastpilotRunner.xctest",
-                &format!("--env=FASTPILOT_PORT={port}"),
-                &format!("--env=FASTPILOT_IDLE_EXIT={idle}"),
-                &format!("--env=FASTPILOT_QUIESCENCE={quiescence}"),
-                &udid_arg,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(false)
-            .spawn()
-            .map_err(|e| Error::Runner(format!("go-ios runtest: {e}")))?;
-        let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
-        lock(runners()).insert(udid.to_owned(), child.clone());
-        // No READY line through go-ios: poll until the runner answers (first launch can take a while).
-        for _ in 0..120 {
-            if let Some(agent) = Agent::try_connect(port).await {
-                return Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), Some(child), true).await;
+            if started.elapsed() > Duration::from_secs(240) {
+                let _ = spawned.child.start_kill();
+                return Err(Error::Runner(format!("runner on {udid} did not answer within 240 s: {}", spawned.tail_text())));
+            }
+            let usb = transport != "tunnel";
+            let tunnel = transport == "tunnel" || (transport == "auto" && started.elapsed() > Duration::from_secs(20));
+            if usb && forward.is_none() {
+                match usbmux::forward(udid, port).await {
+                    Ok(f) => forward = Some(f),
+                    Err(e) => tracing::debug!(error = %e, "usbmux forward not ready"),
+                }
+            }
+            if let Some((local, _)) = &forward {
+                let ep = fastpilot_android::Endpoint { token: Some(token.clone()), ..fastpilot_android::Endpoint::local(*local) };
+                if let Ok(agent) = Agent::connect_to(&ep, 1).await {
+                    tracing::info!(udid, "runner reached over usbmux");
+                    let handle = forward.take().map(|(_, h)| h);
+                    return Self::on_device(udid, agent, spawned.child, handle).await;
+                }
+            }
+            if tunnel && let Some(addr) = tunnel_address(udid).await {
+                let ep = fastpilot_android::Endpoint { host: addr, port, token: Some(token.clone()) };
+                if let Ok(agent) = Agent::connect_to(&ep, 1).await {
+                    tracing::info!(udid, %addr, "runner reached over the CoreDevice tunnel");
+                    if let Some((_, h)) = forward.take() {
+                        h.abort();
+                    }
+                    return Self::on_device(udid, agent, spawned.child, None).await;
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Err(Error::Runner(format!(
-            "runner on device {udid} did not answer on port {port}; is the device unlocked and the developer certificate trusted?"
-        )))
+    }
+
+    async fn on_device(udid: &str, agent: Agent, child: Child, forward: Option<tokio::task::JoinHandle<()>>) -> std::result::Result<Self, Error> {
+        let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
+        lock(runners()).insert(udid.to_owned(), child.clone());
+        let mut d = Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), Some(child), true).await?;
+        d.forward = forward;
+        Ok(d)
     }
 
     async fn connected(
@@ -413,7 +413,38 @@ impl IosDriver {
             locale: Mutex::default(),
             _runner: runner,
             device,
+            forward: None,
         })
+    }
+
+    /// Device `clearState`: terminate, empty the app's data container with devicectl (works for
+    /// development-signed apps only), reset its permissions.
+    async fn clear_device_state(&self, app: Option<&str>) -> Result<()> {
+        let bundle = self.app_or(app)?;
+        self.call("terminate", json!({ "bundleId": bundle })).await?;
+        let empty = std::env::temp_dir().join(format!("fastpilot-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).map_err(|e| CoreError::Driver(e.to_string()))?;
+        for dest in ["Documents", "Library", "tmp"] {
+            let out = Command::new("xcrun")
+                .args(["devicectl", "device", "copy", "to", "--device", &self.udid, "--domain-type", "appDataContainer", "--domain-identifier", &bundle])
+                .arg("--source")
+                .arg(&empty)
+                .args(["--destination", dest, "--remove-existing-content", "true"])
+                .output()
+                .await
+                .map_err(|e| CoreError::Driver(format!("devicectl: {e}")))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                return Err(CoreError::Unsupported(format!(
+                    "clearState {bundle} on a device needs a development-signed app (get-task-allow): {}",
+                    err.trim()
+                )));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&empty);
+        self.call("resetPermissions", json!({ "bundleId": bundle })).await?;
+        self.forget(&bundle);
+        Ok(())
     }
 
     /// Simulator-only features (simctl) on a real device.
@@ -598,7 +629,18 @@ impl Driver for IosDriver {
     async fn open(&self, target: &str) -> Result<()> {
         if target.contains("://") {
             if self.device {
-                self.call("openUrl", json!({ "url": target })).await?;
+                // Runner first (iOS 16.4+); else devicectl opens it in Safari or the app.
+                if self.call("openUrl", json!({ "url": target })).await.is_err() {
+                    let app = if target.starts_with("http") { "com.apple.mobilesafari".to_owned() } else { lock(&self.bundle).clone() };
+                    let out = Command::new("xcrun")
+                        .args(["devicectl", "device", "process", "launch", "--device", &self.udid, "--payload-url", target, &app])
+                        .output()
+                        .await
+                        .map_err(|e| CoreError::Driver(format!("devicectl: {e}")))?;
+                    if !out.status.success() {
+                        return Err(CoreError::Driver(format!("open {target}: {}", String::from_utf8_lossy(&out.stderr).trim())));
+                    }
+                }
             } else {
                 simctl(&["openurl", &self.udid, target]).await?;
             }
@@ -635,7 +677,9 @@ impl Driver for IosDriver {
 
     async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
         if self.device {
-            go(&["setlocation", &format!("--lat={lat}"), &format!("--lon={lon}"), &format!("--udid={}", self.udid)]).await?;
+            return Err(CoreError::Unsupported(
+                "setLocation on a physical iPhone: use Xcode's location simulation (Debug → Simulate Location); simctl location is simulator-only".into(),
+            ));
         } else {
             simctl(&["location", &self.udid, "set", &format!("{lat},{lon}")]).await?;
         }
@@ -644,7 +688,21 @@ impl Driver for IosDriver {
 
     /// `simctl privacy` (TCC services; notifications are not among them).
     async fn set_permissions(&self, app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
-        self.sim_only("setPermissions")?;
+        if self.device {
+            // A device has no simctl privacy: only "unset" (back to asking) is possible.
+            let bundle = self.app_or(app)?;
+            let mut resources = Vec::new();
+            for (name, grant) in perms {
+                if *grant != fastpilot_core::Grant::Unset {
+                    return Err(CoreError::Unsupported(format!(
+                        "setPermissions {name}: allow/deny needs the simulator; on a device use `unset` and answer the prompt (or let FASTPILOT_PERMISSIONS do it)"
+                    )));
+                }
+                resources.push(name.clone());
+            }
+            self.call("resetPermissions", json!({ "bundleId": bundle, "resources": resources })).await?;
+            return Ok(());
+        }
         use fastpilot_core::Grant;
         let bundle = self.app_or(app)?;
         for (name, grant) in perms {
@@ -767,7 +825,9 @@ impl Driver for IosDriver {
     /// The simulator keeps app data in a host directory: terminate, then empty it (keeps
     /// the top-level folders, which the app expects to exist).
     async fn clear_state(&self, app: Option<&str>) -> Result<()> {
-        self.sim_only("clearState")?;
+        if self.device {
+            return self.clear_device_state(app).await;
+        }
         let bundle = self.app_or(app)?;
         self.stop_app(Some(&bundle)).await?;
         let dir = simctl(&["get_app_container", &self.udid, &bundle, "data"]).await?;
@@ -788,7 +848,11 @@ impl Driver for IosDriver {
     }
 
     async fn clear_keychain(&self) -> Result<()> {
-        self.sim_only("clearKeychain")?;
+        if self.device {
+            return Err(CoreError::Unsupported(
+                "iOS has no API to clear the keychain on a device: have the app clear it at launch (a test flag) or log out through the UI".into(),
+            ));
+        }
         simctl(&["keychain", &self.udid, "reset"]).await?;
         Ok(())
     }

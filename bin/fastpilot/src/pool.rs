@@ -46,7 +46,7 @@ async fn healthy(d: Device) -> bool {
         }
         Platform::Ios => {
             fastpilot_ios::devices().await.is_ok_and(|v| v.iter().any(|(u, _, st)| *u == d.id && st == "Booted"))
-                || fastpilot_ios::real_devices().await.contains(&d.id)
+                || fastpilot_ios::physical_devices().await.contains(&d.id)
         }
         Platform::Web => true,
     }
@@ -70,7 +70,8 @@ impl Pool {
                     .map(|(id, _, _)| Device { platform: Platform::Ios, id }),
             );
         }
-        devices.extend(fastpilot_ios::real_devices().await.into_iter().map(|id| Device { platform: Platform::Ios, id }));
+        // Physical iPhones are never leased automatically (free-signing app slots); name one
+        // in the test case's session plan instead.
         Self::new(devices, Box::new(|d| Box::pin(healthy(d))))
     }
 
