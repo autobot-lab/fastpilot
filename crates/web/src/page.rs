@@ -992,23 +992,6 @@ fn third_party_last(mut diag: Vec<String>, page: &str) -> Vec<String> {
     diag
 }
 
-#[cfg(test)]
-mod diag_tests {
-    use super::*;
-
-    #[test]
-    fn orders_first_party_errors_first() {
-        let d = vec![
-            "request failed: net::ERR_NAME_NOT_RESOLVED https://analytics.broken.example/collect".to_owned(),
-            "HTTP 500 https://motmaina.com/api/consultants".to_owned(),
-            "console.error: stok habis".to_owned(),
-            "HTTP 404 https://cdn.motmaina.com/x.png".to_owned(),
-        ];
-        let out = third_party_last(d, "motmaina.com");
-        assert!(out[3].contains("analytics.broken.example"), "{out:?}");
-        assert_eq!(host_of("HTTP 500 https://motmaina.com:443/api"), "motmaina.com");
-    }
-}
 
 /// Pseudo-method in a `dispatch` list: sleep `ms` inside the same uncancellable task.
 const PAUSE: &str = "fastpilot.pause";
@@ -1422,5 +1405,23 @@ impl Driver for WebPage {
         let shot = self.screenshot().await;
         let _ = self.call("Runtime.evaluate", json!({ "expression": "document.getElementById('__fastpilot_som')?.remove()" })).await;
         shot
+    }
+}
+
+#[cfg(test)]
+mod diag_tests {
+    use super::*;
+
+    #[test]
+    fn orders_first_party_errors_first() {
+        let d = vec![
+            "request failed: net::ERR_NAME_NOT_RESOLVED https://analytics.broken.example/collect".to_owned(),
+            "HTTP 500 https://motmaina.com/api/consultants".to_owned(),
+            "console.error: stok habis".to_owned(),
+            "HTTP 404 https://cdn.motmaina.com/x.png".to_owned(),
+        ];
+        let out = third_party_last(d, "motmaina.com");
+        assert!(out[3].contains("analytics.broken.example"), "{out:?}");
+        assert_eq!(host_of("HTTP 500 https://motmaina.com:443/api"), "motmaina.com");
     }
 }
