@@ -118,3 +118,86 @@ mod tests {
         assert_eq!(oem("Google", "", ""), "pixel");
     }
 }
+
+/// Backup of the settings fastpilot changes on a device, restored on close.
+pub const BACKUP: &str = "/data/local/tmp/fastpilot-anim.bak";
+const SCALES: [&str; 3] = ["window_animation_scale", "transition_animation_scale", "animator_duration_scale"];
+
+/// Saves the animation scales and stay-awake setting (only if no backup exists yet, so a
+/// crashed earlier session's originals are kept), then turns animations off and keeps the
+/// screen on while plugged in. Runs under `sh -c` (adb shell service).
+pub fn prepare_script() -> String {
+    let save: Vec<String> = SCALES.iter().map(|k| format!("echo \"{k}=$(settings get global {k})\"")).collect();
+    let zero: Vec<String> = SCALES.iter().map(|k| format!("settings put global {k} 0")).collect();
+    format!(
+        "f={BACKUP}; [ -f $f ] || {{ {{ {}; echo \"stay_on_while_plugged_in=$(settings get global stay_on_while_plugged_in)\"; }} > $f; }}; {}; svc power stayon usb",
+        save.join("; "),
+        zero.join("; ")
+    )
+}
+
+/// Puts every saved value back (`null` = the setting did not exist) and removes the backup.
+pub fn restore_script() -> String {
+    format!(
+        "f={BACKUP}; [ -f $f ] && {{ while IFS='=' read -r k v; do [ -n \"$k\" ] || continue; if [ \"$v\" = null ]; then settings delete global \"$k\"; else settings put global \"$k\" \"$v\"; fi; done < $f; rm -f $f; }}; true"
+    )
+}
+
+/// `mWakefulness=Awake` in `dumpsys power`.
+pub fn awake(dumpsys_power: &str) -> bool {
+    dumpsys_power.lines().any(|l| l.trim() == "mWakefulness=Awake")
+}
+
+/// Keyguard still showing, per `dumpsys window` (field names vary by version/OEM).
+pub fn locked(dumpsys_window: &str) -> bool {
+    ["mDreamingLockscreen=true", "isKeyguardShowing=true", "mShowingLockscreen=true", "keyguardShowing=true", "mKeyguardShowing=true"]
+        .iter()
+        .any(|k| dumpsys_window.contains(k))
+}
+
+/// What an install failure means, with the OEM fix when known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallFailure {
+    /// Signed with another key (another machine's debug keystore) or newer: uninstall and retry.
+    Incompatible,
+    /// MIUI/HyperOS blocks USB installs until "Install via USB" is on.
+    UserRestricted,
+    /// Waiting for an on-phone confirmation.
+    Confirm,
+    Other,
+}
+
+pub fn install_failure(out: &str) -> InstallFailure {
+    if out.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") || out.contains("INSTALL_FAILED_VERSION_DOWNGRADE") {
+        InstallFailure::Incompatible
+    } else if out.contains("INSTALL_FAILED_USER_RESTRICTED") {
+        InstallFailure::UserRestricted
+    } else if out.contains("AdbInstallActivity") || out.contains("packageinstaller") {
+        InstallFailure::Confirm
+    } else {
+        InstallFailure::Other
+    }
+}
+
+pub const XIAOMI_HINT: &str =
+    "Xiaomi/Redmi/POCO: Developer options → turn on \"Install via USB\" and \"USB debugging (Security settings)\" (needs a Mi account and SIM)";
+pub const SAMSUNG_HINT: &str = "Samsung: turn off Auto Blocker (Settings → Security and privacy)";
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn scripts_and_state_parsers() {
+        let p = prepare_script();
+        assert!(p.starts_with("f=/data/local/tmp/fastpilot-anim.bak; [ -f $f ] ||") && p.contains("settings put global animator_duration_scale 0"));
+        assert!(p.contains("svc power stayon usb") && p.contains("stay_on_while_plugged_in=$(settings get global"));
+        let r = restore_script();
+        assert!(r.contains("settings delete global") && r.contains("rm -f $f"));
+        assert!(awake("  mWakefulness=Awake\n") && !awake("  mWakefulness=Asleep\n"));
+        assert!(locked("    mDreamingLockscreen=true mDreamingSleepToken=null") && !locked("isKeyguardShowing=false"));
+        assert_eq!(install_failure("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package ...]"), InstallFailure::Incompatible);
+        assert_eq!(install_failure("Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]"), InstallFailure::UserRestricted);
+        assert_eq!(install_failure("Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"), InstallFailure::Other);
+    }
+}

@@ -60,6 +60,8 @@ impl From<Error> for CoreError {
     fn from(e: Error) -> Self {
         match &e {
             Error::Agent(m) if m.contains("no focused text field") => Self::NotActionable(m.clone()),
+            // MIUI/HyperOS refuses injected input until its security toggle is on.
+            Error::Agent(m) if m.contains("INJECT_EVENTS") => Self::Session(format!("{m}: {}", device::XIAOMI_HINT)),
             // The device needs the user: an environment problem, not a product bug.
             Error::Unauthorized(m) | Error::Offline(m) | Error::Locked(m) => Self::Session(m.clone()),
             _ => Self::Driver(e.to_string()),
@@ -150,6 +152,50 @@ pub struct AndroidDriver {
     notes: Mutex<Vec<String>>,
     /// `screenrecord` shell stream while recording.
     recording: tokio::sync::Mutex<Option<TcpStream>>,
+    /// close() ran: Drop must not restore or quit again.
+    closed: std::sync::atomic::AtomicBool,
+}
+
+/// Screen on and keyguard dismissed before the agent starts; a PIN/pattern lock stays the
+/// user's to open (never automated, never passed through env).
+async fn wake(adb: &Adb, serial: &str) -> std::result::Result<(), Error> {
+    if !device::awake(&adb.shell(serial, "dumpsys power").await?) {
+        adb.shell(serial, "input keyevent 224").await?; // KEYCODE_WAKEUP
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let _ = adb.shell(serial, "wm dismiss-keyguard").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if device::locked(&adb.shell(serial, "dumpsys window").await?) {
+        return Err(Error::Locked(format!(
+            "{serial} is locked: unlock it; a PIN cannot be automated, so use Stay awake and a Swipe/None lock for test phones"
+        )));
+    }
+    Ok(())
+}
+
+/// Install the agent; a key mismatch (another machine's debug keystore) is fixed once by
+/// uninstalling the agent package, OEM blocks come back with their fix.
+async fn install_agent(adb: &Adb, serial: &str) -> std::result::Result<(), Error> {
+    let first = match adb.install(serial, AGENT_APK).await {
+        Ok(()) => return Ok(()),
+        Err(e) => e.to_string(),
+    };
+    match device::install_failure(&first) {
+        device::InstallFailure::Incompatible => {
+            tracing::info!(serial, "agent signed with another key: reinstalling");
+            adb.shell(serial, &format!("pm uninstall {AGENT_PKG}")).await?;
+            adb.install(serial, AGENT_APK).await
+        }
+        device::InstallFailure::UserRestricted => Err(Error::InstallBlocked(format!("installing the agent was blocked: {}", device::XIAOMI_HINT))),
+        device::InstallFailure::Confirm => Err(Error::InstallBlocked("confirm the install on the phone (tap Install), then retry".into())),
+        device::InstallFailure::Other => {
+            let focus = adb.shell(serial, "dumpsys window | grep mCurrentFocus").await.unwrap_or_default();
+            if device::install_failure(&focus) == device::InstallFailure::Confirm {
+                return Err(Error::InstallBlocked("confirm the install on the phone (tap Install), then retry".into()));
+            }
+            Err(Error::InstallBlocked(format!("{first} ({}; {})", device::XIAOMI_HINT, device::SAMSUNG_HINT)))
+        }
+    }
 }
 
 const RECORDING: &str = "/data/local/tmp/fastpilot-recording.mp4";
@@ -162,12 +208,13 @@ impl AndroidDriver {
         }
         let adb = Adb::new().await?;
         let serial = device::resolve(serial).await?;
+        wake(&adb, &serial).await?;
         let sum = checksum(AGENT_APK);
         let marker = "/data/local/tmp/fastpilot-agent.sum";
         let installed = adb.shell(&serial, &format!("pm path {AGENT_PKG} >/dev/null && cat {marker}")).await?;
         if installed.trim() != sum {
             tracing::info!(serial, "installing fastpilot agent");
-            adb.install(&serial, AGENT_APK).await?;
+            install_agent(&adb, &serial).await?;
             adb.shell(&serial, &format!("echo {sum} > {marker}")).await?;
         }
         let stop: Vec<String> = std::iter::once(AGENT_PKG).chain(RIVALS.iter().copied()).map(|p| format!("am force-stop {p}")).collect();
@@ -180,13 +227,11 @@ impl AndroidDriver {
         let agent = Arc::new(Agent::connect(port).await?);
         let hello = agent.call("hello", json!({})).await?;
         let size = (hello["width"].as_f64().unwrap_or(1080.0), hello["height"].as_f64().unwrap_or(1920.0));
-        // Animations are the main source of idle-wait flakiness (Android testing guide).
-        let _ = agent
-            .call(
-                "shell",
-                json!({ "command": "settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0" }),
-            )
-            .await;
+        // Animations are the main source of idle-wait flakiness (Android testing guide). The
+        // user's values are saved first and restored by close().
+        if let Err(e) = adb.shell(&serial, &device::prepare_script()).await {
+            tracing::warn!(serial, error = %e, "could not save/disable animations");
+        }
         Ok(Self {
             adb,
             serial,
@@ -201,6 +246,7 @@ impl AndroidDriver {
             policy: Policy::from_env(),
             notes: Mutex::default(),
             recording: tokio::sync::Mutex::new(None),
+            closed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -419,10 +465,15 @@ impl AndroidDriver {
 }
 
 impl Drop for AndroidDriver {
+    /// Fallback when close() was not called: restore settings and stop the agent.
     fn drop(&mut self) {
-        let agent = self.agent.clone();
+        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let (agent, adb, serial) = (self.agent.clone(), self.adb.clone(), self.serial.clone());
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
+                let _ = adb.shell(&serial, &device::restore_script()).await;
                 let _ = agent.call("quit", json!({})).await;
             });
         }
@@ -705,6 +756,16 @@ impl Driver for AndroidDriver {
 
     fn platform(&self) -> Platform {
         Platform::Android
+    }
+
+    /// Restore the user's animation scales and stay-awake setting, then stop the agent.
+    async fn close(&self) -> Result<()> {
+        if self.closed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let restored = self.adb.shell(&self.serial, &device::restore_script()).await;
+        let _ = self.agent.call("quit", json!({})).await;
+        restored.map(|_| ()).map_err(Into::into)
     }
 
     /// Emulator console `geo fix` (real devices have no console to fake GPS through).
