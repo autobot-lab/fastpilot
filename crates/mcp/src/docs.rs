@@ -30,7 +30,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown) | all |
 | selectOption | `selectOption: { from: "Negara", option: "Indonesia" }` (native `<select>`) | web |
 | uploadFile | `uploadFile: { into: "Lampiran", files: ["a.pdf"] }` | web |
-| evalScript | `evalScript: "document.title"` (value is returned) | web, android WebView |
+| evalScript | `evalScript: "document.title"` (value is returned) | web, android WebView, iOS WKWebView |
 | longPressOn / doubleTapOn | `longPressOn: "Item"` (selector) | all |
 | scrollUntilVisible | `scrollUntilVisible: "Footer"` or `{ element: <selector>, direction: down, timeout: 20000 }` | all |
 | hideKeyboard | `hideKeyboard` (web: blur) | all |
@@ -81,6 +81,7 @@ Rules
 - `${NAME}` is replaced from fastpilot's environment, only for names listed in `FASTPILOT_VARS`;
   values are masked (`***`) in everything returned.
 - Android WebView content is merged into the snapshot and driven over CDP (tapOn, inputText, evalScript).
+- iOS WKWebView content likewise, over the Web Inspector, when the app sets `webView.isInspectable = true` (iOS 16.4+; on an iPhone also Settings → Safari → Advanced → Web Inspector).
 "#;
 
 const SELECTORS: &str = r#"# Selectors

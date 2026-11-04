@@ -322,6 +322,8 @@ pub async fn doctor(udid: Option<&str>) -> Result<String, String> {
             blocked |= p.blocking;
             out.push(format!("  {} {}\n      fix: {}", if p.blocking { "✗" } else { "!" }, p.what, p.fix));
         }
+        // Not blocking: only WKWebView content needs it.
+        out.push(crate::webinspector::doctor(&d.udid).await);
     }
     let text = out.join("\n");
     if blocked { Err(text) } else { Ok(text) }

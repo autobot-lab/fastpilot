@@ -6,6 +6,7 @@
 pub mod device;
 pub mod runner;
 pub mod usbmux;
+pub mod webinspector;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -202,6 +203,216 @@ pub struct IosDriver {
     device: bool,
     /// usbmux port forward to the device's runner, while this session lives.
     forward: Option<tokio::task::JoinHandle<()>>,
+    web: tokio::sync::Mutex<Web>,
+}
+
+/// Web Inspector session on the frontmost app's WKWebView (by bundle id); a failed attempt is
+/// remembered for 3 s so snapshots of screens without inspectable web content stay fast.
+#[derive(Default)]
+struct Web {
+    session: Option<(String, webinspector::Session)>,
+    failed: Option<(std::time::Instant, String, webinspector::Error)>,
+}
+
+fn web_error(e: webinspector::Error) -> CoreError {
+    match e {
+        webinspector::Error::NotInspectable(m) => CoreError::Unsupported(m),
+        e => CoreError::Driver(e.to_string()),
+    }
+}
+
+/// DOM walker for the snapshot: visible elements with canonical roles, names and flags, bounds
+/// in layout-viewport CSS px. Elements get a numeric handle (`window.__fastpilot.els`) that
+/// taps and typing use. Flags: d disabled, k checked, s selected, e expanded, P pressed,
+/// f focused, q required, o readonly, x invalid, p password.
+const DOM_JS: &str = r#"(() => {
+  const W = window.__fastpilot || (window.__fastpilot = { n: 0, els: new Map() });
+  W.els.clear();
+  const ref = typeof WeakRef === 'function' ? e => new WeakRef(e) : e => ({ deref: () => e });
+  const handle = el => { if (!el.__fpId) el.__fpId = ++W.n; W.els.set(el.__fpId, ref(el)); return el.__fpId; };
+  const clean = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const SKIP = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|HEAD|META|LINK|TITLE)$/;
+  const ARIA = { textbox: 'textfield', searchbox: 'textfield', img: 'image', menuitemcheckbox: 'menuitem', menuitemradio: 'menuitem', presentation: '', none: '', generic: '' };
+  const LEAF = /^(button|link|heading|option|tab|menuitem|textfield|combobox|listbox|image|checkbox|radio|switch|slider|spinbutton)$/;
+  let focused = document.activeElement;
+  while (focused && focused.shadowRoot && focused.shadowRoot.activeElement) focused = focused.shadowRoot.activeElement;
+  let budget = 3000;
+  const role = (el, cursor, parentCursor) => {
+    const r = (el.getAttribute('role') || '').split(' ')[0];
+    if (r) return r in ARIA ? ARIA[r] : r;
+    const t = el.tagName, type = (el.getAttribute('type') || '').toLowerCase();
+    if (t === 'A') return el.hasAttribute('href') ? 'link' : '';
+    if (t === 'BUTTON' || t === 'SUMMARY') return 'button';
+    if (t === 'INPUT') {
+      if (type === 'hidden') return null;
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      if (type === 'range') return 'slider';
+      if (/^(button|submit|reset|image)$/.test(type)) return 'button';
+      return 'textfield';
+    }
+    if (t === 'TEXTAREA') return 'textfield';
+    if (t === 'SELECT') return el.multiple ? 'listbox' : 'combobox';
+    if (t === 'OPTION') return 'option';
+    if (t === 'IMG') return 'image';
+    if (/^H[1-6]$/.test(t)) return 'heading';
+    if (t === 'DIALOG') return 'dialog';
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textfield';
+    if (cursor === 'pointer' && parentCursor !== 'pointer') return 'clickable';
+    return '';
+  };
+  const byIds = ids => ids.split(/\s+/).map(i => { const e = document.getElementById(i); return e ? e.textContent : ''; }).join(' ');
+  const name = (el, r) => {
+    const a = el.getAttribute('aria-label');
+    if (a && a.trim()) return clean(a);
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) { const s = clean(byIds(lb)); if (s) return s; }
+    if (/^(textfield|combobox|listbox|checkbox|radio|slider|spinbutton|switch)$/.test(r)) {
+      const l = el.labels && el.labels[0];
+      if (l) { const s = clean(l.innerText); if (s) return s; }
+      return clean(el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name'));
+    }
+    if (r === 'image') return clean(el.getAttribute('alt') || el.getAttribute('title'));
+    if (el.tagName === 'INPUT') return clean(el.value || el.getAttribute('alt'));
+    if (/^(button|link|heading|option|tab|menuitem)$/.test(r)) return clean(el.innerText || el.textContent || el.getAttribute('title'));
+    return clean(el.getAttribute('title'));
+  };
+  const flags = el => {
+    const aria = k => el.getAttribute('aria-' + k) === 'true';
+    let f = '';
+    if (el.disabled || aria('disabled')) f += 'd';
+    if (el.checked || aria('checked')) f += 'k';
+    if (aria('selected') || (el.tagName === 'OPTION' && el.selected)) f += 's';
+    if (aria('expanded')) f += 'e';
+    if (aria('pressed')) f += 'P';
+    if (el === focused) f += 'f';
+    if (el.required || aria('required')) f += 'q';
+    if (el.readOnly || aria('readonly')) f += 'o';
+    if (aria('invalid')) f += 'x';
+    if (el.type === 'password') f += 'p';
+    return f;
+  };
+  const kids = n => {
+    if (n.shadowRoot) return n.shadowRoot.childNodes;
+    if (n.tagName === 'SLOT') { const a = n.assignedNodes({ flatten: true }); return a.length ? a : n.childNodes; }
+    return n.childNodes;
+  };
+  const walk = (node, ox, oy, cursor, visible, out) => {
+    for (const c of kids(node)) {
+      if (budget <= 0) return;
+      if (c.nodeType === 3) {
+        const t = clean(c.data);
+        if (!t || !visible) continue;
+        const rg = document.createRange();
+        rg.selectNodeContents(c);
+        const b = rg.getBoundingClientRect();
+        if (b.width > 0 && b.height > 0) { budget--; out.push({ r: 'text', n: t, b: [b.left + ox, b.top + oy, b.width, b.height] }); }
+        continue;
+      }
+      if (c.nodeType !== 1 || SKIP.test(c.tagName)) continue;
+      const el = c, st = getComputedStyle(el);
+      if (st.display === 'none' || el.getAttribute('aria-hidden') === 'true') continue;
+      const box = el.getBoundingClientRect();
+      if (el.tagName === 'IFRAME') {
+        try { const d = el.contentDocument; if (d && d.body) walk(d.body, ox + box.left, oy + box.top, 'auto', visible, out); } catch (e) {}
+        continue;
+      }
+      const r = role(el, st.cursor, cursor);
+      if (r === null) continue;
+      const shown = st.visibility === 'visible' && +st.opacity > 0;
+      let n = null;
+      if (r && shown && box.width > 0 && box.height > 0) {
+        budget--;
+        n = { r, n: name(el, r), h: handle(el), b: [box.left + ox, box.top + oy, box.width, box.height], f: flags(el) };
+        if (el.id) n.i = el.id; else if (el.getAttribute('data-testid')) n.i = el.getAttribute('data-testid');
+        if (r === 'textfield') n.v = 'value' in el ? String(el.value) : clean(el.innerText);
+        else if (r === 'combobox' && el.selectedOptions) n.v = clean(el.selectedOptions[0] && el.selectedOptions[0].text);
+        out.push(n);
+        if (LEAF.test(r)) continue;
+        n.c = [];
+      }
+      walk(el, ox, oy, st.cursor, shown, n ? n.c : out);
+      if (n && !n.c.length) delete n.c;
+    }
+  };
+  const out = [];
+  walk(document.body || document.documentElement, 0, 0, 'auto', true, out);
+  const vv = window.visualViewport;
+  return JSON.stringify({ vx: vv ? vv.offsetLeft : 0, vy: vv ? vv.offsetTop : 0, vw: vv ? vv.width : innerWidth, nodes: out });
+})()"#;
+
+/// Tap (`el.click()`) or type (`insertText`, else the native value setter plus input/change
+/// events, as React expects) on a snapshot handle.
+/// ponytail: DOM events, not touches; a page listening only to touchstart needs a native tap.
+const ACT_JS: &str = r#"((h, op, text) => {
+  const W = window.__fastpilot, w = W && W.els.get(h), el = w && w.deref();
+  if (!el || !el.isConnected) return 'gone';
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  if (el.disabled) return 'disabled';
+  if (el.focus) el.focus({ preventScroll: true });
+  if (op === 'tap') { el.click(); return 'ok'; }
+  if (document.execCommand('insertText', false, text)) return 'ok';
+  if (!('value' in el)) { el.textContent += text; el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; }
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, (el.value || '') + text);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'ok';
+})"#;
+
+/// DOM walker node -> core node, CSS px mapped into the WKWebView's screen frame.
+fn web_node(v: &Value, to_screen: &dyn Fn([f64; 4]) -> Rect) -> Node {
+    let f = s(v, "f");
+    let has = |c: char| f.contains(c);
+    let b = v["b"].as_array().map(|b| [0, 1, 2, 3].map(|i| b.get(i).and_then(Value::as_f64).unwrap_or(0.0)));
+    Node {
+        role: s(v, "r").to_owned(),
+        name: s(v, "n").to_owned(),
+        value: v["v"].as_str().filter(|_| !has('p')).map(str::to_owned),
+        id: v["i"].as_str().filter(|i| !i.is_empty()).map(str::to_owned),
+        secure: has('p'),
+        disabled: has('d'),
+        checked: has('k'),
+        selected: has('s'),
+        expanded: has('e'),
+        pressed: has('P'),
+        invalid: has('x'),
+        required: has('q'),
+        readonly: has('o'),
+        focused: has('f'),
+        handle: v["h"].as_i64(),
+        bounds: b.map(to_screen),
+        children: v["c"].as_array().into_iter().flatten().map(|c| web_node(c, to_screen)).collect(),
+    }
+}
+
+/// The page's DOM as core nodes placed in `frame` (the WKWebView on screen).
+/// ponytail: the content inset (a translucent navigation bar over the web view) is not
+/// subtracted; bounds may sit a bar's height high. Actions use handles, not bounds.
+async fn dom_nodes(page: &webinspector::Session, frame: Option<Rect>) -> Result<Vec<Node>> {
+    let r = page.call("Runtime.evaluate", json!({ "expression": DOM_JS, "returnByValue": true })).await.map_err(web_error)?;
+    if r["wasThrown"] == true {
+        return Err(CoreError::Driver(format!("DOM snapshot: {}", s(&r["result"], "description"))));
+    }
+    let v: Value = serde_json::from_str(s(&r["result"], "value")).map_err(|e| CoreError::Driver(format!("DOM snapshot: {e}")))?;
+    let f = frame.unwrap_or_default();
+    let vw = v["vw"].as_f64().filter(|w| *w > 0.0).unwrap_or(f.w);
+    let scale = if vw > 0.0 && f.w > 0.0 { f.w / vw } else { 1.0 };
+    let (vx, vy) = (v["vx"].as_f64().unwrap_or(0.0), v["vy"].as_f64().unwrap_or(0.0));
+    let to_screen = |[x, y, w, h]: [f64; 4]| Rect { x: f.x + (x - vx) * scale, y: f.y + (y - vy) * scale, w: w * scale, h: h * scale };
+    Ok(v["nodes"].as_array().into_iter().flatten().map(|n| web_node(n, &to_screen)).collect())
+}
+
+fn find_webview(nodes: &mut [Node]) -> Option<&mut Node> {
+    for n in nodes {
+        if n.role == "webview" {
+            return Some(n);
+        }
+        if let Some(w) = find_webview(&mut n.children) {
+            return Some(w);
+        }
+    }
+    None
 }
 
 /// UDIDs of paired physical iPhones/iPads (`devicectl`).
@@ -414,6 +625,7 @@ impl IosDriver {
             _runner: runner,
             device,
             forward: None,
+            web: tokio::sync::Mutex::default(),
         })
     }
 
@@ -496,7 +708,21 @@ impl IosDriver {
             lock(&self.bundle).clear();
             return Err(CoreError::AppCrashed(format!("{bundle} is no longer running (crashed)")));
         }
-        let roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().filter_map(convert).collect();
+        let mut roots: Vec<Node> = v["nodes"].as_array().into_iter().flatten().filter_map(convert).collect();
+        if let Some(wv) = find_webview(&mut roots) {
+            // Web nodes keep their DOM handles: taps and typing on them go through the inspector.
+            let mut web = self.web.lock().await;
+            if let Ok(page) = self.webview(&bundle, &mut web).await {
+                match dom_nodes(page, wv.bounds).await {
+                    Ok(nodes) if !nodes.is_empty() => wv.children = nodes,
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "WKWebView snapshot failed; native accessibility tree kept");
+                        web.session = None;
+                    }
+                }
+            }
+        }
         let title = if s(&v, "title").is_empty() { bundle.clone() } else { s(&v, "title").to_owned() };
         let snap = Snapshot::build(title, format!("ios, {bundle}"), roots, &mut lock(&self.refs));
         Ok((v, snap))
@@ -529,6 +755,57 @@ impl IosDriver {
             return node;
         }
         Ok(self.snapshot().await?.resolve(sel, intent)?.node.clone())
+    }
+
+    /// Inspector session on `bundle`'s WKWebView (cached; reopened after it closed).
+    async fn webview<'a>(&self, bundle: &str, web: &'a mut Web) -> Result<&'a webinspector::Session> {
+        if !web.session.as_ref().is_some_and(|(b, s)| b == bundle && s.alive()) {
+            web.session = None;
+            if let Some((at, b, e)) = &web.failed
+                && b == bundle
+                && at.elapsed() < Duration::from_secs(3)
+            {
+                return Err(web_error(e.clone()));
+            }
+            let io = if self.device { webinspector::device_stream(&self.udid).await } else { webinspector::simulator_stream(&self.udid).await };
+            match async { webinspector::Session::open(io?, bundle).await }.await {
+                Ok(s) => {
+                    web.session = Some((bundle.to_owned(), s));
+                    web.failed = None;
+                }
+                Err(e) => {
+                    web.failed = Some((std::time::Instant::now(), bundle.to_owned(), e.clone()));
+                    return Err(web_error(e));
+                }
+            }
+        }
+        web.session.as_ref().map(|(_, s)| s).ok_or_else(|| CoreError::Unsupported("no WKWebView session".into()))
+    }
+
+    /// The inspector session in use, else one on the app under test (or the frontmost app).
+    async fn web_page(&self) -> Result<tokio::sync::MappedMutexGuard<'_, webinspector::Session>> {
+        let mut web = self.web.lock().await;
+        if !web.session.as_ref().is_some_and(|(_, s)| s.alive()) {
+            let mut bundle = lock(&self.bundle).clone();
+            if bundle.is_empty() {
+                bundle = s(&self.call("snapshot", json!({})).await?, "bundleId").to_owned();
+            }
+            self.webview(&bundle, &mut web).await?;
+        }
+        tokio::sync::MutexGuard::try_map(web, |w| w.session.as_mut().map(|(_, s)| s))
+            .map_err(|_| CoreError::Unsupported("no WKWebView session".into()))
+    }
+
+    async fn web_act(&self, handle: i64, op: &str, text: &str) -> Result<()> {
+        let js = format!("{ACT_JS}({handle}, {}, {})", json!(op), json!(text));
+        let page = self.web_page().await?;
+        let r = page.call("Runtime.evaluate", json!({ "expression": js, "returnByValue": true, "emulateUserGesture": true })).await.map_err(web_error)?;
+        match s(&r["result"], "value") {
+            "ok" => Ok(()),
+            "disabled" => Err(CoreError::NotActionable("disabled".into())),
+            "gone" => Err(CoreError::NotFound("the web element is gone (the page changed); take a new snapshot".into())),
+            _ => Err(CoreError::Script(s(&r["result"], "description").to_owned())),
+        }
     }
 
     async fn call(&self, cmd: &str, args: Value) -> Result<Value> {
@@ -592,6 +869,7 @@ fn convert(v: &Value) -> Option<Node> {
         "picker" | "pickerWheel" => "combobox",
         "tab" => "tab",
         "alert" | "sheet" => "dialog",
+        "webView" => "webview",
         _ => "none",
     };
     let first = |opts: &[&str]| opts.iter().find(|o| !o.is_empty()).map(|o| (*o).to_owned()).unwrap_or_default();
@@ -862,6 +1140,9 @@ impl Driver for IosDriver {
             return self.tap_at(*p).await;
         }
         let node = self.resolve(sel, Intent::Tap).await?;
+        if let Some(h) = node.handle {
+            return self.web_act(h, "tap", "").await;
+        }
         self.tap_at(Self::center(&node)?).await
     }
 
@@ -871,6 +1152,9 @@ impl Driver for IosDriver {
             Selector::Point(p) => self.tap_at(*p).await?,
             _ => {
                 let node = self.resolve(sel, Intent::Type).await?;
+                if let Some(h) = node.handle {
+                    return self.web_act(h, "type", text).await;
+                }
                 if !node.focused {
                     self.tap_at(Self::center(&node)?).await?;
                 }
@@ -923,8 +1207,28 @@ impl Driver for IosDriver {
         Ok(())
     }
 
-    async fn eval_script(&self, _js: &str) -> Result<Value> {
-        Err(CoreError::Unsupported("evalScript on iOS (WKWebView) is not supported yet".into()))
+    /// In the WKWebView, through the Web Inspector: by reference first, so a Promise is awaited
+    /// and any other object returned by value (as the web driver does).
+    async fn eval_script(&self, js: &str) -> Result<Value> {
+        let guard = self.web_page().await?;
+        let page: &webinspector::Session = &guard;
+        let call = |m: &'static str, p: Value| async move { page.call(m, p).await.map_err(web_error) };
+        let mut r = call("Runtime.evaluate", json!({ "expression": js, "objectGroup": "fastpilot", "emulateUserGesture": true })).await?;
+        if r["wasThrown"] != true
+            && let Some(id) = r["result"]["objectId"].as_str().map(str::to_owned)
+        {
+            r = if r["result"]["className"] == "Promise" || r["result"]["subtype"] == "promise" {
+                call("Runtime.awaitPromise", json!({ "promiseObjectId": id, "returnByValue": true })).await?
+            } else {
+                call("Runtime.callFunctionOn", json!({ "objectId": id, "functionDeclaration": "function() { return this; }", "returnByValue": true })).await?
+            };
+            let _ = call("Runtime.releaseObjectGroup", json!({ "objectGroup": "fastpilot" })).await;
+        }
+        if r["wasThrown"] == true {
+            let msg = r["result"]["description"].as_str().unwrap_or("script error");
+            return Err(CoreError::Script(msg.to_owned()));
+        }
+        Ok(r["result"]["value"].take())
     }
 
     async fn press_key(&self, key: &str) -> Result<()> {
@@ -987,5 +1291,21 @@ mod tests {
             snap.render(None, 120),
             "screen \"Login\" (ios, com.fastpilot.demo)\ne1 text \"Login\"\ne2 textfield \"Email\" value=\"\"\ne3 textfield \"Password\" secure\ne4 switch \"Ingat saya\"\ne5 button \"Masuk\""
         );
+    }
+
+    #[test]
+    fn maps_dom_nodes_into_the_webview_frame() {
+        let v = json!({ "r": "textfield", "n": "Kata sandi", "v": "rahasia", "h": 7, "f": "pfq", "b": [10, 20, 100, 30],
+                        "c": [{ "r": "text", "n": "x", "b": [0, 0, 1, 1] }] });
+        let frame = Rect { x: 0.0, y: 100.0, w: 390.0, h: 600.0 };
+        // Page zoomed out to a 780 px wide layout: half scale.
+        let to_screen = |[x, y, w, h]: [f64; 4]| Rect { x: frame.x + x * 0.5, y: frame.y + y * 0.5, w: w * 0.5, h: h * 0.5 };
+        let n = web_node(&v, &to_screen);
+        assert_eq!((n.role.as_str(), n.handle, n.value.as_deref()), ("textfield", Some(7), None), "password values stay out");
+        assert!(n.secure && n.focused && n.required && !n.disabled);
+        assert_eq!(n.bounds, Some(Rect { x: 5.0, y: 110.0, w: 50.0, h: 15.0 }));
+        assert_eq!(n.children.len(), 1);
+        let mut roots = vec![convert(&json!({ "type": "other", "frame": [0, 0, 390, 844], "children": [{ "type": "webView", "frame": [0, 100, 390, 600] }] })).expect("node")];
+        assert_eq!(find_webview(&mut roots).and_then(|w| w.bounds), Some(frame));
     }
 }

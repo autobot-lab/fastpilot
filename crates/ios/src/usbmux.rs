@@ -116,9 +116,28 @@ pub async fn forward(udid: &str, remote_port: u16) -> Result<(u16, JoinHandle<()
     forward_via(&socket_path(), udid, remote_port).await
 }
 
+/// `(DeviceID, usbmux serial)` of the USB-attached device `udid`.
+pub async fn device(socket: &Path, udid: &str) -> Result<(u64, String), Error> {
+    list(socket).await?.into_iter().find(|(_, u)| same_udid(u, udid)).ok_or_else(|| Error::NotAttached(udid.to_owned()))
+}
+
+/// usbmuxd's pair record for `serial` (as `list` reports it): HostCertificate, HostPrivateKey,
+/// HostID, SystemBUID — what lockdownd sessions need.
+pub async fn pair_record(socket: &Path, serial: &str) -> Result<plist::Dictionary, Error> {
+    let mut s = UnixStream::connect(socket).await.map_err(io)?;
+    let mut req = request("ReadPairRecord");
+    req.insert("PairRecordID".into(), serial.into());
+    s.write_all(&frame(3, &req)?).await.map_err(io)?;
+    let reply = read_frame(&mut s).await?;
+    let data = reply
+        .get("PairRecordData")
+        .and_then(plist::Value::as_data)
+        .ok_or_else(|| Error::Protocol(format!("no pair record for {serial}: unlock the device and tap Trust")))?;
+    plist::from_bytes(data).map_err(|e| Error::Protocol(e.to_string()))
+}
+
 pub async fn forward_via(socket: &Path, udid: &str, remote_port: u16) -> Result<(u16, JoinHandle<()>), Error> {
-    let device = list(socket).await?.into_iter().find(|(_, u)| same_udid(u, udid)).map(|(id, _)| id);
-    let device = device.ok_or_else(|| Error::NotAttached(udid.to_owned()))?;
+    let (device, _) = device(socket, udid).await?;
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(io)?;
     let local = listener.local_addr().map_err(io)?.port();
     let socket = socket.to_owned();
