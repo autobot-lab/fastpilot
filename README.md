@@ -9,8 +9,8 @@ dan diff, bukan view hierarchy mentah.
   fastpilot, satu `BrowserContext` per sesi) atau *attach* (Chrome milik user).
 - **Android:** protokol adb server ditulis di Rust, plus agent instrumentation (UiAutomation) yang
   di-embed di binary. Konten WebView digabung ke snapshot dan dikendalikan lewat CDP.
-- **iOS (simulator):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari source,
-  tanpa Appium/WebDriverAgent.
+- **iOS (simulator dan iPhone):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari
+  source, tanpa Appium/WebDriverAgent. Konten WKWebView lewat Web Inspector.
 - DSL YAML kompatibel Maestro, ditambah `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
   `selectOption`, `uploadFile`.
 - **Andal:**
@@ -419,7 +419,7 @@ cargo test
 crates/core      Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, assert, SessionRegistry
 crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserContext
 crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
-crates/ios       simctl + XCUITest runner client, IosDriver
+crates/ios       simctl/devicectl + XCUITest runner, usbmux, Web Inspector, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
 crates/mcp       rmcp stdio server, 8 tools, docs
 bin/fastpilot    entrypoint: `mcp`, `bench [web|android]`, `stability <flow> --runs N`
@@ -431,8 +431,13 @@ tests/           test case bahasa natural
 
 ## Batasan yang diketahui
 
-- Web: OOPIF hanya satu level (iframe lintas situs di dalam OOPIF belum).
-- Web attach: hanya Chrome M144+ `autoConnect` atau endpoint `--remote-debugging-port`. Extension relay belum ada.
-- Set-of-Mark: kotak hanya digambar di web. Android/iOS mendapat daftar ref → koordinat, tanpa gambar kotak.
-- iOS: simulator saja (real device belum). `evalScript` di WKWebView belum. Start runner dan aksi lambat
-  karena XCUITest menunggu app idle setiap aksi; mempercepatnya perlu hook privat seperti yang dipakai Maestro.
+- iOS device fisik: kode sudah ada (usbmux/tunnel, `fastpilot ios doctor`) tapi belum diuji di hardware.
+  Butuh Xcode yang cocok dengan iOS-nya (iOS 26 → Xcode 26) dan Apple ID di Xcode; profil gratis berlaku
+  7 hari dan maksimal 3 app per device. `setLocation`, `pushNotification`, rekaman layar, `clearKeychain`
+  dan izin allow/deny hanya ada di simulator. Lihat [docs/real-devices.md](docs/real-devices.md).
+- iOS WKWebView: lewat Web Inspector, hanya jika app memasang `webView.isInspectable = true` (iOS 16.4+);
+  di iPhone juga Settings → Safari → Advanced → Web Inspector. Tap web berupa `click()` DOM (bukan
+  sentuhan), dengan beberapa WKWebView dipakai halaman pertama, dan jalur RemoteXPC belum ada.
+- iOS `setNetwork`: tidak didukung (simulator memakai jaringan Mac).
+- Web attach lewat extension relay ([extension-chrome/](extension-chrome/)) perlu klik tombol extension
+  di tab yang mau dikendalikan; tanpa extension: Chrome M144+ `autoConnect` atau `--remote-debugging-port`.

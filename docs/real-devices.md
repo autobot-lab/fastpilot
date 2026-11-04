@@ -44,3 +44,22 @@ interfaces on a device, guarded by a random per-start token.
 On a device: `openLink` works (iOS 16.4+), `clearState` works for development-signed apps,
 `setPermissions` supports `unset`; `clearKeychain`, `setLocation`, `pushNotification`, allow/deny
 permissions and screen recording are simulator-only and report `unsupported`.
+
+## WKWebView content (simulator and iPhone)
+
+Web content inside the app is read and driven through the Web Inspector, like Safari's Develop
+menu: the DOM is merged into the snapshot under the web view, and `tapOn`, `inputText` and
+`evalScript` on web elements go through the inspector protocol. Needed:
+
+1. The app sets `webView.isInspectable = true` (iOS 16.4+; a debug-build flag is enough).
+2. iPhone only: Settings → Safari (Apps → Safari on iOS 18+) → Advanced → **Web Inspector** on,
+   USB cable, phone unlocked. `fastpilot ios doctor` reports whether the service answers.
+
+The simulator uses its `webinspectord_sim` socket (`FASTPILOT_WEBINSPECTOR_SOCKET` overrides when
+several simulators are booted). A device uses lockdownd's `com.apple.webinspector` service over
+usbmux with TLS from this Mac's pair record; the RemoteXPC (`.shim.remote`) variant is not
+implemented. Without an inspectable page the snapshot keeps the native accessibility tree and
+`evalScript` reports `unsupported` with these steps.
+
+Limits: web taps are DOM `click()`s and typing uses `insertText` (no touch events); with several
+WKWebViews the first page listed is used; bounds ignore a translucent bar's content inset.
