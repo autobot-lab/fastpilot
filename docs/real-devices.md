@@ -37,9 +37,13 @@ FASTPILOT_IOS_TEAM=<team id> FASTPILOT_IOS_BUNDLE_PREFIX=com.<you>.fastpilot ios
 Free Apple ID budget: 3 apps signed by you per device = host + runner + the app under test.
 Install your app yourself: `xcrun devicectl device install app --device <udid> <App.app>`.
 
-Transport: USB via usbmux (default); after 20 s fastpilot also tries the CoreDevice tunnel
-(Wi-Fi after pairing). `FASTPILOT_IOS_TRANSPORT=auto|usbmux|tunnel`. The runner listens on all
-interfaces on a device, guarded by a random per-start token.
+Transport: USB via usbmux (default; the runner listens on loopback only). With
+`FASTPILOT_IOS_TRANSPORT=tunnel` fastpilot uses the CoreDevice tunnel instead (Wi-Fi after
+pairing) and the runner listens on every interface. Either way the first request must carry a
+random per-start token, and an unauthenticated client is dropped after 5 s.
+
+One session per phone at a time; stopping the session quits the runner and xcodebuild (the next
+session starts them again).
 
 On a device: `openLink` works (iOS 16.4+), `clearState` works for development-signed apps,
 `setPermissions` supports `unset`; `clearKeychain`, `setLocation`, `pushNotification`, allow/deny

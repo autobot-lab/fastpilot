@@ -202,7 +202,9 @@ pub struct IosDriver {
     /// A physical device (xcodebuild + usbmux/tunnel): simctl features are unavailable.
     device: bool,
     /// usbmux port forward to the device's runner, while this session lives.
-    forward: Option<tokio::task::JoinHandle<()>>,
+    forward: Option<Forward>,
+    /// This process's claim on the physical device (one session per phone).
+    busy: Mutex<Option<Busy>>,
     web: tokio::sync::Mutex<Web>,
 }
 
@@ -431,7 +433,7 @@ fn token() -> std::result::Result<String, Error> {
 
 /// `devicectl device info details`: the CoreDevice tunnel address (IPv6), when connected.
 async fn tunnel_address(udid: &str) -> Option<std::net::IpAddr> {
-    let v = device::devicectl_json(&["device", "info", "details", "--device", udid]).await?;
+    let v = device::devicectl_json(&["device", "info", "details", "--device", udid]).await.ok()?;
     v["result"]["connectionProperties"]["tunnelIPAddress"].as_str()?.parse().ok()
 }
 
@@ -448,24 +450,65 @@ fn runner_port(udid: &str) -> u16 {
     22100 + (h % 500) as u16
 }
 
+/// A usbmux forward that stops when dropped: session end and every failed start alike.
+struct Forward(tokio::task::JoinHandle<()>);
+
+impl Drop for Forward {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Physical devices with a session in this process. The device runner's token lives only in
+/// its session, so a second session would start another xcodebuild on the same port.
+fn busy_devices() -> &'static Mutex<std::collections::HashSet<String>> {
+    static B: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    B.get_or_init(Mutex::default)
+}
+
+struct Busy(String);
+
+impl Busy {
+    fn claim(udid: &str) -> std::result::Result<Self, Error> {
+        if !lock(busy_devices()).insert(udid.to_owned()) {
+            return Err(Error::Runner(format!("{udid} already has a session in this fastpilot: stop it first (one session per physical device)")));
+        }
+        Ok(Self(udid.to_owned()))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        lock(busy_devices()).remove(&self.0);
+    }
+}
+
 impl IosDriver {
     /// Start the XCUITest runner on `udid` (or the booted simulator, booting "iPhone 16" if none).
     /// `udid`: a device spec (`ios-device:<udid>`, `simulator:<udid>`, a plain UDID or name).
     /// A physical device is used only when named; without a spec the booted simulator.
     pub async fn start(udid: Option<&str>) -> std::result::Result<Self, Error> {
+        use fastpilot_core::DeviceKind;
         let spec = udid.map(fastpilot_core::DeviceSpec::parse).transpose().map_err(Error::Runner)?;
+        let mut target = spec.as_ref().map(|s| s.id.clone());
         if let Some(spec) = &spec {
-            let all = device_infos().await;
-            let picked = fastpilot_core::select(&all, Some(spec), fastpilot_core::Platform::Ios);
-            if let Ok(d) = picked
-                && d.kind == fastpilot_core::DeviceKind::IosDevice
-            {
-                return Self::start_device(&d.id).await;
+            // A simulator UDID or name (what the pool leases) needs no devicectl round trip.
+            let known_sim = match spec.kind {
+                Some(DeviceKind::Simulator) => true,
+                Some(_) => false,
+                None => devices().await?.iter().any(|(u, n, _)| *u == spec.id || *n == spec.id),
+            };
+            if !known_sim {
+                let all = device_infos().await;
+                let d = fastpilot_core::select(&all, Some(spec), fastpilot_core::Platform::Ios).map_err(|e| Error::Runner(e.to_string()))?;
+                if d.kind == DeviceKind::IosDevice {
+                    return Self::start_device(&d.id).await;
+                }
+                target = Some(d.id.clone());
             }
         }
-        let udid = spec.as_ref().map(|s| s.id.as_str());
-        let udid = match udid {
-            Some(u) => boot(u).await?,
+        let udid = match target {
+            Some(u) => boot(&u).await?,
             None => match devices().await?.into_iter().find(|(_, _, st)| st == "Booted") {
                 Some((u, _, _)) => u,
                 None => boot(&std::env::var("FASTPILOT_IOS_DEVICE").unwrap_or_else(|_| "iPhone 16".into())).await?,
@@ -519,10 +562,13 @@ impl IosDriver {
         Self::connected(udid, agent, Some(child)).await
     }
 
-    /// Physical device: preflight, the device build of the runner, xcodebuild with a token and
-    /// `bind=any`, then readiness by polling `hello` (raced against xcodebuild exiting, 240 s)
-    /// over usbmux, or the CoreDevice tunnel (`FASTPILOT_IOS_TRANSPORT=auto|usbmux|tunnel`).
+    /// Physical device: preflight, the device build of the runner, xcodebuild with a token,
+    /// then readiness by polling `hello` (raced against xcodebuild exiting, 240 s) over usbmux
+    /// (default; the runner binds loopback) or the CoreDevice tunnel
+    /// (`FASTPILOT_IOS_TRANSPORT=tunnel`; the runner binds every interface, token-guarded).
+    /// Every early return kills xcodebuild (kill_on_drop) and stops the forward (`Forward`).
     async fn start_device(udid: &str) -> std::result::Result<Self, Error> {
+        let claim = Busy::claim(udid)?;
         let facts = device::list().await.into_iter().find(|d| d.udid == udid).ok_or_else(|| Error::Runner(format!("no paired device {udid} (fastpilot ios doctor)")))?;
         let blocking: Vec<String> = device::preflight(&facts, &device::host().await, std::time::SystemTime::now())
             .into_iter()
@@ -535,19 +581,20 @@ impl IosDriver {
         let xctestrun = runner::xctestrun(runner::Target::Device).ok_or_else(|| {
             Error::Runner(format!("runner not built for devices: ios-runner/build.sh --device {udid}"))
         })?;
+        let tunnel = std::env::var("FASTPILOT_IOS_TRANSPORT").is_ok_and(|t| t == "tunnel");
         let port = runner_port(udid);
         let token = token()?;
         let env = [
             ("FASTPILOT_PORT".to_owned(), port.to_string()),
-            ("FASTPILOT_BIND".to_owned(), "any".to_owned()),
+            ("FASTPILOT_BIND".to_owned(), if tunnel { "any" } else { "loopback" }.to_owned()),
             ("FASTPILOT_TOKEN".to_owned(), token.clone()),
             ("FASTPILOT_IDLE_EXIT".to_owned(), std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into())),
             ("FASTPILOT_QUIESCENCE".to_owned(), std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default()),
         ];
         let mut spawned = runner::spawn(&xctestrun, udid, &env).map_err(|e| Error::Runner(format!("xcodebuild: {e}")))?;
-        let transport = std::env::var("FASTPILOT_IOS_TRANSPORT").unwrap_or_else(|_| "auto".into());
         let started = std::time::Instant::now();
-        let mut forward: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+        let mut forward: Option<(u16, Forward)> = None;
+        let mut last = "nothing tried yet".to_owned();
         loop {
             if let Ok(Some(status)) = spawned.child.try_wait() {
                 let tail = spawned.tail_text();
@@ -555,44 +602,50 @@ impl IosDriver {
                 return Err(Error::Runner(format!("xcodebuild exited ({status}) before the runner answered{hint}: {tail}")));
             }
             if started.elapsed() > Duration::from_secs(240) {
-                let _ = spawned.child.start_kill();
-                return Err(Error::Runner(format!("runner on {udid} did not answer within 240 s: {}", spawned.tail_text())));
+                return Err(Error::Runner(format!("runner on {udid} did not answer within 240 s (last: {last}): {}", spawned.tail_text())));
             }
-            let usb = transport != "tunnel";
-            let tunnel = transport == "tunnel" || (transport == "auto" && started.elapsed() > Duration::from_secs(20));
-            if usb && forward.is_none() {
+            if !tunnel && forward.is_none() {
                 match usbmux::forward(udid, port).await {
-                    Ok(f) => forward = Some(f),
-                    Err(e) => tracing::debug!(error = %e, "usbmux forward not ready"),
+                    Ok((local, h)) => forward = Some((local, Forward(h))),
+                    Err(e) => last = e.to_string(),
                 }
             }
             if let Some((local, _)) = &forward {
                 let ep = fastpilot_android::Endpoint { token: Some(token.clone()), ..fastpilot_android::Endpoint::local(*local) };
-                if let Ok(agent) = Agent::connect_to(&ep, 1).await {
-                    tracing::info!(udid, "runner reached over usbmux");
-                    let handle = forward.take().map(|(_, h)| h);
-                    return Self::on_device(udid, agent, spawned.child, handle).await;
+                match Agent::connect_to(&ep, 1).await {
+                    Ok(agent) => {
+                        tracing::info!(udid, "runner reached over usbmux");
+                        return Self::on_device(udid, agent, spawned.child, forward.map(|(_, f)| f), claim).await;
+                    }
+                    Err(e) => last = format!("runner over usbmux: {e}"),
                 }
             }
-            if tunnel && let Some(addr) = tunnel_address(udid).await {
-                let ep = fastpilot_android::Endpoint { host: addr, port, token: Some(token.clone()) };
-                if let Ok(agent) = Agent::connect_to(&ep, 1).await {
-                    tracing::info!(udid, %addr, "runner reached over the CoreDevice tunnel");
-                    if let Some((_, h)) = forward.take() {
-                        h.abort();
+            if tunnel {
+                match tunnel_address(udid).await {
+                    Some(addr) => {
+                        let ep = fastpilot_android::Endpoint { host: addr, port, token: Some(token.clone()) };
+                        match Agent::connect_to(&ep, 1).await {
+                            Ok(agent) => {
+                                tracing::info!(udid, %addr, "runner reached over the CoreDevice tunnel");
+                                return Self::on_device(udid, agent, spawned.child, None, claim).await;
+                            }
+                            Err(e) => last = format!("runner over the tunnel ({addr}): {e}"),
+                        }
                     }
-                    return Self::on_device(udid, agent, spawned.child, None).await;
+                    None => last = "no CoreDevice tunnel address yet (devicectl device info details)".into(),
                 }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
-    async fn on_device(udid: &str, agent: Agent, child: Child, forward: Option<tokio::task::JoinHandle<()>>) -> std::result::Result<Self, Error> {
+    /// The child stays out of `runners()`: a device runner is not reused (its token dies with
+    /// the session); dropping the driver kills it.
+    async fn on_device(udid: &str, agent: Agent, child: Child, forward: Option<Forward>, claim: Busy) -> std::result::Result<Self, Error> {
         let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
-        lock(runners()).insert(udid.to_owned(), child.clone());
         let mut d = Self::connected_as(udid.to_owned(), std::sync::Arc::new(agent), Some(child), true).await?;
         d.forward = forward;
+        *lock(&d.busy) = Some(claim);
         Ok(d)
     }
 
@@ -625,6 +678,7 @@ impl IosDriver {
             _runner: runner,
             device,
             forward: None,
+            busy: Mutex::new(None),
             web: tokio::sync::Mutex::default(),
         })
     }
@@ -951,6 +1005,25 @@ impl Driver for IosDriver {
 
     fn platform(&self) -> Platform {
         Platform::Ios
+    }
+
+    /// Physical device: quit the runner, stop xcodebuild and the usbmux forward, free the
+    /// device. A simulator runner stays up for the next session (it exits when idle).
+    async fn close(&self) -> Result<()> {
+        if !self.device {
+            return Ok(());
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.agent.call("quit", json!({}))).await;
+        if let Some(f) = &self.forward {
+            f.0.abort();
+        }
+        if let Some(r) = &self._runner {
+            let mut child = r.lock().await;
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+        }
+        lock(&self.busy).take();
+        Ok(())
     }
 
     async fn set_location(&self, lat: f64, lon: f64) -> Result<()> {
@@ -1291,6 +1364,15 @@ mod tests {
             snap.render(None, 120),
             "screen \"Login\" (ios, com.fastpilot.demo)\ne1 text \"Login\"\ne2 textfield \"Email\" value=\"\"\ne3 textfield \"Password\" secure\ne4 switch \"Ingat saya\"\ne5 button \"Masuk\""
         );
+    }
+
+    #[test]
+    fn one_session_per_physical_device() {
+        let first = Busy::claim("00008110-TEST").expect("free");
+        assert!(Busy::claim("00008110-TEST").is_err(), "a second session is refused");
+        assert!(Busy::claim("00008110-OTHER").is_ok());
+        drop(first);
+        assert!(Busy::claim("00008110-TEST").is_ok(), "freed when the session ends");
     }
 
     #[test]

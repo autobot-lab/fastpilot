@@ -164,13 +164,16 @@ async fn wake(adb: &Adb, serial: &str) -> std::result::Result<(), Error> {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     let _ = adb.shell(serial, "wm dismiss-keyguard").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    if device::locked(&adb.shell(serial, "dumpsys window").await?) {
-        return Err(Error::Locked(format!(
-            "{serial} is locked: unlock it; a PIN cannot be automated, so use Stay awake and a Swipe/None lock for test phones"
-        )));
+    // Slow phones (MIUI) take a while to drop the keyguard: poll for about 3 s.
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if !device::locked(&adb.shell(serial, "dumpsys window").await?) {
+            return Ok(());
+        }
     }
-    Ok(())
+    Err(Error::Locked(format!(
+        "{serial} is locked: unlock it; a PIN cannot be automated, so use Stay awake and a Swipe/None lock for test phones"
+    )))
 }
 
 /// Install the agent; a key mismatch (another machine's debug keystore) is fixed once by

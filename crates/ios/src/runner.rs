@@ -55,9 +55,12 @@ pub fn classify(output: &str) -> Option<&'static str> {
         "the signing profile expired (free profiles last 7 days): run ios-runner/build.sh --device <udid> again"
     } else if o.contains("developer mode") {
         "Settings → Privacy & Security → Developer Mode → on, then restart the phone"
-    } else if o.contains("locked") {
+    } else if o.match_indices("locked").any(|(i, _)| !o[..i].ends_with("un")) {
         "unlock the phone (Auto-Lock → Never while testing)"
-    } else if o.contains("not supported") || o.contains("xcode") && o.contains("version") {
+    } else if ["newer version of xcode", "not supported by this version of xcode", "doesn't support ios", "does not support ios", "unsupported os version"]
+        .iter()
+        .any(|p| o.contains(p))
+    {
         "this Xcode is too old for the device's iOS: install the matching Xcode and xcode-select it"
     } else {
         return None;
@@ -78,13 +81,14 @@ impl Spawned {
 
 /// `xcodebuild test-without-building -xctestrun <x> -destination id=<udid>` with
 /// `TEST_RUNNER_*` environment for the runner; output tails are kept for error messages.
+/// Device runners only: the child dies with its handle (a failed start or the session's end).
 pub fn spawn(xctestrun: &Path, udid: &str, env: &[(String, String)]) -> std::io::Result<Spawned> {
     let mut cmd = Command::new("xcodebuild");
     cmd.arg("test-without-building").arg("-xctestrun").arg(xctestrun).args(["-destination", &format!("id={udid}")]);
     for (k, v) in env {
         cmd.env(format!("TEST_RUNNER_{k}"), v);
     }
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(false).spawn()?;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn()?;
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     let keep = |stream: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>, tail: Arc<Mutex<VecDeque<String>>>| {
         if let Some(s) = stream {
@@ -124,6 +128,8 @@ mod tests {
         assert!(classify("Provisioning profile \"iOS Team Provisioning Profile\" expired").is_some_and(|h| h.contains("7 days")));
         assert!(classify("Developer Mode disabled").is_some());
         assert!(classify("Device is locked").is_some_and(|h| h.contains("unlock")));
+        assert_eq!(classify("device unlocked; Xcode 26.0 build version 17A324"), None, "neither locked nor an Xcode mismatch");
+        assert!(classify("iPhone is running iOS 26.6.1, which is not supported by this version of Xcode").is_some_and(|h| h.contains("matching Xcode")));
         assert_eq!(classify("** TEST EXECUTE SUCCEEDED **"), None);
     }
 }

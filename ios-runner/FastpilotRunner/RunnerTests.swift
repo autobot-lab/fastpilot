@@ -117,7 +117,7 @@ final class RunnerTests: XCTestCase {
             }
         }
         guard fd >= 0, rc == 0, Darwin.listen(fd, 4) == 0 else {
-            print("FASTPILOT_RUNNER_ERROR bind 127.0.0.1:\(port) failed errno=\(errno)")
+            print("FASTPILOT_RUNNER_ERROR bind \(any ? "[::]" : "127.0.0.1"):\(port) failed errno=\(errno)")
             fflush(stdout)
             throw ProtocolError(message: "bind failed")
         }
@@ -152,12 +152,21 @@ final class RunnerTests: XCTestCase {
         }
     }
 
+    /// SO_RCVTIMEO in seconds (0 = block): a peer that connects and sends nothing must not hold
+    /// the single client slot before it has authenticated.
+    private func receiveTimeout(_ fd: Int32, _ seconds: Int) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     private func serve(_ fd: Int32) {
         var authenticated = token == nil
+        if !authenticated { receiveTimeout(fd, 5) }
         while running {
             guard let head = readFully(fd, 4) else { return }
             let len = head.reduce(0) { $0 << 8 | Int($1) }
-            guard len <= 16 << 20, let body = readFully(fd, len) else { return }
+            // A hello is tiny: nothing large is buffered for an unauthenticated peer.
+            guard len <= (authenticated ? 16 << 20 : 4096), let body = readFully(fd, len) else { return }
             var resp: [String: Any]
             var id: Any = NSNull()
             do {
@@ -172,6 +181,8 @@ final class RunnerTests: XCTestCase {
                         return
                     }
                     authenticated = true
+                    // The host keeps its connection open and idle between commands.
+                    receiveTimeout(fd, 0)
                 }
                 resp = try handle(req)
                 resp["ok"] = true
@@ -233,6 +244,10 @@ final class RunnerTests: XCTestCase {
                                                           ("mediaLibrary", .mediaLibrary), ("homeKit", .homeKit)]
             all.append(("bluetooth", .bluetooth))
             if #available(iOS 14.0, *) { all.append(("location", .location)) }
+            let unknown = (names ?? []).filter { n in !all.contains { $0.0 == n } }
+            if !unknown.isEmpty {
+                throw ProtocolError(message: "unknown permission(s) \(unknown.joined(separator: ", ")); known: \(all.map { $0.0 }.joined(separator: ", "))")
+            }
             var done: [String] = []
             for (name, r) in all where names == nil || names!.contains(name) {
                 a.resetAuthorizationStatus(for: r)

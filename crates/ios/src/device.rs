@@ -245,30 +245,46 @@ async fn run(cmd: &str, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// `devicectl ... -j <tmp>`: its JSON goes to a file, not stdout.
-pub async fn devicectl_json(args: &[&str]) -> Option<Value> {
-    let tag: String = args.join("-").chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    let path = std::env::temp_dir().join(format!("fastpilot-devicectl-{}-{tag}.json", std::process::id()));
+/// `devicectl ... -j <tmp>`: its JSON goes to a file, not stdout. Bounded at 15 s (callers
+/// run inside the 240 s runner deadline); without JSON the error carries devicectl's stderr.
+pub async fn devicectl_json(args: &[&str]) -> Result<Value, String> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("fastpilot-devicectl-{}-{n}.json", std::process::id()));
     let p = path.display().to_string();
     let mut full: Vec<&str> = vec!["devicectl"];
     full.extend_from_slice(args);
     full.extend_from_slice(&["-j", &p]);
-    let _ = Command::new("xcrun").args(&full).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().await;
+    let run = Command::new("xcrun").args(&full).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true).output();
+    let out = tokio::time::timeout(Duration::from_secs(15), run).await;
     let v = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
     let _ = std::fs::remove_file(&path);
-    v
+    match (out, v) {
+        (Ok(Ok(_)), Some(v)) => Ok(v),
+        (Ok(Ok(o)), None) => Err(format!("devicectl {} failed ({}): {}", args.join(" "), o.status, String::from_utf8_lossy(&o.stderr).trim())),
+        (Ok(Err(e)), _) => Err(format!("xcrun devicectl: {e}")),
+        (Err(_), _) => Err(format!("devicectl {} took longer than 15 s", args.join(" "))),
+    }
 }
 
-/// Paired physical devices, with the lock state of reachable ones.
-pub async fn list() -> Vec<DeviceFacts> {
-    let Some(v) = devicectl_json(&["list", "devices"]).await else { return Vec::new() };
+/// Paired physical devices, with the lock state of reachable ones; Err says why devicectl
+/// could not list them.
+pub async fn list_or_why() -> Result<Vec<DeviceFacts>, String> {
+    let v = devicectl_json(&["list", "devices"]).await?;
     let mut devices = parse_devices(&v);
     for d in devices.iter_mut().filter(|d| d.reachable()) {
-        if let Some(l) = devicectl_json(&["device", "info", "lockState", "--device", &d.udid]).await {
+        if let Ok(l) = devicectl_json(&["device", "info", "lockState", "--device", &d.udid]).await {
             d.locked = l["result"]["passcodeRequired"].as_bool().or_else(|| l["result"]["isLocked"].as_bool());
         }
     }
-    devices
+    Ok(devices)
+}
+
+pub async fn list() -> Vec<DeviceFacts> {
+    list_or_why().await.unwrap_or_else(|e| {
+        tracing::warn!("{e}");
+        Vec::new()
+    })
 }
 
 pub async fn host() -> HostFacts {
@@ -291,7 +307,11 @@ pub fn days_left(p: &Profile) -> u64 {
 /// blocking problem remains.
 pub async fn doctor(udid: Option<&str>) -> Result<String, String> {
     let h = host().await;
-    let devices: Vec<DeviceFacts> = list().await.into_iter().filter(|d| udid.is_none_or(|u| d.udid == u || d.name == u)).collect();
+    let (devices, why) = match list_or_why().await {
+        Ok(v) => (v, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let devices: Vec<DeviceFacts> = devices.into_iter().filter(|d| udid.is_none_or(|u| d.udid == u || d.name == u)).collect();
     let mut out = vec![format!(
         "host: devicectl {}, xcodebuild {}, iOS SDK {}, {} signing identities, runner for devices {}",
         if h.devicectl { "ok" } else { "missing" },
@@ -302,6 +322,9 @@ pub async fn doctor(udid: Option<&str>) -> Result<String, String> {
     )];
     for p in &h.profiles {
         out.push(format!("  profile {} (team {}): {} days left, {} devices", p.app, p.team, days_left(p), p.devices.len()));
+    }
+    if let Some(why) = why {
+        out.push(format!("devicectl could not list devices: {why}"));
     }
     if devices.is_empty() {
         out.push(match udid {

@@ -65,6 +65,8 @@ fn request(kind: &str) -> plist::Dictionary {
     d.insert("MessageType".into(), kind.into());
     d.insert("ClientVersionString".into(), "fastpilot".into());
     d.insert("ProgName".into(), "fastpilot".into());
+    // As libimobiledevice and go-ios send; newer usbmuxd builds expect it.
+    d.insert("kLibUSBMuxVersion".into(), plist::Value::Integer(3u64.into()));
     d
 }
 
@@ -111,7 +113,8 @@ pub async fn connect(socket: &Path, device_id: u64, port: u16) -> Result<UnixStr
 }
 
 /// Forward `127.0.0.1:<local>` to `remote_port` on the device `udid`; every accepted
-/// connection opens its own usbmux channel. Dropping (aborting) the handle stops it.
+/// connection opens its own usbmux channel, resolving the device again (a replug gives it a
+/// new DeviceID). Aborting the handle stops the listener and its open connections.
 pub async fn forward(udid: &str, remote_port: u16) -> Result<(u16, JoinHandle<()>), Error> {
     forward_via(&socket_path(), udid, remote_port).await
 }
@@ -137,15 +140,30 @@ pub async fn pair_record(socket: &Path, serial: &str) -> Result<plist::Dictionar
 }
 
 pub async fn forward_via(socket: &Path, udid: &str, remote_port: u16) -> Result<(u16, JoinHandle<()>), Error> {
-    let (device, _) = device(socket, udid).await?;
+    device(socket, udid).await?;
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(io)?;
     let local = listener.local_addr().map_err(io)?.port();
-    let socket = socket.to_owned();
+    let (socket, udid) = (socket.to_owned(), udid.to_owned());
     let task = tokio::spawn(async move {
-        while let Ok((mut tcp, _)) = listener.accept().await {
-            let socket = socket.clone();
-            tokio::spawn(async move {
-                match connect(&socket, device, remote_port).await {
+        // Connections live in the set: dropping it (on abort) closes them.
+        let mut conns = tokio::task::JoinSet::new();
+        loop {
+            let mut tcp = match listener.accept().await {
+                Ok((tcp, _)) => tcp,
+                Err(e) => {
+                    tracing::warn!(error = %e, "usbmux forward: accept failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            while conns.try_join_next().is_some() {}
+            let (socket, udid) = (socket.clone(), udid.clone());
+            conns.spawn(async move {
+                let usb = match device(&socket, &udid).await {
+                    Ok((id, _)) => connect(&socket, id, remote_port).await,
+                    Err(e) => Err(e),
+                };
+                match usb {
                     Ok(mut usb) => {
                         let _ = tokio::io::copy_bidirectional(&mut tcp, &mut usb).await;
                     }
@@ -169,6 +187,7 @@ mod tests {
             tokio::spawn(async move {
                 let Ok(req) = read_frame(&mut s).await else { return };
                 let kind = req.get("MessageType").and_then(plist::Value::as_string).unwrap_or("").to_owned();
+                assert_eq!(req.get("kLibUSBMuxVersion").and_then(plist::Value::as_unsigned_integer), Some(3));
                 let mut reply = plist::Dictionary::new();
                 if kind == "ListDevices" {
                     let mut props = plist::Dictionary::new();
