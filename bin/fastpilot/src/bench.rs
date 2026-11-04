@@ -84,6 +84,7 @@ pub async fn android(n: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
     Stats(snap).row("snapshot", Some(Duration::from_millis(100)));
     Stats(taps).row("tap -> diff", Some(Duration::from_millis(200)));
     println!("\nlast diff: {}", sample.join(" | "));
+    d.close().await?;
     Ok(())
 }
 
@@ -242,5 +243,6 @@ pub async fn tokens(platform: &str, web: LaunchOptions) -> Result<(), Box<dyn Er
         row(&format!("screenshot {w}x{h} (w*h/750)"), 0, fastpilot_llm::image_tokens(w, h));
     }
     println!("\n1-step response:\n{one}");
+    reg.close_all().await;
     Ok(())
 }

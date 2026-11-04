@@ -333,6 +333,8 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
             (forced_class.or((!passed).then_some(Class::Product)), None)
         }
     };
+    // Restore phone settings before the device goes back to the pool (or the process exits).
+    fp.close_all().await;
     CaseResult {
         quarantined: fp.quarantined(&case.id).is_some(),
         case: case.clone(),

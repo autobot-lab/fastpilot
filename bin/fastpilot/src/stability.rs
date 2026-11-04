@@ -30,6 +30,7 @@ pub async fn run(path: &str, runs: usize, web: LaunchOptions) -> Result<(), Box<
         // Fresh registry per run: the flow starts its own sessions, nothing leaks between runs.
         let mut reg = SessionRegistry::default();
         let report = run_flow(&mut reg, &launcher, &flow, &RunOptions::default()).await;
+        reg.close_all().await;
         times.push(report.elapsed);
         let verdict = if report.passed() {
             passes += 1;

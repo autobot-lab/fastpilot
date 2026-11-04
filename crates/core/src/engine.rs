@@ -63,6 +63,17 @@ impl SessionRegistry {
         }
     }
 
+    /// Close and drop every session: device settings are restored and on-device helpers
+    /// stopped before the caller moves on (a Drop fallback would race the process exit).
+    pub async fn close_all(&mut self) {
+        self.active = None;
+        for (id, d) in std::mem::take(&mut self.sessions) {
+            if let Err(e) = d.close().await {
+                tracing::warn!(session = %id, error = %e, "session cleanup failed");
+            }
+        }
+    }
+
     pub fn remove(&mut self, id: &str) -> Option<Arc<dyn Driver>> {
         if self.active.as_deref() == Some(id) {
             self.active = None;
