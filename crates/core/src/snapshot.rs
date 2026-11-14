@@ -774,6 +774,24 @@ mod tests {
     }
 
     #[test]
+    fn nothing_new_allows_only_removals() {
+        let mut refs = RefRegistry::default();
+        let both = Snapshot::build("Dashboard", "u", vec![n("text", "Masuk ke Akun"), n("button", "Masuk"), n("button", "Keluar")], &mut refs);
+        let dash = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar")], &mut refs);
+        assert!(shows_nothing_new(&both, &dash), "the old screen leaving is no effect");
+        assert!(shows_nothing_new(&dash, &dash));
+        let login = Snapshot::build("Login", "u", vec![n("text", "Masuk ke Akun")], &mut refs);
+        assert!(!shows_nothing_new(&dash, &login), "another screen");
+        let counted = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar"), n("text", "Ketukan: 1")], &mut refs);
+        assert!(!shows_nothing_new(&dash, &counted), "a new node");
+        let mut field = n("textfield", "Email");
+        let a = Snapshot::build("t", "u", vec![field.clone()], &mut refs);
+        field.value = Some("x".into());
+        let b = Snapshot::build("t", "u", vec![field], &mut refs);
+        assert!(!shows_nothing_new(&a, &b), "a changed value");
+    }
+
+    #[test]
     fn caps_lines() {
         let mut refs = RefRegistry::default();
         let tree = (0..10).map(|i| n("button", &format!("b{i}"))).collect();
@@ -826,23 +844,5 @@ mod tests {
         // Every node is still there for selectors and uncapped renders.
         assert!(snap.resolve(&Selector::Text("17 Nov".into()), Intent::Tap).is_ok());
         assert!(snap.render(None, usize::MAX).contains("\"17 Nov\""));
-    }
-
-    #[test]
-    fn nothing_new_allows_only_removals() {
-        let mut refs = RefRegistry::default();
-        let both = Snapshot::build("Dashboard", "u", vec![n("text", "Masuk ke Akun"), n("button", "Masuk"), n("button", "Keluar")], &mut refs);
-        let dash = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar")], &mut refs);
-        assert!(shows_nothing_new(&both, &dash), "the old screen leaving is no effect");
-        assert!(shows_nothing_new(&dash, &dash));
-        let login = Snapshot::build("Login", "u", vec![n("text", "Masuk ke Akun")], &mut refs);
-        assert!(!shows_nothing_new(&dash, &login), "another screen");
-        let counted = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar"), n("text", "Ketukan: 1")], &mut refs);
-        assert!(!shows_nothing_new(&dash, &counted), "a new node");
-        let mut field = n("textfield", "Email");
-        let a = Snapshot::build("t", "u", vec![field.clone()], &mut refs);
-        field.value = Some("x".into());
-        let b = Snapshot::build("t", "u", vec![field], &mut refs);
-        assert!(!shows_nothing_new(&a, &b), "a changed value");
     }
 }
