@@ -206,6 +206,13 @@ pub struct IosDriver {
     /// This process's claim on the physical device (one session per phone).
     busy: Mutex<Option<Busy>>,
     web: tokio::sync::Mutex<Web>,
+    /// The screen title the last tap/swipe/typing/back happened on (`None`: unknown). An
+    /// action on a different screen first waits out its transition (issue #4).
+    last_act: Mutex<Option<Option<String>>>,
+    /// Title of the screen the last action targeted, for `last_act`.
+    targeted: Mutex<Option<String>>,
+    /// The latest screen title and when it was first seen.
+    seen: Mutex<(String, std::time::Instant)>,
 }
 
 /// Web Inspector session on the frontmost app's WKWebView (by bundle id); a failed attempt is
@@ -673,6 +680,9 @@ impl IosDriver {
             refs: Mutex::default(),
             policy: Policy::from_env(),
             notes: Mutex::default(),
+            last_act: Mutex::default(),
+            targeted: Mutex::default(),
+            seen: Mutex::new((String::new(), std::time::Instant::now())),
             recording: tokio::sync::Mutex::new(None),
             locale: Mutex::default(),
             _runner: runner,
@@ -745,6 +755,28 @@ impl IosDriver {
         }
     }
 
+    /// An action ran on the screen it targeted (or on an unknown one).
+    fn acted(&self) {
+        let title = lock(&self.targeted).take();
+        *lock(&self.last_act) = Some(title);
+    }
+
+    /// UIKit drops touches while a navigation transition runs, and XCUI already reports both
+    /// screens with their final frames then, so neither the idle check nor a before/after
+    /// comparison sees it. When the screen changed since the last action and its title was
+    /// first seen less than `TRANSITION` ago, wait out the rest. Returns whether it waited.
+    async fn wait_transition(&self, snap: &Snapshot) -> bool {
+        let last = lock(&self.last_act).clone();
+        let (seen, since) = {
+            let seen = lock(&self.seen);
+            (seen.0.clone(), seen.1.elapsed())
+        };
+        let Some(left) = transition_left(last.as_ref().map(Option::as_deref), &snap.title, &seen, since) else { return false };
+        tracing::debug!(title = %snap.title, ?left, "new screen; waiting for its transition");
+        tokio::time::sleep(left).await;
+        true
+    }
+
     fn note(&self, text: String) {
         tracing::info!("{text}");
         let mut n = lock(&self.notes);
@@ -778,14 +810,32 @@ impl IosDriver {
             }
         }
         let title = if s(&v, "title").is_empty() { bundle.clone() } else { s(&v, "title").to_owned() };
+        {
+            let mut seen = lock(&self.seen);
+            if seen.0 != title {
+                *seen = (title.clone(), std::time::Instant::now());
+            }
+        }
         let snap = Snapshot::build(title, format!("ios, {bundle}"), roots, &mut lock(&self.refs));
         Ok((v, snap))
     }
 
     /// Like the Android driver: clear an unrelated permission alert or a covering keyboard first.
     async fn target(&self, sel: &Selector, intent: Intent) -> Result<Node> {
+        self.target_on(sel, intent).await.map(|(_, n)| n)
+    }
+
+    /// `target` plus the screen it was found on (for tap verification).
+    async fn target_on(&self, sel: &Selector, intent: Intent) -> Result<(Snapshot, Node)> {
+        let mut waited = false;
         for _ in 0..3 {
-            let (raw, snap) = self.screen().await?;
+            let (mut raw, mut snap) = self.screen().await?;
+            if !waited && self.wait_transition(&snap).await {
+                // Fresh positions once the old screen is gone.
+                waited = true;
+                (raw, snap) = self.screen().await?;
+            }
+            *lock(&self.targeted) = Some(snap.title.clone());
             let node = snap.resolve(sel, intent).map(|e| e.node.clone());
             if let Some(a) = system_alert(&raw) {
                 let ours = node.as_ref().is_ok_and(|n| n.bounds.is_some_and(|b| a.owns(&b)));
@@ -806,9 +856,27 @@ impl IosDriver {
                 self.call("hideKeyboard", json!({})).await?;
                 continue;
             }
-            return node;
+            return node.map(|n| (snap, n));
         }
-        Ok(self.snapshot().await?.resolve(sel, intent)?.node.clone())
+        let snap = self.snapshot().await?;
+        let node = snap.resolve(sel, intent)?.node.clone();
+        Ok((snap, node))
+    }
+
+    /// Whether the screen differs from `before` within `window`: waits for the runner's idle
+    /// check, then looks again until the window ends.
+    async fn changed_from(&self, before: &str, window: Duration) -> Result<bool> {
+        let start = std::time::Instant::now();
+        let _ = self.call("idle", json!({ "timeoutMs": window.as_millis() as u64 })).await;
+        loop {
+            match self.screen().await {
+                Err(e @ (CoreError::AppCrashed(_) | CoreError::AppNotResponding(_))) => return Err(e),
+                Err(_) => return Ok(true), // Unknown: do not tap again.
+                Ok((_, after)) if after.render(None, usize::MAX) != before => return Ok(true),
+                Ok(_) if start.elapsed() >= window => return Ok(false),
+                Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
     }
 
     /// Inspector session on `bundle`'s WKWebView (cached; reopened after it closed).
@@ -871,6 +939,7 @@ impl IosDriver {
     }
 
     async fn tap_at(&self, p: Point) -> Result<()> {
+        self.acted();
         self.call("tap", json!({ "x": p.x, "y": p.y })).await.map(|_| ())
     }
 
@@ -887,6 +956,23 @@ impl IosDriver {
 
 // No `quit` on drop: the runner stays up for the next session and exits when idle
 // (FASTPILOT_IOS_RUNNER_IDLE seconds, default 300).
+
+/// How long a tap gets to show an effect before it is retried (a UIKit push/pop runs 0.35 s).
+const TAP_EFFECT_WINDOW: Duration = Duration::from_millis(700);
+/// Upper bound of a UIKit navigation transition (push/pop 0.35 s, modal 0.5 s) plus margin,
+/// from when the new screen first shows up in a snapshot.
+const TRANSITION: Duration = Duration::from_millis(600);
+
+/// What is left of a navigation transition before acting on `title`: `last` is the screen of
+/// the last action (`Some(None)`: unknown, `None`: no action yet), `seen` the latest screen
+/// title, first seen `since` ago.
+fn transition_left(last: Option<Option<&str>>, title: &str, seen: &str, since: Duration) -> Option<Duration> {
+    let last = last?;
+    if last == Some(title) || seen != title {
+        return None;
+    }
+    TRANSITION.checked_sub(since).filter(|d| !d.is_zero())
+}
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
@@ -1146,11 +1232,13 @@ impl Driver for IosDriver {
 
     async fn long_press(&self, sel: &Selector) -> Result<()> {
         let p = self.point_of(sel).await?;
+        self.acted();
         self.call("longPress", json!({ "x": p.x, "y": p.y, "ms": 800 })).await.map(|_| ())
     }
 
     async fn double_tap(&self, sel: &Selector) -> Result<()> {
         let p = self.point_of(sel).await?;
+        self.acted();
         self.call("doubleTap", json!({ "x": p.x, "y": p.y })).await.map(|_| ())
     }
 
@@ -1212,11 +1300,27 @@ impl Driver for IosDriver {
         if let Selector::Point(p) = sel {
             return self.tap_at(*p).await;
         }
-        let node = self.resolve(sel, Intent::Tap).await?;
+        let (snap, node) = self.target_on(sel, Intent::Tap).await?;
         if let Some(h) = node.handle {
             return self.web_act(h, "tap", "").await;
         }
-        self.tap_at(Self::center(&node)?).await
+        let p = Self::center(&node)?;
+        self.tap_at(p).await?;
+        // Tap verification, as the Android driver does (issue #4): UIKit ignores touches while a
+        // navigation transition runs, but the runner's idle check (two equal snapshots) already
+        // passes then, because XCUI reports the final frames. A tap that changed nothing was
+        // most likely swallowed: tap again once the transition is over.
+        let before = snap.render(None, usize::MAX);
+        if self.changed_from(&before, TAP_EFFECT_WINDOW).await? {
+            return Ok(());
+        }
+        tracing::debug!(%sel, "tap had no visible effect; retrying once");
+        self.tap_at(p).await?;
+        if !self.changed_from(&before, TAP_EFFECT_WINDOW).await? {
+            // Some taps legitimately change nothing; say so for the failure triage.
+            self.note(format!("tap on {sel} had no visible effect (tapped twice)"));
+        }
+        Ok(())
     }
 
     async fn type_text(&self, sel: &Selector, text: &str) -> Result<()> {
@@ -1233,6 +1337,7 @@ impl Driver for IosDriver {
                 }
             }
         }
+        self.acted();
         self.call("text", json!({ "text": text })).await.map(|_| ())
     }
 
@@ -1253,10 +1358,12 @@ impl Driver for IosDriver {
     }
 
     async fn swipe(&self, from: Point, to: Point) -> Result<()> {
+        self.acted();
         self.call("swipe", json!({ "x1": from.x, "y1": from.y, "x2": to.x, "y2": to.y, "ms": 300 })).await.map(|_| ())
     }
 
     async fn back(&self) -> Result<()> {
+        self.acted();
         match self.call("back", json!({})).await {
             Err(CoreError::Driver(m)) if m.contains("no back button") => Err(CoreError::NotActionable(m)),
             other => other.map(|_| ()),
@@ -1334,6 +1441,20 @@ impl Driver for IosDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #4: the first action on a screen that just appeared waits out its transition.
+    #[test]
+    fn waits_for_a_transition_only_on_a_new_screen() {
+        let ms = Duration::from_millis;
+        // Tapped "Masuk" on Login; Dashboard appeared 80 ms ago: wait the rest.
+        assert_eq!(transition_left(Some(Some("Login")), "Dashboard", "Dashboard", ms(80)), Some(TRANSITION - ms(80)));
+        // After swipe/back/typing (screen unknown): same.
+        assert_eq!(transition_left(Some(None), "Dashboard", "Dashboard", ms(100)), Some(TRANSITION - ms(100)));
+        // Same screen as the last action, a screen shown long enough, or no action yet: no wait.
+        assert_eq!(transition_left(Some(Some("Dashboard")), "Dashboard", "Dashboard", ms(10)), None);
+        assert_eq!(transition_left(Some(Some("Login")), "Dashboard", "Dashboard", TRANSITION), None);
+        assert_eq!(transition_left(None, "Dashboard", "Dashboard", ms(10)), None);
+    }
 
     #[test]
     fn converts_runner_nodes() {
