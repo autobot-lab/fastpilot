@@ -551,7 +551,8 @@ fn line(e: &Entry, indent: bool) -> String {
 }
 
 fn quoted_name(n: &Node) -> String {
-    if n.name.is_empty() { String::new() } else { format!(" {}", quote(&clip(&n.name, MAX_NAME))) }
+    // Secrets are masked before clipping and quoting, which would hide them from `redact`.
+    if n.name.is_empty() { String::new() } else { format!(" {}", quote(&clip(&crate::redact(&n.name), MAX_NAME))) }
 }
 
 fn attrs(n: &Node) -> String {
@@ -561,7 +562,7 @@ fn attrs(n: &Node) -> String {
     } else if let Some(v) = &n.value
         && (EDITABLE.contains(&n.role.as_str()) || !v.is_empty())
     {
-        s.push_str(&format!(" value={}", quote(&clip(v, MAX_VALUE))));
+        s.push_str(&format!(" value={}", quote(&clip(&crate::redact(v), MAX_VALUE))));
     }
     for (on, label) in [
         (n.disabled, " disabled"),
