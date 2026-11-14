@@ -358,14 +358,25 @@ impl WebPage {
     /// runs on its own task, so dropping the caller still completes the sequence.
     async fn dispatch(&self, events: Vec<(&'static str, Value)>) -> Result<()> {
         self.mark_action();
-        let (cdp, sid) = (self.browser.cdp.clone(), self.tab().session);
+        let (cdp, sid, shared) = (self.browser.cdp.clone(), self.tab().session, self.shared.clone());
         let task = tokio::spawn(async move {
             for (method, params) in events {
                 if method == PAUSE {
                     tokio::time::sleep(Duration::from_millis(params["ms"].as_u64().unwrap_or(0))).await;
                     continue;
                 }
-                cdp.call(sid.as_deref(), method, params).await?;
+                // A click that closes its own popup (`window.close()` in the handler) can take
+                // the tab down before Chrome answers the mouse event: the input was delivered,
+                // and waiting for that answer would only time out.
+                let gone = async {
+                    while lock(&shared.tab).session == sid {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                };
+                tokio::select! {
+                    r = cdp.call(sid.as_deref(), method, params) => { r?; }
+                    () = gone => return Ok(()),
+                }
             }
             Ok::<(), Error>(())
         });
