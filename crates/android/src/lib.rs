@@ -26,6 +26,8 @@ use system::Kind;
 
 const AGENT_APK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fastpilot-agent.apk"));
 const AGENT_PKG: &str = "com.fastpilot.agent";
+/// Roles that own the keyboard while focused.
+const EDITABLE: &[&str] = &["textfield", "combobox", "spinbutton"];
 const AGENT_PORT: u16 = 7912;
 /// Other UiAutomation holders: only one may exist per device.
 const RIVALS: &[&str] = &["com.github.uiautomator", "com.github.uiautomator.test", "io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"];
@@ -353,14 +355,22 @@ impl AndroidDriver {
         Ok((snap, node))
     }
 
-    /// Back closes the IME without navigating; only sent while the keyboard is up.
+    /// Back closes the IME without navigating, but only while a text field of the screen has
+    /// focus. Right after a screen change the old screen's keyboard is still reported while it
+    /// closes; Back then would leave the new screen (issue #8: Dashboard → Login), so wait for
+    /// it to go instead.
     async fn dismiss_ime(&self) -> Result<()> {
-        let v = self.agent.call("snapshot", json!({})).await?;
-        if system::ime(&v).is_some() {
+        let (v, snap) = self.screen().await?;
+        if system::ime(&v).is_none() {
+            return Ok(());
+        }
+        if snap.entries.iter().any(|e| e.node.focused && EDITABLE.contains(&e.node.role.as_str())) {
             self.acted();
             self.agent.call("key", json!({ "code": 4 })).await?;
-            let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
+        } else {
+            tracing::debug!("keyboard without a focused field (closing); waiting instead of Back");
         }
+        let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
         Ok(())
     }
 
@@ -655,10 +665,22 @@ impl Driver for AndroidDriver {
         // likely swallowed by an animation or a re-layout; retry it once.
         let idle = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 800 })).await;
         let before = snap.render(None, usize::MAX);
-        let after = match self.snapshot().await {
+        let after = match self.screen().await {
             Err(e @ (CoreError::AppCrashed(_) | CoreError::AppNotResponding(_))) => return Err(e),
             other => other,
         };
+        // The keyboard of a field typed into just before came up under the finger (issue #8):
+        // the tap went to the keyboard. Look the target up again (that hides the keyboard).
+        if let Ok((raw, _)) = &after
+            && !EDITABLE.contains(&node.role.as_str())
+            && system::ime(raw).is_some_and(|k| k.contains(p))
+        {
+            self.note(format!("keyboard came up under the tap on {sel}; tapped again"));
+            let (_, node) = self.target(sel, Intent::Tap).await?;
+            self.tap_at(self.center(&node)?).await?;
+            return Ok(());
+        }
+        let after = after.map(|(_, s)| s);
         if after.is_ok_and(|after| after.render(None, usize::MAX) == before) {
             tracing::debug!(%sel, "tap had no visible effect; retrying once");
             self.tap_at(p).await?;
