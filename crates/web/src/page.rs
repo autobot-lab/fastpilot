@@ -1121,8 +1121,23 @@ impl Driver for WebPage {
         self.wait_nav("back navigation", |n| n.count > before).await
     }
 
+    /// In CSS pixels, the space of snapshot boxes and `{ point: [x, y] }` taps: with a
+    /// device scale factor (setViewport: iPhone 15 is 3x) the capture is scaled down, so a
+    /// position read off the image can be tapped as is (issue #6).
     async fn screenshot(&self) -> Result<Vec<u8>> {
-        let r = self.call("Page.captureScreenshot", json!({ "format": "jpeg", "quality": 80 })).await?;
+        let mut params = json!({ "format": "jpeg", "quality": 80 });
+        let dpr = self
+            .call("Runtime.evaluate", json!({ "expression": "devicePixelRatio", "returnByValue": true }))
+            .await
+            .ok()
+            .and_then(|r| r["result"]["value"].as_f64());
+        if let Some(dpr) = dpr.filter(|d| (d - 1.0).abs() >= 0.01)
+            && let Ok(m) = self.call("Page.getLayoutMetrics", json!({})).await
+            && let Some(clip) = css_clip(&m, dpr)
+        {
+            params["clip"] = clip;
+        }
+        let r = self.call("Page.captureScreenshot", params).await?;
         let data = r["data"].as_str().ok_or(Error::Unexpected("data"))?;
         base64::engine::general_purpose::STANDARD
             .decode(data)
@@ -1405,6 +1420,44 @@ impl Driver for WebPage {
         let shot = self.screenshot().await;
         let _ = self.call("Runtime.evaluate", json!({ "expression": "document.getElementById('__fastpilot_som')?.remove()" })).await;
         shot
+    }
+}
+
+/// `Page.captureScreenshot` clip of the visible viewport (`Page.getLayoutMetrics`, CSS
+/// pixels) scaled by 1/`dpr`, so one image pixel is one CSS pixel; `None` when DPR is 1.
+fn css_clip(m: &Value, dpr: f64) -> Option<Value> {
+    let css = &m["cssVisualViewport"];
+    let (w, h) = (css["clientWidth"].as_f64()?, css["clientHeight"].as_f64()?);
+    if w <= 0.0 || h <= 0.0 || !dpr.is_finite() || dpr <= 0.0 || (dpr - 1.0).abs() < 0.01 {
+        return None;
+    }
+    Some(json!({
+        "x": css["pageX"].as_f64().unwrap_or(0.0),
+        "y": css["pageY"].as_f64().unwrap_or(0.0),
+        "width": w,
+        "height": h.round(),
+        "scale": 1.0 / dpr,
+    }))
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    #[test]
+    fn clips_to_css_pixels_only_when_scaled() {
+        // setViewport: iPhone 15 (DPR 3) on a page with a mobile viewport, scrolled 100 px.
+        let m = json!({ "cssVisualViewport": { "pageX": 0, "pageY": 100, "clientWidth": 393, "clientHeight": 852, "scale": 1, "zoom": 1 } });
+        let c = css_clip(&m, 3.0).expect("clip");
+        assert_eq!((c["x"].as_f64(), c["y"].as_f64(), c["width"].as_f64(), c["height"].as_f64()), (Some(0.0), Some(100.0), Some(393.0), Some(852.0)));
+        assert!((c["scale"].as_f64().unwrap_or(0.0) - 1.0 / 3.0).abs() < 1e-9);
+        // A page without a viewport meta tag: 980 CSS px wide, zoomed out.
+        let m = json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 980, "clientHeight": 2124.58, "scale": 0.401 } });
+        let c = css_clip(&m, 3.0).expect("clip");
+        assert_eq!((c["width"].as_f64(), c["height"].as_f64()), (Some(980.0), Some(2125.0)));
+        // DPR 1 or no metrics: plain capture.
+        assert_eq!(css_clip(&m, 1.0), None);
+        assert_eq!(css_clip(&json!({}), 3.0), None);
     }
 }
 
