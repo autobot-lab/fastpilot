@@ -594,6 +594,28 @@ fn state(n: &Node) -> (&str, Option<&str>, bool, [bool; 8]) {
     (&n.name, value, n.secure, flags)
 }
 
+/// Whether `after` shows nothing that `before` did not: the same screen, and every node of
+/// `after` (role, name, value, state) was already in `before`. Nodes may have gone: during a
+/// navigation transition both screens are listed, and the old one leaving is no effect of an
+/// action. Used to tell an action that changed nothing from one that worked (failure triage).
+pub fn shows_nothing_new(before: &Snapshot, after: &Snapshot) -> bool {
+    if before.header() != after.header() {
+        return false;
+    }
+    type Key<'a> = (&'a str, (&'a str, Option<&'a str>, bool, [bool; 8]));
+    let mut pool: Vec<Key> = before.entries.iter().map(|e| (e.node.role.as_str(), state(&e.node))).collect();
+    after.entries.iter().all(|e| {
+        let key = (e.node.role.as_str(), state(&e.node));
+        match pool.iter().position(|k| *k == key) {
+            Some(i) => {
+                pool.swap_remove(i);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Changes from `prev` to `next` as `+`/`-`/`~` lines. `None` means "send the full snapshot":
 /// the screen changed or the diff is too long to be useful (PRD §9.2).
 pub fn diff(prev: &Snapshot, next: &Snapshot) -> Option<Vec<String>> {
@@ -804,5 +826,23 @@ mod tests {
         // Every node is still there for selectors and uncapped renders.
         assert!(snap.resolve(&Selector::Text("17 Nov".into()), Intent::Tap).is_ok());
         assert!(snap.render(None, usize::MAX).contains("\"17 Nov\""));
+    }
+
+    #[test]
+    fn nothing_new_allows_only_removals() {
+        let mut refs = RefRegistry::default();
+        let both = Snapshot::build("Dashboard", "u", vec![n("text", "Masuk ke Akun"), n("button", "Masuk"), n("button", "Keluar")], &mut refs);
+        let dash = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar")], &mut refs);
+        assert!(shows_nothing_new(&both, &dash), "the old screen leaving is no effect");
+        assert!(shows_nothing_new(&dash, &dash));
+        let login = Snapshot::build("Login", "u", vec![n("text", "Masuk ke Akun")], &mut refs);
+        assert!(!shows_nothing_new(&dash, &login), "another screen");
+        let counted = Snapshot::build("Dashboard", "u", vec![n("button", "Keluar"), n("text", "Ketukan: 1")], &mut refs);
+        assert!(!shows_nothing_new(&dash, &counted), "a new node");
+        let mut field = n("textfield", "Email");
+        let a = Snapshot::build("t", "u", vec![field.clone()], &mut refs);
+        field.value = Some("x".into());
+        let b = Snapshot::build("t", "u", vec![field], &mut refs);
+        assert!(!shows_nothing_new(&a, &b), "a changed value");
     }
 }

@@ -18,6 +18,10 @@ pub enum Class {
     Agent,
     /// Passes and fails without a change: passed on retry, or a mixed recent history.
     Flaky,
+    /// The tool acted too early: an action reported success but changed nothing on screen,
+    /// and the next check failed (e.g. a tap swallowed by an animation). Not a product bug:
+    /// rerun, add `waitForAnimationToEnd`, or report it against fastpilot.
+    Timing,
 }
 
 impl Class {
@@ -27,6 +31,7 @@ impl Class {
             Self::Infra => "infra",
             Self::Agent => "agent",
             Self::Flaky => "flaky",
+            Self::Timing => "timing",
         }
     }
 }
@@ -38,6 +43,8 @@ impl Class {
 /// (pass/fail at least twice over ≥ 5 runs, failing under half the time) → flaky as well,
 /// since the same steps have passed without a product change. Otherwise the category decides;
 /// a run reported failed with no failing step is a product failure (the AI judged the screen).
+/// `timing` (a check failed right after an action that changed nothing on screen) is a tool
+/// timing failure, never a product one.
 pub fn classify(category: Option<&str>, passed_on_retry: bool, history: Option<&PathMemory>) -> Class {
     if passed_on_retry {
         return Class::Flaky;
@@ -45,6 +52,7 @@ pub fn classify(category: Option<&str>, passed_on_retry: bool, history: Option<&
     match category {
         Some("infra") => Class::Infra,
         Some("agent") => Class::Agent,
+        Some("timing") => Class::Timing,
         _ => {
             let flips = history.map(|m| {
                 let s = m.stats();
@@ -207,6 +215,11 @@ mod tests {
         assert_eq!(classify(Some("product"), false, Some(&mixed)), Class::Flaky);
         assert_eq!(classify(Some("product"), false, Some(&history(&[true; 10]))), Class::Product);
         assert_eq!(classify(None, false, None), Class::Product);
+        // Issue #7: a check failing after an action with no visible effect is not a product bug.
+        assert_eq!(classify(Some("timing"), false, None), Class::Timing);
+        assert_eq!(classify(Some("timing"), false, Some(&history(&[true; 10]))), Class::Timing);
+        assert_eq!(classify(Some("timing"), true, None), Class::Flaky);
+        assert_eq!(Class::Timing.as_str(), "timing");
         assert_eq!(pass_hat_k(1, 2, 3), None);
     }
 

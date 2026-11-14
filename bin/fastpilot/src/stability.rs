@@ -39,7 +39,7 @@ pub async fn run(path: &str, runs: usize, web: LaunchOptions) -> Result<(), Box<
             let why = report
                 .records
                 .iter()
-                .find_map(|r| r.error.as_ref().map(|e| format!("step {} {}: {} [{}]", r.index, r.label, e.reason(), e.category())))
+                .find_map(|r| r.error.as_ref().zip(r.category()).map(|(e, c)| format!("step {} {}: {} [{c}]", r.index, r.label, e.reason())))
                 .unwrap_or_else(|| "incomplete".into());
             *reasons.entry(why.clone()).or_default() += 1;
             format!("FAIL {why}")

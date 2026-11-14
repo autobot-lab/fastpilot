@@ -290,7 +290,7 @@ impl Run {
                 "ms": r.elapsed.as_millis() as u64,
                 "ok": r.error.is_none(),
                 "reason": r.error.as_ref().map(|e| e.reason()),
-                "category": r.error.as_ref().map(|e| e.category()),
+                "category": r.category(),
                 "error": r.error.as_ref().map(|e| fastpilot_core::redact(&e.to_string())),
             });
             writeln!(f, "{line}").map_err(io(&path))?;
@@ -308,8 +308,8 @@ impl Run {
                 }
             }
         }
-        if let Some(e) = report.records.iter().find_map(|r| r.error.as_ref()) {
-            self.note_failure(e.reason(), e.category());
+        if let Some((e, category)) = report.records.iter().find_map(|r| r.error.as_ref().zip(r.category())) {
+            self.note_failure(e.reason(), category);
         }
         if report.passed() {
             self.flows.push(durable_yaml);

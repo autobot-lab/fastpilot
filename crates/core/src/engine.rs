@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use tokio::time::Instant;
 
 use crate::dsl::{Condition, HttpRequest, OtpSource, Random, ReadOtp, add_secret, looks_secret, substitute, substitute_with};
-use crate::snapshot::DEFAULT_MAX_LINES;
+use crate::snapshot::{DEFAULT_MAX_LINES, shows_nothing_new};
 use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Rect, Result, Selector, SessionId, Snapshot, Step, diff};
 
 const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -179,8 +179,20 @@ pub struct StepRecord {
     pub error: Option<Error>,
     /// For steps that targeted a ref: the role+name (or id) it resolved to, for path memory.
     pub durable: Option<Selector>,
+    /// This step failed to find what it looked for right after a tap (long press, double
+    /// tap) on its session that reported success but left the screen as it was: most likely
+    /// the action came too early (an animation swallowed it), not a product bug.
+    pub after_no_effect: bool,
     timeout: Option<Duration>,
     target: Option<(Selector, Intent)>,
+}
+
+impl StepRecord {
+    /// The failure category for triage: `timing` when the step failed only because the
+    /// previous action had no visible effect, else the error's own category.
+    pub fn category(&self) -> Option<&'static str> {
+        self.error.as_ref().map(|e| if self.after_no_effect { "timing" } else { e.category() })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +226,9 @@ impl fmt::Display for FlowReport {
                 let e = r.error.as_ref().map(|e| (e.reason(), e.to_string())).unwrap_or_default();
                 let timeout = r.timeout.map(|t| format!(" (timeout {}ms)", t.as_millis())).unwrap_or_default();
                 writeln!(f, "fail step {}/{} {}{}: {}: {}{timeout}", r.index, self.total, prefix(&r.session), r.label, e.0, e.1)?;
+                if r.after_no_effect {
+                    writeln!(f, "note: the previous tap reported success but changed nothing on screen; it most likely came too early (category timing, not product): retry it or add waitForAnimationToEnd")?;
+                }
                 if let Some(Error::Ambiguous { candidates, .. }) = &r.error {
                     writeln!(f, "candidates: {}", candidates.join(", "))?;
                 } else if !self.candidates.is_empty() {
@@ -248,6 +263,9 @@ struct Ctx {
     clipboard: Mutex<Option<String>>,
     /// Name given to `startRecording`, used by `stopRecording`.
     recording: Mutex<Option<String>>,
+    /// Per session: the step index of the last tap-like action and the screen before it,
+    /// while only checks followed it (failure triage, see `StepRecord::after_no_effect`).
+    last_action: Mutex<HashMap<String, (usize, Snapshot)>>,
 }
 
 fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -290,6 +308,7 @@ pub async fn run_flow(
         vars: Mutex::new(HashMap::new()),
         clipboard: Mutex::new(None),
         recording: Mutex::new(None),
+        last_action: Mutex::new(HashMap::new()),
     };
     let mut baselines: Vec<(SessionId, Option<Snapshot>)> = Vec::new();
     let mut active = opts.session.clone().or_else(|| reg.active().map(str::to_owned));
@@ -390,6 +409,7 @@ pub async fn run_flow(
     let mut candidates = Vec::new();
     let mut states = Vec::new();
     let mut root_cause = None;
+    let mut no_effect = None;
     for (sid, base) in &baselines {
         let Ok(d) = reg.get(sid) else { continue };
         let snap = match d.snapshot().await {
@@ -406,6 +426,14 @@ pub async fn run_flow(
             }
         };
         let failed_here = failed.filter(|f| f.session.as_deref() == Some(sid.as_str()));
+        if let Some(f) = failed_here
+            && matches!(f.error, Some(Error::NotFound(_) | Error::Assertion(_)))
+            && let Some((at, before)) = guard(&ctx.last_action).get(sid.as_str())
+            && *at < f.index
+            && shows_nothing_new(before, &snap)
+        {
+            no_effect = Some(f.index);
+        }
         if let Some((sel, intent)) = failed_here.and_then(|f| f.target.as_ref()) {
             candidates = snap.candidates(sel, *intent);
         }
@@ -430,6 +458,11 @@ pub async fn run_flow(
         && let Some(r) = records.iter_mut().find(|r| r.index == index && r.error.is_some())
     {
         r.error = Some(e);
+    }
+    if let Some(index) = no_effect
+        && let Some(r) = records.iter_mut().find(|r| r.index == index && r.error.is_some())
+    {
+        r.after_no_effect = true;
     }
     FlowReport {
         total: leaf_count(&flow.steps),
@@ -526,13 +559,33 @@ async fn durable(d: &dyn Driver, sel: &Selector) -> Option<Selector> {
     }
 }
 
+/// Taps whose effect the failure triage checks.
+fn tap_like(step: &Step) -> bool {
+    matches!(step, Step::TapOn(_) | Step::LongPressOn(_) | Step::DoubleTapOn(_))
+}
+
+/// Steps that only look at the screen: they keep the last action as "previous".
+fn check_only(step: &Step) -> bool {
+    matches!(step, Step::AssertVisible { .. } | Step::AssertNotVisible { .. } | Step::WaitForAnimationToEnd(_) | Step::TakeScreenshot(_))
+}
+
 async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx) -> bool {
     let t0 = Instant::now();
     let stable = match step_ref(step) {
         Some(sel) => durable(d, sel).await,
         None => None,
     };
+    let before = if tap_like(step) { d.snapshot().await.ok() } else { None };
     let res = exec(d, step, ctx).await;
+    match (before, &res) {
+        (Some(b), Ok(_)) => {
+            guard(&ctx.last_action).insert(sid.to_owned(), (index, b));
+        }
+        _ if check_only(step) => {}
+        _ => {
+            guard(&ctx.last_action).remove(sid);
+        }
+    }
     if let Err(e) = &res {
         tracing::debug!(session = sid, step = %step.label(), error = %e, "step failed");
     }
@@ -576,6 +629,7 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
         elapsed: t0.elapsed(),
         output,
         durable: None,
+        after_no_effect: false,
         // Retry exhaustion is the only case where the timeout is the relevant detail.
         timeout: timeout.filter(|_| error.as_ref().is_some_and(Error::is_retryable)),
         error,
@@ -1292,6 +1346,28 @@ mod tests {
         let report = run(&mut reg, "- retry: { maxRetries: 2, commands: [ tapOn: Logout ] }\n").await;
         let out = report.to_string();
         assert!(out.contains("not_found: attempt 3: step 1 tapOn \"Logout\": no element matches"), "{out}");
+    }
+
+    /// Issue #7: a check that fails after a tap which changed nothing is `timing`, not `product`.
+    #[tokio::test(start_paused = true)]
+    async fn check_after_a_tap_without_effect_is_timing() {
+        let mut reg = SessionRegistry::default();
+        // "Masuk" with an empty email does nothing in the fake app.
+        let report = run(&mut reg, "- session: { start: w }\n- tapOn: Masuk\n- assertVisible: { text: Budi, timeout: 300 }\n").await;
+        let failed = report.records.iter().find(|r| r.error.is_some()).expect("failed step");
+        assert!(failed.after_no_effect, "{report}");
+        assert_eq!(failed.category(), Some("timing"));
+        assert!(report.to_string().contains("category timing, not product"), "{report}");
+        // The tap worked (the screen changed) and the check still fails: product.
+        let report = run(&mut reg, "- inputText: { into: Email, text: a@b.com }\n- tapOn: Masuk\n- assertVisible: { text: Nope, timeout: 300 }\n").await;
+        let failed = report.records.iter().find(|r| r.error.is_some()).expect("failed step");
+        assert!(!failed.after_no_effect, "{report}");
+        assert_eq!(failed.category(), Some("product"));
+        // Another action came after the no-op tap: the tap is not the previous action.
+        let mut reg = SessionRegistry::default();
+        let report = run(&mut reg, "- session: { start: w }\n- tapOn: Daftar\n- inputText: { into: Email, text: x }\n- assertVisible: { text: Nope, timeout: 300 }\n").await;
+        let failed = report.records.iter().find(|r| r.error.is_some()).expect("failed step");
+        assert_eq!(failed.category(), Some("product"), "{report}");
     }
 
     #[tokio::test(start_paused = true)]
