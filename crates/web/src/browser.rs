@@ -178,7 +178,8 @@ fn reap_orphans() {
         if !alive {
             let dir = e.path();
             tracing::debug!(dir = %dir.display(), "reaping orphaned chrome profile");
-            let _ = std::process::Command::new("pkill").arg("-f").arg(format!("--user-data-dir={}", dir.display())).status();
+            // `--` ends the options: otherwise pkill parses the pattern itself as `--user-data-dir…`.
+            let _ = std::process::Command::new("pkill").args(["-f", "--"]).arg(format!("--user-data-dir={}", dir.display())).status();
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -251,4 +252,46 @@ fn find_chrome() -> Option<PathBuf> {
     std::env::split_paths(&path)
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .find(|p| p.is_file())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// #9: a Chrome left by a killed fastpilot (its `--user-data-dir` points at a profile whose
+    /// pid is gone) must be killed, not only have its profile deleted.
+    #[test]
+    fn reap_orphans_kills_chrome_of_dead_owner() {
+        // A pid that is certainly gone: a child we already waited for.
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = gone.id();
+        gone.wait().unwrap();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("fastpilot-{dead_pid}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Stand-in for the orphaned Chrome: same `--user-data-dir=` flag in its command line.
+        let mut chrome = std::process::Command::new("sh")
+            .args(["-c", "while :; do sleep 1; done", "sh"])
+            .arg(format!("--user-data-dir={}", dir.display()))
+            .spawn()
+            .unwrap();
+
+        reap_orphans();
+
+        let mut exited = None;
+        for _ in 0..50 {
+            exited = chrome.try_wait().unwrap();
+            if exited.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if exited.is_none() {
+            let _ = chrome.kill();
+            let _ = chrome.wait();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(exited.is_some(), "orphaned chrome still running after reap_orphans");
+        assert!(!dir.exists(), "orphaned profile not deleted");
+    }
 }
