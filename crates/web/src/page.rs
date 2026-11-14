@@ -173,6 +173,33 @@ pub struct WebPage {
     nav: watch::Receiver<Nav>,
     last_action: Mutex<Instant>,
     events: JoinHandle<()>,
+    /// `Emulation.setUserAgentOverride` replaces the whole override, so every call sends all
+    /// of it (issue #5: setLocale after setViewport used to reset the UA to desktop).
+    ua: Mutex<UaOverride>,
+}
+
+/// The user agent override as set so far by setViewport (UA, platform) and setLocale
+/// (Accept-Language / navigator.language).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct UaOverride {
+    user_agent: Option<String>,
+    platform: Option<String>,
+    accept_language: Option<String>,
+}
+
+impl UaOverride {
+    /// Parameters for `Emulation.setUserAgentOverride`; `default_ua` (the browser's own) when
+    /// no viewport set one.
+    fn params(&self, default_ua: &str) -> Value {
+        let mut p = json!({ "userAgent": self.user_agent.as_deref().unwrap_or(default_ua) });
+        if let Some(pl) = &self.platform {
+            p["platform"] = json!(pl);
+        }
+        if let Some(l) = &self.accept_language {
+            p["acceptLanguage"] = json!(l);
+        }
+        p
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -282,6 +309,7 @@ impl WebPage {
             nav,
             last_action: Mutex::new(Instant::now()),
             events,
+            ua: Mutex::default(),
         };
         enable(&page.browser.cdp, session.as_deref()).await?;
         Ok(page)
@@ -293,6 +321,19 @@ impl WebPage {
 
     async fn call(&self, method: &str, params: Value) -> std::result::Result<Value, Error> {
         self.browser.cdp.call(self.tab().session.as_deref(), method, params).await
+    }
+
+    /// Send the whole user agent override (see `UaOverride`).
+    async fn apply_ua(&self) -> std::result::Result<(), Error> {
+        let state = lock(&self.ua).clone();
+        let default = if state.user_agent.is_none() {
+            let v = self.browser.cdp.call(None, "Browser.getVersion", json!({})).await?;
+            v["userAgent"].as_str().unwrap_or("").to_owned()
+        } else {
+            String::new()
+        };
+        self.call("Emulation.setUserAgentOverride", state.params(&default)).await?;
+        Ok(())
     }
 
     async fn call_in(&self, session: Option<&str>, method: &str, params: Value) -> std::result::Result<Value, Error> {
@@ -1293,10 +1334,13 @@ impl Driver for WebPage {
         let Some(v) = v else {
             self.call("Emulation.clearDeviceMetricsOverride", json!({})).await?;
             self.call("Emulation.setTouchEmulationEnabled", json!({ "enabled": false })).await?;
-            let ua = self.browser.cdp.call(None, "Browser.getVersion", json!({})).await.ok();
-            if let Some(ua) = ua.as_ref().and_then(|u| u["userAgent"].as_str()) {
-                self.call("Emulation.setUserAgentOverride", json!({ "userAgent": ua })).await?;
+            {
+                let mut ua = lock(&self.ua);
+                ua.user_agent = None;
+                ua.platform = None;
             }
+            // Back to the browser's own UA; a locale set earlier is kept.
+            self.apply_ua().await?;
             return Ok(());
         };
         self.call(
@@ -1307,7 +1351,12 @@ impl Driver for WebPage {
         self.call("Emulation.setTouchEmulationEnabled", json!({ "enabled": v.touch, "maxTouchPoints": if v.touch { 5 } else { 1 } })).await?;
         if let Some(ua) = &v.user_agent {
             let platform = if ua.contains("iPhone") || ua.contains("iPad") { "iOS" } else if ua.contains("Android") { "Android" } else { "" };
-            self.call("Emulation.setUserAgentOverride", json!({ "userAgent": ua, "platform": platform })).await?;
+            {
+                let mut state = lock(&self.ua);
+                state.user_agent = Some(ua.clone());
+                state.platform = Some(platform.to_owned());
+            }
+            self.apply_ua().await?;
         }
         Ok(())
     }
@@ -1365,9 +1414,9 @@ impl Driver for WebPage {
     async fn set_locale(&self, locale: Option<&str>, timezone: Option<&str>) -> Result<()> {
         if let Some(l) = locale {
             self.call("Emulation.setLocaleOverride", json!({ "locale": l.replace('-', "_") })).await?;
-            let ua = self.browser.cdp.call(None, "Browser.getVersion", json!({})).await?;
-            let user_agent = ua["userAgent"].as_str().unwrap_or("").to_owned();
-            self.call("Emulation.setUserAgentOverride", json!({ "userAgent": user_agent, "acceptLanguage": l })).await?;
+            // Keeps a mobile UA set by setViewport.
+            lock(&self.ua).accept_language = Some(l.to_owned());
+            self.apply_ua().await?;
         }
         if let Some(tz) = timezone {
             self.call("Emulation.setTimezoneOverride", json!({ "timezoneId": tz }))
@@ -1423,5 +1472,27 @@ mod diag_tests {
         let out = third_party_last(d, "motmaina.com");
         assert!(out[3].contains("analytics.broken.example"), "{out:?}");
         assert_eq!(host_of("HTTP 500 https://motmaina.com:443/api"), "motmaina.com");
+    }
+}
+
+#[cfg(test)]
+mod ua_tests {
+    use super::*;
+
+    const IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148 Safari/604.1";
+
+    #[test]
+    fn every_override_carries_ua_platform_and_language() {
+        let mut ua = UaOverride::default();
+        assert_eq!(ua.params("Desktop/1"), json!({ "userAgent": "Desktop/1" }));
+        // setViewport then setLocale: the iPhone UA stays.
+        ua.user_agent = Some(IPHONE.into());
+        ua.platform = Some("iOS".into());
+        ua.accept_language = Some("ar".into());
+        assert_eq!(ua.params("Desktop/1"), json!({ "userAgent": IPHONE, "platform": "iOS", "acceptLanguage": "ar" }));
+        // setViewport reset: browser UA, language kept.
+        ua.user_agent = None;
+        ua.platform = None;
+        assert_eq!(ua.params("Desktop/1"), json!({ "userAgent": "Desktop/1", "acceptLanguage": "ar" }));
     }
 }
