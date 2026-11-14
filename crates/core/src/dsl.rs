@@ -1227,17 +1227,81 @@ pub fn to_vars(text: &str) -> String {
 
 /// Mask every allowed variable's value in text going back to the AI (PRD §15).
 pub fn redact(text: &str) -> String {
+    let mut secrets: Vec<String> = allowed()
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|v| v.chars().count() >= 3)
+        .collect();
+    secrets.extend(SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().cloned());
+    redact_with(text, &secrets)
+}
+
+/// A clipped secret (`sk-test-FAKE0123…`) is masked when at least this many of its first
+/// characters are shown.
+const MIN_CLIPPED_PREFIX: usize = 6;
+
+/// Every way a secret can appear in output: as is, escaped by `quote` (snapshots), by JSON
+/// (reports, tool arguments), by HTML (reports), and whitespace-collapsed (snapshot names).
+fn secret_forms(v: &str) -> Vec<String> {
+    let inner = |q: String| q[1..q.len() - 1].to_owned();
+    let mut forms = vec![
+        v.to_owned(),
+        inner(crate::snapshot::quote(v)),
+        serde_json::to_string(v).map(inner).unwrap_or_default(),
+        crate::recording::escape_html(v),
+        v.split_whitespace().collect::<Vec<_>>().join(" "),
+    ];
+    forms.retain(|f| f.chars().count() >= 3);
+    // Longest first, so an escaped form is masked whole rather than around its raw core.
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    forms
+}
+
+/// `redact` over an explicit list of secret values.
+pub(crate) fn redact_with(text: &str, secrets: &[String]) -> String {
+    let forms: Vec<String> = secrets.iter().flat_map(|v| secret_forms(v)).collect();
     let mut out = text.to_owned();
-    for name in allowed() {
-        if let Ok(v) = std::env::var(&name)
-            && v.chars().count() >= 3
-        {
-            out = out.replace(&v, "***");
+    for f in &forms {
+        if out.contains(f.as_str()) {
+            out = out.replace(f.as_str(), "***");
         }
     }
-    for v in SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter() {
-        out = out.replace(v.as_str(), "***");
+    // Output clipped with `…` may show only the start of a secret: mask that prefix too.
+    if out.contains('…') {
+        out = mask_clipped(&out, &forms);
     }
+    out
+}
+
+/// Replace `<prefix of a secret>…` with `***…`.
+fn mask_clipped(text: &str, forms: &[String]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('…') {
+        let head = &rest[..i];
+        let cut = forms
+            .iter()
+            .filter_map(|f| {
+                // Longest prefix of `f` (whole chars, at least MIN_CLIPPED_PREFIX) ending `head`.
+                f.char_indices()
+                    .map(|(j, c)| j + c.len_utf8())
+                    .skip(MIN_CLIPPED_PREFIX - 1)
+                    .filter(|&end| head.ends_with(&f[..end]))
+                    .max()
+            })
+            .max();
+        match cut {
+            Some(n) => {
+                out.push_str(&head[..head.len() - n]);
+                out.push_str("***");
+            }
+            None => out.push_str(head),
+        }
+        out.push('…');
+        rest = &rest[i + '…'.len_utf8()..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1476,6 +1540,59 @@ mod tests {
         assert_eq!(b[0].steps[1].line, Some(11));
         assert_eq!(b[1].steps[0].step, Step::Back);
         assert_eq!(b[1].steps[0].line, Some(14));
+    }
+
+    /// Issues #2 and #3: secrets must be masked however they were clipped or escaped.
+    #[test]
+    fn redacts_clipped_and_escaped_secrets() {
+        let long = "sk-test-FAKE0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH".to_owned();
+        let quoted = "pa\"ss\\word99".to_owned();
+        let multi = "line1\nline2\tend".to_owned();
+        let arabic = "كلمة\"سر\\٢٠".to_owned();
+        let secrets = [long.clone(), quoted.clone(), multi.clone(), arabic.clone()];
+        let r = |t: &str| redact_with(t, &secrets);
+        // Raw and clipped (40 chars + `…`, as snapshots render a value).
+        assert_eq!(r(&format!("token {long} end")), "token *** end");
+        let clipped: String = long.chars().take(40).collect();
+        assert_eq!(r(&format!("value=\"{clipped}…\"")), "value=\"***…\"");
+        // A clipped value with the secret after other text.
+        assert_eq!(r("value=\"Bearer sk-test-FAKE01…\""), "value=\"Bearer ***…\"");
+        // Too short a prefix, or unrelated clipped text, stays.
+        assert_eq!(r("see sk-te… and Sesi Anda telah…"), "see sk-te… and Sesi Anda telah…");
+        // Escaped by `quote` (snapshots), JSON (reports) and HTML (report pages).
+        for secret in [&quoted, &multi, &arabic] {
+            let q = crate::snapshot::quote(secret);
+            assert_eq!(r(&format!("value={q}")), "value=\"***\"", "quote form of {secret:?}");
+            let j = serde_json::to_string(secret).expect("json");
+            assert_eq!(r(&format!("{{\"text\":{j}}}")), "{\"text\":\"***\"}", "json form of {secret:?}");
+            assert!(!r(&crate::recording::escape_html(secret)).contains("ss"), "html form of {secret:?}");
+            assert_eq!(r(secret), "***");
+        }
+        assert_eq!(r("value=\"pa\\\"ss\\\\word99\""), "value=\"***\"");
+        // Whitespace collapsed, as in snapshot names.
+        assert_eq!(r("text \"line1 line2 end\""), "text \"***\"");
+        // Escaped and clipped at once.
+        let q = crate::snapshot::quote(&quoted);
+        assert_eq!(r(&format!("{}…", &q[..q.len() - 4])), "\"***…");
+    }
+
+    #[test]
+    fn snapshots_mask_secrets_before_clipping_and_quoting() {
+        let long = "sk-test-FAKEsnap0123456789abcdefghijklmnopqrstuvwxyz".to_owned();
+        let quoted = "pa\"ss\\snap99".to_owned();
+        add_secret(&long);
+        add_secret(&quoted);
+        let field = |name: &str, v: &str| crate::Node { role: "textfield".into(), name: name.into(), value: Some(v.into()), ..Default::default() };
+        let mut refs = crate::RefRegistry::default();
+        let snap = crate::Snapshot::build("t", "u", vec![field("API Token", &long), field("Kata sandi", &quoted), field("Auth", &format!("Bearer {long}"))], &mut refs);
+        let text = snap.render(None, 120);
+        assert!(text.contains("textfield \"API Token\" value=\"***\""), "{text}");
+        assert!(text.contains("textfield \"Kata sandi\" value=\"***\""), "{text}");
+        assert!(text.contains("textfield \"Auth\" value=\"Bearer ***\""), "{text}");
+        assert!(!text.contains("FAKEsnap") && !text.contains("snap99"), "{text}");
+        let next = crate::Snapshot::build("t", "u", vec![field("API Token", ""), field("Kata sandi", ""), field("Auth", "")], &mut refs);
+        let d = crate::diff(&snap, &next).expect("small diff").join("\n");
+        assert!(!d.contains("FAKEsnap") && !d.contains("snap99"), "{d}");
     }
 
     #[test]
