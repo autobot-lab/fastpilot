@@ -185,7 +185,9 @@ const ERRORS: &str = r#"# Failure reasons
 Every failure also has a category: `product` (screen not as expected: product bug, changed UI,
 crash), `infra` (browser/device/transport), `agent` (the flow is wrong or uses an unsupported step).
 Over runs a failure can also be classified `flaky` (passed on retry, or the test's history flips);
-see docs(topic: memory).
+see docs(topic: memory). A check that fails right after a tap that reported success but changed
+nothing on screen is `timing` (the tool acted too early, e.g. during an animation), not `product`:
+rerun it or add `waitForAnimationToEnd` before the tap.
 
 | Reason | Meaning | What to do |
 |---|---|---|
