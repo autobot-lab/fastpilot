@@ -150,7 +150,15 @@ impl RetryBudget {
 
     /// Spend one retry; false when the budget is used up.
     pub fn take(&self) -> bool {
-        self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok()
+        // A compare-exchange loop: `fetch_update` is deprecated on newer toolchains.
+        let mut n = self.0.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = n.checked_sub(1) else { return false };
+            match self.0.compare_exchange_weak(n, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
     }
 
     pub fn left(&self) -> u32 {
