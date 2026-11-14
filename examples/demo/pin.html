@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="id">
+<meta charset="utf-8">
+<title>PIN</title>
+<style>
+  #pad { display: grid; grid-template-columns: repeat(3, 48px); gap: 8px; cursor: default; }
+  #pad span { padding: 12px; text-align: center; background: #eee; }
+</style>
+<h1>Masukkan PIN</h1>
+<p id="pin">PIN: </p>
+<!-- Event delegation on the container, as React does: the keys are plain spans. -->
+<div id="pad"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>0</span></div>
+<p>Rating</p><div><span>4.8</span><span>(11)</span></div><div><span>Toko Budi</span></div>
+<script>
+  document.getElementById('pad').addEventListener('click', (e) => {
+    if (e.target.tagName === 'SPAN') document.getElementById('pin').textContent += e.target.textContent;
+  });
+</script>
+</html>

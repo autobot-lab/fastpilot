@@ -172,6 +172,9 @@ pub enum Intent {
 struct Pending {
     key: u64,
     depth: usize,
+    /// The container this node sits in, looking through single-child wrappers (an inline
+    /// `<span>` around one text): only text from the same container is ever merged.
+    group: usize,
     node: Node,
 }
 
@@ -181,23 +184,61 @@ fn symbolic(s: &str) -> bool {
     !t.is_empty() && t.chars().count() <= 12 && !t.chars().any(char::is_alphabetic)
 }
 
+/// Punctuation only, no digits: `(`, `)`, `·`, `/`.
+fn punctuation(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !t.chars().any(char::is_alphanumeric)
+}
+
+const OPENERS: [char; 6] = ['(', '[', '{', '#', '@', '/'];
+const CLOSERS: [char; 9] = [')', ']', '}', ',', '.', ':', ';', '%', '/'];
+/// A merged inline run never grows past this; longer runs are not split markup any more.
+const MAX_MERGED: usize = 24;
+
 fn join_inline(a: &str, b: &str) -> String {
     let (a, b) = (a.trim_end(), b.trim_start());
-    let tight = a.ends_with(['(', '[', '{', '#', '@', '/']) || b.starts_with([')', ']', '}', ',', '.', ':', ';', '%', '/']);
+    let tight = a.ends_with(OPENERS) || b.starts_with(CLOSERS);
     if tight { format!("{a}{b}") } else { format!("{a} {b}") }
 }
 
+/// Two boxes on one line with at most about a space between them (a missing box passes).
+fn adjacent(a: Option<Rect>, b: Option<Rect>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else { return true };
+    let h = a.h.min(b.h).max(1.0);
+    let overlap = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
+    let gap = b.x - (a.x + a.w);
+    overlap >= h * 0.5 && gap <= h * 0.6 && gap >= -h * 0.6
+}
+
+/// `p` continues the inline run `last`: both are text from the same container, the run so far
+/// and the new piece are digits/punctuation, a punctuation piece or bracket glues them (so a
+/// keypad's `1`, `2`, `3` stay separate keys), they touch on one line, and the run stays short.
+fn continues(last: &Pending, p: &Pending) -> bool {
+    let (a, b) = (&last.node.name, &p.node.name);
+    last.node.role == "text"
+        && p.node.role == "text"
+        && last.depth == p.depth
+        && last.group == p.group
+        && last.node.children.is_empty()
+        && !a.trim().is_empty()
+        && !a.chars().any(char::is_alphabetic)
+        && symbolic(b)
+        && (punctuation(a)
+            || punctuation(b)
+            || a.trim_end().ends_with(OPENERS)
+            || b.trim_start().starts_with(CLOSERS)
+            || b.trim_start().starts_with(['(', '[']))
+        && a.chars().count() + b.chars().count() < MAX_MERGED
+        && adjacent(last.node.bounds, p.node.bounds)
+}
+
 /// Sibling text runs split by markup (a rating as `text "("`, `text "11"`, `text ")"`) become
-/// one node, when the pieces are digits/punctuation; worded texts stay separate.
+/// one node; worded texts, separate containers and keypad keys stay separate.
 fn merge_inline_text(kept: Vec<Pending>) -> Vec<Pending> {
     let mut out: Vec<Pending> = Vec::with_capacity(kept.len());
     for p in kept {
         if let Some(last) = out.last_mut()
-            && last.node.role == "text"
-            && p.node.role == "text"
-            && last.depth == p.depth
-            && last.node.children.is_empty()
-            && (symbolic(&last.node.name) || symbolic(&p.node.name))
+            && continues(last, &p)
         {
             last.node.name = join_inline(&last.node.name, &p.node.name);
             if let (Some(a), Some(b)) = (last.node.bounds, p.node.bounds) {
@@ -224,8 +265,9 @@ impl Snapshot {
         let mut out = Vec::new();
         let mut dups = HashMap::new();
         let mut path = Vec::new();
+        let mut groups = 0;
         for n in roots {
-            walk(n, 0, None, &mut path, &mut dups, &mut out);
+            walk(n, 0, None, 0, &mut groups, &mut path, &mut dups, &mut out);
         }
         // A label rendered next to the control it names is noise: `text "Email"` + `textfield "Email"`.
         let redundant: Vec<bool> = (0..out.len())
@@ -442,19 +484,31 @@ impl Snapshot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk(
     mut node: Node,
     depth: usize,
     parent: Option<(&str, &str)>,
+    group: usize,
+    groups: &mut usize,
     path: &mut Vec<String>,
     dups: &mut HashMap<u64, u32>,
     out: &mut Vec<Pending>,
 ) {
     node.name = node.name.split_whitespace().collect::<Vec<_>>().join(" ");
     let children = std::mem::take(&mut node.children);
-    if !keep(&node, parent) {
+    let kept = keep(&node, parent);
+    // A pruned wrapper around a single child (an inline `<span>`) is see-through; any other
+    // node with children starts a new container for its children.
+    let inner = if !kept && children.len() == 1 {
+        group
+    } else {
+        *groups += 1;
+        *groups
+    };
+    if !kept {
         for c in children {
-            walk(c, depth, parent, path, dups, out);
+            walk(c, depth, parent, inner, groups, path, dups, out);
         }
         return;
     }
@@ -470,11 +524,12 @@ fn walk(
     out.push(Pending {
         key: h.finish(),
         depth,
+        group,
         node,
     });
     path.push(role.clone());
     for c in children {
-        walk(c, depth + 1, Some((&role, &name)), path, dups, out);
+        walk(c, depth + 1, Some((&role, &name)), inner, groups, path, dups, out);
     }
     path.pop();
 }
@@ -776,7 +831,10 @@ mod tests {
         let text = snap.render(None, 50);
         assert!(text.contains("e1 link \"كن شريكًا\""), "{text}");
         assert!(!text.contains("\\u{"), "no escaped harakat: {text}");
-        assert!(text.contains("\"say \\\"hi\\\"\\n\""), "quotes and control chars escaped: {text}");
+        // Whitespace (a trailing newline included) is collapsed when the tree is built, like
+        // selectors are; quotes and the remaining control characters are escaped.
+        assert!(text.contains("text \"say \\\"hi\\\"\""), "quotes escaped, whitespace collapsed: {text}");
+        assert_eq!(quote("a\"b\\c\nd\te\u{7}"), "\"a\\\"b\\\\c\\nd\\te\\u{7}\"");
         // A name copied from the rendered line still resolves.
         let copied = text.lines().nth(1).and_then(|l| l.split('"').nth(1)).expect("name");
         assert!(snap.resolve(&Selector::Text(copied.into()), Intent::Tap).is_ok());
@@ -804,5 +862,67 @@ mod tests {
         // Every node is still there for selectors and uncapped renders.
         assert!(snap.resolve(&Selector::Text("17 Nov".into()), Intent::Tap).is_ok());
         assert!(snap.render(None, usize::MAX).contains("\"17 Nov\""));
+    }
+
+    fn at(mut node: Node, x: f64, y: f64, w: f64, h: f64) -> Node {
+        node.bounds = Some(Rect { x, y, w, h });
+        node
+    }
+
+    /// Issue #1: a PIN pad of plain `<span>` keys next to a `PIN:` label and a rating card.
+    fn pin_page() -> Vec<Node> {
+        let span = |t: &str, x: f64, y: f64| with(n("generic", ""), vec![at(n("text", t), x, y, 20.0, 20.0)]);
+        let keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+        let pad = keys.iter().enumerate().map(|(i, k)| span(k, 10.0 + 40.0 * (i % 3) as f64, 100.0 + 40.0 * (i / 3) as f64)).collect();
+        vec![with(
+            n("generic", ""),
+            vec![
+                with(n("heading", "Masukkan PIN"), vec![n("text", "Masukkan PIN")]),
+                with(n("paragraph", ""), vec![at(n("text", "PIN:"), 10.0, 50.0, 30.0, 20.0)]),
+                with(n("generic", ""), pad),
+                with(n("paragraph", ""), vec![at(n("text", "Rating"), 10.0, 300.0, 50.0, 20.0)]),
+                with(n("generic", ""), vec![span("4.8", 10.0, 330.0), span("(11)", 34.0, 330.0)]),
+                with(n("generic", ""), vec![span("Toko Budi", 10.0, 360.0)]),
+            ],
+        )]
+    }
+
+    #[test]
+    fn pin_pad_keys_stay_separate_and_tappable() {
+        let mut refs = RefRegistry::default();
+        let snap = Snapshot::build("PIN", "u", pin_page(), &mut refs);
+        // Uncapped: a capped render summarizes the ten keys as one run.
+        let text = snap.render(None, usize::MAX);
+        for k in ["1", "2", "5", "9", "0"] {
+            assert!(text.contains(&format!("text \"{k}\"")), "key {k} is its own node: {text}");
+        }
+        assert!(text.contains("text \"PIN:\""), "{text}");
+        assert!(text.contains("text \"Rating\"") && text.contains("text \"4.8 (11)\""), "{text}");
+        assert!(text.contains("text \"Toko Budi\""), "{text}");
+        let one = snap.resolve(&Selector::Text("1".into()), Intent::Tap).expect("tapOn \"1\" resolves");
+        assert_eq!(one.node.bounds, Some(Rect { x: 10.0, y: 100.0, w: 20.0, h: 20.0 }));
+    }
+
+    #[test]
+    fn inline_merge_needs_same_container_glue_and_adjacency() {
+        let merged = |nodes: Vec<Node>| {
+            let mut refs = RefRegistry::default();
+            Snapshot::build("t", "u", nodes, &mut refs).entries.into_iter().map(|e| e.node.name).collect::<Vec<_>>()
+        };
+        // Same container, punctuation glue: one node.
+        assert_eq!(merged(vec![n("text", "("), n("text", "11"), n("text", ")")]), ["(11)"]);
+        // Digits without glue (keypad, calendar row) stay apart.
+        assert_eq!(merged(vec![n("text", "1"), n("text", "2"), n("text", "3")]), ["1", "2", "3"]);
+        // Glue across two containers does not merge.
+        assert_eq!(
+            merged(vec![with(n("generic", ""), vec![n("text", "4.8"), n("text", "x")]), with(n("generic", ""), vec![n("text", "("), n("text", "11")])]),
+            ["4.8", "x", "(11"]
+        );
+        // Far apart on one line, or on different lines: separate.
+        assert_eq!(merged(vec![at(n("text", "*"), 0.0, 0.0, 10.0, 20.0), at(n("text", "0"), 60.0, 0.0, 10.0, 20.0)]), ["*", "0"]);
+        assert_eq!(merged(vec![at(n("text", "("), 0.0, 0.0, 10.0, 20.0), at(n("text", "11"), 0.0, 40.0, 10.0, 20.0)]), ["(", "11"]);
+        // The run is capped.
+        let long: Vec<Node> = (0..20).flat_map(|i| [n("text", &i.to_string()), n("text", "·")]).collect();
+        assert!(merged(long).iter().all(|s| s.chars().count() <= MAX_MERGED), "capped");
     }
 }
