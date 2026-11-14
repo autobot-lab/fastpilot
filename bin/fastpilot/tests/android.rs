@@ -58,9 +58,27 @@ fn prepare() -> Option<()> {
     serial()?;
     let apk = format!("{root}/examples/demo-android/out/fastpilot-demo.apk");
     std::path::Path::new(&apk).exists().then_some(())?;
-    let out = adb_s(&["install", "-r", &apk]).output().ok()?;
+    let install = || adb_s(&["install", "-r", &apk]).output().ok();
+    let mut out = install()?;
+    // Built on another machine or checkout (another debug keystore): the installed copy has
+    // to go first, as the driver does for its agent APK.
+    if !out.status.success() && needs_uninstall(&format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))) {
+        let _ = adb_s(&["uninstall", "com.fastpilot.demo"]).output();
+        out = install()?;
+    }
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     Some(())
+}
+
+/// `adb install` output that an uninstall fixes: another signing key, or a newer version.
+fn needs_uninstall(out: &str) -> bool {
+    out.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") || out.contains("INSTALL_FAILED_VERSION_DOWNGRADE")
+}
+
+#[test]
+fn reinstalls_on_a_signature_mismatch() {
+    assert!(needs_uninstall("adb: failed to install x.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.fastpilot.demo signatures do not match newer version; ignoring!]"));
+    assert!(!needs_uninstall("Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"));
 }
 
 fn server() -> TokioChildProcess {
