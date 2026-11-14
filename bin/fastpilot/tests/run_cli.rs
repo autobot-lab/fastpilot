@@ -194,7 +194,16 @@ async fn parallel_suite_with_stubbed_model() {
         return eprintln!("skipping: no Chrome");
     }
     println!("{out}");
-    assert!(ok && out.contains("4 tests: 4 passed"), "{out}");
+    // Without an Android device (CI) the cross-platform test fails as infra; the web tests must
+    // still overlap and pass.
+    let has_android = !out.contains("no healthy android device");
+    if has_android {
+        assert!(ok && out.contains("4 tests: 4 passed"), "{out}");
+    } else {
+        assert!(!ok && out.contains("4 tests: 3 passed, 1 failed"), "{out}");
+        let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
+        assert!(cross.contains("[infra]"), "{cross}");
+    }
     let seen = seen.lock().unwrap();
     let first: Vec<String> = seen
         .iter()
@@ -202,12 +211,19 @@ async fn parallel_suite_with_stubbed_model() {
         .filter_map(|(_, b)| b["messages"][0]["content"].as_str().and_then(|c| c.split('`').nth(1)).map(str::to_owned))
         .collect();
     // Three workers start the three longest tests first (b 5 s, c 3 s, a 1 s), the 0.1 s one last.
-    assert_eq!(first.last().map(String::as_str), Some("login-cross-platform"), "{first:?}");
+    if has_android {
+        assert_eq!(first.last().map(String::as_str), Some("login-cross-platform"), "{first:?}");
+    }
+    assert!(first.len() >= 3, "{first:?}");
     let mut head = first[..3].to_vec();
     head.sort();
     assert_eq!(head, ["par-a", "par-b", "par-c"], "{first:?}");
     // 3 web tests × 3 model turns × 300 ms run concurrently, not one after another.
     assert!(started.elapsed() < std::time::Duration::from_secs(12), "{:?}", started.elapsed());
+    if !has_android {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
     assert!(cross.contains("Session plan: web: your own Chrome; android:"), "{cross}");
     let _ = std::fs::remove_dir_all(&dir);
