@@ -7,8 +7,6 @@ fn bench_tokens_reports_snapshot_diff_and_flow() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
         .args(["bench", "tokens", "web"])
         .current_dir(ROOT)
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
         .output()
         .expect("run");
     let text = String::from_utf8_lossy(&out.stdout);

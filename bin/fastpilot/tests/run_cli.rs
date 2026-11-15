@@ -1,120 +1,62 @@
-//! `fastpilot run` end to end with a **stubbed model**: a local server speaks the Messages API
-//! (`ANTHROPIC_BASE_URL`) and scripts the agent's tool calls, so the loop, the in-process tools,
-//! path memory, model selection, retries and the JUnit/HTML output are exercised against real
-//! Chrome without an API key. Skips without Chrome.
+//! `fastpilot run` end to end with a **stand-in Claude Code**: `tests/fake-claude/claude` takes
+//! the same arguments as `claude -p`, connects to fastpilot over the MCP bridge and scripts the
+//! agent's tool calls. So the bridge, the in-process tools, path memory, model selection,
+//! retries and the JUnit/HTML output are exercised against real Chrome, with no model and no
+//! API key. Skips without Chrome or python3.
 
-use std::sync::{Arc, Mutex};
-
-use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use serde_json::Value;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude");
 
-async fn read_request(s: &mut tokio::net::TcpStream) -> Option<(String, Value)> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 65536];
-    loop {
-        let n = s.read(&mut chunk).await.ok()?;
-        if n == 0 {
-            return None;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        let text = String::from_utf8_lossy(&buf).into_owned();
-        if let Some(i) = text.find("\r\n\r\n") {
-            let head = text[..i].to_ascii_lowercase();
-            let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-            if buf.len() >= i + 4 + len {
-                let body = serde_json::from_slice(&buf[i + 4..i + 4 + len]).ok()?;
-                return Some((head, body));
-            }
-        }
-    }
+fn python() -> bool {
+    std::process::Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success())
 }
 
-fn tool_use(id: &str, name: &str, input: Value) -> Value {
-    json!({ "id": "msg", "type": "message", "role": "assistant", "stop_reason": "tool_use",
-            "usage": { "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 50 },
-            "content": [{ "type": "text", "text": "ok" }, { "type": "tool_use", "id": id, "name": name, "input": input }] })
+/// Invocations of the fake `claude`, oldest first.
+fn calls(log: &std::path::Path) -> Vec<Value> {
+    let mut files: Vec<_> = std::fs::read_dir(log).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default();
+    files.sort();
+    files.iter().filter_map(|p| serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()).collect()
 }
 
-/// The scripted agent: its next move depends on how many tool results it has seen. A test
-/// whose session plan names a device only reports what it was given.
-fn agent(body: &Value, fail: bool) -> Value {
-    let results = body["messages"].as_array().map_or(0, |m| m.iter().filter(|m| m["role"] == "user").count()) - 1;
-    let intro = body["messages"][0]["content"].as_str().unwrap_or("");
-    if let Some(plan) = intro.lines().find(|l| l.starts_with("Session plan:")).filter(|p| p.contains("android")) {
-        return tool_use("t9", "finish", json!({ "status": "pass", "notes": plan }));
-    }
-    match results {
-        0 => tool_use("t1", "session", json!({ "action": "start", "id": "w", "target": "examples/demo/login.html" })),
-        1 => tool_use("t2", "run_flow", json!({ "flow": format!(
-            "- inputText: {{ into: Email, text: a@b.com }}\n- inputText: {{ into: Password, text: \"${{DEMO_PASS}}\" }}\n- tapOn: Masuk\n- assertVisible: {}\n",
-            if fail { "{ text: Nope, timeout: 500 }" } else { "Budi" }) })),
-        _ => {
-            let last = body["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
-            let failed = last["content"][0]["is_error"] == true;
-            tool_use("t3", "finish", json!({ "status": if failed { "fail" } else { "pass" }, "notes": "checked Budi on the dashboard" }))
-        }
-    }
+fn arg<'a>(call: &'a Value, name: &str) -> Option<&'a str> {
+    let argv = call["argv"].as_array()?;
+    let i = argv.iter().position(|a| a == name)?;
+    argv.get(i + 1)?.as_str()
 }
 
-async fn fake_claude(seen: Arc<Mutex<Vec<(String, Value)>>>, fail: bool) -> u16 {
-    fake_claude_delay(seen, fail, 0).await
-}
-
-/// Each reply waits `delay_ms`, so parallel tests visibly overlap.
-async fn fake_claude_delay(seen: Arc<Mutex<Vec<(String, Value)>>>, fail: bool, delay_ms: u64) -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    tokio::spawn(async move {
-        while let Ok((mut s, _)) = listener.accept().await {
-            let seen = seen.clone();
-            tokio::spawn(async move {
-                while let Some((head, body)) = read_request(&mut s).await {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    let reply = agent(&body, fail).to_string();
-                    seen.lock().unwrap().push((head, body));
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}", reply.len());
-                    if s.write_all(resp.as_bytes()).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    });
-    port
-}
-
-fn run(port: u16, dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
-    run_on("tests/login.md", port, dir, extra)
-}
-
-fn run_on(target: &str, port: u16, dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
-        .args(["run", target])
+fn run_on(target: &str, dir: &std::path::Path, log: &std::path::Path, env: &[(&str, &str)], extra: &[&str]) -> (bool, String) {
+    std::fs::create_dir_all(log).expect("log dir");
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["run", target])
         .args(extra)
         .current_dir(ROOT)
-        .env("ANTHROPIC_API_KEY", "test-key")
-        .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env("FASTPILOT_CLAUDE", FAKE)
+        .env("FAKE_CLAUDE_LOG", log)
         .env("FASTPILOT_DIR", dir)
         .env("DEMO_PASS", "rahasia123")
         .env("FASTPILOT_VARS", "DEMO_PASS")
-        .env("FASTPILOT_RETRY_BUDGET", "1")
-        .output()
-        .expect("run");
+        .env("FASTPILOT_RETRY_BUDGET", "1");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("run");
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
-// Multi-threaded: the CLI is awaited synchronously while the fake model serves on the runtime.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn headless_run_with_stubbed_model() {
+#[test]
+fn headless_run_drives_claude_code() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
     let dir = std::env::temp_dir().join(format!("fastpilot-run-{}", std::process::id()));
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let port = fake_claude(seen.clone(), false).await;
-
+    let log = dir.join("claude");
     let junit = dir.join("junit.xml");
     let html = dir.join("report.html");
-    let (ok, out) = run(port, &dir, &["--record", "--junit", junit.to_str().unwrap_or(""), "--html", html.to_str().unwrap_or("")]);
+    let (ok, out) = run_on("tests/login.md", &dir, &log, &[], &["--record", "--junit", junit.to_str().unwrap_or(""), "--html", html.to_str().unwrap_or("")]);
     if out.contains("Chrome not found") {
         return eprintln!("skipping: no Chrome");
     }
@@ -122,22 +64,23 @@ async fn headless_run_with_stubbed_model() {
     assert!(ok, "{out}");
     assert!(out.contains("✓ login-ok") && out.contains("claude-opus-5-5") && out.contains("1 passed, 0 failed"), "{out}");
     {
-        let seen = seen.lock().unwrap();
-        let (head, first) = &seen[0];
-        assert!(head.contains("x-api-key: test-key") && head.contains("anthropic-version: 2026-10-21"), "{head}");
-        assert!(head.contains("anthropic-beta: server-side-fallback-2026-07-01") && first["fallbacks"] == "default", "{head}");
-        assert_eq!(first["model"], "claude-opus-5-5");
-        assert_eq!(first["cache_control"]["type"], "ephemeral");
-        let tools: Vec<&str> = first["tools"].as_array().map(|t| t.iter().filter_map(|t| t["name"].as_str()).collect()).unwrap_or_default();
+        let c = calls(&log);
+        assert_eq!(c.len(), 1, "{c:?}");
+        let first = &c[0];
+        // Claude Code is told to use only fastpilot, unattended.
+        assert_eq!(arg(first, "--model"), Some("claude-opus-5-5"));
+        assert_eq!(arg(first, "--tools"), Some(""));
+        assert_eq!(arg(first, "--allowedTools"), Some("mcp__fastpilot"));
+        assert_eq!(arg(first, "--permission-mode"), Some("dontAsk"));
+        assert!(first["argv"].as_array().is_some_and(|a| a.iter().any(|x| x == "--strict-mcp-config")));
+        let tools: Vec<&str> = first["tools"].as_array().map(|t| t.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         assert!(tools.contains(&"run_flow") && tools.contains(&"finish") && !tools.contains(&"report"), "{tools:?}");
-        // Tool results go back as one user message with the matching tool_use_id; secrets stay masked.
-        let second = &seen[1].1["messages"];
-        assert_eq!(second[2]["content"][0]["tool_use_id"], "t1");
-        assert!(second[2]["content"][0]["content"][0]["text"].as_str().is_some_and(|t| t.contains("session w started")));
-        let third = seen[2].1.to_string();
-        assert!(third.contains("ok 4/4 steps") && !third.contains("rahasia123"), "{third}");
         // The case text spells out the password: the model gets the variable name instead.
-        assert!(third.contains("a@b.com / ${DEMO_PASS}"), "{third}");
+        let prompt = first["prompt"].as_str().unwrap_or("");
+        assert!(prompt.contains("a@b.com / ${DEMO_PASS}") && !prompt.contains("rahasia123"), "{prompt}");
+        let results: Vec<&str> = first["calls"].as_array().map(|c| c.iter().filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
+        assert!(results[0].contains("session w started"), "{results:?}");
+        assert!(results[1].contains("ok 4/4 steps") && !results[1].contains("rahasia123"), "{results:?}");
     }
     let xml = std::fs::read_to_string(&junit).expect("junit");
     assert!(xml.contains("tests=\"1\" failures=\"0\"") && xml.contains("name=\"login-ok: Login berhasil\""), "{xml}");
@@ -149,29 +92,46 @@ async fn headless_run_with_stubbed_model() {
     assert!(std::fs::read_to_string(run_dir.join("report.html")).expect("report").contains("Recording [w]"));
 
     // Second run: the passing flow is now path memory, so the fast model replays it.
-    seen.lock().unwrap().clear();
-    let (ok, out) = run(port, &dir, &[]);
+    let log2 = dir.join("claude2");
+    let (ok, out) = run_on("tests/login.md", &dir, &log2, &[], &[]);
     assert!(ok && out.contains("claude-haiku-5-5"), "{out}");
-    {
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen[0].1["model"], "claude-haiku-5-5");
-        assert!(seen[0].1.get("fallbacks").is_none() && !seen[0].0.contains("anthropic-beta"), "{}", seen[0].0);
-        assert!(seen[0].1["messages"][0]["content"].as_str().is_some_and(|c| c.contains("path memory for login-ok")));
-    }
+    let c = calls(&log2);
+    assert_eq!(arg(&c[0], "--model"), Some("claude-haiku-5-5"));
+    assert_eq!(arg(&c[0], "--effort"), Some("low"));
+    assert!(c[0]["prompt"].as_str().is_some_and(|p| p.contains("path memory for login-ok")), "{}", c[0]["prompt"]);
 
     // A failing test: retried once (budget 1), exits non-zero, JUnit carries the failure class.
-    let port = fake_claude(Arc::new(Mutex::new(Vec::new())), true).await;
-    let (ok, out) = run(port, &dir, &["--junit", junit.to_str().unwrap_or("")]);
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude3"), &[("FAKE_CLAUDE_FAIL", "1")], &["--junit", junit.to_str().unwrap_or("")]);
     assert!(!ok && out.contains("✗ login-ok") && out.contains("2 attempts") && out.contains("[product]"), "{out}");
     let xml = std::fs::read_to_string(&junit).expect("junit");
     assert!(xml.contains("failures=\"1\"") && xml.contains("<failure type=\"product\""), "{xml}");
+
+    // Claude Code logged out: an infra failure that says so, not a product bug.
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude4"), &[("FAKE_CLAUDE_NOLOGIN", "1")], &[]);
+    assert!(!ok && out.contains("[infra]") && out.contains("Please run /login"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_without_claude_code_says_how_to_get_it() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["run", "tests/login.md"])
+        .current_dir(ROOT)
+        .env("FASTPILOT_CLAUDE", "/nonexistent/claude")
+        .output()
+        .expect("run");
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && text.contains("needs Claude Code installed and logged in"), "{text}");
+    assert!(!text.contains("API_KEY"), "{text}");
 }
 
 /// `--workers`: tests overlap, run longest-first from recorded durations, and a cross-platform
 /// test gets a leased Android device in its session plan (when one is attached).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn parallel_suite_with_stubbed_model() {
+#[test]
+fn parallel_suite_with_stand_in_claude() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
     let dir = std::env::temp_dir().join(format!("fastpilot-par-{}", std::process::id()));
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).expect("dir");
@@ -183,13 +143,12 @@ async fn parallel_suite_with_stubbed_model() {
     let mem = dir.join("fp/memory");
     std::fs::create_dir_all(&mem).expect("mem");
     for (id, ms) in [("par-a", 1000), ("par-b", 5000), ("par-c", 3000), ("login-cross-platform", 100)] {
-        let m = json!({ "test_id": id, "flow": "", "start": "", "screens": [], "duration_ms": ms, "pass_count": 1, "fail_count": 0, "last_pass": "", "failed_at": [] });
+        let m = serde_json::json!({ "test_id": id, "flow": "", "start": "", "screens": [], "duration_ms": ms, "pass_count": 1, "fail_count": 0, "last_pass": "", "failed_at": [] });
         std::fs::write(mem.join(format!("{id}.json")), m.to_string()).expect("mem");
     }
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let port = fake_claude_delay(seen.clone(), false, 300).await;
+    let log = dir.join("claude");
     let started = std::time::Instant::now();
-    let (ok, out) = run_on(cases.to_str().unwrap_or(""), port, &dir.join("fp"), &["--workers", "3"]);
+    let (ok, out) = run_on(cases.to_str().unwrap_or(""), &dir.join("fp"), &log, &[("FAKE_CLAUDE_DELAY_MS", "300")], &["--workers", "3"]);
     if out.contains("Chrome not found") {
         return eprintln!("skipping: no Chrome");
     }
@@ -204,12 +163,12 @@ async fn parallel_suite_with_stubbed_model() {
         let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
         assert!(cross.contains("[infra]"), "{cross}");
     }
-    let seen = seen.lock().unwrap();
-    let first: Vec<String> = seen
+    let mut started_at: Vec<(f64, String)> = calls(&log)
         .iter()
-        .filter(|(_, b)| b["messages"].as_array().is_some_and(|m| m.len() == 1))
-        .filter_map(|(_, b)| b["messages"][0]["content"].as_str().and_then(|c| c.split('`').nth(1)).map(str::to_owned))
+        .filter_map(|c| Some((c["start"].as_f64()?, c["prompt"].as_str()?.split('`').nth(1)?.to_owned())))
         .collect();
+    started_at.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let first: Vec<String> = started_at.into_iter().map(|(_, id)| id).collect();
     // Three workers start the three longest tests first (b 5 s, c 3 s, a 1 s), the 0.1 s one last.
     if has_android {
         assert_eq!(first.last().map(String::as_str), Some("login-cross-platform"), "{first:?}");
@@ -218,13 +177,11 @@ async fn parallel_suite_with_stubbed_model() {
     let mut head = first[..3].to_vec();
     head.sort();
     assert_eq!(head, ["par-a", "par-b", "par-c"], "{first:?}");
-    // 3 web tests × 3 model turns × 300 ms run concurrently, not one after another.
-    assert!(started.elapsed() < std::time::Duration::from_secs(12), "{:?}", started.elapsed());
-    if !has_android {
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
+    // 3 web tests × 3 tool calls × 300 ms run concurrently, not one after another.
+    assert!(started.elapsed() < std::time::Duration::from_secs(15), "{:?}", started.elapsed());
+    if has_android {
+        let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
+        assert!(cross.contains("Session plan: web: your own Chrome; android:"), "{cross}");
     }
-    let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
-    assert!(cross.contains("Session plan: web: your own Chrome; android:"), "{cross}");
     let _ = std::fs::remove_dir_all(&dir);
 }

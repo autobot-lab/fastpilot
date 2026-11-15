@@ -255,7 +255,6 @@ dependencies = [
  "fastpilot-android",
  "fastpilot-core",
  "fastpilot-ios",
- "fastpilot-llm",
  "fastpilot-mcp",
  "fastpilot-memory",
  "fastpilot-web",
@@ -309,17 +308,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "fastpilot-llm"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde_json",
- "thiserror",
- "tokio",
  "tracing",
 ]
 

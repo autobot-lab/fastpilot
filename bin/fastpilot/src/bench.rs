@@ -151,25 +151,41 @@ pub async fn run(opts: LaunchOptions, n: usize) -> Result<(), Box<dyn Error + Se
     Ok(())
 }
 
-/// Token cost of what the AI reads: count_tokens when credentials are set, else the stated
-/// approximation (`fastpilot_llm::approx_tokens`).
-struct Counter(Option<fastpilot_llm::Claude>);
-
-impl Counter {
-    fn name(&self) -> String {
-        match &self.0 {
-            Some(_) => format!("count_tokens API ({})", fastpilot_llm::MODEL_EXPLORE),
-            None => "approximation (no ANTHROPIC_API_KEY): letter runs 1 per 5, digit runs 1 per 3, other chars 1, ±20%".into(),
+/// Offline approximation of Claude tokens (fastpilot calls no model API itself). Rule: a run of
+/// letters is 1 token per started 5 letters after the first; a run of digits 1 per 3; every
+/// other non-space character 1; spaces are free and each newline is 1. Close (about ±20%) for
+/// English-like UI text.
+fn approx_tokens(text: &str) -> usize {
+    let mut n = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_alphabetic() {
+            let mut len: usize = 1;
+            while chars.peek().is_some_and(|c| c.is_alphabetic()) {
+                chars.next();
+                len += 1;
+            }
+            n += 1 + (len - 1) / 5;
+        } else if c.is_ascii_digit() {
+            let mut len: usize = 1;
+            while chars.peek().is_some_and(char::is_ascii_digit) {
+                chars.next();
+                len += 1;
+            }
+            n += len.div_ceil(3);
+        } else if c == '\n' || !c.is_whitespace() {
+            n += 1;
         }
     }
-
-    async fn count(&self, text: &str) -> Result<u64, Box<dyn Error + Send + Sync>> {
-        Ok(match &self.0 {
-            Some(c) => c.count_tokens(fastpilot_llm::MODEL_EXPLORE, text).await?,
-            None => fastpilot_llm::approx_tokens(text) as u64,
-        })
-    }
+    n
 }
+
+/// Image input tokens for a `w`×`h` screenshot (the documented `w*h/750` estimate).
+fn image_tokens(w: u32, h: u32) -> u64 {
+    (u64::from(w) * u64::from(h)).div_ceil(750)
+}
+
+const COUNTER: &str = "approximation: letter runs 1 per 5, digit runs 1 per 3, other chars 1, ±20%";
 
 /// Width and height from a JPEG's SOF segment.
 fn jpeg_size(b: &[u8]) -> Option<(u32, u32)> {
@@ -212,7 +228,6 @@ pub async fn tokens(platform: &str, web: LaunchOptions) -> Result<(), Box<dyn Er
         ),
         other => return Err(format!("bench tokens: unknown platform `{other}` (web, android, ios)").into()),
     };
-    let counter = Counter(fastpilot_llm::Claude::from_env());
     let launcher = fastpilot_mcp::PlatformLauncher::new(web);
     let mut reg = SessionRegistry::default();
     let run = |yaml: String| check_flow(&yaml, &[]).map_err(|e| e.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"));
@@ -230,19 +245,32 @@ pub async fn tokens(platform: &str, web: LaunchOptions) -> Result<(), Box<dyn Er
     let full = full.to_string();
     let shot = d.screenshot().await?;
 
-    println!("fastpilot bench tokens ({platform}, demo login)\ncounter: {}\n", counter.name());
+    println!("fastpilot bench tokens ({platform}, demo login)\ncounter: {COUNTER}\n");
     println!("{:<34} {:>7} {:>8}", "what the AI reads", "chars", "tokens");
     let row = |what: &str, chars: usize, tokens: u64| println!("{what:<34} {chars:>7} {tokens:>8}");
-    let snap_t = counter.count(&snap).await?;
+    let snap_t = approx_tokens(&snap) as u64;
     row("snapshot (login screen)", snap.len(), snap_t);
-    row("run_flow, 1 step (tap → diff)", one.len(), counter.count(&one).await?);
-    let full_t = counter.count(&full).await?;
+    row("run_flow, 1 step (tap → diff)", one.len(), approx_tokens(&one) as u64);
+    let full_t = approx_tokens(&full) as u64;
     row(&format!("run_flow, login ({steps} steps)"), full.len(), full_t);
     row("  per step", full.len() / steps.max(1), full_t / steps.max(1) as u64);
     if let Some((w, h)) = jpeg_size(&shot) {
-        row(&format!("screenshot {w}x{h} (w*h/750)"), 0, fastpilot_llm::image_tokens(w, h));
+        row(&format!("screenshot {w}x{h} (w*h/750)"), 0, image_tokens(w, h));
     }
     println!("\n1-step response:\n{one}");
     reg.close_all().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approximates_tokens() {
+        assert_eq!(approx_tokens(""), 0);
+        assert_eq!(approx_tokens("e12 button \"Masuk\""), 7);
+        assert_eq!(approx_tokens("Dashboard\n"), 3);
+        assert_eq!(image_tokens(1280, 720), 1229);
+    }
 }
