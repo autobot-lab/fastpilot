@@ -130,5 +130,8 @@ final class DashboardViewController: UIViewController {
 
     @objc private func back() { navigationController?.popViewController(animated: true) }
     @objc private func askLocation() { location.requestWhenInUseAuthorization() }
-    @objc private func die() { fatalError("demo crash") }
+    /// Simulates a crash for fastpilot's `app_crashed` test: the process just ends, and fastpilot
+    /// sees the app as no longer running. Not `fatalError`: that traps (SIGTRAP), so macOS writes
+    /// a crash report and shows "FastpilotDemo quit unexpectedly" on the Mac at every test run.
+    @objc private func die() { exit(1) }
 }
