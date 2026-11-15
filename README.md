@@ -305,20 +305,23 @@ candidates: e10 button "Keluar"
 Path memory: `session start` dengan `test_id` mengembalikan hint YAML dari run lolos terakhir. Kirim hint
 itu sebagai satu `run_flow` dengan `test_id` yang sama, lalu tutup dengan `report`. Lihat `docs` topic `memory`.
 
-## CI tanpa klien MCP: `fastpilot run`
+## Tanpa membuka Claude Code: `fastpilot run`
 
-Menjalankan test case bahasa natural (`tests/*.md`) secara headless: Claude memanggil tool yang sama
-dengan server MCP, langsung di proses yang sama.
+Menjalankan test case bahasa natural (`tests/*.md`) tanpa sesi chat: fastpilot memanggil **Claude Code
+milik user** (`claude -p`, login dan langganan user sendiri) dan memberinya tool fastpilot lewat MCP.
+fastpilot tidak memanggil API model sendiri, jadi **tidak perlu API key**. Syaratnya `claude` ter-install
+dan sudah login sekali (`claude`); lokasi lain bisa diatur lewat `FASTPILOT_CLAUDE`.
 
 ```bash
-export ANTHROPIC_API_KEY=...            # atau ANTHROPIC_AUTH_TOKEN
 DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   ./target/release/fastpilot run tests/ --junit junit.xml --html report.html
 ```
 
+- Claude Code hanya mendapat tool fastpilot: tool bawaan (shell, file, web) dimatikan dan izin tool
+  fastpilot disetujui otomatis, karena tidak ada yang menunggu di depan layar.
 - Test dengan hint path memory diputar ulang oleh model cepat (`claude-haiku-5-5`); bila replay gagal
-  atau belum ada hint, model besar (`claude-opus-5-5`) yang mengeksplorasi. `--model` memaksa satu model,
-  `--max-steps` membatasi jumlah giliran (default 30).
+  atau belum ada hint, model besar (`claude-opus-5-5`) melanjutkan dari layar terakhir. `--model` memaksa
+  satu model, `--max-steps` membatasi jumlah panggilan tool per test (default 30).
 - Kegagalan diulang selama `FASTPILOT_RETRY_BUDGET` (default 3) masih ada; retry yang lolos = flaky.
   Setelah `FASTPILOT_BREAKER` (default 3) kegagalan infra beruntun, sisa test dilewati sebagai infra.
 - `--workers N` menjalankan N test sekaligus. Tiap test punya Chrome sendiri; device Android dan simulator
@@ -364,8 +367,7 @@ Hasil di M1 Pro (Chrome headless; emulator Android API 35; simulator iPhone 16 i
 
 iOS diukur manual lewat klien protokol; belum ada `bench ios`.
 
-Biaya token yang dibaca AI (`count_tokens` bila `ANTHROPIC_API_KEY` di-set, selain itu aproksimasi yang
-dicetak di output):
+Biaya token yang dibaca AI (aproksimasi offline; aturannya dicetak di output):
 
 ```bash
 ./target/release/fastpilot bench tokens web      # atau android / ios

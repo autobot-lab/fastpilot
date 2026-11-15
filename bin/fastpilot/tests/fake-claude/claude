@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""A stand-in for Claude Code's `claude -p` in `fastpilot run` tests.
+
+It takes the same arguments, reads the prompt from stdin, starts the MCP server named in
+--mcp-config (fastpilot's bridge) and plays a scripted agent over real MCP: start a web
+session, log in with one run_flow, then call finish. Every invocation is logged as JSON in
+$FAKE_CLAUDE_LOG (argv, prompt, tool names, tool results) for the test to inspect.
+
+Env: FAKE_CLAUDE_FAIL=1 asserts a text that is not there; FAKE_CLAUDE_DELAY_MS waits before
+each tool call; FAKE_CLAUDE_NOLOGIN=1 behaves like a logged-out Claude Code.
+"""
+import json, os, subprocess, sys, time
+
+argv = sys.argv[1:]
+if argv == ["--version"]:
+    print("9.9.9 (Claude Code, fake)")
+    sys.exit(0)
+
+def opt(name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+prompt = sys.stdin.read()
+log_dir = os.environ.get("FAKE_CLAUDE_LOG")
+entry = {"start": time.time(), "argv": argv, "prompt": prompt, "tools": [], "calls": []}
+log_path = os.path.join(log_dir, f"{time.time_ns()}-{os.getpid()}.json") if log_dir else None
+
+def save():
+    if log_path:
+        with open(log_path, "w") as f:
+            json.dump(entry, f)
+
+def result(text, is_error=False, turns=0, code=0):
+    save()
+    print(json.dumps({"type": "result", "subtype": "error_during_execution" if is_error else "success",
+                      "is_error": is_error, "num_turns": turns, "result": text,
+                      "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 50}}))
+    sys.exit(code)
+
+save()
+if os.environ.get("FAKE_CLAUDE_NOLOGIN") == "1":
+    result("Invalid API key · Please run /login", is_error=True, code=1)
+
+server = json.loads(opt("--mcp-config"))["mcpServers"]["fastpilot"]
+proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+next_id = 0
+
+def rpc(method, params=None, notify=False):
+    global next_id
+    msg = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        msg["params"] = params
+    if not notify:
+        next_id += 1
+        msg["id"] = next_id
+    proc.stdin.write(json.dumps(msg) + "\n")
+    proc.stdin.flush()
+    if notify:
+        return None
+    return json.loads(proc.stdout.readline())["result"]
+
+def call(name, args):
+    time.sleep(int(os.environ.get("FAKE_CLAUDE_DELAY_MS", "0")) / 1000)
+    r = rpc("tools/call", {"name": name, "arguments": args})
+    text = "\n".join(c.get("text", "") for c in r["content"] if c.get("type") == "text")
+    entry["calls"].append({"name": name, "args": args, "ok": not r.get("isError"), "text": text})
+    save()
+    return r
+
+rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake-claude", "version": "0"}})
+rpc("notifications/initialized", notify=True)
+entry["tools"] = [t["name"] for t in rpc("tools/list")["tools"]]
+
+plan = next((l for l in prompt.splitlines() if l.startswith("Session plan:")), "")
+if "android" in plan:
+    call("finish", {"status": "pass", "notes": plan})
+else:
+    call("session", {"action": "start", "id": "w", "target": "examples/demo/login.html"})
+    check = "{ text: Nope, timeout: 500 }" if os.environ.get("FAKE_CLAUDE_FAIL") == "1" else "Budi"
+    r = call("run_flow", {"flow": "- inputText: { into: Email, text: a@b.com }\n"
+                                  "- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n"
+                                  f"- tapOn: Masuk\n- assertVisible: {check}\n"})
+    call("finish", {"status": "fail" if r.get("isError") else "pass", "notes": "checked Budi on the dashboard"})
+proc.stdin.close()
+proc.wait(timeout=10)
+result("done", turns=len(entry["calls"]))

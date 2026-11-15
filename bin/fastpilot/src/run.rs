@@ -1,6 +1,9 @@
-//! `fastpilot run <tests dir|file>`: headless CI runner. Each natural-language test case is
-//! driven by Claude over the same tools the MCP server serves, in-process (no MCP client), with
-//! path-memory hints, retries within a budget, an infra circuit breaker, and JUnit/HTML output.
+//! `fastpilot run <tests dir|file>`: headless runner. Each natural-language test case is driven
+//! by the user's own Claude Code (`claude -p`, their login and plan; fastpilot calls no model API
+//! and needs no API key). Claude Code reaches this process's tools over MCP: a per-test server on
+//! 127.0.0.1 behind `fastpilot mcp-bridge` (the stdio command Claude Code spawns), so path-memory
+//! hints, evidence and the `finish` verdict stay in-process. Retries within a budget, an infra
+//! circuit breaker, and JUnit/HTML output.
 //!
 //! Models (PRD §12.5): a test with a path-memory hint starts on the fast model to replay it;
 //! a failed replay, or a test without a hint, runs on the larger model. `--model` pins one.
@@ -12,13 +15,20 @@ use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 
 use fastpilot_core::Platform;
-use fastpilot_llm::{Claude, MODEL_EXPLORE, MODEL_REPLAY};
 use fastpilot_mcp::{Devices, FastPilot};
 use fastpilot_memory::{Breaker, Class, RetryBudget};
 use fastpilot_web::LaunchOptions;
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::pool::{Device, Pool};
+
+/// Exploration / judgment (PRD §12.5: the larger model).
+pub const MODEL_EXPLORE: &str = "claude-opus-5-5";
+/// Replaying a path-memory hint (PRD §12.5: the fast model).
+pub const MODEL_REPLAY: &str = "claude-haiku-5-5";
+/// One Claude Code invocation may take this long before it is stopped.
+const CASE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 const SYSTEM: &str = "You are fastpilot's QA agent running one test case unattended in CI. Nobody is watching and \
 nobody can answer questions: decide for yourself, and always finish.
@@ -31,9 +41,8 @@ screenshot only when the returned state is not enough. Read docs(topic: dsl) onc
 - Verify every expectation in the test case with assertVisible or the assert tool; do not assume.
 - `${NAME}` variables are masked as *** in results; keep using the ${NAME} form in flows.
 - When done, call `finish` exactly once: status pass only if every expectation was verified, otherwise fail, with \
-notes saying what was checked or what went wrong (expected vs actual).";
-
-const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+notes saying what was checked or what went wrong (expected vs actual).
+- Only the fastpilot tools are available; do not ask for others.";
 
 #[derive(Clone)]
 pub struct Options {
@@ -156,8 +165,7 @@ fn finish_tool() -> Value {
     json!({
         "name": "finish",
         "description": "Call exactly once when the test case is done: pass only if every expectation was verified.",
-        "strict": true,
-        "input_schema": {
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "enum": ["pass", "fail"] },
@@ -169,47 +177,196 @@ fn finish_tool() -> Value {
     })
 }
 
-/// MCP content blocks → Claude tool_result content.
-fn to_claude(content: Vec<Value>) -> Vec<Value> {
-    content
-        .into_iter()
-        .map(|c| match c["type"].as_str() {
-            Some("image") => json!({
-                "type": "image",
-                "source": { "type": "base64", "media_type": c["mimeType"].as_str().unwrap_or("image/jpeg"), "data": c["data"] }
-            }),
-            _ => json!({ "type": "text", "text": c["text"].as_str().unwrap_or("") }),
-        })
-        .collect()
-}
-
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_owned() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
 }
 
-/// Larger models take the server-side refusal fallback (Haiku has none).
-fn request(model: &str, tools: &[Value], messages: &[Value]) -> (Value, Vec<&'static str>) {
-    let replay = model.contains("haiku");
-    let mut body = json!({
-        "model": model,
-        "max_tokens": 16000,
-        "system": SYSTEM,
-        "tools": tools,
-        "messages": messages,
-        // Auto-caching: the stable prefix (tools, system, earlier turns) is reused every turn.
-        "cache_control": { "type": "ephemeral" },
-        "output_config": { "effort": if replay { "low" } else { "medium" } },
-    });
-    let mut betas = Vec::new();
-    if !replay {
-        body["fallbacks"] = json!("default");
-        betas.push(FALLBACK_BETA);
+/// Claude Code's CLI: `FASTPILOT_CLAUDE`, else `claude` on PATH.
+pub fn claude_bin() -> String {
+    std::env::var("FASTPILOT_CLAUDE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into())
+}
+
+/// What the tools of one test case share with Claude Code's calls.
+struct Agent {
+    fp: FastPilot,
+    case_id: String,
+    max_steps: usize,
+    verdict: Mutex<Option<(bool, String)>>,
+    transcript: Mutex<Vec<String>>,
+    steps: std::sync::atomic::AtomicUsize,
+    replay_failed: std::sync::atomic::AtomicBool,
+}
+
+impl Agent {
+    /// MCP `tools/list`: the server's tools (without `report`: the runner closes the run) plus `finish`.
+    fn tools() -> Vec<Value> {
+        let mut tools: Vec<Value> = FastPilot::api_tools()
+            .into_iter()
+            .filter(|t| t["name"] != "report")
+            .map(|t| json!({ "name": t["name"], "description": t["description"], "inputSchema": t["input_schema"] }))
+            .collect();
+        tools.push(finish_tool());
+        tools
     }
-    (body, betas)
+
+    async fn call(&self, name: &str, mut input: Value) -> Value {
+        let text = |t: String, err: bool| json!({ "content": [{ "type": "text", "text": t }], "isError": err });
+        if name == "finish" {
+            let pass = input["status"] == "pass";
+            let notes = input["notes"].as_str().unwrap_or("").to_owned();
+            lock(&self.transcript).push(format!("finish {}: {}", if pass { "pass" } else { "fail" }, fastpilot_core::redact(&notes)));
+            *lock(&self.verdict) = Some((pass, notes));
+            return text("recorded; the test is over, stop here".into(), false);
+        }
+        if lock(&self.verdict).is_some() {
+            return text("the test already has a verdict (finish was called); stop here".into(), true);
+        }
+        let n = self.steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if n > self.max_steps {
+            return text(format!("step budget of {} tool calls is used up: call finish now", self.max_steps), true);
+        }
+        // Evidence always lands in this test's run, whether or not the model passed test_id.
+        let start = name == "session" && input["action"] == "start";
+        if (start || name == "run_flow" || name == "assert") && input.get("test_id").is_none_or(Value::is_null) {
+            input["test_id"] = json!(self.case_id);
+        }
+        let (ok, out) = self.fp.call_json(name, input.clone()).await;
+        let joined: String = out.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+        lock(&self.transcript).push(format!("{} {} {}\n{}", if ok { "✓" } else { "✗" }, name, clip(&input.to_string(), 300), clip(&joined, 1500)));
+        if !ok && name == "run_flow" {
+            self.replay_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        json!({ "content": out, "isError": !ok })
+    }
+
+    /// One JSON-RPC message from Claude Code; `None` for notifications.
+    async fn handle(&self, msg: &Value) -> Option<Value> {
+        let id = msg.get("id").cloned()?;
+        let result = match msg["method"].as_str().unwrap_or("") {
+            "initialize" => json!({
+                "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "fastpilot", "version": env!("CARGO_PKG_VERSION") },
+            }),
+            "ping" => json!({}),
+            "tools/list" => json!({ "tools": Self::tools() }),
+            "tools/call" => {
+                let p = &msg["params"];
+                self.call(p["name"].as_str().unwrap_or(""), p["arguments"].clone()).await
+            }
+            other => return Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("method not found: {other}") } })),
+        };
+        Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Serve `agent` as an MCP server (newline-delimited JSON-RPC) to every connection that first
+/// sends `token`. Returns the address.
+async fn serve(agent: Arc<Agent>, token: String) -> std::io::Result<(String, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?.to_string();
+    let task = tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            let (agent, token) = (agent.clone(), token.clone());
+            tokio::spawn(async move {
+                let (r, mut w) = sock.into_split();
+                let mut lines = BufReader::new(r).lines();
+                if lines.next_line().await.ok().flatten().as_deref() != Some(token.as_str()) {
+                    return;
+                }
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                    if let Some(reply) = agent.handle(&msg).await
+                        && (w.write_all(format!("{reply}\n").as_bytes()).await.is_err() || w.flush().await.is_err())
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    Ok((addr, task))
+}
+
+/// `fastpilot mcp-bridge <addr> <token>`: the stdio MCP server Claude Code spawns; it relays
+/// stdin/stdout to the runner's in-process server for one test case.
+pub async fn bridge(addr: &str, token: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let sock = tokio::net::TcpStream::connect(addr).await?;
+    let (mut r, mut w) = sock.into_split();
+    w.write_all(format!("{token}\n").as_bytes()).await?;
+    let up = async {
+        let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut w).await;
+        let _ = w.shutdown().await;
+    };
+    let down = async {
+        let _ = tokio::io::copy(&mut r, &mut tokio::io::stdout()).await;
+    };
+    tokio::select! {
+        () = up => {}
+        () = down => {}
+    }
+    Ok(())
+}
+
+/// What one `claude -p` invocation reported.
+struct Session {
+    turns: usize,
+    usage: Usage,
+    /// Set when Claude Code itself failed (not installed, not logged in, crashed, timed out).
+    failure: Option<String>,
+}
+
+/// Run Claude Code once on `prompt` with only this test's fastpilot tools.
+async fn claude_session(prompt: &str, model: &str, addr: &str, token: &str) -> Session {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
+    let config = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp-bridge", addr, token] } } });
+    let effort = if model == MODEL_REPLAY { "low" } else { "medium" };
+    let child = tokio::process::Command::new(claude_bin())
+        .args(["-p", "--output-format", "json", "--model", model, "--effort", effort])
+        .args(["--append-system-prompt", SYSTEM])
+        .args(["--mcp-config", &config.to_string(), "--strict-mcp-config"])
+        // Only fastpilot: no shell, file or web tools for an unattended agent.
+        .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--permission-mode", "dontAsk", "--no-session-persistence"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return Session { turns: 0, usage: Usage::default(), failure: Some(format!("cannot start Claude Code (`{}`): {e}", claude_bin())) },
+    };
+    // The prompt goes on stdin: variadic options (--tools, --mcp-config) would swallow it.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prompt.as_bytes()).await;
+    }
+    let out = match tokio::time::timeout(CASE_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Session { turns: 0, usage: Usage::default(), failure: Some(format!("Claude Code: {e}")) },
+        Err(_) => return Session { turns: 0, usage: Usage::default(), failure: Some(format!("Claude Code did not finish within {} min", CASE_TIMEOUT.as_secs() / 60)) },
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let result: Value = stdout.lines().rev().find_map(|l| serde_json::from_str(l).ok()).unwrap_or_default();
+    let u = &result["usage"];
+    let usage = Usage {
+        input: u["input_tokens"].as_u64().unwrap_or(0),
+        output: u["output_tokens"].as_u64().unwrap_or(0),
+        cache_read: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+    };
+    let failed = !out.status.success() || result["is_error"] == true;
+    let failure = failed.then(|| {
+        let why = result["result"].as_str().map(str::to_owned).unwrap_or_else(|| format!("{}{}", stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()));
+        format!("Claude Code failed ({}): {}", out.status, clip(why.trim(), 400))
+    });
+    Session { turns: result["num_turns"].as_u64().unwrap_or(0) as usize, usage, failure }
 }
 
 /// Drive one test case to a verdict.
-async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry: bool, devices: &[Device]) -> CaseResult {
+async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &[Device]) -> CaseResult {
     let started = Instant::now();
     let pick = |p: Platform| devices.iter().find(|d| d.platform == p).map(|d| d.id.clone());
     let fp = FastPilot::with_devices(opts.web.clone(), Devices { android: pick(Platform::Android), ios: pick(Platform::Ios) });
@@ -221,8 +378,6 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
         (None, None) => MODEL_EXPLORE.to_owned(),
     };
     let mut models = vec![model.clone()];
-    let mut tools: Vec<Value> = FastPilot::api_tools().into_iter().filter(|t| t["name"] != "report").collect();
-    tools.push(finish_tool());
     let plan: Vec<String> = case
         .platforms()
         .iter()
@@ -239,93 +394,75 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
         plan.join("; "),
         hint.as_deref().unwrap_or("No path memory for this test yet: explore.")
     );
-    let mut messages = vec![json!({ "role": "user", "content": intro })];
+    let agent = Arc::new(Agent {
+        fp: fp.clone(),
+        case_id: case.id.clone(),
+        max_steps: opts.max_steps,
+        verdict: Mutex::new(None),
+        transcript: Mutex::new(Vec::new()),
+        steps: std::sync::atomic::AtomicUsize::new(0),
+        replay_failed: std::sync::atomic::AtomicBool::new(false),
+    });
+    // Only this test's Claude Code may connect: a random token it passes to the bridge.
+    let token: String = (0..2)
+        .map(|_| {
+            use std::hash::{BuildHasher, Hasher};
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(started.elapsed().as_nanos());
+            format!("{:016x}", h.finish())
+        })
+        .collect();
     let mut usage = Usage::default();
-    let mut transcript = Vec::new();
-    let mut verdict: Option<(bool, String)> = None;
     let mut turns = 0;
-    let mut nudges = 0;
     let mut forced_class = None;
-
-    while turns < opts.max_steps && verdict.is_none() {
-        turns += 1;
-        let (body, betas) = request(&model, &tools, &messages);
-        let resp = match claude.messages(&body, &betas).await {
-            Ok(r) => r,
-            Err(e) => {
-                transcript.push(format!("model error: {e}"));
-                forced_class = Some(Class::Infra);
-                verdict = Some((false, format!("model request failed: {e}")));
+    let mut failure = None;
+    match serve(agent.clone(), token.clone()).await {
+        Err(e) => failure = Some(format!("cannot serve the tools to Claude Code: {e}")),
+        Ok((addr, server)) => {
+            let mut prompt = intro;
+            loop {
+                let s = claude_session(&prompt, &model, &addr, &token).await;
+                turns += s.turns;
+                usage.input += s.usage.input;
+                usage.output += s.usage.output;
+                usage.cache_read += s.usage.cache_read;
+                let verdict = lock(&agent.verdict).clone();
+                if verdict.is_none() && s.failure.is_some() {
+                    failure = s.failure;
+                    break;
+                }
+                // The hint no longer applies: hand over to the larger model, sessions as they are.
+                let replay_failed = agent.replay_failed.load(std::sync::atomic::Ordering::SeqCst);
+                if replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && opts.model.is_none() && model == MODEL_REPLAY {
+                    model = MODEL_EXPLORE.to_owned();
+                    models.push(model.clone());
+                    lock(&agent.transcript).push(format!("replay failed: switching to {model}"));
+                    *lock(&agent.verdict) = None;
+                    prompt = format!(
+                        "{prompt}\n\nThe path-memory replay failed. The sessions are still open where it stopped: take a \
+                         snapshot, explore from there, and call finish."
+                    );
+                    continue;
+                }
                 break;
             }
-        };
-        let u = &resp["usage"];
-        usage.input += u["input_tokens"].as_u64().unwrap_or(0);
-        usage.output += u["output_tokens"].as_u64().unwrap_or(0);
-        usage.cache_read += u["cache_read_input_tokens"].as_u64().unwrap_or(0);
-        let stop = resp["stop_reason"].as_str().unwrap_or("").to_owned();
-        let content = resp["content"].as_array().cloned().unwrap_or_default();
-        if stop == "refusal" {
-            let why = resp["stop_details"]["category"].as_str().unwrap_or("unspecified");
-            forced_class = Some(Class::Agent);
-            verdict = Some((false, format!("the model declined the request (refusal: {why})")));
-            break;
-        }
-        // The whole assistant turn goes back, thinking blocks included.
-        messages.push(json!({ "role": "assistant", "content": content.clone() }));
-        let calls: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
-        if stop == "max_tokens" && !calls.is_empty() {
-            forced_class = Some(Class::Agent);
-            verdict = Some((false, "model output was cut off at max_tokens mid tool call".into()));
-            break;
-        }
-        if calls.is_empty() {
-            // `auto` does not guarantee a tool call: ask for the verdict, a bounded number of times.
-            nudges += 1;
-            if nudges > 2 {
-                break;
-            }
-            messages.push(json!({ "role": "user", "content": "Continue the test, then call finish with pass or fail." }));
-            continue;
-        }
-        let mut results = Vec::new();
-        let mut replay_failed = false;
-        for call in calls {
-            let id = call["id"].clone();
-            let name = call["name"].as_str().unwrap_or("");
-            let mut input = call["input"].clone();
-            if name == "finish" {
-                let pass = input["status"] == "pass";
-                let notes = input["notes"].as_str().unwrap_or("").to_owned();
-                transcript.push(format!("finish {}: {}", if pass { "pass" } else { "fail" }, fastpilot_core::redact(&notes)));
-                verdict = Some((pass, notes));
-                results.push(json!({ "type": "tool_result", "tool_use_id": id, "content": "recorded" }));
-                continue;
-            }
-            // Evidence always lands in this test's run, whether or not the model passed test_id.
-            let start = name == "session" && input["action"] == "start";
-            if (start || name == "run_flow" || name == "assert") && input.get("test_id").is_none_or(Value::is_null) {
-                input["test_id"] = json!(case.id);
-            }
-            let (ok, out) = fp.call_json(name, input.clone()).await;
-            let text: String = out.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
-            transcript.push(format!("{} {} {}\n{}", if ok { "✓" } else { "✗" }, name, clip(&input.to_string(), 300), clip(&text, 1500)));
-            replay_failed |= !ok && name == "run_flow";
-            results.push(json!({ "type": "tool_result", "tool_use_id": id, "content": to_claude(out), "is_error": !ok }));
-        }
-        messages.push(json!({ "role": "user", "content": results }));
-        // The hint no longer applies: hand over to the larger model.
-        if replay_failed && opts.model.is_none() && model == MODEL_REPLAY {
-            model = MODEL_EXPLORE.to_owned();
-            models.push(model.clone());
-            transcript.push(format!("replay failed: switching to {model}"));
+            server.abort();
         }
     }
-
-    let (passed, notes) = verdict.unwrap_or_else(|| {
-        forced_class = Some(Class::Agent);
-        (false, format!("the agent did not call finish within {} turns", opts.max_steps))
-    });
+    let mut transcript = std::mem::take(&mut *lock(&agent.transcript));
+    let verdict = lock(&agent.verdict).clone();
+    let (passed, notes) = match (verdict, failure) {
+        (Some(v), _) => v,
+        (None, Some(f)) => {
+            transcript.push(f.clone());
+            forced_class = Some(Class::Infra);
+            (false, f)
+        }
+        (None, None) => {
+            forced_class = Some(Class::Agent);
+            (false, "the agent ended without calling finish".to_owned())
+        }
+    };
     let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry).await {
         Ok(f) => (forced_class.or(f.class), Some(f.report)),
         Err(e) => {
@@ -355,19 +492,18 @@ async fn run_case(case: &Case, claude: &Claude, opts: &Options, passed_on_retry:
 /// Run a test case with the suite's retry budget and breaker: a failure is rerun while the
 /// budget lasts; a rerun that passes makes the test flaky.
 /// Lease devices, run, release; `avoid` steers a retry to other devices.
-async fn attempt(case: &Case, claude: &Claude, opts: &Options, pool: &Pool, retry: bool, avoid: &[String]) -> CaseResult {
+async fn attempt(case: &Case, opts: &Options, pool: &Pool, retry: bool, avoid: &[String]) -> CaseResult {
     let devices = match pool.lease(&case.platforms(), avoid).await {
         Ok(d) => d,
         Err(e) => return CaseResult::skipped(case, &format!("skipped: {e}")),
     };
-    let result = run_case(case, claude, opts, retry, &devices).await;
+    let result = run_case(case, opts, retry, &devices).await;
     pool.release(devices);
     result
 }
 
 pub async fn run_with_retries(
     case: &Case,
-    claude: &Claude,
     opts: &Options,
     budget: &RetryBudget,
     breaker: &Breaker,
@@ -376,11 +512,11 @@ pub async fn run_with_retries(
     if breaker.is_open() {
         return CaseResult::skipped(case, "skipped: the infra circuit breaker is open (consecutive infra failures)");
     }
-    let mut result = attempt(case, claude, opts, pool, false, &[]).await;
+    let mut result = attempt(case, opts, pool, false, &[]).await;
     let mut attempts = 1;
     while !result.passed && result.attempts > 0 && result.class != Some(Class::Agent) && budget.take() {
         attempts += 1;
-        let mut again = attempt(case, claude, opts, pool, true, &result.devices).await;
+        let mut again = attempt(case, opts, pool, true, &result.devices).await;
         let earlier = std::mem::take(&mut result.transcript);
         again.transcript.splice(0..0, earlier.into_iter().chain(std::iter::once(format!("— attempt {attempts} —"))));
         again.usage.input += result.usage.input;
@@ -420,16 +556,23 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     if cases.is_empty() {
         return Err(format!("no test cases (*.md) in {}", target.display()).into());
     }
-    let claude = Claude::from_env().ok_or(
-        "fastpilot run needs Claude credentials: set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN; ANTHROPIC_BASE_URL for a proxy)",
-    )?;
+    // The user's own Claude Code does the thinking: no API key, their login and plan.
+    let version = tokio::process::Command::new(claude_bin()).arg("--version").output().await;
+    if !version.as_ref().is_ok_and(|o| o.status.success()) {
+        return Err(format!(
+            "fastpilot run needs Claude Code installed and logged in (`{}` not found or not working; \
+             install it from https://claude.com/claude-code, run `claude` once to log in, or set FASTPILOT_CLAUDE)",
+            claude_bin()
+        )
+        .into());
+    }
     let pool = Arc::new(Pool::discover().await);
     let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
     println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary());
     let started = Instant::now();
     let queue = Arc::new(Mutex::new(order.into_iter().collect::<std::collections::VecDeque<_>>()));
     let results = Arc::new(Mutex::new(Vec::new()));
-    let shared = Arc::new((claude, opts.clone(), RetryBudget::from_env(), Breaker::from_env()));
+    let shared = Arc::new((opts.clone(), RetryBudget::from_env(), Breaker::from_env()));
     let workers: Vec<_> = (0..opts.workers.clamp(1, cases.len()))
         .map(|_| {
             let (queue, results, shared, pool, cases) = (queue.clone(), results.clone(), shared.clone(), pool.clone(), cases.clone());
@@ -437,8 +580,8 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
                 loop {
                     let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     let Some(i) = next else { break };
-                    let (claude, opts, budget, breaker) = &*shared;
-                    let r = run_with_retries(&cases[i], claude, opts, budget, breaker, &pool).await;
+                    let (opts, budget, breaker) = &*shared;
+                    let r = run_with_retries(&cases[i], opts, budget, breaker, &pool).await;
                     println!("{}", summary_line(&r));
                     results.lock().unwrap_or_else(|p| p.into_inner()).push((i, r));
                 }

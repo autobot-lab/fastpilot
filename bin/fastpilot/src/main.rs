@@ -18,14 +18,15 @@ commands:
   bench [web|android|ios]   print snapshot and tap->diff latency against the demo login
           [--iterations N]      (android: booted device with examples/demo-android installed)
   bench tokens [web|android|ios]   tokens per snapshot, per 1-step diff and per login run_flow
-                                   (count_tokens API with ANTHROPIC_API_KEY, else an approximation)
+                                   (offline approximation)
   stability <flow.yaml> [--runs N]   repeat a flow in fresh sessions: pass rate, pass^k,
                                      95% upper bound of the failure rate
   ios doctor [udid]   why a physical iPhone can or cannot run tests yet (Xcode, signing,
                       Developer Mode, pairing, profile expiry), each with the fix
   run <tests dir|file.md> [--workers N] [--record] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
-          headless CI: Claude drives each natural-language test case over the same tools;
-          exits non-zero when a test outside quarantine fails (needs ANTHROPIC_API_KEY)
+          headless: your Claude Code (`claude -p`, your login, no API key) drives each
+          natural-language test case over the same tools; exits non-zero when a test
+          outside quarantine fails (FASTPILOT_CLAUDE: path to the claude CLI)
 
 env:
   FASTPILOT_CHROME   Chrome/Chromium executable
@@ -47,6 +48,14 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     match args.first().map(String::as_str) {
         Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
+        // Internal: the stdio MCP server Claude Code spawns during `fastpilot run`.
+        Some("mcp-bridge") => match (args.get(1), args.get(2)) {
+            (Some(addr), Some(token)) => run::bridge(addr, token).await,
+            _ => {
+                eprintln!("usage: fastpilot mcp-bridge <addr> <token> (started by `fastpilot run`)");
+                std::process::exit(2);
+            }
+        },
         Some("bench") => {
             let iterations = args
                 .iter()
