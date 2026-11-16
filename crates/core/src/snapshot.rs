@@ -300,6 +300,63 @@ impl Snapshot {
         }
     }
 
+    /// Only what can be acted on (buttons, links, fields, ...), flattened: the `snapshot -i`
+    /// view of the CLI. Refs are unchanged, so `click @e7` works on either view.
+    pub fn interactive_only(&self) -> Snapshot {
+        Snapshot {
+            title: self.title.clone(),
+            location: self.location.clone(),
+            entries: self
+                .entries
+                .iter()
+                .filter(|e| INTERACTIVE.contains(&e.node.role.as_str()))
+                .map(|e| Entry { depth: 0, ..e.clone() })
+                .collect(),
+        }
+    }
+
+    /// Machine-readable form (`snapshot --json`): secure values are never included and
+    /// names/values are redacted like the text render.
+    pub fn to_json(&self) -> serde_json::Value {
+        let entries: Vec<serde_json::Value> = self
+            .entries
+            .iter()
+            .map(|e| {
+                let n = &e.node;
+                let mut v = serde_json::json!({ "ref": e.r#ref, "depth": e.depth, "role": n.role, "name": crate::redact(&n.name) });
+                if let (false, Some(val)) = (n.secure, &n.value) {
+                    v["value"] = serde_json::json!(crate::redact(val));
+                }
+                if n.secure {
+                    v["secure"] = serde_json::json!(true);
+                }
+                if let Some(id) = &n.id {
+                    v["id"] = serde_json::json!(id);
+                }
+                for (on, k) in [
+                    (n.disabled, "disabled"),
+                    (n.checked, "checked"),
+                    (n.selected, "selected"),
+                    (n.expanded, "expanded"),
+                    (n.pressed, "pressed"),
+                    (n.invalid, "invalid"),
+                    (n.required, "required"),
+                    (n.readonly, "readonly"),
+                    (n.focused, "focused"),
+                ] {
+                    if on {
+                        v[k] = serde_json::json!(true);
+                    }
+                }
+                if let Some(b) = n.bounds {
+                    v["box"] = serde_json::json!([b.x.round(), b.y.round(), b.w.round(), b.h.round()]);
+                }
+                v
+            })
+            .collect();
+        serde_json::json!({ "title": crate::redact(&self.title), "location": self.location, "entries": entries })
+    }
+
     pub fn header(&self) -> String {
         format!("screen {} ({})", quote(&self.title), self.location)
     }
@@ -965,5 +1022,21 @@ mod tests {
         // The run is capped.
         let long: Vec<Node> = (0..20).flat_map(|i| [n("text", &i.to_string()), n("text", "·")]).collect();
         assert!(merged(long).iter().all(|s| s.chars().count() <= MAX_MERGED), "capped");
+    }
+
+    #[test]
+    fn interactive_view_and_json() {
+        let mut refs = RefRegistry::default();
+        let s = Snapshot::build("Login", "u", login_tree("a@b.com"), &mut refs);
+        let i = s.interactive_only();
+        assert_eq!(
+            i.render(None, 120),
+            "screen \"Login\" (u)\ne2 textfield \"Email\" value=\"a@b.com\"\ne3 textfield \"Password\" secure\ne4 button \"Masuk\"\ne5 link \"Lupa password?\""
+        );
+        let j = s.to_json();
+        assert_eq!(j["entries"][0]["role"], "heading");
+        assert_eq!(j["entries"][1]["value"], "a@b.com");
+        assert!(j["entries"][2].get("value").is_none() && j["entries"][2]["secure"] == true, "{j}");
+        assert!(!j.to_string().contains("hunter2"));
     }
 }

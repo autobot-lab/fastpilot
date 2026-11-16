@@ -305,6 +305,37 @@ candidates: e10 button "Keluar"
 Path memory: `session start` dengan `test_id` mengembalikan hint YAML dari run lolos terakhir. Kirim hint
 itu sebagai satu `run_flow` dengan `test_id` yang sama, lalu tutup dengan `report`. Lihat `docs` topic `memory`.
 
+## Shell CLI: satu perintah per langkah
+
+Untuk agent yang hanya bisa menjalankan perintah shell, atau untuk dicoba manual. Sesi tetap terbuka di
+daemon latar belakang (`~/.fastpilot/cli.sock`, dinyalakan otomatis oleh perintah pertama, mati sendiri
+setelah 30 menit tanpa perintah atau lewat `fastpilot daemon stop`), jadi tiap perintah cepat.
+
+```bash
+export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123   # dibaca daemon saat menyala
+fastpilot open examples/demo/login.html
+fastpilot snapshot -i                  # hanya elemen yang bisa diaksi, dengan ref
+fastpilot fill @e2 a@b.com
+fastpilot fill "Password" '${DEMO_PASS}'
+fastpilot click @e5
+fastpilot wait Budi && fastpilot get title
+fastpilot screenshot hasil.jpg --annotate
+fastpilot close
+```
+
+- Selector: `@e7` (ref dari snapshot), `"Masuk"` (teks), `#email` (id), `role=button:Masuk`, `120,340` (titik).
+- Perintah: `open`, `attach`, `close [--all]`, `sessions`, `devices`, `snapshot [-i] [--json] [--full]
+  [--coords] [--filter T]`, `click`/`tap`, `dblclick`, `longpress`, `fill`, `type`, `clear`, `press`,
+  `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
+  `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
+  `screenshot`, `record start|stop`, `set viewport|locale|geo|network|permission`, `launch`, `stop-app`,
+  `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `errors`, `docs`, `daemon status|stop`.
+  `fastpilot help` menampilkan semuanya.
+- Web, Android dan iOS sama saja: `fastpilot open com.app/.MainActivity --platform android`.
+- Beberapa sesi sekaligus: `--session NAMA` (atau `FASTPILOT_SESSION`); `--json` untuk output mentah.
+- Exit code ≠ 0 bila langkah gagal; outputnya alasan, kandidat, dan layar saat itu, sama seperti MCP.
+- macOS dan Linux (Unix socket). Secret di `FASTPILOT_VARS` tetap tersamar `***`.
+
 ## Tanpa membuka Claude Code: `fastpilot run`
 
 Menjalankan test case bahasa natural (`tests/*.md`) tanpa sesi chat: fastpilot memanggil **Claude Code
