@@ -199,6 +199,15 @@ pub struct ReportArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct StateArgs {
+    /// save | load | list | delete
+    pub action: String,
+    /// State name (save, load, delete): `.fastpilot/states/<name>.json`.
+    pub name: Option<String>,
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocsArgs {
     /// dsl | selectors | parallel | examples | errors | memory | devices (default: dsl)
     pub topic: Option<String>,
@@ -335,6 +344,7 @@ impl FastPilot {
             "assert" => match parse(args) { Ok(a) => self.assert(a).await, Err(e) => fail(e) },
             "report" => match parse(args) { Ok(a) => self.report(a).await, Err(e) => fail(e) },
             "docs" => match parse(args) { Ok(a) => self.docs(a).await, Err(e) => fail(e) },
+            "state" => match parse(args) { Ok(a) => self.state(a).await, Err(e) => fail(e) },
             other => fail(format!("unknown tool `{other}`")),
         };
         match res {
@@ -716,6 +726,40 @@ impl FastPilot {
                 ok(text)
             }
             Err(e) => fail(format!("report failed: {e}")),
+        }
+    }
+
+    #[tool(description = "Saved login state (web: cookies + localStorage), so a test can skip the login: save | load | list | delete. Files are owner-only, expire after FASTPILOT_STATE_EXPIRE_DAYS (30) and are encrypted when FASTPILOT_STATE_KEY is set. Same as the saveState / loadState steps.")]
+    async fn state(&self, Parameters(args): Parameters<StateArgs>) -> Result<CallToolResult, ErrorData> {
+        use fastpilot_core::state;
+        let name = || args.name.as_deref().filter(|n| !n.is_empty()).ok_or("`name` is required");
+        match args.action.as_str() {
+            "list" => {
+                let all = state::list();
+                if all.is_empty() {
+                    return ok(format!("no saved states in {}", state::dir().display()));
+                }
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let lines: Vec<String> = all
+                    .iter()
+                    .map(|(n, at, enc)| format!("{n}  saved {} h ago{}", now.saturating_sub(*at) / 3600, if *enc { ", encrypted" } else { "" }))
+                    .collect();
+                ok(lines.join("\n"))
+            }
+            "delete" => match name().map_err(str::to_owned).and_then(state::delete) {
+                Ok(p) => ok(format!("deleted {}", p.display())),
+                Err(e) => fail(e),
+            },
+            action @ ("save" | "load") => {
+                let n = match name() {
+                    Ok(n) => n.to_owned(),
+                    Err(e) => return fail(e),
+                };
+                let step = if action == "save" { "saveState" } else { "loadState" };
+                let flow = format!("- {step}: {}\n", serde_json::to_string(&n).unwrap_or_default());
+                self.run_flow(Parameters(RunFlowArgs { flow, session: args.session.clone(), stop_on_fail: None, test_id: None })).await
+            }
+            other => fail(format!("unknown action `{other}` (save, load, list, delete)")),
         }
     }
 

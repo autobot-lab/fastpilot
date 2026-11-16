@@ -21,7 +21,7 @@ pub const COMMANDS: &[&str] = &[
     "open", "attach", "close", "sessions", "devices", "snapshot", "click", "tap", "dblclick", "longpress", "fill", "type", "clear",
     "press", "select", "check", "uncheck", "upload", "scroll", "scrollto", "swipe", "back", "forward", "reload", "wait", "assert",
     "is", "get", "eval", "screenshot", "record", "set", "launch", "stop-app", "clear-state", "hide-keyboard", "flow", "check-flow",
-    "errors", "docs", "daemon", "help",
+    "errors", "docs", "daemon", "help", "state",
 ];
 
 const HELP: &str = "fastpilot shell commands (sessions stay open in a background daemon between commands)
@@ -52,6 +52,8 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   set network <offline|online> | set permission <name> <allow|deny|unset>
   launch <app> | stop-app [app] | clear-state [app] | hide-keyboard
   flow <file.yaml|-> [--keep-going] | check-flow <file.yaml|->   run / validate a DSL flow
+  state <save|load|delete> <name> | state list   saved login state (web: cookies + localStorage;
+                               encrypted with FASTPILOT_STATE_KEY, expires after 30 days)
   errors                       recent console errors, failed requests, crashes
   docs [dsl|selectors|errors|...]
   daemon <status|stop>
@@ -648,6 +650,14 @@ pub fn main(argv: &[String]) -> Res<()> {
             } else {
                 println!("{}", lines.join("\n"));
             }
+        }
+        "state" => {
+            let action = arg(1, "save, load, list or delete")?;
+            let mut a = json!({ "action": action, "session": sid });
+            if action != "list" {
+                a["name"] = json!(arg(2, "a state name")?);
+            }
+            finish(&ctx, &ctx.tool("state", a)?)?;
         }
         "docs" => finish(&ctx, &ctx.tool("docs", json!({ "topic": args.get(1).cloned().unwrap_or_else(|| "dsl".into()) }))?)?,
         "daemon" => match args.get(1).map(String::as_str) {

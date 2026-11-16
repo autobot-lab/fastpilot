@@ -218,7 +218,7 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 
-## Tools (8)
+## Tools (9)
 
 | Tool | Fungsi |
 |---|---|
@@ -229,6 +229,7 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `screenshot` | JPEG. `annotate: som` = kotak bernomor per target (digambar di web) + daftar ref → koordinat |
 | `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
 | `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
+| `state` | Simpan/muat login (web: cookies + localStorage) supaya test berikutnya tidak perlu login: `save` / `load` / `list` / `delete`. File hanya bisa dibaca pemiliknya, kedaluwarsa setelah 30 hari (`FASTPILOT_STATE_EXPIRE_DAYS`), dan dienkripsi AES-256-GCM bila `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) di-set. Sama dengan langkah `saveState` / `loadState` |
 | `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 
 ## Contoh
@@ -329,7 +330,8 @@ fastpilot close
   `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
   `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
   `screenshot`, `record start|stop`, `set viewport|locale|geo|network|permission`, `launch`, `stop-app`,
-  `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `errors`, `docs`, `daemon status|stop`.
+  `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`, `errors`,
+  `docs`, `daemon status|stop`.
   `fastpilot help` menampilkan semuanya.
 - Web, Android dan iOS sama saja: `fastpilot open com.app/.MainActivity --platform android`.
 - Beberapa sesi sekaligus: `--session NAMA` (atau `FASTPILOT_SESSION`); `--json` untuk output mentah.

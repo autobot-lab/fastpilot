@@ -8,6 +8,7 @@ mod error;
 mod recording;
 mod selector;
 mod snapshot;
+pub mod state;
 
 use std::fmt;
 use std::time::Duration;
@@ -246,6 +247,15 @@ pub trait Driver: Send + Sync {
     /// stay-awake) and stop on-device helpers. Called on `session stop` and at shutdown.
     async fn close(&self) -> Result<()> {
         Ok(())
+    }
+    /// Login state to save (`saveState`): web returns cookies and the current origin's
+    /// localStorage. Other platforms: Unsupported.
+    async fn save_state(&self) -> Result<Value> {
+        Err(Error::Unsupported("saveState / loadState (saved login state) is web-only".into()))
+    }
+    /// Restore what `save_state` returned (`loadState`).
+    async fn load_state(&self, _state: &Value) -> Result<()> {
+        Err(Error::Unsupported("saveState / loadState (saved login state) is web-only".into()))
     }
     async fn clear_keychain(&self) -> Result<()> {
         Err(Error::Unsupported("clearKeychain is iOS-only".into()))

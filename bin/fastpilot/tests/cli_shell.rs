@@ -129,6 +129,10 @@ fn login_through_shell_commands() {
     sh.ok(&["--session", "two", "close"]);
     assert!(sh.ok(&["daemon", "status"]).contains("[\"default\"]"));
     assert!(sh.ok(&["errors"]).contains("no errors"));
+    // Saved state through the shell (file:// has no cookies; the commands still round-trip).
+    assert!(sh.ok(&["state", "save", "demo"]).contains("demo.json"));
+    assert!(sh.ok(&["state", "list"]).contains("demo"));
+    assert!(sh.ok(&["state", "delete", "demo"]).contains("deleted"));
     sh.ok(&["close", "--all"]);
     let (running, _) = sh.run(&["daemon", "status"]);
     assert!(!running, "daemon still up after close --all");
