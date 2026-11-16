@@ -21,7 +21,7 @@ pub const COMMANDS: &[&str] = &[
     "open", "attach", "close", "sessions", "devices", "snapshot", "click", "tap", "dblclick", "longpress", "fill", "type", "clear",
     "press", "select", "check", "uncheck", "upload", "scroll", "scrollto", "swipe", "back", "forward", "reload", "wait", "assert",
     "is", "get", "eval", "screenshot", "record", "set", "launch", "stop-app", "clear-state", "hide-keyboard", "flow", "check-flow",
-    "errors", "docs", "daemon", "help", "state",
+    "errors", "docs", "daemon", "help", "state", "diff",
 ];
 
 const HELP: &str = "fastpilot shell commands (sessions stay open in a background daemon between commands)
@@ -54,6 +54,8 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   flow <file.yaml|-> [--keep-going] | check-flow <file.yaml|->   run / validate a DSL flow
   state <save|load|delete> <name> | state list   saved login state (web: cookies + localStorage;
                                encrypted with FASTPILOT_STATE_KEY, expires after 30 days)
+  diff screenshot <name> [--update] [--threshold 0.1] [--max-diff 0.002] [--ignore sel]...
+                               compare with the stored baseline (stored on first use)
   errors                       recent console errors, failed requests, crashes
   docs [dsl|selectors|errors|...]
   daemon <status|stop>
@@ -369,17 +371,19 @@ pub fn main(argv: &[String]) -> Res<()> {
     let mut opts: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut flags: Vec<&str> = Vec::new();
     let mut args: Vec<String> = Vec::new();
+    let mut ignores: Vec<String> = Vec::new();
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--session" => session = it.next().cloned().ok_or("--session needs a name")?,
             "--json" => json = true,
             "--headed" | "--headful" => headed = true,
-            "--platform" | "--device" | "--timeout" | "--filter" | "--url" => {
+            "--ignore" => ignores.push(it.next().cloned().ok_or("--ignore needs a selector")?),
+            "--platform" | "--device" | "--timeout" | "--filter" | "--url" | "--threshold" | "--max-diff" => {
                 let key = a.as_str();
                 opts.insert(key, it.next().cloned().ok_or_else(|| format!("{key} needs a value"))?);
             }
-            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" => {
+            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" | "--update" => {
                 flags.push(a.as_str());
             }
             _ => args.push(a.clone()),
@@ -667,6 +671,24 @@ pub fn main(argv: &[String]) -> Res<()> {
             } else {
                 println!("{}", lines.join("\n"));
             }
+        }
+        "diff" => {
+            if arg(1, "screenshot")? != "screenshot" {
+                return Err("only `diff screenshot <name>` exists".into());
+            }
+            let mut parts = vec![format!("name: {}", q(arg(2, "a baseline name")?))];
+            for (opt, key) in [("--threshold", "threshold"), ("--max-diff", "maxDiff")] {
+                if let Some(v) = opts.get(opt) {
+                    parts.push(format!("{key}: {}", v.parse::<f64>().map_err(|_| format!("{opt} takes a number from 0 to 1"))?));
+                }
+            }
+            if !ignores.is_empty() {
+                parts.push(format!("ignore: [{}]", ignores.iter().map(|i| selector(i)).collect::<Vec<_>>().join(", ")));
+            }
+            if flag("--update") {
+                parts.push("update: true".into());
+            }
+            step(format!("- assertScreenshot: {{ {} }}\n", parts.join(", ")))?;
         }
         "state" => {
             let action = arg(1, "save, load, list or delete")?;

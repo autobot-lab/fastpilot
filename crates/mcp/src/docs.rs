@@ -43,6 +43,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
 | waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
 | takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
+| assertScreenshot | `assertScreenshot: home` or `{ name: home, ignore: ["Jam", { id: banner }], threshold: 0.1, maxDiff: 0.002, update: true }`: visual regression. First run (or `update: true`, or `FASTPILOT_UPDATE_BASELINES=1`) stores `.fastpilot/baselines/home.png`; later runs fail when more than `maxDiff` of the pixels moved by more than `threshold`, with `home.diff.png` (changed pixels red) and `home.actual.png`. `ignore` blanks dynamic parts (clock, ads) | all |
 | saveState / loadState | `saveState: admin` after logging in → `.fastpilot/states/admin.json` (cookies + localStorage); `loadState: admin` restores it, so later tests skip the login (owner-only file, expires after 30 days, encrypted when `FASTPILOT_STATE_KEY` is set; also the `state` tool) | web |
 | setViewport | `setViewport: iPhone 15` (also iPhone SE, iPhone Pro Max, Pixel 8, Galaxy S23, iPad), `{ width: 390, height: 844, deviceScaleFactor: 3, mobile: true, touch: true, userAgent: "..." }`, `desktop` to reset — the site's mobile layout | web |
 | setLocation | `{ latitude: -6.2088, longitude: 106.8456 }` (web: geolocation override; android: emulator console; ios: simctl) | all (android: emulator) |

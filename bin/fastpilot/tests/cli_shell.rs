@@ -129,6 +129,9 @@ fn login_through_shell_commands() {
     sh.ok(&["--session", "two", "close"]);
     assert!(sh.ok(&["daemon", "status"]).contains("[\"default\"]"));
     assert!(sh.ok(&["errors"]).contains("no errors"));
+    // Visual regression through the shell: stored, then matched.
+    assert!(sh.ok(&["diff", "screenshot", "home"]).contains("baseline stored"));
+    assert!(sh.ok(&["diff", "screenshot", "home", "--ignore", "Masuk ke Akun"]).contains("matches baseline"));
     // Saved state through the shell (file:// has no cookies; the commands still round-trip).
     assert!(sh.ok(&["state", "save", "demo"]).contains("demo.json"));
     assert!(sh.ok(&["state", "list"]).contains("demo"));

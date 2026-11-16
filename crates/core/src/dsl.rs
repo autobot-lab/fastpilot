@@ -43,6 +43,8 @@ pub enum Step {
     PasteText,
     WaitForAnimationToEnd(Option<Duration>),
     TakeScreenshot(String),
+    /// `assertScreenshot: name` (visual regression against `.fastpilot/baselines/<name>.png`).
+    AssertScreenshot { name: String, threshold: Option<f64>, max_diff: Option<f64>, ignore: Vec<Selector>, update: bool },
     /// `saveState: name` → `.fastpilot/states/<name>.json` (web: cookies + localStorage).
     SaveState(String),
     /// `loadState: name`: restore a saved login state.
@@ -381,6 +383,28 @@ impl Step {
                     _ => return Err("expects exactly one of `visible` / `notVisible`".into()),
                 }
             }
+            "assertScreenshot" => match arg {
+                Yaml::Mapping(m) => {
+                    let frac = |k: &str| -> Result<Option<f64>, String> {
+                        match get(m, k) {
+                            None => Ok(None),
+                            Some(v) => v.as_f64().filter(|f| (0.0..=1.0).contains(f)).map(Some).ok_or(format!("`{k}` is a number from 0 to 1")),
+                        }
+                    };
+                    Self::AssertScreenshot {
+                        name: string(get(m, "name").ok_or("missing `name`")?)?,
+                        threshold: frac("threshold")?,
+                        max_diff: frac("maxDiff")?,
+                        ignore: match get(m, "ignore") {
+                            None => Vec::new(),
+                            Some(Yaml::Sequence(v)) => v.iter().map(|s| Selector::from_yaml(s, &[])).collect::<Result<_, _>>()?,
+                            Some(one) => vec![Selector::from_yaml(one, &[])?],
+                        },
+                        update: get(m, "update").and_then(Yaml::as_bool).unwrap_or(false),
+                    }
+                }
+                other => Self::AssertScreenshot { name: string(other)?, threshold: None, max_diff: None, ignore: Vec::new(), update: false },
+            },
             "saveState" => Self::SaveState(string(arg)?),
             "loadState" => Self::LoadState(string(arg)?),
             "takeScreenshot" => Self::TakeScreenshot(match arg {
@@ -795,6 +819,7 @@ impl Step {
             Self::PasteText => "pasteText".into(),
             Self::WaitForAnimationToEnd(_) => "waitForAnimationToEnd".into(),
             Self::TakeScreenshot(n) => format!("takeScreenshot {n}"),
+            Self::AssertScreenshot { name, .. } => format!("assertScreenshot {name}"),
             Self::SaveState(n) => format!("saveState {n}"),
             Self::LoadState(n) => format!("loadState {n}"),
             Self::InputRandom { kind, .. } => kind.command().into(),
@@ -1021,6 +1046,22 @@ impl Step {
             Self::WaitForAnimationToEnd(Some(t)) => one("waitForAnimationToEnd", map(vec![("timeout", Yaml::Number((t.as_millis() as u64).into()))])),
             Self::WaitForAnimationToEnd(None) => s("waitForAnimationToEnd"),
             Self::TakeScreenshot(n) => one("takeScreenshot", s(n)),
+            Self::AssertScreenshot { name, threshold, max_diff, ignore, update } => {
+                let mut pairs = vec![("name", s(name))];
+                if let Some(t) = threshold {
+                    pairs.push(("threshold", Yaml::Number((*t).into())));
+                }
+                if let Some(t) = max_diff {
+                    pairs.push(("maxDiff", Yaml::Number((*t).into())));
+                }
+                if !ignore.is_empty() {
+                    pairs.push(("ignore", Yaml::Sequence(ignore.iter().map(Selector::to_yaml).collect())));
+                }
+                if *update {
+                    pairs.push(("update", Yaml::Bool(true)));
+                }
+                one("assertScreenshot", map(pairs))
+            }
             Self::SaveState(n) => one("saveState", s(n)),
             Self::LoadState(n) => one("loadState", s(n)),
             Self::InputRandom { kind, length } => one(kind.command(), map(vec![("length", Yaml::Number((*length as u64).into()))])),

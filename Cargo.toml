@@ -18,6 +18,7 @@ aes-gcm = "0.10"
 async-trait = "0.1"
 base64 = "0.22"
 futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rmcp = { version = "3.8", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
