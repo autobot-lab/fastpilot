@@ -21,7 +21,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 |---|---|---|
 | launchApp | `launchApp: com.example.app` or `pkg/.Activity` (stop + start) | android, ios |
 | openUrl | `openUrl: https://...` or a local path (`examples/demo/login.html`) | web (android/ios: deep link) |
-| tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }` | all |
+| tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action when FASTPILOT_CONFIRM_ACTIONS is set (also longPressOn, doubleTapOn) | all |
 | inputText | `inputText: { into: "Email", text: "a@b.com" }` (replaces content); `inputText: "abc"` types into the focused field | all |
 | assertVisible / assertNotVisible | `assertVisible: "Dashboard"` or `{ text: "Dashboard", timeout: 10000 }` (ms) | all |
 | scroll | `scroll: down` or `{ direction: up, within: "Daftar" }` | all |
@@ -196,6 +196,7 @@ rerun it or add `waitForAnimationToEnd` before the tap.
 | ambiguous | several fuzzy matches | pick one of the listed refs |
 | not_actionable | hidden, disabled, animating or covered | dismiss the overlay / wait for the state with assertVisible |
 | timeout | the driver did not answer in time | retry; check the page |
+| blocked | a guard rail refused the step: a host outside FASTPILOT_ALLOWED_DOMAINS, or a risky tap (FASTPILOT_CONFIRM_ACTIONS) | stay on the allowed hosts; for an intended risky tap add `confirm: true` to the step |
 | unsupported | step or platform not available on this driver/phase | use a supported step |
 | script_error | evalScript threw | fix the expression |
 | session | unknown / duplicate session | start or switch sessions |

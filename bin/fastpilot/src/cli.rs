@@ -31,7 +31,7 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   close [--all]                close the session (--all: every session and the daemon)
   sessions | devices           list sessions / attached devices and simulators
   snapshot [-i] [--json] [--full] [--coords] [--filter TEXT]   accessibility tree with refs (@e1 ...)
-  click|tap|dblclick|longpress <sel>
+  click|tap|dblclick|longpress <sel> [--confirm]   --confirm: a risky action (FASTPILOT_CONFIRM_ACTIONS)
   fill <sel> <text>            replace the content of a field
   type <text>                  type into the focused field
   clear [N]                    erase N characters (all without N)
@@ -272,6 +272,14 @@ pub fn selector(s: &str) -> String {
     q(s)
 }
 
+/// `--confirm`: the selector with `confirm: true` (FASTPILOT_CONFIRM_ACTIONS).
+fn confirmed(sel: &str) -> String {
+    match sel.strip_suffix(" }") {
+        Some(map) => format!("{map}, confirm: true }}"),
+        None => format!("{{ text: {sel}, confirm: true }}"),
+    }
+}
+
 fn q(t: &str) -> String {
     serde_json::to_string(t).unwrap_or_default()
 }
@@ -371,7 +379,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                 let key = a.as_str();
                 opts.insert(key, it.next().cloned().ok_or_else(|| format!("{key} needs a value"))?);
             }
-            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" => {
+            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" => {
                 flags.push(a.as_str());
             }
             _ => args.push(a.clone()),
@@ -449,9 +457,18 @@ pub fn main(argv: &[String]) -> Res<()> {
                 finish(&ctx, &ctx.tool("snapshot", a)?)?;
             }
         }
-        "click" | "tap" => step(format!("- tapOn: {}\n", selector(arg(1, "a selector")?)))?,
-        "dblclick" => step(format!("- doubleTapOn: {}\n", selector(arg(1, "a selector")?)))?,
-        "longpress" => step(format!("- longPressOn: {}\n", selector(arg(1, "a selector")?)))?,
+        "click" | "tap" | "dblclick" | "longpress" => {
+            let verb = match cmd {
+                "dblclick" => "doubleTapOn",
+                "longpress" => "longPressOn",
+                _ => "tapOn",
+            };
+            let mut sel = selector(arg(1, "a selector")?);
+            if flag("--confirm") {
+                sel = confirmed(&sel);
+            }
+            step(format!("- {verb}: {sel}\n"))?;
+        }
         "fill" => step(format!("- inputText: {{ into: {}, text: {} }}\n", selector(arg(1, "a selector")?), q(&rest(2))))?,
         "type" => step(format!("- inputText: {}\n", q(&rest(1))))?,
         "clear" => step(match args.get(1) {
@@ -697,6 +714,15 @@ mod tests {
         assert_eq!(selector("text=#1 pilihan"), "\"#1 pilihan\"");
         for s in ["@e7", "#email", "role=button:Masuk", "120,340", "Masuk", "text=e12"] {
             assert!(fastpilot_core::Selector::parse_yaml(&selector(s)).is_ok(), "{s} → {}", selector(s));
+        }
+    }
+
+    #[test]
+    fn confirmed_selectors_parse() {
+        for s in ["@e7", "Hapus akun", "role=button:Bayar"] {
+            let yaml = format!("- tapOn: {}\n", confirmed(&selector(s)));
+            let flow = fastpilot_core::parse_flow(&yaml).unwrap_or_else(|e| panic!("{yaml}: {e:?}"));
+            assert!(matches!(flow.steps[0].step, fastpilot_core::Step::Confirmed(_)), "{yaml}");
         }
     }
 

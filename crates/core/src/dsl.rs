@@ -13,6 +13,8 @@ use crate::{Direction, Grant, Network, Platform, Point, Selector, Viewport};
 pub enum Step {
     OpenUrl(String),
     TapOn(Selector),
+    /// A tap-like step written with `confirm: true`: allowed past FASTPILOT_CONFIRM_ACTIONS.
+    Confirmed(Box<Step>),
     InputText { into: Selector, text: String },
     AssertVisible { selector: Selector, timeout: Option<Duration> },
     Scroll { direction: Direction, within: Option<Selector> },
@@ -337,8 +339,8 @@ impl Step {
                 Yaml::Mapping(m) => Self::OpenUrl(string(get(m, "link").ok_or("missing `link`")?)?),
                 other => Self::OpenUrl(string(other)?),
             },
-            "longPressOn" => Self::LongPressOn(Selector::from_yaml(arg, &[])?),
-            "doubleTapOn" => Self::DoubleTapOn(Selector::from_yaml(arg, &[])?),
+            "longPressOn" => confirmable(arg, Self::LongPressOn(Selector::from_yaml(arg, &["confirm"])?))?,
+            "doubleTapOn" => confirmable(arg, Self::DoubleTapOn(Selector::from_yaml(arg, &["confirm"])?))?,
             "scrollUntilVisible" => match arg {
                 Yaml::Mapping(m) if get(m, "element").is_some() => Self::ScrollUntilVisible {
                     selector: Selector::from_yaml(get(m, "element").ok_or("missing `element`")?, &[])?,
@@ -633,7 +635,7 @@ impl Step {
                 };
                 Self::Retry { max, steps }
             }
-            "tapOn" => Self::TapOn(Selector::from_yaml(arg, &[])?),
+            "tapOn" => confirmable(arg, Self::TapOn(Selector::from_yaml(arg, &["confirm"])?))?,
             "inputText" => match arg {
                 Yaml::Mapping(m) => Self::InputText {
                     into: match get(m, "into") {
@@ -764,6 +766,7 @@ impl Step {
         match self {
             Self::OpenUrl(u) => format!("openUrl {}", crate::quote(u)),
             Self::TapOn(s) => format!("tapOn {s}"),
+            Self::Confirmed(inner) => format!("{} (confirmed)", inner.label()),
             Self::InputText { into, text } => format!("inputText {into} {}", crate::quote(text)),
             Self::AssertVisible { selector, .. } => format!("assertVisible {selector}"),
             Self::Scroll { direction, within: Some(w) } => format!("scroll {direction:?} within {w}"),
@@ -907,7 +910,24 @@ fn with_timeout(sel: Yaml, timeout: Option<Duration>) -> Yaml {
     }
 }
 
+/// `confirm: true` in a tap-like step's selector mapping wraps it in `Step::Confirmed`.
+fn confirmable(arg: &Yaml, step: Step) -> Result<Step, String> {
+    match arg.as_mapping().and_then(|m| get(m, "confirm")) {
+        None | Some(Yaml::Bool(false)) => Ok(step),
+        Some(Yaml::Bool(true)) => Ok(Step::Confirmed(Box::new(step))),
+        Some(_) => Err("`confirm` is true or false".into()),
+    }
+}
+
 impl Step {
+    /// The step itself, without a `confirm: true` wrapper.
+    pub fn unconfirmed(&self) -> &Step {
+        match self {
+            Self::Confirmed(inner) => inner.unconfirmed(),
+            other => other,
+        }
+    }
+
     /// DSL YAML for this step; `durable` replaces the selector of leaf `n` (refs -> role+name).
     fn to_yaml(&self, leaf: &mut usize, durable: &HashMap<usize, Selector>) -> Yaml {
         let s = |x: &str| Yaml::String(x.to_owned());
@@ -929,6 +949,22 @@ impl Step {
         match self {
             Self::OpenUrl(u) => one("openUrl", s(u)),
             Self::TapOn(x) => one("tapOn", sel(x)),
+            Self::Confirmed(inner) => {
+                // `{ tapOn: <sel> }` → `{ tapOn: { ...sel, confirm: true } }`
+                let Yaml::Mapping(m) = inner.to_yaml(leaf, durable) else { return Yaml::Null };
+                let pairs: Vec<(Yaml, Yaml)> = m
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let mut v = match v {
+                            Yaml::Mapping(v) => v,
+                            other => [(Yaml::String("text".into()), other)].into_iter().collect(),
+                        };
+                        v.insert(Yaml::String("confirm".into()), Yaml::Bool(true));
+                        (k, Yaml::Mapping(v))
+                    })
+                    .collect();
+                Yaml::Mapping(pairs.into_iter().collect())
+            }
             Self::InputText { into: Selector::Focused, text } => one("inputText", s(text)),
             Self::InputText { into, text } => one("inputText", map(vec![("into", sel(into)), ("text", s(text))])),
             Self::AssertVisible { selector, timeout } => one("assertVisible", with_timeout(sel(selector), *timeout)),
