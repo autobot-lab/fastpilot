@@ -1089,15 +1089,20 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 impl Driver for WebPage {
     async fn open(&self, target: &str) -> Result<()> {
         let url = to_url(target);
-        let before = self.nav.borrow().count;
+        let (before, previous) = {
+            let n = self.nav.borrow();
+            (n.count, n.loader.clone())
+        };
         self.mark_action();
         let r = self.call("Page.navigate", json!({ "url": url })).await?;
         if let Some(err) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
             return Err(CoreError::Driver(format!("navigation to {url} failed: {err}")));
         }
         match r["loaderId"].as_str() {
-            // New document: wait for *its* load, not a late one from the previous page.
-            Some(loader) => self.wait_nav(&url, |n| n.loader == loader).await,
+            // New document: wait for *its* load, not a late one from the previous page. A page
+            // that sends the browser on before it finishes loading (`location.href = ...` right
+            // after a login) never fires its own load: the load of the document it led to counts.
+            Some(loader) => self.wait_nav(&url, |n| n.loader == loader || (n.count > before && !n.loader.is_empty() && n.loader != previous)).await,
             None => self.wait_nav(&url, |n| n.count > before).await,
         }
     }
@@ -1337,6 +1342,77 @@ impl Driver for WebPage {
             self.call("Storage.clearDataForOrigin", json!({ "origin": o, "storageTypes": "all" })).await?;
         } else {
             self.eval_script("try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} true").await?;
+        }
+        Ok(())
+    }
+
+    /// Cookies (the whole BrowserContext fastpilot owns; with an attached Chrome only the current
+    /// page's, so a user's other sites never end up in the file) and the current origin's
+    /// localStorage.
+    async fn save_state(&self) -> Result<Value> {
+        let cookies = match &self.context {
+            Some(ctx) => self.browser.cdp.call(None, "Storage.getCookies", json!({ "browserContextId": ctx })).await?,
+            None => self.call("Network.getCookies", json!({})).await?,
+        };
+        let storage = self
+            .eval_script("location.origin.startsWith('http') ? JSON.stringify({ origin: location.origin, items: Object.fromEntries(Object.entries(localStorage)) }) : null")
+            .await?;
+        let origins: Vec<Value> = storage
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .map(|v| json!({ "origin": v["origin"], "localStorage": v["items"] }))
+            .into_iter()
+            .collect();
+        Ok(json!({ "cookies": cookies["cookies"], "origins": origins }))
+    }
+
+    /// Cookies now; localStorage on the next document of its origin (now too, if the page is
+    /// already there). A page already open is reloaded so it sees the logged-in state.
+    async fn load_state(&self, state: &Value) -> Result<()> {
+        const KEYS: &[&str] = &["name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "priority", "sourceScheme", "sourcePort"];
+        let cookies: Vec<Value> = state["cookies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| {
+                let mut p = serde_json::Map::new();
+                for k in KEYS {
+                    if let Some(v) = c.get(*k).filter(|v| !v.is_null()) {
+                        p.insert((*k).to_owned(), v.clone());
+                    }
+                }
+                // Session cookies have no expiry (-1).
+                if c["session"] != true && c["expires"].as_f64().is_some_and(|e| e > 0.0) {
+                    p.insert("expires".into(), c["expires"].clone());
+                }
+                Value::Object(p)
+            })
+            .collect();
+        if !cookies.is_empty() {
+            match &self.context {
+                Some(ctx) => self.browser.cdp.call(None, "Storage.setCookies", json!({ "cookies": cookies, "browserContextId": ctx })).await?,
+                None => self.call("Network.setCookies", json!({ "cookies": cookies })).await?,
+            };
+        }
+        let here = self.eval_script("location.origin").await.ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let mut reload = here.starts_with("http") && !cookies.is_empty();
+        for o in state["origins"].as_array().into_iter().flatten() {
+            let (origin, items) = (&o["origin"], &o["localStorage"]);
+            let set = format!(
+                "(() => {{ if (location.origin !== {origin}) return; try {{ for (const [k, v] of Object.entries({items})) \
+                 if (localStorage.getItem(k) === null) localStorage.setItem(k, v); }} catch (e) {{}} }})()"
+            );
+            self.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": set })).await?;
+            if origin.as_str() == Some(here.as_str()) {
+                self.eval_script(&format!("(() => {{ for (const [k, v] of Object.entries({items})) localStorage.setItem(k, v); return true; }})()")).await?;
+                reload = true;
+            }
+        }
+        if reload {
+            let before = self.nav.borrow().count;
+            self.mark_action();
+            self.call("Page.reload", json!({})).await?;
+            self.wait_nav("reload", |n| n.count > before).await?;
         }
         Ok(())
     }

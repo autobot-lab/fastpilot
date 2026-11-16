@@ -744,6 +744,22 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
                 let jpeg = d.screenshot().await?;
                 return save_screenshot(name, &jpeg).map(Some);
             }
+            Step::SaveState(name) => {
+                let state = d.save_state().await?;
+                let (path, encrypted) = crate::state::write(name, "web", &state).map_err(Error::Flow)?;
+                let how = if encrypted { "encrypted" } else { "not encrypted: set FASTPILOT_STATE_KEY to encrypt" };
+                return Ok(Some(format!("{} ({how})", path.display())));
+            }
+            Step::LoadState(name) => {
+                let doc = crate::state::read(name).map_err(Error::Flow)?;
+                d.load_state(&doc["state"]).await?;
+                settle(d).await;
+                let hours = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|n| n.as_secs().saturating_sub(doc["saved_at"].as_u64().unwrap_or(0)) / 3600)
+                    .unwrap_or(0);
+                return Ok(Some(format!("{name} (saved {hours} h ago)")));
+            }
             Step::InputRandom { kind, length } => {
                 let value = random(*kind, *length);
                 retry(ACTION_TIMEOUT, || d.type_text(&Selector::Focused, &value)).await?;

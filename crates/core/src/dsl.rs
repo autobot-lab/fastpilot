@@ -41,6 +41,10 @@ pub enum Step {
     PasteText,
     WaitForAnimationToEnd(Option<Duration>),
     TakeScreenshot(String),
+    /// `saveState: name` → `.fastpilot/states/<name>.json` (web: cookies + localStorage).
+    SaveState(String),
+    /// `loadState: name`: restore a saved login state.
+    LoadState(String),
     InputRandom { kind: Random, length: usize },
     /// A sub-flow: `file` (kept for round-trips) or inline `commands`, optionally conditional,
     /// with `env` variables visible inside it.
@@ -375,6 +379,8 @@ impl Step {
                     _ => return Err("expects exactly one of `visible` / `notVisible`".into()),
                 }
             }
+            "saveState" => Self::SaveState(string(arg)?),
+            "loadState" => Self::LoadState(string(arg)?),
             "takeScreenshot" => Self::TakeScreenshot(match arg {
                 Yaml::Mapping(m) => string(get(m, "path").ok_or("missing `path`")?)?,
                 other => string(other)?,
@@ -786,6 +792,8 @@ impl Step {
             Self::PasteText => "pasteText".into(),
             Self::WaitForAnimationToEnd(_) => "waitForAnimationToEnd".into(),
             Self::TakeScreenshot(n) => format!("takeScreenshot {n}"),
+            Self::SaveState(n) => format!("saveState {n}"),
+            Self::LoadState(n) => format!("loadState {n}"),
             Self::InputRandom { kind, .. } => kind.command().into(),
             Self::RunFlow { file, when, steps, .. } => {
                 let what = file.clone().unwrap_or_else(|| format!("({} steps)", steps.len()));
@@ -977,6 +985,8 @@ impl Step {
             Self::WaitForAnimationToEnd(Some(t)) => one("waitForAnimationToEnd", map(vec![("timeout", Yaml::Number((t.as_millis() as u64).into()))])),
             Self::WaitForAnimationToEnd(None) => s("waitForAnimationToEnd"),
             Self::TakeScreenshot(n) => one("takeScreenshot", s(n)),
+            Self::SaveState(n) => one("saveState", s(n)),
+            Self::LoadState(n) => one("loadState", s(n)),
             Self::InputRandom { kind, length } => one(kind.command(), map(vec![("length", Yaml::Number((*length as u64).into()))])),
             Self::RunFlow { file, when, env, steps } => {
                 let env = if env.is_empty() {
