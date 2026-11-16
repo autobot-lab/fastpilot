@@ -23,6 +23,21 @@ dan diff, bukan view hierarchy mentah.
 
 Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-improvements.md](docs/research-improvements.md).
 
+## Instal (binary siap pakai)
+
+macOS (Apple Silicon / Intel) dan Linux x86_64, tanpa Rust:
+
+```bash
+curl -fsSL https://gitlab.com/autobot-lab/fastpilot/-/raw/main/scripts/install.sh | sh   # ke ~/.local/bin
+npm install -g fastpilot                                                                 # atau lewat npm
+brew install autobot-lab/fastpilot/fastpilot                                             # atau Homebrew (tap)
+```
+
+Skrip dan paket npm mengunduh arsip rilis dari GitLab dan mengecek SHA-256-nya sebelum memasang.
+Versi tertentu: `FASTPILOT_VERSION=0.1.0`; lokasi lain: `FASTPILOT_INSTALL_DIR=/usr/local/bin`.
+Android sudah tertanam di binary; iOS tetap butuh Xcode dan runner dari checkout (`ios-runner/build.sh`).
+Setelah itu lanjut ke langkah 3 di bawah. Cara merilis: [docs/releasing.md](docs/releasing.md).
+
 ## Mulai cepat dengan Claude Code
 
 ### 1. Prasyarat
@@ -32,7 +47,7 @@ Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-impro
 - Opsional, untuk Android: Android SDK (platform-tools, emulator, build-tools, platform 35), JDK 17, dan satu AVD.
 - Opsional, untuk iOS: Xcode 16+ dengan simulator iOS.
 
-### 2. Build dan pasang
+### 2. Build dan pasang (atau pakai binary siap pakai di atas)
 
 ```bash
 git clone https://gitlab.com/autobot-lab/fastpilot.git
