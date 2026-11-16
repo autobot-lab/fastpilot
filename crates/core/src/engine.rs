@@ -566,7 +566,10 @@ fn tap_like(step: &Step) -> bool {
 
 /// Steps that only look at the screen: they keep the last action as "previous".
 fn check_only(step: &Step) -> bool {
-    matches!(step, Step::AssertVisible { .. } | Step::AssertNotVisible { .. } | Step::WaitForAnimationToEnd(_) | Step::TakeScreenshot(_))
+    matches!(
+        step,
+        Step::AssertVisible { .. } | Step::AssertNotVisible { .. } | Step::WaitForAnimationToEnd(_) | Step::TakeScreenshot(_) | Step::AssertScreenshot { .. }
+    )
 }
 
 async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx) -> bool {
@@ -643,6 +646,28 @@ type StepFuture<'a> = std::pin::Pin<Box<dyn Future<Output = Result<Option<String
 /// Boxed: blocks (runFlow, repeat, retry) run their steps through `exec` again.
 fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
     exec_with(d, step, ctx, false)
+}
+
+/// Boxes of `ignore` selectors in screenshot pixels. Snapshot boxes are in CSS pixels (web) or
+/// points (iOS) or pixels (Android); the scale comes from the viewport when the driver knows it,
+/// else from the widest box on screen, rounded to a whole device scale.
+async fn masks_for(d: &dyn Driver, ignore: &[Selector], shot: &[u8]) -> Result<Vec<crate::visual::Mask>> {
+    let img_w = image::load_from_memory(shot).map(|i| i.width()).map_err(|e| Error::Driver(format!("screenshot: {e}")))? as f64;
+    let snap = d.snapshot().await?;
+    let screen_w = match d.viewport().await {
+        Some(v) if v.w > 0.0 => v.w,
+        _ => snap.entries.iter().filter_map(|e| e.node.bounds.map(|b| b.x + b.w)).fold(0.0, f64::max),
+    };
+    let scale = if screen_w > 0.0 { (img_w / screen_w).round().max(1.0) } else { 1.0 };
+    let (ox, oy) = d.viewport().await.map(|v| (v.x, v.y)).unwrap_or((0.0, 0.0));
+    let mut out = Vec::new();
+    for sel in ignore {
+        let e = snap.resolve(sel, Intent::Find)?;
+        let b = e.node.bounds.ok_or_else(|| Error::NotActionable(format!("{sel} has no box to ignore")))?;
+        let px = |v: f64| (v * scale).max(0.0) as u32;
+        out.push(crate::visual::Mask { x: px(b.x - ox), y: px(b.y - oy), w: px(b.w) + 2, h: px(b.h) + 2 });
+    }
+    Ok(out)
 }
 
 /// FASTPILOT_CONFIRM_ACTIONS: a tap on an element named like a risky action ("Hapus akun",
@@ -783,6 +808,23 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::TakeScreenshot(name) => {
                 let jpeg = d.screenshot().await?;
                 return save_screenshot(name, &jpeg).map(Some);
+            }
+            Step::AssertScreenshot { name, threshold, max_diff, ignore, update } => {
+                settle(d).await;
+                let shot = d.screenshot().await?;
+                let masks = if ignore.is_empty() { Vec::new() } else { masks_for(d, ignore, &shot).await? };
+                let (t, m) = (threshold.unwrap_or(crate::visual::THRESHOLD), max_diff.unwrap_or(crate::visual::MAX_DIFF));
+                return match crate::visual::compare(name, &shot, &masks, t, m, *update).map_err(Error::Flow)? {
+                    crate::visual::Outcome::Stored(p) => Ok(Some(format!("baseline stored: {}", p.display()))),
+                    crate::visual::Outcome::Same(f) => Ok(Some(format!("matches baseline ({:.2}% of pixels changed)", f * 100.0))),
+                    crate::visual::Outcome::Changed { fraction, limit, diff } => Err(Error::Assertion(format!(
+                        "screenshot differs from baseline {name}: {:.2}% of pixels changed (limit {:.2}%); diff image {} \
+                         (red = changed); if the change is intended, rerun with update: true",
+                        fraction * 100.0,
+                        limit * 100.0,
+                        diff.display()
+                    ))),
+                };
             }
             Step::SaveState(name) => {
                 let state = d.save_state().await?;

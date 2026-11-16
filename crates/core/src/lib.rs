@@ -10,6 +10,11 @@ mod selector;
 pub mod policy;
 mod snapshot;
 pub mod state;
+pub mod visual;
+
+/// Tests that change process-wide environment variables (FASTPILOT_DIR) take turns.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use std::fmt;
 use std::time::Duration;

@@ -150,6 +150,7 @@ mod tests {
     /// One test: it changes process-wide environment variables.
     #[test]
     fn plain_encrypted_expired_and_wrong_key() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let d = std::env::temp_dir().join(format!("fastpilot-state-{}", std::process::id()));
         let state = json!({ "cookies": [{ "name": "sid", "value": "tok-123" }] });
         // SAFETY: test-only env mutation; no other test in this crate reads these variables.

@@ -333,7 +333,8 @@ fastpilot close
   `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
   `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
   `screenshot`, `record start|stop`, `set viewport|locale|geo|network|permission`, `launch`, `stop-app`,
-  `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`, `errors`,
+  `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`,
+  `diff screenshot <name> [--update] [--ignore sel]`, `errors`,
   `docs`, `daemon status|stop`.
   `fastpilot help` menampilkan semuanya.
 - Web, Android dan iOS sama saja: `fastpilot open com.app/.MainActivity --platform android`.
