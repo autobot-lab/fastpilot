@@ -240,6 +240,11 @@ async fn enable(cdp: &crate::cdp::Cdp, session: Option<&str>) -> std::result::Re
     let _ = cdp
         .call(session, "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }))
         .await;
+    // FASTPILOT_ALLOWED_DOMAINS: every document request of this tab stops for a check
+    // (answered in `event_loop`).
+    if !fastpilot_core::policy::allowed_domains().is_empty() {
+        cdp.call(session, "Fetch.enable", json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] })).await?;
+    }
     Ok(())
 }
 
@@ -633,6 +638,21 @@ async fn event_loop(
         };
         let tab = lock(&shared.tab).clone();
         let p = &ev.params;
+        if ev.method == "Fetch.requestPaused" {
+            let ours = ev.session == tab.session || lock(&shared.openers).iter().any(|(t, _)| t.session == ev.session);
+            if let (true, Some(id)) = (ours, p["requestId"].as_str()) {
+                let url = p["request"]["url"].as_str().unwrap_or("");
+                if fastpilot_core::policy::url_allowed(url, &fastpilot_core::policy::allowed_domains()) {
+                    cdp.send(ev.session.as_deref(), "Fetch.continueRequest", json!({ "requestId": id }));
+                } else {
+                    cdp.send(ev.session.as_deref(), "Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" }));
+                    let msg = format!("blocked: {url} is not in FASTPILOT_ALLOWED_DOMAINS");
+                    note(msg.clone());
+                    diag(msg);
+                }
+            }
+            continue;
+        }
         // Browser-level events (only on browser endpoints, where the tab has a session).
         if ev.session.is_none() && tab.session.is_some() {
             match ev.method.as_str() {
@@ -640,6 +660,15 @@ async fn event_loop(
                     let Some(target) = p["targetInfo"]["targetId"].as_str().map(str::to_owned) else { continue };
                     let Ok(a) = cdp.call(None, "Target.attachToTarget", json!({ "targetId": target, "flatten": true })).await else { continue };
                     let Some(session) = a["sessionId"].as_str().map(str::to_owned) else { continue };
+                    let url = p["targetInfo"]["url"].as_str().unwrap_or("");
+                    let allowed = fastpilot_core::policy::allowed_domains();
+                    if !fastpilot_core::policy::url_allowed(url, &allowed) {
+                        cdp.send(None, "Target.closeTarget", json!({ "targetId": target }));
+                        let msg = format!("blocked: popup to {url} is not in FASTPILOT_ALLOWED_DOMAINS (closed)");
+                        note(msg.clone());
+                        diag(msg);
+                        continue;
+                    }
                     if enable(&cdp, Some(&session)).await.is_ok() {
                         let frames = std::mem::take(&mut *lock(&shared.frames));
                         lock(&shared.openers).push((tab.clone(), frames));
@@ -648,6 +677,22 @@ async fn event_loop(
                         note(if url.is_empty() { "popup opened".into() } else { format!("popup opened: {url}") });
                         nav_tx.send_modify(|n| n.count += 1);
                     }
+                }
+                // A popup that went (or was sent) to a host outside FASTPILOT_ALLOWED_DOMAINS before
+                // its own requests could be checked: close it; the opener takes over again.
+                "Target.targetInfoChanged"
+                    if p["targetInfo"]["targetId"].as_str() == Some(tab.target.as_str())
+                        && !lock(&shared.openers).is_empty()
+                        && !fastpilot_core::policy::url_allowed(
+                            p["targetInfo"]["url"].as_str().unwrap_or(""),
+                            &fastpilot_core::policy::allowed_domains(),
+                        ) =>
+                {
+                    let url = p["targetInfo"]["url"].as_str().unwrap_or("");
+                    let msg = format!("blocked: popup to {url} is not in FASTPILOT_ALLOWED_DOMAINS (closed)");
+                    note(msg.clone());
+                    diag(msg);
+                    cdp.send(None, "Target.closeTarget", json!({ "targetId": tab.target }));
                 }
                 "Target.targetDestroyed" if p["targetId"].as_str() == Some(tab.target.as_str()) => {
                     let back = lock(&shared.openers).pop();
@@ -1089,6 +1134,10 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 impl Driver for WebPage {
     async fn open(&self, target: &str) -> Result<()> {
         let url = to_url(target);
+        let allowed = fastpilot_core::policy::allowed_domains();
+        if !fastpilot_core::policy::url_allowed(&url, &allowed) {
+            return Err(CoreError::Blocked(format!("{url} is not in FASTPILOT_ALLOWED_DOMAINS ({})", allowed.join(", "))));
+        }
         let (before, previous) = {
             let n = self.nav.borrow();
             (n.count, n.loader.clone())

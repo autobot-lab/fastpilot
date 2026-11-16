@@ -537,7 +537,7 @@ async fn run_branch(
 }
 
 fn step_ref(step: &Step) -> Option<&Selector> {
-    let sel = match step {
+    let sel = match step.unconfirmed() {
         Step::TapOn(s) | Step::InputText { into: s, .. } | Step::UploadFile { into: s, .. } => s,
         Step::LongPressOn(s) | Step::DoubleTapOn(s) | Step::CopyTextFrom(s) => s,
         Step::SelectOption { from: s, .. } => s,
@@ -561,7 +561,7 @@ async fn durable(d: &dyn Driver, sel: &Selector) -> Option<Selector> {
 
 /// Taps whose effect the failure triage checks.
 fn tap_like(step: &Step) -> bool {
-    matches!(step, Step::TapOn(_) | Step::LongPressOn(_) | Step::DoubleTapOn(_))
+    matches!(step.unconfirmed(), Step::TapOn(_) | Step::LongPressOn(_) | Step::DoubleTapOn(_))
 }
 
 /// Steps that only look at the screen: they keep the last action as "previous".
@@ -601,7 +601,7 @@ async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx
 
 fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Instant, res: Result<Option<String>>) -> bool {
     let ok = res.is_ok();
-    let (timeout, target) = match step {
+    let (timeout, target) = match step.unconfirmed() {
         Step::TapOn(s) => (Some(ACTION_TIMEOUT), Some((s.clone(), Intent::Tap))),
         Step::InputText { into, .. } | Step::UploadFile { into, .. } => {
             (Some(ACTION_TIMEOUT), Some((into.clone(), Intent::Type)))
@@ -642,11 +642,45 @@ type StepFuture<'a> = std::pin::Pin<Box<dyn Future<Output = Result<Option<String
 
 /// Boxed: blocks (runFlow, repeat, retry) run their steps through `exec` again.
 fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
+    exec_with(d, step, ctx, false)
+}
+
+/// FASTPILOT_CONFIRM_ACTIONS: a tap on an element named like a risky action ("Hapus akun",
+/// "Bayar") needs `confirm: true` in the step.
+async fn guard_risky(d: &dyn Driver, sel: &Selector, confirmed: bool) -> Result<()> {
+    guard_risky_with(d, sel, confirmed, &crate::policy::risky_words()).await
+}
+
+async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[String]) -> Result<()> {
+    if confirmed || words.is_empty() {
+        return Ok(());
+    }
+    let name = match d.snapshot().await.ok().and_then(|s| s.resolve(sel, Intent::Tap).ok().map(|e| e.node.name.clone())) {
+        Some(n) => n,
+        None => match sel {
+            Selector::Text(t) | Selector::Role { name: Some(t), .. } => t.clone(),
+            _ => return Ok(()),
+        },
+    };
+    match crate::policy::risky_match(&name, words) {
+        Some(w) => Err(Error::Blocked(format!(
+            "{sel} (\"{name}\") looks like a risky action (\"{w}\", FASTPILOT_CONFIRM_ACTIONS): if it is intended, \
+             write the step with `confirm: true`, e.g. tapOn: {{ text: \"{name}\", confirm: true }}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: bool) -> StepFuture<'a> {
     Box::pin(async move {
         let subst = |s: &str| ctx.subst(s);
         match step {
+            Step::Confirmed(inner) => return exec_with(d, inner, ctx, true).await,
             Step::OpenUrl(url) => d.open(&subst(url)?).await?,
-            Step::TapOn(sel) => retry(ACTION_TIMEOUT, || d.tap(sel)).await?,
+            Step::TapOn(sel) => {
+                guard_risky(d, sel, confirmed).await?;
+                retry(ACTION_TIMEOUT, || d.tap(sel)).await?
+            }
             Step::InputText { into, text } => {
                 let text = subst(text)?;
                 retry(ACTION_TIMEOUT, || d.type_text(into, &text)).await?
@@ -685,8 +719,14 @@ fn exec<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx) -> StepFuture<'a> {
             Step::UseSession(_) | Step::StartSession { .. } | Step::Parallel(_) => {
                 return Err(Error::Flow(format!("`{}` is not allowed here", step.label())));
             }
-            Step::LongPressOn(sel) => retry(ACTION_TIMEOUT, || d.long_press(sel)).await?,
-            Step::DoubleTapOn(sel) => retry(ACTION_TIMEOUT, || d.double_tap(sel)).await?,
+            Step::LongPressOn(sel) => {
+                guard_risky(d, sel, confirmed).await?;
+                retry(ACTION_TIMEOUT, || d.long_press(sel)).await?
+            }
+            Step::DoubleTapOn(sel) => {
+                guard_risky(d, sel, confirmed).await?;
+                retry(ACTION_TIMEOUT, || d.double_tap(sel)).await?
+            }
             Step::ScrollUntilVisible { selector, direction, timeout } => {
                 let timeout = timeout.unwrap_or(SCROLL_TIMEOUT);
                 let deadline = Instant::now() + timeout;
@@ -1384,6 +1424,30 @@ mod tests {
         let report = run(&mut reg, "- session: { start: w }\n- tapOn: Daftar\n- inputText: { into: Email, text: x }\n- assertVisible: { text: Nope, timeout: 300 }\n").await;
         let failed = report.records.iter().find(|r| r.error.is_some()).expect("failed step");
         assert_eq!(failed.category(), Some("product"), "{report}");
+    }
+
+    /// FASTPILOT_CONFIRM_ACTIONS: risky taps need `confirm: true` (the env path is covered by
+    /// tests/policy_web.rs; here the word list is passed, so parallel tests are unaffected).
+    #[tokio::test(start_paused = true)]
+    async fn risky_taps_need_confirmation() {
+        let d = Fake::default();
+        let words = vec!["daftar".to_owned()];
+        let daftar = Selector::Text("Daftar".into());
+        let e = guard_risky_with(&d, &daftar, false, &words).await.expect_err("blocked");
+        assert_eq!(e.reason(), "blocked");
+        assert_eq!(e.category(), "agent");
+        assert!(e.to_string().contains("confirm: true"), "{e}");
+        assert!(guard_risky_with(&d, &daftar, true, &words).await.is_ok());
+        assert!(guard_risky_with(&d, &Selector::Text("Masuk".into()), false, &words).await.is_ok());
+        assert!(guard_risky_with(&d, &daftar, false, &[]).await.is_ok());
+        // `confirm: true` runs the step and says so; it survives in path memory.
+        let mut reg = SessionRegistry::default();
+        let report = run(&mut reg, "- session: { start: w }\n- tapOn: { text: Daftar, confirm: true }\n").await;
+        assert!(report.passed() && report.to_string().contains("tapOn \"Daftar\" (confirmed)"), "{report}");
+        let flow = crate::parse_flow("- tapOn: { ref: e3, confirm: true }\n- doubleTapOn: { text: X, confirm: true }\n").expect("flow");
+        let yaml = crate::flow_to_yaml(&flow, &std::collections::HashMap::new());
+        assert!(yaml.contains("confirm: true") && crate::parse_flow(&yaml).expect("again").steps.len() == 2, "{yaml}");
+        assert!(crate::parse_flow("- tapOn: { text: X, confirm: maybe }\n").is_err());
     }
 
     #[tokio::test(start_paused = true)]

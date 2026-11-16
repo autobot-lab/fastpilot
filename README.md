@@ -215,6 +215,9 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `FASTPILOT_IOS_RUNNER` | folder build runner iOS (default `ios-runner/build`) |
 | `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
+| `FASTPILOT_ALLOWED_DOMAINS` | daftar host (dipisah koma, `*.contoh.com` untuk subdomain) yang boleh dibuka sesi web: `openUrl`, link, redirect, dan popup ke host lain diblokir (`blocked`). Resource lain (CDN, API) tetap jalan |
+| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`) |
+| `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | kunci AES-256 (64 hex) untuk mengenkripsi login tersimpan / umur maksimalnya (default 30 hari) |
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 

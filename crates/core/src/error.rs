@@ -35,6 +35,9 @@ pub enum Error {
     /// The app's main thread stopped responding (Android ANR dialog).
     #[error("{0}")]
     AppNotResponding(String),
+    /// A guard rail refused the step (FASTPILOT_ALLOWED_DOMAINS, FASTPILOT_CONFIRM_ACTIONS).
+    #[error("{0}")]
+    Blocked(String),
 }
 
 impl Error {
@@ -55,6 +58,7 @@ impl Error {
             Self::Driver(m) => Self::Driver(p(m)),
             Self::AppCrashed(m) => Self::AppCrashed(p(m)),
             Self::AppNotResponding(m) => Self::AppNotResponding(p(m)),
+            Self::Blocked(m) => Self::Blocked(p(m)),
         }
     }
 
@@ -71,6 +75,7 @@ impl Error {
             Self::Assertion(_) => "assertion_failed",
             Self::Session(_) => "session",
             Self::Flow(_) => "invalid_flow",
+            Self::Blocked(_) => "blocked",
             Self::Driver(_) => "driver_error",
             Self::AppCrashed(_) => "app_crashed",
             Self::AppNotResponding(_) => "app_not_responding",
@@ -92,7 +97,7 @@ impl Error {
             | Self::AppCrashed(_)
             | Self::AppNotResponding(_) => "product",
             Self::Transient(_) | Self::Driver(_) | Self::Session(_) => "infra",
-            Self::Flow(_) | Self::Unsupported(_) => "agent",
+            Self::Flow(_) | Self::Unsupported(_) | Self::Blocked(_) => "agent",
         }
     }
 

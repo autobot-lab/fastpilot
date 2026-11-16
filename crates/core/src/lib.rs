@@ -7,6 +7,7 @@ mod engine;
 mod error;
 mod recording;
 mod selector;
+pub mod policy;
 mod snapshot;
 pub mod state;
 
