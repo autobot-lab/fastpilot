@@ -159,6 +159,10 @@ pub struct SnapshotArgs {
     pub coords: Option<bool>,
     /// Write the full snapshot to `.fastpilot/snapshots/` and return only its path and size.
     pub file: Option<bool>,
+    /// Only interactive nodes (buttons, links, fields), flattened; refs unchanged.
+    pub interactive: Option<bool>,
+    /// `json`: entries as JSON (ref, role, name, value, flags, box) instead of text.
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -337,6 +341,18 @@ impl FastPilot {
             Ok(r) => (r.is_error != Some(true), r.content.iter().filter_map(|c| serde_json::to_value(c).ok()).collect()),
             Err(e) => (false, vec![serde_json::json!({ "type": "text", "text": e.to_string() })]),
         }
+    }
+
+    /// Session ids and the active one (shell CLI).
+    pub async fn session_ids(&self) -> (Vec<String>, Option<String>) {
+        let reg = self.state.registry.lock().await;
+        (reg.ids(), reg.active().map(str::to_owned))
+    }
+
+    /// Recent page / app errors of a session (console errors, failed requests, crashes).
+    pub async fn diagnostics(&self, session: Option<&str>) -> Result<Vec<String>, String> {
+        let (_, driver, _busy) = self.session_driver(session).await.map_err(|e| e.to_string())?;
+        Ok(driver.diagnostics().await.into_iter().map(|d| redact(&d)).collect())
     }
 
     /// Close every session (restores device settings) before the process exits.
@@ -559,6 +575,12 @@ impl FastPilot {
             Ok(s) => s,
             Err(e) => return err(&e),
         };
+        let snap = if args.interactive == Some(true) { snap.interactive_only() } else { snap };
+        if args.format.as_deref() == Some("json") {
+            let mut v = snap.to_json();
+            v["session"] = serde_json::json!(id);
+            return ok(v.to_string());
+        }
         let text = redact(&format!("[{id}] {}", snap.render_with(args.filter.as_deref(), max, args.coords == Some(true))));
         if args.file != Some(true) {
             return ok(text);

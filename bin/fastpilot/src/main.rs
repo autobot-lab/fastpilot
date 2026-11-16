@@ -1,6 +1,7 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod bench;
+mod cli;
 mod pool;
 mod report;
 mod run;
@@ -14,6 +15,8 @@ use tracing_subscriber::EnvFilter;
 const USAGE: &str = "usage: fastpilot <command> [--headful]
 
 commands:
+  open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
+                                     daemon (`fastpilot help` lists them all)
   mcp     serve MCP over stdio (what MCP clients run)
   bench [web|android|ios]   print snapshot and tap->diff latency against the demo login
           [--iterations N]      (android: booted device with examples/demo-android installed)
@@ -48,6 +51,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     match args.first().map(String::as_str) {
         Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
+        Some("daemon") if args.len() == 1 => cli::daemon(web).await,
+        _ if cli::command_of(&args).is_some() => {
+            // Blocking client: one request to the daemon (started on demand).
+            let argv = args.clone();
+            tokio::task::spawn_blocking(move || cli::main(&argv)).await?
+        }
         // Internal: the stdio MCP server Claude Code spawns during `fastpilot run`.
         Some("mcp-bridge") => match (args.get(1), args.get(2)) {
             (Some(addr), Some(token)) => run::bridge(addr, token).await,
