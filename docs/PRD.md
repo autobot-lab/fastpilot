@@ -8,7 +8,7 @@
 | Tanggal | 2026-11-03 |
 | Nama kerja | fastpilot (nama final belum ditentukan, lihat §19) |
 | Owner | Yogi Is Ariyanto |
-| Repo | https://gitlab.com/autobot-lab/fastpilot |
+| Repo | https://github.com/autobot-lab/fastpilot |
 
 ---
 

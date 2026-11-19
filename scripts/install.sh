@@ -1,15 +1,15 @@
 #!/usr/bin/env sh
-# Install fastpilot from its GitLab releases:
-#   curl -fsSL https://gitlab.com/autobot-lab/fastpilot/-/raw/main/scripts/install.sh | sh
+# Install fastpilot from its GitHub releases:
+#   curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
 # Options (environment):
 #   FASTPILOT_VERSION=0.1.0           a version instead of the latest release
 #   FASTPILOT_INSTALL_DIR=/usr/local/bin   where the binary goes (default ~/.local/bin)
-#   FASTPILOT_DOWNLOAD_BASE=...       a mirror of the package registry
+#   FASTPILOT_DOWNLOAD_BASE=...       a mirror of the release downloads (<base>/v<version>/<file>)
 # The archive's SHA-256 is checked before anything is installed.
 set -eu
 
-project="https://gitlab.com/api/v4/projects/88423537"
-base="${FASTPILOT_DOWNLOAD_BASE:-$project/packages/generic/fastpilot}"
+repo="autobot-lab/fastpilot"
+base="${FASTPILOT_DOWNLOAD_BASE:-https://github.com/$repo/releases/download}"
 dir="${FASTPILOT_INSTALL_DIR:-$HOME/.local/bin}"
 
 fail() { echo "fastpilot install: $*" >&2; exit 1; }
@@ -23,12 +23,12 @@ case "$os/$arch" in
   Darwin/arm64) target=aarch64-apple-darwin ;;
   Darwin/x86_64) target=x86_64-apple-darwin ;;
   Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-gnu ;;
-  *) fail "no prebuilt binary for $os/$arch yet; build from source: https://gitlab.com/autobot-lab/fastpilot#build" ;;
+  *) fail "no prebuilt binary for $os/$arch yet; build from source: https://github.com/autobot-lab/fastpilot#build" ;;
 esac
 
 version="${FASTPILOT_VERSION:-}"
 if [ -z "$version" ]; then
-  tag="$(curl -fsSL "$project/releases/permalink/latest" | sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p')"
+  tag="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
   [ -n "$tag" ] || fail "cannot find the latest release (set FASTPILOT_VERSION)"
   version="${tag#v}"
 fi
@@ -37,8 +37,8 @@ name="fastpilot-$version-$target"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 echo "downloading $name"
-curl -fsSL "$base/$version/$name.tar.gz" -o "$tmp/$name.tar.gz" || fail "download failed: $base/$version/$name.tar.gz"
-curl -fsSL "$base/$version/$name.tar.gz.sha256" -o "$tmp/sum" || fail "checksum download failed"
+curl -fsSL "$base/v$version/$name.tar.gz" -o "$tmp/$name.tar.gz" || fail "download failed: $base/v$version/$name.tar.gz"
+curl -fsSL "$base/v$version/$name.tar.gz.sha256" -o "$tmp/sum" || fail "checksum download failed"
 want="$(cut -d' ' -f1 < "$tmp/sum")"
 if command -v sha256sum >/dev/null 2>&1; then
   got="$(sha256sum "$tmp/$name.tar.gz" | cut -d' ' -f1)"

@@ -45,8 +45,8 @@ fastpilot menjanjikan automation full-AI yang cepat dan stabil untuk web dan mob
 
 | Aktor | Surface |
 |---|---|
-| Developer fastpilot | Push ke GitLab → pipeline CI; tag → pipeline rilis |
-| Tim QA pengguna baru | Skrip install / GitLab Releases → `fastpilot --version` → README quick start |
+| Developer fastpilot | Push ke GitHub → workflow CI; tag → workflow rilis |
+| Tim QA pengguna baru | Skrip install / GitHub Releases → `fastpilot --version` → README quick start |
 | AI agent (Claude Code, dll.) | MCP stdio, tidak berubah |
 | CI pengguna | `fastpilot run --junit --html --budget` |
 | Pemilik budget | Field biaya di `report.md`, HTML, JUnit properties |
@@ -55,13 +55,13 @@ fastpilot menjanjikan automation full-AI yang cepat dan stabil untuk web dan mob
 
 **Pipeline per commit:** `queued → build → lint → unit → e2e-web → passed | failed`. Job Android dan iOS berjalan terjadwal (nightly), tidak memblokir merge: `scheduled → running → passed | failed | skipped(no-device)`.
 
-**Rilis:** `tag vX.Y.Z → build-matrix → embed APK + runner iOS → checksum → publish GitLab Release`. Rilis gagal di langkah mana pun tidak mempublikasikan artefak parsial.
+**Rilis:** `tag vX.Y.Z → build-matrix → embed APK + runner iOS → checksum → publish GitHub Release`. Rilis gagal di langkah mana pun tidak mempublikasikan artefak parsial.
 
 **Run dengan budget:** `running → passed | failed | budget_exceeded`. `budget_exceeded` diklasifikasikan `infra`, bukan `product`, dan tidak dihitung ke flake rate.
 
 ## Interface Contract
 
-**CI (`.gitlab-ci.yml`)**
+**CI (`.github/workflows/`)**
 - Input: commit di branch mana pun; jadwal nightly untuk mobile.
 - Output: status pipeline, artefak `target/release/fastpilot`, JUnit test Rust, evidence `.fastpilot/runs/` saat e2e gagal.
 - Kegagalan: job gagal jika build, `clippy -D warnings`, `cargo test` unit, atau e2e web headless gagal.

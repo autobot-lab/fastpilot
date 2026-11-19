@@ -28,12 +28,12 @@ Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-impro
 macOS (Apple Silicon / Intel) dan Linux x86_64, tanpa Rust:
 
 ```bash
-curl -fsSL https://gitlab.com/autobot-lab/fastpilot/-/raw/main/scripts/install.sh | sh   # ke ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh   # ke ~/.local/bin
 npm install -g fastpilot                                                                 # atau lewat npm
 brew install autobot-lab/fastpilot/fastpilot                                             # atau Homebrew (tap)
 ```
 
-Skrip dan paket npm mengunduh arsip rilis dari GitLab dan mengecek SHA-256-nya sebelum memasang.
+Skrip dan paket npm mengunduh arsip rilis dari GitHub Releases dan mengecek SHA-256-nya sebelum memasang.
 Versi tertentu: `FASTPILOT_VERSION=0.1.0`; lokasi lain: `FASTPILOT_INSTALL_DIR=/usr/local/bin`.
 Android sudah tertanam di binary; iOS tetap butuh Xcode dan runner dari checkout (`ios-runner/build.sh`).
 Setelah itu lanjut ke langkah 3 di bawah. Cara merilis: [docs/releasing.md](docs/releasing.md).
@@ -50,7 +50,7 @@ Setelah itu lanjut ke langkah 3 di bawah. Cara merilis: [docs/releasing.md](docs
 ### 2. Build dan pasang (atau pakai binary siap pakai di atas)
 
 ```bash
-git clone https://gitlab.com/autobot-lab/fastpilot.git
+git clone https://github.com/autobot-lab/fastpilot.git
 ```
 
 ```bash
