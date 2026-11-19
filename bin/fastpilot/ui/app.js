@@ -48,17 +48,21 @@ async function api(path, body) {
 
 // ---- state ----
 let S = null; // { path, settings: [...], defaults }
-let savedAt = null;
+let savedAt = null; // { page, at }: the page where something was just saved
 let doctorCache = null;
 const get = (key) => (S && S.settings ? S.settings.find((s) => s.key === key) : undefined);
 
 async function loadSettings() {
   S = await api("/api/settings");
 }
+function currentPage() {
+  return (location.hash || "#/live").split("/").slice(1, 3).join("/");
+}
+
 async function save(key, value) {
   try {
     S = await api("/api/settings", { key, value });
-    savedAt = new Date();
+    savedAt = { page: currentPage(), at: new Date() };
     render();
   } catch (e) {
     toast("Tidak tersimpan: " + e.message);
@@ -86,6 +90,10 @@ function chips(key, opts) {
   const items = Array.isArray(s.value) ? s.value : [];
   const locked = s.source === "env";
   const input = h("input", { type: "text", placeholder: opts.placeholder, "aria-label": opts.addLabel, disabled: locked });
+  const empty = !items.length && opts.empty ? h("span", { class: "chip none" }, opts.empty) : null;
+  const preset = opts.preset && !items.includes(opts.preset[0]) && !locked
+    ? h("button", { class: "chip preset", onclick: () => save(key, [...items, opts.preset[0]]) }, icon("plus", "sm"), opts.preset[1])
+    : null;
   const add = () => {
     const v = input.value.trim();
     if (!v) return;
@@ -95,9 +103,11 @@ function chips(key, opts) {
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
   return h("div", { class: "chips" },
+    empty,
     items.map((it) =>
       h("span", { class: "chip" + (opts.red ? " x" : "") }, opts.show ? opts.show(it) : it,
         locked ? null : h("button", { class: "rm", "aria-label": `Hapus ${it}`, onclick: () => save(key, items.filter((x) => x !== it)) }, icon("close", "sm")))),
+    preset,
     locked ? null : h("span", { class: "add" }, input, h("button", { onclick: add, "aria-label": opts.addLabel }, icon("plus", "sm"), "Tambah")));
 }
 function select(key, choices, label) {
@@ -110,8 +120,8 @@ function select(key, choices, label) {
   return el;
 }
 function savedNote() {
-  if (!savedAt) return h("small", {}, "");
-  const t = savedAt.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  if (!savedAt || savedAt.page !== currentPage()) return h("small", {}, "");
+  const t = savedAt.at.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
   return h("small", {}, `✓ Tersimpan · ${t}`);
 }
 
@@ -122,13 +132,14 @@ function settingsNav(cur) {
 }
 
 function topSettings() {
-  $top().replaceChildren(icon("settings"), "Pengaturan");
+  $top().replaceChildren(icon("settings"), h("h1", {}, "Pengaturan"));
 }
 
 const MODELS = [
   ["claude-haiku-5-5", "Claude Code · Haiku 5.5"],
   ["claude-sonnet-5-5", "Claude Code · Sonnet 5.5"],
   ["claude-opus-5-5", "Claude Code · Opus 5.5"],
+  ["claude-fable-5-2", "Claude Code · Fable 5.2"],
 ];
 
 function pageModel() {
@@ -157,26 +168,26 @@ function pageLimits() {
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("globe"), "domain yang boleh dibuka"),
       opt("Hanya izinkan domain ini", "Kosong = semua domain boleh. Link, redirect, dan popup ke domain lain diblokir.",
-        chips("allowed_domains", { placeholder: "toko.com", addLabel: "Tambah domain" }), get("allowed_domains"))),
+        chips("allowed_domains", { placeholder: "mis. toko.com", addLabel: "Tambah domain", empty: "Semua domain boleh" }), get("allowed_domains"))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("risk"), "aksi berisiko"),
-      opt("Tombol yang butuh konfirmasi", "AI berhenti dan harus menulis confirm: true sebelum menekan. Cocok per kata.",
-        chips("confirm_actions", { placeholder: "kata, mis. Hapus", addLabel: "Tambah kata konfirmasi", show: confirmShow }), get("confirm_actions")),
+      opt("Tombol yang butuh konfirmasi", "AI berhenti dan harus menyatakan sengaja menekan (confirm: true). Cocok per kata. Bawaan: kosong.",
+        chips("confirm_actions", { placeholder: "mis. Hapus", addLabel: "Tambah kata konfirmasi", show: confirmShow, empty: "Belum ada", preset: ["default", "Daftar bawaan (hapus, bayar, beli, …)"] }), get("confirm_actions")),
       opt("Tombol yang selalu diblokir", null,
-        chips("block_actions", { placeholder: "kata, mis. Bayar", addLabel: "Tambah kata yang diblokir", red: true }), get("block_actions"),
+        chips("block_actions", { placeholder: "mis. Bayar", addLabel: "Tambah kata yang diblokir", red: true, empty: "Belum ada" }), get("block_actions"),
         h("div", { class: "d" }, "Diblokir kalau teks tombol ", h("b", {}, "berisi"), " kata ini (huruf besar/kecil diabaikan), juga dengan confirm: true. Contoh: \"Bayar\" juga memblokir \"Lanjut ke Pembayaran\"."))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("device"), "device & aplikasi"),
-      opt("Boleh install / uninstall aplikasi", "Langkah installApp dan uninstallApp", toggle("allow_app_install", "Boleh install / uninstall aplikasi"), get("allow_app_install")),
-      opt("Boleh hapus data aplikasi (reset)", "Langkah clearState dan clearKeychain", toggle("allow_app_reset", "Boleh hapus data aplikasi"), get("allow_app_reset")),
+      opt("Boleh install / uninstall aplikasi", "Memasang atau menghapus aplikasi di HP, emulator, atau simulator", toggle("allow_app_install", "Boleh install / uninstall aplikasi"), get("allow_app_install")),
+      opt("Boleh hapus data aplikasi (reset)", "Mengosongkan data dan login aplikasi, untuk test yang mulai dari awal", toggle("allow_app_reset", "Boleh hapus data aplikasi"), get("allow_app_reset")),
       opt("Boleh pakai HP fisik", "Kalau mati, hanya emulator dan simulator", toggle("allow_physical_devices", "Boleh pakai HP fisik"), get("allow_physical_devices")),
-      opt("Boleh ubah setting HP (jaringan, lokasi, izin app, bahasa)", "setNetwork, setLocation, setPermissions, setLocale di Android dan iOS", toggle("allow_device_settings", "Boleh ubah setting HP"), get("allow_device_settings"))),
+      opt("Boleh ubah setting HP (jaringan, lokasi, izin app, bahasa)", "Contoh: mode offline, GPS palsu, izin kamera, bahasa HP", toggle("allow_device_settings", "Boleh ubah setting HP"), get("allow_device_settings"))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("lock"), "data & keamanan"),
-      opt("Jalankan JavaScript bebas (evalScript)", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script")),
-      opt("Folder yang boleh di-upload", "Untuk langkah uploadFile. Kosong = folder mana saja.",
-        chips("upload_dirs", { placeholder: "~/fastpilot/fixtures", addLabel: "Tambah folder" }), get("upload_dirs")),
-      opt("Umur login tersimpan", "saveState / loadState menolak login yang lebih tua",
+      opt("Jalankan JavaScript bebas di halaman", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script")),
+      opt("Folder yang boleh di-upload", "File yang diunggah test harus berasal dari folder ini.",
+        chips("upload_dirs", { placeholder: "mis. ~/fixtures", addLabel: "Tambah folder", empty: "Folder mana saja" }), get("upload_dirs")),
+      opt("Umur login tersimpan", "Login tersimpan yang lebih tua dari ini tidak dipakai lagi",
         select("state_expire_days", [["", "30 hari (bawaan)"], ["1", "1 hari"], ["7", "7 hari"], ["14", "14 hari"], ["90", "90 hari"]], "Umur login tersimpan"), get("state_expire_days")),
       opt("Sembunyikan secret di semua output", "Nilai secret tampil sebagai *** di output, laporan, dan rekaman", h("span", { class: "fixed" }, "Selalu aktif"))),
     h("div", { class: "grp" },
@@ -194,7 +205,7 @@ function pageSecret() {
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("key"), "secret"),
       opt("Nama secret", "Hanya nama yang disimpan di sini; nilainya tidak pernah dibaca atau ditampilkan halaman ini.",
-        chips("vars", { placeholder: "NAMA_SECRET", addLabel: "Tambah nama secret" }), get("vars")),
+        chips("vars", { placeholder: "mis. DEMO_PASS", addLabel: "Tambah nama secret", empty: "Belum ada" }), get("vars")),
       h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, "Di mana nilainya?"),
         h("div", { class: "d" }, "Isi nilainya di konfigurasi MCP, misalnya ", code("claude mcp add fastpilot -e DEMO_PASS=… -- fastpilot mcp"), ", atau sebagai environment saat menjalankan fastpilot.")))));
 }
@@ -247,7 +258,7 @@ async function loadDoctor(rerender = true) {
 }
 
 function pageDevice() {
-  const top = [icon("device"), "Device"];
+  const top = [icon("device"), h("h1", {}, "Device")];
   if (doctorCache && !doctorCache.error) {
     const ok = doctorCache.checks.filter((c) => c.status === "ok").length;
     const bad = doctorCache.checks.length - ok;
@@ -286,10 +297,11 @@ function pageDevice() {
 
 // ---- live (C7a) ----
 const PLATFORM = { web: "chrome · milik fastpilot", android: "android", ios: "ios" };
+const KIND = { mcp: "Claude Code / MCP", daemon: "CLI", run: "fastpilot run" };
 let liveTimer = null;
 let liveSel = null; // "pid:id"
-let liveBig = null; // "pid:id" shown large
-const liveCards = new Map(); // key -> { el, img, text }
+const liveCards = new Map(); // key -> { el, line, status, more }
+let stepsSig = "";
 
 function stopLive() {
   clearTimeout(liveTimer);
@@ -297,7 +309,9 @@ function stopLive() {
   // Ending the streams ends the screencasts on the server.
   stopWatching();
   liveCards.clear();
+  stepsSig = "";
   document.getElementById("live-root")?.remove();
+  closeZoom(false);
 }
 
 function stepLine(steps) {
@@ -315,6 +329,20 @@ function sessionStatus(s) {
   if (f.steps.some((x) => x.state === "failed")) return { text: "Gagal", cls: "bad" };
   if (!f.finished) return { text: "Sedang berjalan", cls: "run" };
   return { text: `Selesai · ${f.steps.filter((x) => x.state === "done").length}/${f.steps.length} lolos`, cls: "ok" };
+}
+
+// Why a guard rail stopped a step, in a few words, from the engine's message.
+function blockReason(note) {
+  const n = note || "";
+  let m = /contains "([^"]+)" \(block_actions\)/.exec(n);
+  if (m) return `teks berisi "${m[1]}"`;
+  m = /risky action \("([^"]+)"/.exec(n);
+  if (m) return `butuh confirm: true ("${m[1]}")`;
+  if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain di luar daftar";
+  m = /\((allow_[a-z_]+) = false\)/.exec(n);
+  if (m) return `dimatikan di Batasan (${m[1]})`;
+  if (/upload_dirs/.test(n)) return "file di luar folder upload";
+  return "aturan Batasan";
 }
 
 // Read the MJPEG stream with fetch and show each JPEG as a blob URL: works in every browser,
@@ -342,15 +370,15 @@ async function watch(img, url, onFirst, onError) {
       const merged = new Uint8Array(buf.length + value.length);
       merged.set(buf); merged.set(value, buf.length); buf = merged;
       for (;;) {
-        const h = find(buf, sep, 0);
-        if (h < 0) break;
-        const head = new TextDecoder().decode(buf.slice(0, h));
+        const at = find(buf, sep, 0);
+        if (at < 0) break;
+        const head = new TextDecoder().decode(buf.slice(0, at));
         const m = /Content-Length:\s*(\d+)/i.exec(head);
-        if (!m) { buf = buf.slice(h + 4); continue; }
+        if (!m) { buf = buf.slice(at + 4); continue; }
         const len = Number(m[1]);
-        if (buf.length < h + 4 + len) break;
-        const jpeg = buf.slice(h + 4, h + 4 + len);
-        buf = buf.slice(h + 4 + len);
+        if (buf.length < at + 4 + len) break;
+        const jpeg = buf.slice(at + 4, at + 4 + len);
+        buf = buf.slice(at + 4 + len);
         const next = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
         img.src = next;
         if (shown) URL.revokeObjectURL(shown); else onFirst();
@@ -368,7 +396,6 @@ function stopWatching(root) {
 }
 
 function screenEl(s, big) {
-  const key = `${s.pid}:${s.id}`;
   if (!s.watchable) {
     return h("div", { class: "screen-box none" }, h("span", {}, s.platform === "web"
       ? "Chrome milikmu (attach) tidak ditampilkan di sini."
@@ -378,51 +405,71 @@ function screenEl(s, big) {
   const img = h("img", { class: "screen", alt: `Layar sesi ${s.id}` });
   const status = h("div", { class: "screen-state" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("span", {}, "Menyambung ke layar…"));
   const box = h("div", { class: "screen-box" }, img, status);
-  watch(img, `/api/live/frames?pid=${s.pid}&session=${encodeURIComponent(s.id)}&fps=${fps}&w=${w}`, () => status.remove(), (why) => {
+  const start = () => watch(img, `/api/live/frames?pid=${s.pid}&session=${encodeURIComponent(s.id)}&fps=${fps}&w=${w}`, () => status.remove(), (why) => {
     status.replaceChildren(h("span", { class: "bad" }, "Layar tidak bisa ditampilkan: " + why),
-      h("button", { class: "btn sm", onclick: () => { const c = liveCards.get(key); if (c) { stopWatching(c.el); c.el.remove(); } liveCards.delete(key); renderLive(lastLive); } }, "Coba lagi"));
+      h("button", { class: "btn sm", onclick: () => { status.replaceChildren(h("div", { class: "spin" }), h("span", {}, "Menyambung ke layar…")); start(); } }, "Coba lagi"));
     if (!box.contains(status)) box.append(status);
   });
+  start();
   return box;
 }
 
 let lastLive = { sessions: [] };
 
-function card(s) {
-  const key = `${s.pid}:${s.id}`;
-  const text = h("div", { class: "card-text" });
-  const el = h("article", { class: "lcard", tabindex: "0", "aria-label": `Sesi ${s.id}`,
-    onclick: (e) => { if (e.target.closest("button")) return; liveSel = key; renderLive(lastLive); } },
-    h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
-    screenEl(s, false), text);
-  el.addEventListener("keydown", (e) => { if (e.key === "Enter") { liveSel = key; renderLive(lastLive); } });
-  return { el, text };
+function selectSession(key) {
+  liveSel = key;
+  renderLive(lastLive);
 }
 
-function fillCard(c, s) {
+function card(s) {
+  const key = `${s.pid}:${s.id}`;
+  const line = h("div", { class: "l" });
+  const status = h("div", { class: "d" });
+  const more = s.watchable
+    ? h("button", { class: "btn sm", "data-fk": `zoom:${key}`, "aria-label": `Perbesar layar sesi ${s.id}`, onclick: (e) => openZoom(s, e.currentTarget) }, icon("expand", "sm"), "Perbesar")
+    : null;
+  const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Sesi ${s.id}, ${s.platform}. Enter untuk melihat langkahnya.`,
+    onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
+    h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
+    screenEl(s, false),
+    h("div", { class: "card-text" }, h("div", {}, line, status), more));
+  el.addEventListener("keydown", (e) => {
+    if (e.target !== el) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSession(key); }
+  });
+  return { el, line, status };
+}
+
+// Only text and classes change on each poll: the buttons stay, so keyboard focus stays.
+function fillCard(c, s, selected) {
   const st = sessionStatus(s);
   const steps = s.flow ? s.flow.steps : [];
-  c.text.replaceChildren(
-    h("div", {}, h("div", { class: "l" }, stepLine(steps)), h("div", { class: "d " + st.cls }, st.text, s.kind ? ` · ${s.kind === "mcp" ? "Claude Code / MCP" : s.kind === "daemon" ? "CLI" : "fastpilot run"}` : "")),
-    s.watchable ? h("button", { class: "btn sm", onclick: () => { liveBig = `${s.pid}:${s.id}`; renderLive(lastLive); } }, icon("expand", "sm"), "Perbesar") : null);
+  const lineText = stepLine(steps);
+  if (c.line.textContent !== lineText) c.line.textContent = lineText;
+  const statusText = st.text + (s.kind ? ` · ${KIND[s.kind] || s.kind}` : "");
+  if (c.status.textContent !== statusText) c.status.textContent = statusText;
+  c.status.className = "d " + st.cls;
+  c.el.classList.toggle("sel", selected);
+  if (selected) c.el.setAttribute("aria-current", "true"); else c.el.removeAttribute("aria-current");
 }
 
 function stepsPanel(s) {
   const steps = s.flow ? s.flow.steps : [];
+  const limits = (i) => h("a", { class: "lk bad", href: "#/settings/limits", "data-fk": `limits:${i}` }, "Lihat Batasan");
   const items = steps.map((x, i) => {
     const n = `${i + 1} · `;
     if (x.state === "running") return h("li", { class: "now" }, h("span", { class: "i" }, icon("play", "sm")), h("span", {}, n, x.label), h("span", { class: "r" }, "sedang berjalan"));
-    if (x.state === "done") return h("li", {}, h("span", { class: "i ok" }, "✓"), h("span", {}, n, x.label));
-    if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "gagal"));
-    if (x.state === "blocked") return h("li", { class: "blk" }, h("span", { class: "i" }, icon("lock", "sm")), h("span", {}, n, x.label),
-      h("span", { class: "r" }, "diblokir · ", h("a", { class: "lk bad", href: "#/settings/limits" }, "Lihat Batasan")));
+    if (x.state === "done") return h("li", {}, h("span", { class: "i ok", "aria-label": "selesai" }, "✓"), h("span", {}, n, x.label));
+    if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "gagal" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "gagal"));
+    if (x.state === "blocked") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "diblokir" }, icon("lock", "sm")), h("span", {}, n, x.label),
+      h("span", { class: "r" }, `diblokir: ${blockReason(x.note)} · `, limits(i)));
     if (x.state === "skipped") return h("li", { class: "muted" }, h("span", { class: "i" }, "–"), h("span", {}, n, x.label, " · dilewati"));
     return h("li", { class: x.will_block ? "warnline" : "" }, h("span", { class: "i" }, x.will_block ? icon("lock", "sm") : "○"), h("span", {}, n, x.label),
-      x.will_block ? h("span", { class: "r" }, x.will_block, " · ", h("a", { class: "lk bad", href: "#/settings/limits" }, "Lihat Batasan")) : null);
+      x.will_block ? h("span", { class: "r" }, x.will_block, " · ", limits(i)) : null);
   });
   return h("div", { class: "grp steps-grp" },
-    h("div", { class: "gh" }, icon("tests"), `riwayat langkah · ${s.id} (${s.platform} · sesi yang dipilih)`),
-    items.length ? h("ul", { class: "steps" }, items) : h("div", { class: "empty small" }, "Sesi ini belum menjalankan langkah."));
+    h("h2", { class: "gh" }, icon("tests"), `riwayat langkah · ${s.id} (${s.platform} · sesi yang dipilih)`),
+    items.length ? h("ul", { class: "steps", "aria-live": "polite" }, items) : h("div", { class: "empty small" }, "Sesi ini belum menjalankan langkah."));
 }
 
 function liveEmpty() {
@@ -432,15 +479,56 @@ function liveEmpty() {
       h("span", {}, "Coba: ", code("fastpilot open https://example.com"))));
 }
 
+// Perbesar: a modal <dialog> (focus stays inside, Escape closes), focus goes back to the button.
+let zoomOpener = null;
+function openZoom(s, opener) {
+  closeZoom(false);
+  zoomOpener = opener;
+  const dlg = h("dialog", { class: "zoom", "aria-label": `Layar sesi ${s.id}, diperbesar` },
+    h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "mono" }, s.id),
+      h("button", { class: "btn sm right", onclick: () => closeZoom(true) }, icon("close", "sm"), "Tutup")),
+    screenEl(s, true));
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); closeZoom(true); });
+  // Tab and Shift+Tab go round inside the dialog only.
+  dlg.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const items = [...dlg.querySelectorAll("button, a[href], [tabindex]:not([tabindex='-1'])")].filter((x) => !x.disabled);
+    if (!items.length) return;
+    const at = items.indexOf(document.activeElement);
+    const next = e.shiftKey ? (at <= 0 ? items.length - 1 : at - 1) : (at < 0 || at === items.length - 1 ? 0 : at + 1);
+    e.preventDefault();
+    items[next].focus();
+  });
+  document.body.append(dlg);
+  dlg.showModal();
+  dlg.querySelector("button").focus();
+}
+function closeZoom(restore) {
+  document.querySelectorAll("dialog.zoom").forEach((d) => { stopWatching(d); if (d.open) d.close(); d.remove(); });
+  if (restore && zoomOpener && zoomOpener.isConnected) zoomOpener.focus();
+  zoomOpener = null;
+}
+
+function livePill(sessions) {
+  if (!sessions.length) return h("span", { class: "pill grey" }, "○ Tidak ada sesi berjalan");
+  const count = (st) => sessions.filter((s) => s.flow && s.flow.steps.some((x) => x.state === st)).length;
+  const running = sessions.filter((s) => s.flow && !s.flow.finished).length;
+  const blocked = count("blocked"), failed = count("failed");
+  const parts = [`${sessions.length} sesi`, `${running} berjalan`];
+  if (blocked) parts.push(`${blocked} diblokir`);
+  if (failed) parts.push(`${failed} gagal`);
+  return h("span", { class: "pill" + (blocked || failed ? " bad" : "") }, "● " + parts.join(" · "));
+}
+
 function renderLive(data) {
   lastLive = data;
   const sessions = data.sessions || [];
-  const running = sessions.filter((s) => s.flow && !s.flow.finished).length;
-  $top().replaceChildren(icon("live"), "Live",
-    sessions.length ? h("span", { class: "pill" }, `● ${sessions.length} sesi · ${running} berjalan · headless`) : h("span", { class: "pill grey" }, "○ Tidak ada sesi berjalan"));
+  $top().replaceChildren(icon("live"), h("h1", {}, "Live"), livePill(sessions));
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();
+    stepsSig = "";
+    closeZoom(false);
     $body().replaceChildren(liveEmpty());
     return;
   }
@@ -449,12 +537,12 @@ function renderLive(data) {
     if (!keys.has(k)) { stopWatching(c.el); c.el.remove(); liveCards.delete(k); }
   }
   if (!liveSel || !keys.has(liveSel)) liveSel = [...keys][0];
-  if (liveBig && !keys.has(liveBig)) liveBig = null;
   // Built once and updated in place: moving an <img> would restart its stream.
   let root = document.getElementById("live-root");
   if (!root) {
     for (const c of liveCards.values()) stopWatching(c.el);
     liveCards.clear();
+    stepsSig = "";
     root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }));
     $body().replaceChildren(root);
   }
@@ -463,32 +551,24 @@ function renderLive(data) {
     const k = `${s.pid}:${s.id}`;
     let c = liveCards.get(k);
     if (!c) { c = card(s); liveCards.set(k, c); grid.append(c.el); }
-    fillCard(c, s);
-    c.el.classList.toggle("sel", k === liveSel);
+    fillCard(c, s, k === liveSel);
   }
+  // The step list is rebuilt only when it changed, and focus inside it is put back.
   const sel = sessions.find((s) => `${s.pid}:${s.id}` === liveSel);
-  document.getElementById("live-steps").replaceChildren(...(sel ? [stepsPanel(sel)] : []));
-  if (liveBig) {
-    const b = sessions.find((s) => `${s.pid}:${s.id}` === liveBig);
-    if (b) {
-      const close = () => { liveBig = null; document.querySelectorAll(".zoom").forEach((x) => stopWatching(x)); renderLive(lastLive); };
-      if (!document.querySelector(".zoom") || document.querySelector(".zoom").dataset.key !== liveBig) {
-        const ov = h("div", { class: "zoom", role: "dialog", "aria-modal": "true", "aria-label": `Layar ${b.id}`, "data-key": liveBig },
-          h("div", { class: "zoom-in" }, h("div", { class: "lh" }, h("span", { class: "pf web" }, "web"), h("span", { class: "mono" }, b.id),
-            h("button", { class: "btn sm right", onclick: close }, icon("close", "sm"), "Tutup")), screenEl(b, true)));
-        ov.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-        document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); });
-        document.body.append(ov);
-        ov.querySelector("button").focus();
-      }
-    }
-  } else {
-    document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); });
+  const sig = JSON.stringify([liveSel, sel && sel.flow]);
+  if (sig !== stepsSig) {
+    stepsSig = sig;
+    const host = document.getElementById("live-steps");
+    const fk = host.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+    host.replaceChildren(...(sel ? [stepsPanel(sel)] : []));
+    if (fk) host.querySelector(`[data-fk="${fk}"]`)?.focus();
   }
+  if (document.querySelector("dialog.zoom") && zoomOpener && !zoomOpener.isConnected) closeZoom(false);
 }
 
 async function pollLive() {
-  if (!location.hash.startsWith("#/live")) return;
+  // An empty hash is the Live page too (the first page after the link).
+  if (!(location.hash || "#/live").startsWith("#/live")) return;
   try {
     renderLive(await api("/api/live"));
   } catch (e) {
@@ -502,7 +582,7 @@ function render() {
   if (!S) return;
   const hash = location.hash || "#/live";
   const [, page, sub] = hash.split("/");
-  if (page !== "live") { stopLive(); document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); }); }
+  if (page !== "live") stopLive();
   document.querySelectorAll(".rail a").forEach((a) => {
     const on = a.dataset.nav === page;
     a.classList.toggle("on", on);
@@ -510,7 +590,7 @@ function render() {
   });
   if (page === "live") {
     if (!liveTimer) {
-      $top().replaceChildren(icon("live"), "Live");
+      $top().replaceChildren(icon("live"), h("h1", {}, "Live"));
       $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca sesi…")));
       pollLive();
     }
