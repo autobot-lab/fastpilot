@@ -107,7 +107,7 @@ fastpilot menjanjikan automation full-AI yang cepat dan stabil untuk web dan mob
 
 ## Open Questions
 
-1. **Runner CI untuk mobile.** Runner Linux bersama di GitLab.com umumnya tidak menyediakan KVM, sehingga emulator Android lambat atau tidak jalan; runner macOS butuh paket berbayar. Pilihan: runner self-hosted di Mac ini, paket GitLab berbayar, atau job mobile hanya dijalankan manual. Siapa yang memutuskan dan berapa budgetnya?
+1. **Runner CI untuk mobile.** Repo publik di GitHub mendapat runner GitHub Actions gratis: Linux (emulator Android butuh KVM diaktifkan di job) dan macOS (simulator iOS, menit lebih lambat dan antrean lebih panjang). Pilihan: job mobile di runner GitHub, runner self-hosted di Mac ini, atau job mobile hanya dijalankan manual. Saat ini CI hanya build; test dijalankan lokal.
 2. **Aplikasi nyata yang boleh diuji.** Qualia front-end dan Motmaina: URL staging mana, akun uji mana, dan apakah ada skenario lintas platform yang nyata (mis. admin web Qualia ↔ app Motmaina)?
 3. **Lokasi test case aplikasi nyata.** Di repo fastpilot (`tests/real/`) atau di repo aplikasi masing-masing?
 4. **Penandatanganan binary macOS.** Tanpa notarisasi, Gatekeeper menandai binary hasil download. Cukup instruksi `xattr -d com.apple.quarantine`, atau perlu Apple Developer ID?
