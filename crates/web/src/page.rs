@@ -1131,6 +1131,10 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 
 #[async_trait]
 impl Driver for WebPage {
+    fn is_gone(&self) -> bool {
+        self.browser.is_closed()
+    }
+
     fn live_screen(&self) -> Option<fastpilot_core::live::Screen> {
         let tab = self.tab();
         (self.browser.own.load(std::sync::atomic::Ordering::Relaxed) && tab.session.is_some())
