@@ -55,6 +55,9 @@ pub enum Error {
     /// The OEM blocked installing the agent (MIUI "Install via USB", Samsung Auto Blocker, ...).
     #[error("{0}")]
     InstallBlocked(String),
+    /// A guard rail of the user's settings refused it.
+    #[error("{0}")]
+    Blocked(String),
 }
 
 impl Error {
@@ -71,6 +74,7 @@ impl From<Error> for CoreError {
             Error::Agent(m) if m.contains("INJECT_EVENTS") => Self::Session(format!("{m}: {}", device::XIAOMI_HINT)),
             // The device needs the user: an environment problem, not a product bug.
             Error::Unauthorized(m) | Error::Offline(m) | Error::Locked(m) => Self::Session(m.clone()),
+            Error::Blocked(m) => Self::Blocked(m.clone()),
             _ => Self::Driver(e.to_string()),
         }
     }
@@ -250,6 +254,11 @@ impl AndroidDriver {
         }
         let adb = Adb::new().await?;
         let serial = device::resolve(serial).await?;
+        if !serial.starts_with("emulator-") && !fastpilot_core::config::flag("allow_physical_devices") {
+            return Err(Error::Blocked(format!(
+                "{serial} is a physical phone and real phones are turned off (allow_physical_devices = false); use an emulator, or the user allows phones in fastpilot settings"
+            )));
+        }
         wake(&adb, &serial).await?;
         let sum = checksum(AGENT_APK);
         let marker = "/data/local/tmp/fastpilot-agent.sum";
@@ -1023,6 +1032,17 @@ impl Driver for AndroidDriver {
         let code = keycode(key).ok_or_else(|| CoreError::Unsupported(format!("unknown key `{key}`")))?;
         self.agent.call("key", json!({ "code": code })).await?;
         Ok(())
+    }
+
+    async fn install_app(&self, path: &str) -> Result<()> {
+        let apk = std::fs::read(path).map_err(|e| CoreError::Flow(format!("installApp {path}: {e}")))?;
+        self.adb.install(&self.serial, &apk).await?;
+        Ok(())
+    }
+
+    async fn uninstall_app(&self, app: &str) -> Result<()> {
+        let out = self.adb.shell(&self.serial, &format!("pm uninstall {}", shell_safe(app)?)).await.map_err(|e| CoreError::Driver(e.to_string()))?;
+        if out.contains("Success") { Ok(()) } else { Err(CoreError::Driver(format!("uninstallApp {app}: {}", out.trim()))) }
     }
 
     /// Maestro semantics: stop the app, then start it fresh.

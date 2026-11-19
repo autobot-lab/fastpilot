@@ -213,10 +213,34 @@ headful = true
 flow_timeout = 600
 ```
 
+**Lewat browser:** `fastpilot ui` membuka halaman Pengaturan dan Device di browser default (hanya
+`127.0.0.1`, port acak, token di link; `--no-open` hanya mencetak link-nya, `--port N` memilih port).
+Isinya Model AI untuk `fastpilot run`, Batasan & izin, nama Secret (nilainya tidak pernah tampil), dan
+hasil `doctor` dengan tombol Cek ulang. Perubahan dari halaman ini adalah perubahan user: boleh
+melonggarkan, ditulis atomik ke file (mode 600), dan berlaku mulai run berikutnya. Semua aset dan font
+ada di dalam binary, jadi halaman ini jalan tanpa internet.
+
+Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
+
+| Kunci | Arti |
+|---|---|
+| `allowed_domains` | sesi web hanya membuka host ini |
+| `confirm_actions` | tap pada elemen bernama begini butuh `confirm: true` (cocok per kata) |
+| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran") |
+| `allow_app_install` | langkah `installApp` / `uninstallApp` (bawaan: boleh) |
+| `allow_app_reset` | `clearState` / `clearKeychain` (bawaan: boleh) |
+| `allow_physical_devices` | sesi boleh memakai HP fisik; `false` = hanya emulator/simulator (bawaan: boleh) |
+| `allow_device_settings` | `setNetwork`, `setLocation`, `setPermissions`, `setLocale` di Android/iOS (bawaan: boleh) |
+| `allow_eval_script` | langkah `evalScript` (bawaan: boleh) |
+| `upload_dirs` | `uploadFile` hanya mengambil file di folder ini (kosong = mana saja) |
+| `state_expire_days` | umur maksimal login tersimpan (bawaan 30 hari) |
+| `max_steps` / `test_timeout` | `fastpilot run`: maksimal panggilan tool AI per test (bawaan 30) / menit per test (bawaan 30) |
+
 Lewat chat, agent memakai tool `config` dengan aturan:
 
-- **Batasan** (`allowed_domains`, `confirm_actions`, `vars`, `state_expire_days`): agent hanya boleh
-  memperketat. Melonggarkan atau menghapusnya hanya lewat `fastpilot config` oleh user.
+- **Batasan** (tabel di atas, plus `vars`): agent hanya boleh memperketat (menambah kata/domain,
+  mematikan izin, menurunkan batas). Melonggarkan atau menghapusnya hanya oleh user lewat
+  `fastpilot config` atau `fastpilot ui`.
 - **Program dan lokasi** (`chrome`, `claude`, `dir`, `ios_runner`): hanya user.
 - **Lainnya** (`headful`, `model*`, `flow_timeout`, `retry_budget`, `breaker`, device default, `memory`,
   `daemon_idle`): bebas.

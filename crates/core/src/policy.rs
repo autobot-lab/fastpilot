@@ -8,6 +8,10 @@
 //!   double tap on an element whose name contains one of them ("Hapus", "Bayar", "Delete
 //!   account", ...) fails with `blocked` unless the step says `confirm: true`.
 
+//! - `block_actions`: a tap on an element whose text contains one of these words is always refused,
+//!   `confirm: true` or not ("Bayar" also blocks "Lanjut ke Pembayaran").
+//! - `allow_*` permissions (default on) and `upload_dirs`: see [`crate::config::SETTINGS`].
+
 /// Built-in risky words for `FASTPILOT_CONFIRM_ACTIONS=default` (or `1`).
 const DEFAULT_RISKY: &[&str] = &[
     "delete", "hapus", "remove", "pay", "bayar", "purchase", "buy", "beli", "checkout", "transfer", "place order", "buat pesanan",
@@ -54,6 +58,40 @@ pub fn url_allowed(url: &str, allowed: &[String]) -> bool {
     })
 }
 
+/// Words that always block a tap (`block_actions`).
+pub fn blocked_words() -> Vec<String> {
+    list("FASTPILOT_BLOCK_ACTIONS")
+}
+
+/// The blocked word `name` contains (substring, case-insensitive).
+pub fn block_match(name: &str, words: &[String]) -> Option<String> {
+    let name = name.to_lowercase();
+    words.iter().find(|w| name.contains(w.as_str())).cloned()
+}
+
+/// Folders `uploadFile` may take files from (`upload_dirs`); empty = any. `~/` is the home folder.
+pub fn upload_dirs() -> Vec<std::path::PathBuf> {
+    crate::config::var("FASTPILOT_UPLOAD_DIRS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|d| match d.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join(rest),
+            None => std::path::PathBuf::from(d),
+        })
+        .collect()
+}
+
+/// Whether `file` lies inside one of `dirs` (both resolved, so `..` and links cannot leave them).
+pub fn upload_allowed(file: &std::path::Path, dirs: &[std::path::PathBuf]) -> bool {
+    if dirs.is_empty() {
+        return true;
+    }
+    let Ok(f) = file.canonicalize() else { return false };
+    dirs.iter().filter_map(|d| d.canonicalize().ok()).any(|d| f.starts_with(d))
+}
+
 /// Risky words / phrases; empty = no confirmation needed.
 pub fn risky_words() -> Vec<String> {
     let words = list("FASTPILOT_CONFIRM_ACTIONS");
@@ -89,6 +127,30 @@ mod tests {
         assert!(!url_allowed("http://notlocalhost/", &allowed));
         assert!(url_allowed("file:///tmp/a.html", &allowed) && url_allowed("about:blank", &allowed) && url_allowed("data:text/html,hi", &allowed));
         assert!(url_allowed("https://anything/", &[]));
+    }
+
+    #[test]
+    fn blocked_words_match_inside_text() {
+        let w: Vec<String> = vec!["bayar".into()];
+        assert_eq!(block_match("Lanjut ke Pembayaran", &w).as_deref(), Some("bayar"));
+        assert_eq!(block_match("BAYAR", &w).as_deref(), Some("bayar"));
+        assert_eq!(block_match("Batal", &w), None);
+    }
+
+    #[test]
+    fn uploads_stay_in_their_folders() {
+        let dir = std::env::temp_dir().join(format!("fp-upload-{}", std::process::id()));
+        let inside = dir.join("ok");
+        std::fs::create_dir_all(&inside).expect("dir");
+        std::fs::write(inside.join("a.pdf"), b"x").expect("file");
+        std::fs::write(dir.join("secret.txt"), b"x").expect("file");
+        let dirs = vec![inside.clone()];
+        assert!(upload_allowed(&inside.join("a.pdf"), &dirs));
+        assert!(!upload_allowed(&inside.join("../secret.txt"), &dirs), "`..` leaves the folder");
+        assert!(!upload_allowed(&dir.join("secret.txt"), &dirs));
+        assert!(!upload_allowed(&inside.join("missing.pdf"), &dirs));
+        assert!(upload_allowed(&dir.join("secret.txt"), &[]));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

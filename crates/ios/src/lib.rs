@@ -31,11 +31,15 @@ pub enum Error {
     Runner(String),
     #[error(transparent)]
     Agent(#[from] fastpilot_android::Error),
+    /// A guard rail of the user's settings refused it.
+    #[error("{0}")]
+    Blocked(String),
 }
 
 impl From<Error> for CoreError {
     fn from(e: Error) -> Self {
         match &e {
+            Error::Blocked(m) => Self::Blocked(m.clone()),
             Error::Agent(fastpilot_android::Error::Agent(m)) if m.contains("no focused text field") => {
                 Self::NotActionable(m.clone())
             }
@@ -509,6 +513,12 @@ impl IosDriver {
                 let all = device_infos().await;
                 let d = fastpilot_core::select(&all, Some(spec), fastpilot_core::Platform::Ios).map_err(|e| Error::Runner(e.to_string()))?;
                 if d.kind == DeviceKind::IosDevice {
+                    if !fastpilot_core::config::flag("allow_physical_devices") {
+                        return Err(Error::Blocked(format!(
+                            "{} is a physical iPhone/iPad and real devices are turned off (allow_physical_devices = false); use a simulator, or the user allows devices in fastpilot settings",
+                            d.id
+                        )));
+                    }
                     return Self::start_device(&d.id).await;
                 }
                 target = Some(d.id.clone());
@@ -1284,6 +1294,22 @@ impl Driver for IosDriver {
             Ok(())
         };
         wipe(&dir).map_err(|e| CoreError::Driver(format!("clear {}: {e}", dir.display())))
+    }
+
+    async fn install_app(&self, path: &str) -> Result<()> {
+        if self.device {
+            return Err(CoreError::Unsupported("installApp on an iPhone/iPad: install it with Xcode or TestFlight; only simulators here".into()));
+        }
+        simctl(&["install", &self.udid, path]).await?;
+        Ok(())
+    }
+
+    async fn uninstall_app(&self, app: &str) -> Result<()> {
+        if self.device {
+            return Err(CoreError::Unsupported("uninstallApp on an iPhone/iPad is not supported; only simulators".into()));
+        }
+        simctl(&["uninstall", &self.udid, app]).await?;
+        Ok(())
     }
 
     async fn clear_keychain(&self) -> Result<()> {

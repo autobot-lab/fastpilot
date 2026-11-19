@@ -226,6 +226,14 @@ pub trait Driver: Send + Sync {
     async fn launch_app(&self, app: &str) -> Result<()> {
         self.open(app).await
     }
+    /// `installApp`: put an app (apk / .app) on the device.
+    async fn install_app(&self, _path: &str) -> Result<()> {
+        Err(Error::Unsupported("installApp is for Android devices and iOS simulators".into()))
+    }
+    /// `uninstallApp`: remove an app from the device.
+    async fn uninstall_app(&self, _app: &str) -> Result<()> {
+        Err(Error::Unsupported("uninstallApp is for Android devices and iOS simulators".into()))
+    }
     /// `launchApp` with `arguments` / `env` (values already substituted).
     async fn launch_app_with(&self, app: &str, launch: &Launch) -> Result<()> {
         if launch.is_empty() {

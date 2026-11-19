@@ -740,7 +740,7 @@ impl FastPilot {
         }
     }
 
-    #[tool(description = "fastpilot settings (~/.fastpilot/config.toml; environment variables win): list, get, set, unset. Changes apply to the next action, no restart. Guard rails (allowed_domains, confirm_actions, vars, state_expire_days) can only be made stricter here (a running fastpilot also ignores a looser value written to the file until it restarts); program paths and locations (chrome, claude, dir, ios_runner) only by the user with `fastpilot config set` or the file.")]
+    #[tool(description = "fastpilot settings (~/.fastpilot/config.toml; environment variables win): list, get, set, unset. Changes apply to the next action, no restart. Guard rails (allowed_domains, confirm_actions, block_actions, vars, state_expire_days, allow_* permissions, upload_dirs, max_steps, test_timeout) can only be made stricter here (a running fastpilot also ignores a looser value written to the file until it restarts); program paths and locations (chrome, claude, dir, ios_runner) only by the user with `fastpilot config set` or the file.")]
     async fn config(&self, Parameters(args): Parameters<ConfigArgs>) -> Result<CallToolResult, ErrorData> {
         use fastpilot_core::config::{self, Rule, Source};
         let action = args.action.as_deref().unwrap_or("list");

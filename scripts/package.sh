@@ -2,7 +2,8 @@
 # Build a release archive: dist/fastpilot-<version>-<target>.tar.gz (+ .sha256).
 #   scripts/package.sh                  host target
 #   scripts/package.sh --target x86_64-apple-darwin
-# The archive holds the binary, README.md and LICENSE. Android support is embedded when
+# The archive holds the binary, README.md, LICENSE and the licenses of the fonts built into
+# `fastpilot ui` (SIL OFL 1.1, under licenses/). Android support is embedded when
 # agent-android/out/fastpilot-agent.apk exists (run agent-android/build.sh first); the iOS
 # runner is not shipped (it needs Xcode: ios-runner/build.sh from a checkout).
 set -eu
@@ -24,6 +25,8 @@ stage="dist/$name"
 rm -rf "$stage" && mkdir -p "$stage"
 cp "${CARGO_TARGET_DIR:-target}/$target/release/fastpilot" "$stage/"
 cp README.md LICENSE "$stage/"
+mkdir -p "$stage/licenses"
+cp bin/fastpilot/ui/fonts/*-OFL.txt "$stage/licenses/"
 tar -C dist -czf "dist/$name.tar.gz" "$name"
 rm -rf "$stage"
 ( cd dist && { sha256sum "$name.tar.gz" 2>/dev/null || shasum -a 256 "$name.tar.gz"; } > "$name.tar.gz.sha256" )
