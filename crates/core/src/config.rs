@@ -150,6 +150,16 @@ fn from_file(key: &str) -> Option<String> {
     pinned.clone()
 }
 
+/// Pin every guard rail now. Long-running processes (`fastpilot mcp`, the shell daemon, `fastpilot
+/// run`) call this at start, so the file as it was then is the loosest they ever apply: loosening
+/// it before a rail's first use (an agent with a shell, between reading a page and the first risky
+/// tap) does not count either.
+pub fn pin_guard_rails() {
+    for s in SETTINGS.iter().filter(|s| s.rule == Rule::TightenOnly) {
+        let _ = from_file(s.key);
+    }
+}
+
 /// Like `std::env::var` for a `FASTPILOT_*` name, falling back to the config file.
 pub fn var(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
@@ -198,6 +208,29 @@ fn items_of(key: &str, v: &str) -> Vec<String> {
 /// Settings whose value is a whole number.
 const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "retry_budget", "breaker", "daemon_idle"];
 
+const BOOLS: &[&str] = &["true", "false", "on", "off", "yes", "no", "1", "0"];
+const MEMORY_MODES: &[&str] = &["rw", "readonly", "off"];
+
+/// Why `value` is not valid for `key`, if it is not.
+fn invalid(key: &str, value: &str) -> Option<String> {
+    let v = value.trim();
+    if NUMBERS.contains(&key) && v.parse::<u64>().is_err() {
+        let unit = match key {
+            "retry_budget" | "breaker" => "runs",
+            "state_expire_days" => "days",
+            _ => "seconds",
+        };
+        return Some(format!("`{key}` takes a whole number of {unit}, not `{value}`"));
+    }
+    if key == "headful" && !BOOLS.contains(&v.to_lowercase().as_str()) {
+        return Some(format!("`headful` takes true or false, not `{value}`"));
+    }
+    if key == "memory" && !MEMORY_MODES.contains(&v) {
+        return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
+    }
+    None
+}
+
 /// Whether `new` is at least as strict as `old` for a guard-rail setting (`None` = unset).
 pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
     let items = |v: &str| items_of(key, v);
@@ -223,11 +256,15 @@ fn to_toml(key: &str, value: &str) -> toml::Value {
     if matches!(key, "allowed_domains" | "confirm_actions" | "vars") {
         return toml::Value::Array(items_of(key, value).into_iter().map(toml::Value::String).collect());
     }
-    match value.trim() {
-        "true" | "on" | "yes" => toml::Value::Boolean(true),
-        "false" | "off" | "no" => toml::Value::Boolean(false),
-        v => v.parse::<i64>().map(toml::Value::Integer).unwrap_or_else(|_| toml::Value::String(v.to_owned())),
+    let v = value.trim();
+    if key == "headful" {
+        return toml::Value::Boolean(matches!(v.to_lowercase().as_str(), "true" | "on" | "yes" | "1"));
     }
+    if NUMBERS.contains(&key) {
+        return v.parse::<i64>().map(toml::Value::Integer).unwrap_or_else(|_| toml::Value::String(v.to_owned()));
+    }
+    // Everything else is text (`memory = "off"`, not a boolean).
+    toml::Value::String(v.to_owned())
 }
 
 /// Write `key = value` to the file (`None` removes it), keeping the other keys and comments-free
@@ -236,11 +273,8 @@ pub fn write(key: &str, value: Option<&str>) -> Result<PathBuf, String> {
     let s = setting(key).ok_or_else(|| {
         format!("unknown setting `{key}`; known: {}", SETTINGS.iter().map(|s| s.key).collect::<Vec<_>>().join(", "))
     })?;
-    if let Some(v) = value
-        && NUMBERS.contains(&s.key)
-        && v.trim().parse::<u64>().is_err()
-    {
-        return Err(format!("`{}` takes a whole number of {}, not `{v}`", s.key, if s.key == "retry_budget" || s.key == "breaker" { "runs" } else if s.key == "state_expire_days" { "days" } else { "seconds" }));
+    if let Some(e) = value.and_then(|v| invalid(s.key, v)) {
+        return Err(e);
     }
     let p = path();
     let mut table: toml::Table = match std::fs::read_to_string(&p) {
@@ -390,6 +424,73 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 1, "only config.toml");
+        unsafe {
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FastTest P0: the rails are pinned when the process starts, not at first use, so a file
+    /// loosened between start and the first risky step does not apply. Stricter still applies.
+    #[test]
+    fn guard_rails_are_pinned_at_start() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-config-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        let _ = std::fs::remove_file(&file);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", &file);
+            for k in ["FASTPILOT_ALLOWED_DOMAINS", "FASTPILOT_CONFIRM_ACTIONS", "FASTPILOT_VARS", "FASTPILOT_STATE_EXPIRE_DAYS"] {
+                std::env::remove_var(k);
+            }
+        }
+        std::fs::write(&file, "allowed_domains = [\"localhost\"]\nconfirm_actions = \"default\"\nvars = [\"DEMO_PASS\"]\nstate_expire_days = 7\n").expect("write");
+        pin_guard_rails();
+        // Loosened before any rail was read: nothing changes in this process.
+        std::fs::write(&file, "").expect("empty");
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("localhost"));
+        assert_eq!(var("FASTPILOT_CONFIRM_ACTIONS").as_deref(), Ok("default"));
+        assert_eq!(var("FASTPILOT_STATE_EXPIRE_DAYS").as_deref(), Ok("7"));
+        // Fewer readable variables is stricter, so dropping `vars` applies.
+        assert!(var("FASTPILOT_VARS").is_err());
+        // Stricter applies at once.
+        std::fs::write(&file, "allowed_domains = [\"localhost\"]\nconfirm_actions = \"default,hapus\"\nvars = []\nstate_expire_days = 1\n").expect("write");
+        assert_eq!(var("FASTPILOT_CONFIRM_ACTIONS").as_deref(), Ok("default,hapus"));
+        assert_eq!(var("FASTPILOT_STATE_EXPIRE_DAYS").as_deref(), Ok("1"));
+        assert_eq!(var("FASTPILOT_VARS").as_deref(), Ok(""));
+        unsafe {
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FastTest P0: `headful` and `memory` only take values fastpilot understands, and `memory off`
+    /// stays the word `off` (a boolean would read as "rw").
+    #[test]
+    fn headful_and_memory_values_are_checked() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-config-values-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        let _ = std::fs::remove_file(&file);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", &file);
+            std::env::remove_var("FASTPILOT_HEADFUL");
+            std::env::remove_var("FASTPILOT_MEMORY");
+        }
+        assert!(write("headful", Some("maybe")).expect_err("not a bool").contains("true or false"));
+        assert!(write("memory", Some("banana")).expect_err("not a mode").contains("rw, readonly or off"));
+        for (v, want) in [("yes", "1"), ("off", "0"), ("TRUE", "1"), ("0", "0")] {
+            write("headful", Some(v)).expect("bool");
+            assert_eq!(var("FASTPILOT_HEADFUL").as_deref(), Ok(want), "headful {v}");
+        }
+        for mode in MEMORY_MODES {
+            write("memory", Some(mode)).expect("mode");
+            assert_eq!(var("FASTPILOT_MEMORY").as_deref(), Ok(*mode));
+        }
         unsafe {
             std::env::remove_var("FASTPILOT_CONFIG");
         }
