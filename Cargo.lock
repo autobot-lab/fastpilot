@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-android"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-ios"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-mcp"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-memory"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "fastpilot-core",
@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "fastpilot-web"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
