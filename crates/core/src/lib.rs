@@ -227,6 +227,11 @@ pub trait Driver: Send + Sync {
     async fn launch_app(&self, app: &str) -> Result<()> {
         self.open(app).await
     }
+    /// The browser or device behind this session is gone for good (Chrome crashed or was
+    /// closed): the session cannot recover and should be dropped.
+    fn is_gone(&self) -> bool {
+        false
+    }
     /// Where `fastpilot ui` can watch this session (web sessions on fastpilot's own Chrome).
     fn live_screen(&self) -> Option<live::Screen> {
         None

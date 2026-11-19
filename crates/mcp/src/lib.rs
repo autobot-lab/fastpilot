@@ -253,8 +253,39 @@ impl FastPilot {
         guards
     }
 
+    /// Drop sessions whose browser is gone (fastpilot's Chrome crashed or was closed), so the
+    /// same name can be started again and a new Chrome is launched. Returns their names.
+    async fn prune(&self) -> Vec<String> {
+        let gone: Vec<(String, Arc<dyn Driver>)> = {
+            let mut reg = self.state.registry.lock().await;
+            let dead: Vec<String> = reg.ids().into_iter().filter(|id| reg.shared(id).is_some_and(|d| d.is_gone())).collect();
+            dead.into_iter().filter_map(|id| reg.remove(&id).map(|d| (id, d))).collect()
+        };
+        for (id, d) in &gone {
+            tracing::warn!(session = %id, "browser gone; session dropped");
+            let _ = d.close().await;
+        }
+        gone.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Why a session that was just dropped by [`Self::prune`] is not there any more.
+    fn ended(gone: &[String]) -> Option<String> {
+        (!gone.is_empty()).then(|| {
+            let names = gone.iter().map(|g| format!("`{g}`")).collect::<Vec<_>>().join(", ");
+            format!(
+                "note: session {names} ended: fastpilot's Chrome stopped (crashed or was closed). Start it again with `session start` (shell: `fastpilot open <url>`); a new Chrome is launched."
+            )
+        })
+    }
+
     /// The session's driver plus its lock, without holding the registry lock.
     async fn session_driver(&self, id: Option<&str>) -> fastpilot_core::Result<(String, Arc<dyn Driver>, Vec<OwnedMutexGuard<()>>)> {
+        let gone = self.prune().await;
+        if let Some(note) = Self::ended(&gone)
+            && (id.is_none_or(|i| gone.iter().any(|g| g == i)))
+        {
+            return Err(Error::Session(note));
+        }
         let (id, driver) = {
             let reg = self.state.registry.lock().await;
             let (id, _) = reg.pick(id)?;
@@ -364,8 +395,9 @@ impl FastPilot {
         }
     }
 
-    /// Session ids and the active one (shell CLI).
+    /// Session ids and the active one (shell CLI); sessions whose browser is gone are dropped.
     pub async fn session_ids(&self) -> (Vec<String>, Option<String>) {
+        self.prune().await;
         let reg = self.state.registry.lock().await;
         (reg.ids(), reg.active().map(str::to_owned))
     }
@@ -504,11 +536,14 @@ impl FastPilot {
 
     #[tool(description = "Session lifecycle: start (returns the first snapshot, and the path-memory hint when test_id is given), stop, list, devices, start_device. Web sessions launch their own Chrome or attach to yours (mode: attach).")]
     async fn session(&self, Parameters(args): Parameters<SessionArgs>) -> Result<CallToolResult, ErrorData> {
+        let gone = self.prune().await;
+        let note = Self::ended(&gone).map(|n| format!("{n}\n")).unwrap_or_default();
         match args.action.as_str() {
             "start" => match self.start_session(&args).await {
-                Ok(text) => ok(text),
-                Err(e) => err(&e),
+                Ok(text) => ok(format!("{note}{text}")),
+                Err(e) => fail(format!("{note}{}: {e}", e.reason())),
             },
+            "stop" if args.id.as_ref().is_some_and(|id| gone.contains(id)) => ok(note),
             "stop" => {
                 let id = match args.id.clone() {
                     Some(id) => Some(id),
@@ -548,14 +583,15 @@ impl FastPilot {
 
     #[tool(description = "Run a YAML flow (batch of steps, may span sessions and `parallel:` blocks). Auto-waits, stops at the first failure, and returns per-step timing plus a diff (or full snapshot) per touched session. Pass test_id to record evidence for `report`.")]
     async fn run_flow(&self, Parameters(args): Parameters<RunFlowArgs>) -> Result<CallToolResult, ErrorData> {
+        let note = Self::ended(&self.prune().await).map(|n| format!("{n}\n")).unwrap_or_default();
         let (flow, before) = {
             let reg = self.state.registry.lock().await;
             let flow = match check_flow(&args.flow, &reg.ids()) {
                 Ok(f) => f,
-                Err(errors) => return fail(errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")),
+                Err(errors) => return fail(format!("{note}{}", errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"))),
             };
             if let Some(s) = args.session.as_deref().filter(|s| !reg.contains(s)) {
-                return fail(format!("unknown session `{s}`"));
+                return fail(format!("{note}unknown session `{s}`"));
             }
             (flow, reg.clone())
         };
@@ -568,7 +604,7 @@ impl FastPilot {
         };
         let mut local = before.clone();
         let report = run_flow(&mut local, &self.state.launcher, &flow, &opts).await;
-        let mut text = report.to_string();
+        let mut text = format!("{note}{report}");
         if let Some(t) = &args.test_id {
             text.push_str(&self.record(t, &flow, &report, &local).await);
         }

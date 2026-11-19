@@ -20,7 +20,7 @@ pub enum Error {
     Launch(String),
     #[error("CDP websocket: {0}")]
     WebSocket(String),
-    #[error("CDP connection closed (did Chrome exit?)")]
+    #[error("Chrome closed or crashed (DevTools connection lost): this session has ended; start a new one (`session start`, or `fastpilot open <url>`)")]
     Closed,
     #[error("CDP {method}: {message}")]
     Protocol { method: String, message: String },
