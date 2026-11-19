@@ -741,7 +741,26 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::PressKey(k) => d.press_key(k).await?,
             Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
             Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
-            Step::LaunchApp(app) => d.launch_app(&subst(app)?).await?,
+            Step::LaunchApp { app, launch } => {
+                let mut l = crate::Launch::default();
+                for (k, v) in &launch.arguments {
+                    let v = match v {
+                        crate::LaunchArg::Str(t) => crate::LaunchArg::Str(subst(t)?),
+                        crate::LaunchArg::List(items) => crate::LaunchArg::List(items.iter().map(|t| subst(t)).collect::<Result<_>>()?),
+                        other => other.clone(),
+                    };
+                    l.arguments.push((k.clone(), v));
+                }
+                for (k, v) in &launch.env {
+                    if v == crate::dsl::MASKED {
+                        return Err(Error::Flow(format!(
+                            "launchApp env `{k}` was hidden when this flow was recorded; give its value again (secrets as ${{NAME}} from FASTPILOT_VARS)"
+                        )));
+                    }
+                    l.env.push((k.clone(), subst(v)?));
+                }
+                d.launch_app_with(&subst(app)?, &l).await?
+            }
             Step::Swipe { from, to } => d.swipe(*from, *to).await?,
             Step::EvalScript(js) => {
                 let v = d.eval_script(&subst(js)?).await?;
@@ -1518,5 +1537,16 @@ mod tests {
         )
         .await;
         assert!(report.to_string().starts_with("fail step 1/2 [a] assertVisible \"Nope\": not_found"), "{report}");
+    }
+
+    /// E1: a web session refuses launch extras with a reason; a masked env value from a recorded
+    /// flow is not passed to the app as `***`.
+    #[tokio::test(start_paused = true)]
+    async fn launch_app_extras_need_a_mobile_app_and_real_values() {
+        let mut reg = SessionRegistry::default();
+        let report = run(&mut reg, "- session: { start: web1, target: login }\n- launchApp: { appId: com.x, arguments: { debug: true } }\n").await;
+        assert!(!report.passed() && report.to_string().contains("for Android and iOS apps"), "{report}");
+        let report = run(&mut reg, "- session: web1\n- launchApp: { appId: com.x, env: { API_TOKEN: \"***\" } }\n").await;
+        assert!(!report.passed() && report.to_string().contains("was hidden when this flow was recorded"), "{report}");
     }
 }

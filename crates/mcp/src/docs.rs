@@ -19,7 +19,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 
 | Step | Form | Platforms |
 |---|---|---|
-| launchApp | `launchApp: com.example.app` or `pkg/.Activity` (stop + start) | android, ios |
+| launchApp | `launchApp: com.example.app` or `pkg/.Activity` (stop + start); `{ appId, arguments: { server: "https://staging", retries: 3, debug: true, tags: [a, b] }, env: { API_TOKEN: "${TOKEN}" } }`. `arguments`: android intent extras (text, whole number, true/false, text list without commas), ios launch arguments `-key value` (read with UserDefaults). `env`: ios only (the app's environment); values always show as `***`, recorded runs keep only `${NAME}` references, and `DYLD_*`, `LD_*`, `FASTPILOT_*`, `MALLOC*`, `OBJC_*`, `XPC_*` names are refused | android, ios |
 | openUrl | `openUrl: https://...` or a local path (`examples/demo/login.html`) | web (android/ios: deep link) |
 | tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action when FASTPILOT_CONFIRM_ACTIONS is set (also longPressOn, doubleTapOn) | all |
 | inputText | `inputText: { into: "Email", text: "a@b.com" }` (replaces content); `inputText: "abc"` types into the focused field | all |

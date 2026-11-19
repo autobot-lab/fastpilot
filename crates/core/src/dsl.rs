@@ -24,7 +24,8 @@ pub enum Step {
     PressKey(String),
     SelectOption { from: Selector, option: String },
     UploadFile { into: Selector, files: Vec<String> },
-    LaunchApp(String),
+    /// `launchApp: appId` or `{ appId, arguments: {k: v}, env: {K: V} }`.
+    LaunchApp { app: String, launch: crate::Launch },
     Swipe { from: Point, to: Point },
     UseSession(String),
     StartSession { id: String, platform: Platform, target: Option<String>, reset: bool, device: Option<String> },
@@ -727,8 +728,8 @@ impl Step {
                 Self::UploadFile { into: Selector::from_yaml(get(m, "into").ok_or("missing `into`")?, &[])?, files }
             }
             "launchApp" => match arg {
-                Yaml::Mapping(m) => Self::LaunchApp(string(get(m, "appId").ok_or("missing `appId`")?)?),
-                other => Self::LaunchApp(string(other)?),
+                Yaml::Mapping(m) => Self::LaunchApp { app: string(get(m, "appId").ok_or("missing `appId`")?)?, launch: launch_of(m)? },
+                other => Self::LaunchApp { app: string(other)?, launch: crate::Launch::default() },
             },
             "swipe" => {
                 let m = arg.as_mapping().ok_or("expects { from: [x, y], to: [x, y] }")?;
@@ -801,7 +802,19 @@ impl Step {
             Self::PressKey(k) => format!("pressKey {k}"),
             Self::SelectOption { from, option } => format!("selectOption {from} {}", crate::quote(option)),
             Self::UploadFile { into, files } => format!("uploadFile {into} {files:?}"),
-            Self::LaunchApp(a) => format!("launchApp {a}"),
+            Self::LaunchApp { app, launch } => {
+                let mut label = format!("launchApp {app}");
+                if !launch.arguments.is_empty() {
+                    let args: Vec<String> = launch.arguments.iter().map(|(k, v)| format!("{k}={}", arg_text(v))).collect();
+                    label.push_str(&format!(" arguments {{{}}}", args.join(", ")));
+                }
+                if !launch.env.is_empty() {
+                    // Values never shown: env is where apps take tokens and keys.
+                    let env: Vec<String> = launch.env.iter().map(|(k, _)| format!("{k}=***")).collect();
+                    label.push_str(&format!(" env {{{}}}", env.join(", ")));
+                }
+                label
+            }
             Self::Swipe { from, to } => format!("swipe [{}, {}] -> [{}, {}]", from.x, from.y, to.x, to.y),
             Self::UseSession(id) => format!("session {id}"),
             Self::StartSession { id, platform, .. } => format!("session start {id} ({platform})"),
@@ -885,6 +898,14 @@ impl Step {
             Self::InputText { text, .. } => vec![text],
             Self::StartSession { target: Some(t), .. } => vec![t],
             Self::StopApp(Some(a)) | Self::ClearState(Some(a)) => vec![a],
+            Self::LaunchApp { app, launch } => std::iter::once(app.as_str())
+                .chain(launch.env.iter().map(|(_, v)| v.as_str()))
+                .chain(launch.arguments.iter().flat_map(|(_, v)| match v {
+                    crate::LaunchArg::Str(t) => vec![t.as_str()],
+                    crate::LaunchArg::List(l) => l.iter().map(String::as_str).collect(),
+                    _ => vec![],
+                }))
+                .collect(),
             Self::RunFlow { env, .. } => env.iter().map(|(_, v)| v.as_str()).collect(),
             Self::HttpRequest(h) => {
                 let mut names: Vec<String> = std::iter::once(h.url.as_str())
@@ -911,6 +932,70 @@ impl Step {
             _ => vec![],
         }
     }
+}
+
+/// What a literal `launchApp` env value becomes in recorded flows.
+pub(crate) const MASKED: &str = "***";
+
+fn arg_text(v: &crate::LaunchArg) -> String {
+    match v {
+        crate::LaunchArg::Str(t) => crate::quote(t),
+        crate::LaunchArg::Int(n) => n.to_string(),
+        crate::LaunchArg::Bool(b) => b.to_string(),
+        crate::LaunchArg::List(l) => format!("[{}]", l.iter().map(|t| crate::quote(t)).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+/// `arguments` and `env` of a `launchApp` mapping.
+fn launch_of(m: &Mapping) -> Result<crate::Launch, String> {
+    let mut launch = crate::Launch::default();
+    match get(m, "arguments") {
+        Some(Yaml::Mapping(a)) => {
+            for (k, v) in a {
+                let k = k.as_str().ok_or("argument names are strings")?.to_owned();
+                if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+                    return Err(format!("argument name `{k}` must be letters, digits, `.`, `_` or `-`"));
+                }
+                let v = match v {
+                    Yaml::Bool(b) => crate::LaunchArg::Bool(*b),
+                    Yaml::Number(n) => crate::LaunchArg::Int(n.as_i64().ok_or(format!("argument `{k}`: whole numbers only (write \"{n}\" for text)"))?),
+                    Yaml::Sequence(items) => crate::LaunchArg::List(
+                        items.iter().map(|i| match i {
+                            Yaml::Number(n) => Ok(n.to_string()),
+                            Yaml::Bool(b) => Ok(b.to_string()),
+                            other => string(other),
+                        }).collect::<Result<_, _>>().map_err(|e| format!("argument `{k}`: {e}"))?,
+                    ),
+                    other => crate::LaunchArg::Str(string(other).map_err(|e| format!("argument `{k}`: {e}"))?),
+                };
+                launch.arguments.push((k, v));
+            }
+        }
+        Some(Yaml::Null) | None => {}
+        Some(_) => return Err("`arguments` must be a map (name: value)".into()),
+    }
+    match get(m, "env") {
+        Some(Yaml::Mapping(e)) => {
+            for (k, v) in e {
+                let k = k.as_str().ok_or("env names are strings")?.to_owned();
+                if let Some(why) = crate::launch_env_refused(&k) {
+                    return Err(why);
+                }
+                let v = match v {
+                    Yaml::Number(n) => n.to_string(),
+                    Yaml::Bool(b) => b.to_string(),
+                    other => string(other).map_err(|e| format!("env `{k}`: {e}"))?,
+                };
+                launch.env.push((k, v));
+            }
+        }
+        Some(Yaml::Null) | None => {}
+        Some(_) => return Err("`env` must be a map (NAME: value)".into()),
+    }
+    if let Some(k) = m.keys().filter_map(Yaml::as_str).find(|k| !["appId", "arguments", "env"].contains(k)) {
+        return Err(format!("unknown launchApp field `{k}` (appId, arguments, env)"));
+    }
+    Ok(launch)
 }
 
 fn map(pairs: Vec<(&str, Yaml)>) -> Yaml {
@@ -1009,7 +1094,26 @@ impl Step {
                 "uploadFile",
                 map(vec![("into", sel(into)), ("files", Yaml::Sequence(files.iter().map(|f| s(f)).collect()))]),
             ),
-            Self::LaunchApp(a) => one("launchApp", s(a)),
+            Self::LaunchApp { app, launch } if launch.is_empty() => one("launchApp", s(app)),
+            Self::LaunchApp { app, launch } => {
+                let arg = |v: &crate::LaunchArg| match v {
+                    crate::LaunchArg::Str(t) => s(t),
+                    crate::LaunchArg::Int(n) => Yaml::Number((*n).into()),
+                    crate::LaunchArg::Bool(b) => Yaml::Bool(*b),
+                    crate::LaunchArg::List(l) => Yaml::Sequence(l.iter().map(|t| s(t)).collect()),
+                };
+                let arguments = launch.arguments.iter().map(|(k, v)| (s(k), arg(v))).collect::<Mapping>();
+                // Recorded runs and hints keep `${NAME}` references but never literal env values.
+                let env = launch.env.iter().map(|(k, v)| (s(k), s(if v.contains("${") { v } else { MASKED }))).collect::<Mapping>();
+                one(
+                    "launchApp",
+                    map(vec![
+                        ("appId", s(app)),
+                        ("arguments", if arguments.is_empty() { Yaml::Null } else { Yaml::Mapping(arguments) }),
+                        ("env", if env.is_empty() { Yaml::Null } else { Yaml::Mapping(env) }),
+                    ]),
+                )
+            }
             Self::Swipe { from, to } => one("swipe", map(vec![("from", pt(from)), ("to", pt(to))])),
             Self::UseSession(id) => one("session", s(id)),
             Self::StartSession { id, platform, target, reset, device } => one(
@@ -1808,5 +1912,57 @@ mod tests {
         assert!(substitute("${HOME}").expect_err("not allowlisted").contains("FASTPILOT_VARS"));
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
+    }
+
+    /// E1: `launchApp` with `arguments` and `env`; the old string form still works.
+    #[test]
+    fn launch_app_arguments_and_env() {
+        use crate::{Launch, LaunchArg};
+        let flow = parse_flow(
+            "- launchApp: com.x\n- launchApp:\n    appId: com.x/.Main\n    arguments: { server: \"https://staging\", retries: 3, debug: true, tags: [a, b] }\n    env: { API_TOKEN: s3cr3t-literal, REF: \"${FP_LAUNCH_SECRET}\" }\n",
+        )
+        .expect("parses");
+        assert_eq!(flow.steps[0].step, Step::LaunchApp { app: "com.x".into(), launch: Launch::default() });
+        let Step::LaunchApp { app, launch } = &flow.steps[1].step else { panic!("not launchApp") };
+        assert_eq!(app, "com.x/.Main");
+        assert_eq!(
+            launch.arguments,
+            [
+                ("server".into(), LaunchArg::Str("https://staging".into())),
+                ("retries".into(), LaunchArg::Int(3)),
+                ("debug".into(), LaunchArg::Bool(true)),
+                ("tags".into(), LaunchArg::List(vec!["a".into(), "b".into()])),
+            ]
+        );
+        // Env values never in the step label (output, report) ...
+        let label = flow.steps[1].step.label();
+        assert!(label.contains("env {API_TOKEN=***, REF=***}") && !label.contains("s3cr3t") && label.contains("retries=3"), "{label}");
+        // ... nor as literals in the recorded flow; `${NAME}` references stay replayable.
+        let yaml = flow_to_yaml(&flow, &HashMap::new());
+        assert!(!yaml.contains("s3cr3t") && yaml.contains("API_TOKEN: '***'") && yaml.contains("REF: ${FP_LAUNCH_SECRET}"), "{yaml}");
+        assert!(yaml.contains("- launchApp: com.x\n"), "old form kept: {yaml}");
+        let again = parse_flow(&yaml).expect("recorded flow parses");
+        let Step::LaunchApp { launch: replay, .. } = &again.steps[1].step else { panic!("not launchApp") };
+        assert_eq!(replay.arguments, launch.arguments);
+
+        // `${NAME}` in env is checked like any variable.
+        let errs = check_flow("- session: { start: a, platform: android }\n- launchApp: { appId: com.x, env: { T: \"${FP_NOT_ALLOWED_X}\" } }\n", &[])
+            .expect_err("unknown variable");
+        assert!(errs.iter().any(|e| e.message.contains("FP_NOT_ALLOWED_X")), "{errs:?}");
+
+        // Names that change how the app is loaded, or reach into fastpilot, are refused.
+        for bad in ["DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "FASTPILOT_ALLOWED_DOMAINS", "fastpilot_vars", "MallocStackLogging", "A-B"] {
+            let err = parse_flow(&format!("- launchApp: {{ appId: com.x, env: {{ {bad}: \"1\" }} }}\n")).expect_err(bad);
+            assert!(err.iter().any(|e| e.message.contains(bad)), "{bad}: {err:?}");
+        }
+        for (yaml, want) in [
+            ("{ appId: com.x, arguments: { ratio: 1.5 } }", "whole numbers"),
+            ("{ appId: com.x, arguments: [a] }", "must be a map"),
+            ("{ appId: com.x, arguments: { \"a b\": 1 } }", "argument name"),
+            ("{ appId: com.x, clearState: true }", "unknown launchApp field `clearState`"),
+        ] {
+            let err = parse_flow(&format!("- launchApp: {yaml}\n")).expect_err(yaml);
+            assert!(err.iter().any(|e| e.message.contains(want)), "{yaml}: {err:?}");
+        }
     }
 }
