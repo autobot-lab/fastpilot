@@ -145,7 +145,7 @@ impl RetryBudget {
     }
 
     pub fn from_env() -> Self {
-        Self::new(std::env::var("FASTPILOT_RETRY_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(3))
+        Self::new(fastpilot_core::config::var("FASTPILOT_RETRY_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(3))
     }
 
     /// Spend one retry; false when the budget is used up.
@@ -181,7 +181,7 @@ impl Breaker {
     }
 
     pub fn from_env() -> Self {
-        Self::new(std::env::var("FASTPILOT_BREAKER").ok().and_then(|v| v.parse().ok()).unwrap_or(3))
+        Self::new(fastpilot_core::config::var("FASTPILOT_BREAKER").ok().and_then(|v| v.parse().ok()).unwrap_or(3))
     }
 
     /// `None` for a pass.

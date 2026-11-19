@@ -23,10 +23,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::pool::{Device, Pool};
 
-/// Exploration / judgment (PRD §12.5: the larger model).
-pub const MODEL_EXPLORE: &str = "claude-opus-5-5";
-/// Replaying a path-memory hint (PRD §12.5: the fast model).
-pub const MODEL_REPLAY: &str = "claude-haiku-5-5";
+/// Exploration / judgment (PRD §12.5: the larger model); `model_explore` setting overrides.
+pub fn model_explore() -> String {
+    fastpilot_core::config::var("FASTPILOT_MODEL_EXPLORE").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| "claude-opus-5-5".into())
+}
+/// Replaying a path-memory hint (PRD §12.5: the fast model); `model_replay` setting overrides.
+pub fn model_replay() -> String {
+    fastpilot_core::config::var("FASTPILOT_MODEL_REPLAY").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| "claude-haiku-5-5".into())
+}
 /// One Claude Code invocation may take this long before it is stopped.
 const CASE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -183,7 +187,7 @@ fn clip(s: &str, n: usize) -> String {
 
 /// Claude Code's CLI: `FASTPILOT_CLAUDE`, else `claude` on PATH.
 pub fn claude_bin() -> String {
-    std::env::var("FASTPILOT_CLAUDE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into())
+    fastpilot_core::config::var("FASTPILOT_CLAUDE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into())
 }
 
 /// What the tools of one test case share with Claude Code's calls.
@@ -202,7 +206,7 @@ impl Agent {
     fn tools() -> Vec<Value> {
         let mut tools: Vec<Value> = FastPilot::api_tools()
             .into_iter()
-            .filter(|t| t["name"] != "report")
+            .filter(|t| t["name"] != "report" && t["name"] != "config")
             .map(|t| json!({ "name": t["name"], "description": t["description"], "inputSchema": t["input_schema"] }))
             .collect();
         tools.push(finish_tool());
@@ -211,6 +215,9 @@ impl Agent {
 
     async fn call(&self, name: &str, mut input: Value) -> Value {
         let text = |t: String, err: bool| json!({ "content": [{ "type": "text", "text": t }], "isError": err });
+        if name == "config" {
+            return text("settings are not changed during an unattended run".into(), true);
+        }
         if name == "finish" {
             let pass = input["status"] == "pass";
             let notes = input["notes"].as_str().unwrap_or("").to_owned();
@@ -324,7 +331,7 @@ struct Session {
 async fn claude_session(prompt: &str, model: &str, addr: &str, token: &str) -> Session {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
     let config = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp-bridge", addr, token] } } });
-    let effort = if model == MODEL_REPLAY { "low" } else { "medium" };
+    let effort = if model == model_replay() { "low" } else { "medium" };
     let child = tokio::process::Command::new(claude_bin())
         .args(["-p", "--output-format", "json", "--model", model, "--effort", effort])
         .args(["--append-system-prompt", SYSTEM])
@@ -374,8 +381,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let hint = fp.hint(&case.id);
     let mut model = match (&opts.model, &hint) {
         (Some(m), _) => m.clone(),
-        (None, Some(_)) => MODEL_REPLAY.to_owned(),
-        (None, None) => MODEL_EXPLORE.to_owned(),
+        (None, Some(_)) => model_replay(),
+        (None, None) => model_explore(),
     };
     let mut models = vec![model.clone()];
     let plan: Vec<String> = case
@@ -433,8 +440,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
                 }
                 // The hint no longer applies: hand over to the larger model, sessions as they are.
                 let replay_failed = agent.replay_failed.load(std::sync::atomic::Ordering::SeqCst);
-                if replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && opts.model.is_none() && model == MODEL_REPLAY {
-                    model = MODEL_EXPLORE.to_owned();
+                if replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && opts.model.is_none() && model == model_replay() {
+                    model = model_explore();
                     models.push(model.clone());
                     lock(&agent.transcript).push(format!("replay failed: switching to {model}"));
                     *lock(&agent.verdict) = None;

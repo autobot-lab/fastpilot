@@ -84,7 +84,7 @@ pub fn command_of(args: &[String]) -> Option<&str> {
 
 /// `~/.fastpilot/cli.sock`, or `FASTPILOT_SOCKET`.
 fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("FASTPILOT_SOCKET") {
+    if let Some(p) = fastpilot_core::config::var_os("FASTPILOT_SOCKET") {
         return p.into();
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
@@ -114,7 +114,7 @@ pub async fn daemon(web: LaunchOptions) -> Res<()> {
     let _ = std::fs::remove_file(&path);
     let listener = tokio::net::UnixListener::bind(&path)?;
     let fp = FastPilot::new(web);
-    let idle = Duration::from_secs(std::env::var("FASTPILOT_DAEMON_IDLE").ok().and_then(|v| v.parse().ok()).unwrap_or(1800));
+    let idle = Duration::from_secs(fastpilot_core::config::var("FASTPILOT_DAEMON_IDLE").ok().and_then(|v| v.parse().ok()).unwrap_or(1800));
     let last = std::sync::Arc::new(std::sync::Mutex::new(Instant::now()));
     // Requests being handled: a long one (launching Chrome, a flow) is never cut by the idle exit.
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -366,8 +366,8 @@ fn flow_source(arg: &str) -> Res<String> {
 /// One shell command. `argv` starts at the command name.
 pub fn main(argv: &[String]) -> Res<()> {
     // Global options, anywhere on the line.
-    let mut session = std::env::var("FASTPILOT_SESSION").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
-    let (mut json, mut headed) = (false, std::env::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1"));
+    let mut session = fastpilot_core::config::var("FASTPILOT_SESSION").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
+    let (mut json, mut headed) = (false, fastpilot_core::config::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1"));
     let mut opts: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut flags: Vec<&str> = Vec::new();
     let mut args: Vec<String> = Vec::new();

@@ -74,6 +74,9 @@ matching message (Mailpit `/api/v1`, MailHog `/api/v2`, any URL's body, or the A
 the first run of `length` digits (default 4–8) after `after`; clear the inbox in setup if old codes
 could match.
 
+Settings: the `config` tool lists and changes settings (allowed_domains, confirm_actions,
+headful, model_replay, ...); environment variables win. An agent may only make guard rails stricter.
+
 Rules
 - Auto-wait before/after every step (actionability, DOM/accessibility quiet, navigation and requests
   triggered by the action). There is no sleep.

@@ -66,7 +66,7 @@ pub async fn list() -> Result<Vec<DeviceInfo>, Error> {
 pub async fn resolve(spec: Option<&str>) -> Result<String, Error> {
     let spec = spec
         .map(str::to_owned)
-        .or_else(|| std::env::var("FASTPILOT_ANDROID_SERIAL").ok())
+        .or_else(|| fastpilot_core::config::var("FASTPILOT_ANDROID_SERIAL").ok())
         .or_else(|| std::env::var("ANDROID_SERIAL").ok())
         .filter(|s| !s.is_empty());
     let spec = spec.as_deref().map(DeviceSpec::parse).transpose().map_err(Error::Adb)?;

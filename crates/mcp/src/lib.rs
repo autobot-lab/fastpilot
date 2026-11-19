@@ -40,11 +40,11 @@ pub struct Devices {
 
 impl Devices {
     fn android(&self) -> Option<String> {
-        self.android.clone().or_else(|| std::env::var("FASTPILOT_ANDROID_SERIAL").ok())
+        self.android.clone().or_else(|| fastpilot_core::config::var("FASTPILOT_ANDROID_SERIAL").ok())
     }
 
     fn ios(&self) -> Option<String> {
-        self.ios.clone().or_else(|| std::env::var("FASTPILOT_IOS_UDID").ok())
+        self.ios.clone().or_else(|| fastpilot_core::config::var("FASTPILOT_IOS_UDID").ok())
     }
 }
 
@@ -199,6 +199,16 @@ pub struct ReportArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigArgs {
+    /// list (default) | get | set | unset
+    pub action: Option<String>,
+    /// Setting key, e.g. allowed_domains, confirm_actions, headful, model_replay (see list).
+    pub key: Option<String>,
+    /// set: the new value; lists are comma separated (`shop.example.com, *.staging.example.com`).
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct StateArgs {
     /// save | load | list | delete
     pub action: String,
@@ -345,6 +355,7 @@ impl FastPilot {
             "report" => match parse(args) { Ok(a) => self.report(a).await, Err(e) => fail(e) },
             "docs" => match parse(args) { Ok(a) => self.docs(a).await, Err(e) => fail(e) },
             "state" => match parse(args) { Ok(a) => self.state(a).await, Err(e) => fail(e) },
+            "config" => match parse(args) { Ok(a) => self.config(a).await, Err(e) => fail(e) },
             other => fail(format!("unknown tool `{other}`")),
         };
         match res {
@@ -595,7 +606,7 @@ impl FastPilot {
         if args.file != Some(true) {
             return ok(text);
         }
-        let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("snapshots");
+        let dir = fastpilot_core::config::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("snapshots");
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let path = dir.join(format!("{id}-{ms}.txt"));
         match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &text)) {
@@ -726,6 +737,63 @@ impl FastPilot {
                 ok(text)
             }
             Err(e) => fail(format!("report failed: {e}")),
+        }
+    }
+
+    #[tool(description = "fastpilot settings (~/.fastpilot/config.toml; environment variables win): list, get, set, unset. Changes apply to the next action, no restart. Guard rails (allowed_domains, confirm_actions, vars, state_expire_days) can only be made stricter here; program paths and locations (chrome, claude, dir, ios_runner) only by the user with `fastpilot config set` or the file.")]
+    async fn config(&self, Parameters(args): Parameters<ConfigArgs>) -> Result<CallToolResult, ErrorData> {
+        use fastpilot_core::config::{self, Rule, Source};
+        let action = args.action.as_deref().unwrap_or("list");
+        if action == "list" {
+            return ok(config::describe());
+        }
+        let Some(key) = args.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_lowercase) else {
+            return fail("`key` is required (see action: list)");
+        };
+        let Some(setting) = config::setting(&key) else {
+            return fail(format!("unknown setting `{key}`; see action: list"));
+        };
+        let current = match config::effective(&key) {
+            Source::Env(v) | Source::File(v) => Some(v),
+            Source::Default => None,
+        };
+        if action == "get" {
+            return ok(format!("{key} = {}", current.as_deref().unwrap_or("— (default)")));
+        }
+        let value = match action {
+            "set" => match args.value.as_deref() {
+                Some(v) => Some(v),
+                None => return fail("set needs `value`"),
+            },
+            "unset" => None,
+            other => return fail(format!("unknown action `{other}` (list, get, set, unset)")),
+        };
+        match setting.rule {
+            Rule::HumanOnly => {
+                return fail(format!(
+                    "`{key}` is a program path or location: only the user changes it (`fastpilot config set {key} <value>` or {})",
+                    config::path().display()
+                ));
+            }
+            Rule::TightenOnly if !config::tightens(&key, current.as_deref(), value) => {
+                return fail(format!(
+                    "`{key}` is a guard rail: this change would loosen it (now {}), so it needs the user: `fastpilot config set {key} ...` or {}",
+                    current.as_deref().unwrap_or("default"),
+                    config::path().display()
+                ));
+            }
+            _ => {}
+        }
+        if let Source::Env(v) = config::effective(&key) {
+            return fail(format!("`{key}` is set by the environment (FASTPILOT_{} = {v}), which wins over the file: change it there", key.to_uppercase()));
+        }
+        match config::write(&key, value) {
+            Ok(p) => ok(format!(
+                "{key} {} in {} (applies to the next action)",
+                value.map_or("removed".to_owned(), |v| format!("= {v}")),
+                p.display()
+            )),
+            Err(e) => fail(e),
         }
     }
 

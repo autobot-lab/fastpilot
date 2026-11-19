@@ -355,7 +355,7 @@ impl Session {
 /// matched by the simulator's device path in launchd_sim's command line (or the only one).
 /// `FASTPILOT_WEBINSPECTOR_SOCKET` overrides.
 pub async fn simulator_socket(udid: &str) -> Result<PathBuf, Error> {
-    if let Some(p) = std::env::var_os("FASTPILOT_WEBINSPECTOR_SOCKET") {
+    if let Some(p) = fastpilot_core::config::var_os("FASTPILOT_WEBINSPECTOR_SOCKET") {
         return Ok(p.into());
     }
     let out = tokio::process::Command::new("lsof").args(["-aUc", "launchd_sim", "-Fpn"]).output().await.map_err(other)?;

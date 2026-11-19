@@ -40,7 +40,7 @@ fn relays() -> &'static Mutex<Vec<Arc<Relay>>> {
 
 /// Shared secret the extension must send (`?token=`), from `FASTPILOT_RELAY_TOKEN`.
 fn token() -> Option<String> {
-    std::env::var("FASTPILOT_RELAY_TOKEN").ok().filter(|t| !t.is_empty())
+    fastpilot_core::config::var("FASTPILOT_RELAY_TOKEN").ok().filter(|t| !t.is_empty())
 }
 
 async fn start(port: u16) -> Result<Arc<Relay>, Error> {

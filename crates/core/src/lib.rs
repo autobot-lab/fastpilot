@@ -1,6 +1,7 @@
 //! fastpilot core: the platform-agnostic driver contract, selectors, snapshots,
 //! the flow DSL and the flow engine. Drivers (web, android, ios) live in their own crates.
 
+pub mod config;
 mod device;
 mod dsl;
 mod engine;

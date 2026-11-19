@@ -15,7 +15,7 @@ pub const THRESHOLD: f64 = 0.1;
 pub const MAX_DIFF: f64 = 0.002;
 
 pub fn dir() -> PathBuf {
-    std::env::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("baselines")
+    crate::config::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("baselines")
 }
 
 /// A region to leave out, in image pixels.
@@ -50,7 +50,7 @@ pub fn compare(name: &str, shot: &[u8], masks: &[Mask], threshold: f64, max_diff
     let d = dir();
     std::fs::create_dir_all(&d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
     let base_path = d.join(format!("{name}.png"));
-    let update = update || std::env::var("FASTPILOT_UPDATE_BASELINES").is_ok_and(|v| v == "1");
+    let update = update || crate::config::var("FASTPILOT_UPDATE_BASELINES").is_ok_and(|v| v == "1");
     let save = |img: &RgbaImage, p: &PathBuf| img.save_with_format(p, ImageFormat::Png).map_err(|e| format!("cannot write {}: {e}", p.display()));
     if update || !base_path.exists() {
         save(&actual, &base_path)?;

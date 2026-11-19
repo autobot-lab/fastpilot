@@ -20,7 +20,7 @@ pub enum Target {
 /// `FASTPILOT_IOS_RUNNER` / `FASTPILOT_IOS_RUNNER_DEVICE`.
 pub fn build_dir(target: Target) -> PathBuf {
     match target {
-        Target::Simulator => std::env::var_os("FASTPILOT_IOS_RUNNER")
+        Target::Simulator => fastpilot_core::config::var_os("FASTPILOT_IOS_RUNNER")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build"))),
         Target::Device => crate::device::device_build_dir(),
