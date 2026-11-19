@@ -67,9 +67,12 @@ impl Cdp {
         tokio::spawn(async move {
             while let Some(m) = rx.recv().await {
                 if sink.send(m).await.is_err() {
-                    break;
+                    return;
                 }
             }
+            // Every handle is gone: close the socket, so the reader ends and the browser frees
+            // the connection (a split sink alone would keep it open).
+            let _ = sink.close().await;
         });
         let (p, ev, c) = (pending.clone(), events.clone(), closed.clone());
         tokio::spawn(async move {

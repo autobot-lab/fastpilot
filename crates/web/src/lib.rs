@@ -5,9 +5,11 @@ mod browser;
 mod cdp;
 mod page;
 mod relay;
+mod screencast;
 
 pub use browser::{Browser, LaunchOptions, chrome_endpoint, find_chrome, http_get};
 pub use page::WebPage;
+pub use screencast::Screencast;
 pub use relay::{DEFAULT_PORT as RELAY_PORT, extension_page, native_host as relay_native_host};
 
 #[derive(Debug, thiserror::Error)]

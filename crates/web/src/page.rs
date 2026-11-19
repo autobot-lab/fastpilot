@@ -1131,6 +1131,12 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 
 #[async_trait]
 impl Driver for WebPage {
+    fn live_screen(&self) -> Option<fastpilot_core::live::Screen> {
+        let tab = self.tab();
+        (self.browser.own.load(std::sync::atomic::Ordering::Relaxed) && tab.session.is_some())
+            .then(|| fastpilot_core::live::Screen { ws: self.browser.ws.clone(), target: tab.target })
+    }
+
     async fn open(&self, target: &str) -> Result<()> {
         let url = to_url(target);
         let allowed = fastpilot_core::policy::allowed_domains();

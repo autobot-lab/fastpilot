@@ -213,12 +213,20 @@ headful = true
 flow_timeout = 600
 ```
 
-**Lewat browser:** `fastpilot ui` membuka halaman Pengaturan dan Device di browser default (hanya
+**Lewat browser:** `fastpilot ui` membuka halaman Live, Pengaturan, dan Device di browser default (hanya
 `127.0.0.1`, port acak, token di link; `--no-open` hanya mencetak link-nya, `--port N` memilih port).
 Isinya Model AI untuk `fastpilot run`, Batasan & izin, nama Secret (nilainya tidak pernah tampil), dan
 hasil `doctor` dengan tombol Cek ulang. Perubahan dari halaman ini adalah perubahan user: boleh
 melonggarkan, ditulis atomik ke file (mode 600), dan berlaku mulai run berikutnya. Semua aset dan font
 ada di dalam binary, jadi halaman ini jalan tanpa internet.
+
+**Panel Live** (`fastpilot ui`, menu Live): sesi yang sedang berjalan dari server MCP (Claude Code),
+CLI, dan `fastpilot run`, masing-masing dengan langkah flow-nya (✓ selesai, ▶ berjalan, 🔒 diblokir
+atau akan diblokir Batasan) dan, untuk sesi web di Chrome milik fastpilot, layarnya secara live. Layar
+hanya ditonton (read-only): koneksi DevTools terpisah yang hanya mengirim screencast, sekitar 2 fps untuk
+thumbnail dan 8 fps saat diperbesar, dan hanya selama panel terbuka. Chrome milikmu (mode attach) dan
+layar Android/iOS belum ditampilkan; langkahnya tetap terlihat. Data sesi ada di `~/.fastpilot/live/`
+(hanya bisa dibaca pemiliknya); alamat DevTools tidak pernah dikirim ke browser.
 
 Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 

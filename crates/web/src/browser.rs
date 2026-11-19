@@ -23,6 +23,11 @@ pub struct Browser {
     pub(crate) cdp: Arc<Cdp>,
     child: Option<Child>,
     profile: Option<PathBuf>,
+    /// The browser's DevTools socket.
+    pub(crate) ws: String,
+    /// fastpilot's own Chrome (launched, or the configured remote one), as opposed to the user's
+    /// Chrome attached to: only these sessions are offered to the Live panel.
+    pub(crate) own: std::sync::atomic::AtomicBool,
 }
 
 impl Browser {
@@ -32,7 +37,9 @@ impl Browser {
         if opts.executable.is_none()
             && let Some(endpoint) = chrome_endpoint()
         {
-            return Self::connect(Some(&endpoint)).await.map_err(|e| Error::Launch(format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT): {e}")));
+            let b = Self::connect(Some(&endpoint)).await.map_err(|e| Error::Launch(format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT): {e}")))?;
+            b.own.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(b);
         }
         Self::launch_local(opts).await
     }
@@ -98,7 +105,7 @@ impl Browser {
         let cdp = Cdp::connect(&ws).await?;
         // Popups (window.open) of our pages are attached as they appear.
         let _ = cdp.call(None, "Target.setDiscoverTargets", json!({ "discover": true })).await;
-        Ok(Arc::new(Self { cdp, child: Some(child), profile: Some(profile) }))
+        Ok(Arc::new(Self { cdp, child: Some(child), profile: Some(profile), ws, own: true.into() }))
     }
 
     /// Attach to a running Chrome (PRD §7.3 attach mode). `endpoint` is a `ws://` browser URL or
@@ -123,12 +130,12 @@ impl Browser {
         };
         let cdp = Cdp::connect(&ws).await?;
         let _ = cdp.call(None, "Target.setDiscoverTargets", json!({ "discover": true })).await;
-        Ok(Arc::new(Self { cdp, child: None, profile: None }))
+        Ok(Arc::new(Self { cdp, child: None, profile: None, ws, own: false.into() }))
     }
 
     /// A page-level endpoint (e.g. an Android WebView's `/json/list` entry): no Target domain.
     pub async fn connect_page(ws_url: &str, target_id: &str) -> Result<WebPage, Error> {
-        let browser = Arc::new(Self { cdp: Cdp::connect(ws_url).await?, child: None, profile: None });
+        let browser = Arc::new(Self { cdp: Cdp::connect(ws_url).await?, child: None, profile: None, ws: ws_url.to_owned(), own: false.into() });
         WebPage::init(browser, None, target_id.to_owned(), None, None).await
     }
 

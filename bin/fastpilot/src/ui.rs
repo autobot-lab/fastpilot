@@ -9,6 +9,9 @@
 //! - Changes made here are the user's: they may loosen guard rails, and like every change they
 //!   apply from the next run (running fastpilot processes keep the rails they started with).
 //!   Secret values are never read or sent: only the names in `vars`.
+//! - Live (C7a): running sessions and their steps from `~/.fastpilot/live` (see
+//!   `fastpilot_core::live`), and the screen of web sessions on fastpilot's own Chrome as an MJPEG
+//!   stream that exists only while the page shows it. The browser's DevTools address stays here.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -73,6 +76,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/assets/{*path}", get(asset))
         .route("/api/settings", get(settings).post(change))
         .route("/api/doctor", get(doctor_api))
+        .route("/api/live", get(live_api))
+        .route("/api/live/frames", get(frames))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -171,6 +176,7 @@ const ICONS: &[(&str, &str)] = &[
     ("clock", include_str!("../ui/icons/clock.svg")),
     ("close", include_str!("../ui/icons/close.svg")),
     ("device", include_str!("../ui/icons/device.svg")),
+    ("expand", include_str!("../ui/icons/expand.svg")),
     ("gauge", include_str!("../ui/icons/gauge.svg")),
     ("globe", include_str!("../ui/icons/globe.svg")),
     ("info", include_str!("../ui/icons/info.svg")),
@@ -336,4 +342,73 @@ async fn doctor_api(Query(q): Query<std::collections::HashMap<String, String>>) 
         })
         .collect();
     axum::Json(json!({ "checks": checks })).into_response()
+}
+
+// ---- live (C7a) ---------------------------------------------------------------------------
+
+/// Running sessions of every fastpilot process, with the steps of their flows. The DevTools
+/// address of the browser is not part of it: frames come from `/api/live/frames`.
+async fn live_api() -> Response {
+    let sessions: Vec<Value> = fastpilot_core::live::read_all()
+        .into_iter()
+        .flat_map(|p| {
+            let flows = p.flows.clone();
+            p.sessions.into_iter().map(move |s| {
+                let flow = s.flow.and_then(|id| flows.iter().find(|f| f.id == id)).map(|f| {
+                    json!({ "started_ms": f.started_ms, "finished": f.finished, "steps": f.steps })
+                });
+                json!({ "pid": p.pid, "kind": p.kind, "id": s.id, "platform": s.platform, "started_ms": s.started_ms, "watchable": s.screen.is_some(), "flow": flow })
+            })
+        })
+        .collect();
+    axum::Json(json!({ "sessions": sessions })).into_response()
+}
+
+const BOUNDARY: &str = "fpframe";
+
+/// `?pid=&session=&fps=&w=`: the session's screen as `multipart/x-mixed-replace` JPEG frames,
+/// at most `fps` (1–15) per second and `w` (160–1920) pixels wide. Read-only: a separate DevTools
+/// connection that only screencasts; it ends when the page stops showing the stream.
+async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
+    let (Some(pid), Some(session)) = (q.get("pid").and_then(|p| p.parse::<u32>().ok()), q.get("session")) else {
+        return refuse(StatusCode::BAD_REQUEST, "pid and session are needed");
+    };
+    let fps = q.get("fps").and_then(|f| f.parse::<u64>().ok()).unwrap_or(2).clamp(1, 15);
+    let width = q.get("w").and_then(|w| w.parse::<u32>().ok()).unwrap_or(480).clamp(160, 1920);
+    let screen = fastpilot_core::live::read_all()
+        .into_iter()
+        .filter(|p| p.pid == pid)
+        .flat_map(|p| p.sessions)
+        .find(|s| &s.id == session)
+        .and_then(|s| s.screen);
+    let Some(screen) = screen else {
+        return refuse(StatusCode::NOT_FOUND, "no watchable session by that name (only web sessions on fastpilot's own Chrome are)");
+    };
+    let cast = match fastpilot_web::Screencast::start(&screen.ws, &screen.target, width, if width > 800 { 70 } else { 55 }).await {
+        Ok(c) => c,
+        Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("the screen cannot be shown: {e}")),
+    };
+    let rx = cast.frames();
+    let period = std::time::Duration::from_millis(1000 / fps);
+    let frames = futures_util::stream::unfold((cast, rx, None::<tokio::time::Instant>), move |(cast, mut rx, last)| async move {
+        // A new frame (waiting as long as the page is static), no more often than `fps`.
+        rx.changed().await.ok()?;
+        if let Some(last) = last {
+            tokio::time::sleep_until(last + period).await;
+        }
+        let frame = rx.borrow_and_update().clone()?;
+        // The boundary right after the frame: a browser shows a part once the next one starts,
+        // and a static page sends no next frame.
+        let mut part = format!("Content-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", frame.len()).into_bytes();
+        part.extend_from_slice(&frame);
+        part.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
+        Some((Ok::<_, std::io::Error>(part), (cast, rx, Some(tokio::time::Instant::now()))))
+    });
+    let first = futures_util::stream::once(async { Ok::<_, std::io::Error>(format!("--{BOUNDARY}\r\n").into_bytes()) });
+    let stream = futures_util::StreamExt::chain(first, frames);
+    let mut r = Response::new(Body::from_stream(stream));
+    if let Ok(v) = HeaderValue::from_str(&format!("multipart/x-mixed-replace; boundary={BOUNDARY}")) {
+        r.headers_mut().insert(header::CONTENT_TYPE, v);
+    }
+    r
 }
