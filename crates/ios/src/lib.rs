@@ -518,7 +518,7 @@ impl IosDriver {
             Some(u) => boot(&u).await?,
             None => match devices().await?.into_iter().find(|(_, _, st)| st == "Booted") {
                 Some((u, _, _)) => u,
-                None => boot(&std::env::var("FASTPILOT_IOS_DEVICE").unwrap_or_else(|_| "iPhone 16".into())).await?,
+                None => boot(&fastpilot_core::config::var("FASTPILOT_IOS_DEVICE").unwrap_or_else(|_| "iPhone 16".into())).await?,
             },
         };
         let port = runner_port(&udid);
@@ -534,8 +534,8 @@ impl IosDriver {
             .arg(&xctestrun)
             .args(["-destination", &format!("id={udid}")])
             .env("TEST_RUNNER_FASTPILOT_PORT", port.to_string())
-            .env("TEST_RUNNER_FASTPILOT_IDLE_EXIT", std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into()))
-            .env("TEST_RUNNER_FASTPILOT_QUIESCENCE", std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default())
+            .env("TEST_RUNNER_FASTPILOT_IDLE_EXIT", fastpilot_core::config::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into()))
+            .env("TEST_RUNNER_FASTPILOT_QUIESCENCE", fastpilot_core::config::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -588,15 +588,15 @@ impl IosDriver {
         let xctestrun = runner::xctestrun(runner::Target::Device).ok_or_else(|| {
             Error::Runner(format!("runner not built for devices: ios-runner/build.sh --device {udid}"))
         })?;
-        let tunnel = std::env::var("FASTPILOT_IOS_TRANSPORT").is_ok_and(|t| t == "tunnel");
+        let tunnel = fastpilot_core::config::var("FASTPILOT_IOS_TRANSPORT").is_ok_and(|t| t == "tunnel");
         let port = runner_port(udid);
         let token = token()?;
         let env = [
             ("FASTPILOT_PORT".to_owned(), port.to_string()),
             ("FASTPILOT_BIND".to_owned(), if tunnel { "any" } else { "loopback" }.to_owned()),
             ("FASTPILOT_TOKEN".to_owned(), token.clone()),
-            ("FASTPILOT_IDLE_EXIT".to_owned(), std::env::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into())),
-            ("FASTPILOT_QUIESCENCE".to_owned(), std::env::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default()),
+            ("FASTPILOT_IDLE_EXIT".to_owned(), fastpilot_core::config::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into())),
+            ("FASTPILOT_QUIESCENCE".to_owned(), fastpilot_core::config::var("FASTPILOT_IOS_QUIESCENCE").unwrap_or_default()),
         ];
         let mut spawned = runner::spawn(&xctestrun, udid, &env).map_err(|e| Error::Runner(format!("xcodebuild: {e}")))?;
         let started = std::time::Instant::now();

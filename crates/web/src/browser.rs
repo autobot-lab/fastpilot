@@ -234,7 +234,7 @@ fn active_port_url() -> Option<String> {
 }
 
 fn find_chrome() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("FASTPILOT_CHROME") {
+    if let Some(p) = fastpilot_core::config::var_os("FASTPILOT_CHROME") {
         return Some(PathBuf::from(p));
     }
     let fixed = [

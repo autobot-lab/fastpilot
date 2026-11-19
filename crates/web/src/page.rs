@@ -240,11 +240,10 @@ async fn enable(cdp: &crate::cdp::Cdp, session: Option<&str>) -> std::result::Re
     let _ = cdp
         .call(session, "Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }))
         .await;
-    // FASTPILOT_ALLOWED_DOMAINS: every document request of this tab stops for a check
-    // (answered in `event_loop`).
-    if !fastpilot_core::policy::allowed_domains().is_empty() {
-        cdp.call(session, "Fetch.enable", json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] })).await?;
-    }
+    // FASTPILOT_ALLOWED_DOMAINS: every document request of this tab stops for a check (answered
+    // in `event_loop`), always, so a limit set later (`config` tool, config file) applies to
+    // sessions already open. Without a limit the request continues at once.
+    cdp.call(session, "Fetch.enable", json!({ "patterns": [{ "resourceType": "Document", "requestStage": "Request" }] })).await?;
     Ok(())
 }
 

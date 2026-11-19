@@ -15,7 +15,7 @@ const DEFAULT_RISKY: &[&str] = &[
 ];
 
 fn list(var: &str) -> Vec<String> {
-    std::env::var(var)
+    crate::config::var(var)
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_lowercase())

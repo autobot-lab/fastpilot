@@ -144,7 +144,7 @@ pub struct RunOptions {
 
 impl Default for RunOptions {
     fn default() -> Self {
-        let secs = std::env::var("FASTPILOT_FLOW_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(300);
+        let secs = crate::config::var("FASTPILOT_FLOW_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(300);
         Self {
             session: None,
             stop_on_fail: true,
@@ -1168,7 +1168,7 @@ fn check_name(name: &str) -> Result<()> {
 /// `.fastpilot/<dir>/<file>` (or under `FASTPILOT_DIR`); returns the path.
 fn save_file(dir: &str, file: &str, bytes: &[u8]) -> Result<String> {
     check_name(file)?;
-    let dir = std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join(dir);
+    let dir = crate::config::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join(dir);
     let path = dir.join(file);
     std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&path, bytes))

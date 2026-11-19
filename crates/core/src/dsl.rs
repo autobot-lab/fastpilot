@@ -1273,7 +1273,7 @@ pub(crate) fn var_names(s: &str) -> Vec<String> {
 /// Variables a flow may read: only those listed in `FASTPILOT_VARS` (comma separated), so a
 /// flow (or a prompt-injected AI) cannot pull arbitrary secrets out of the process environment.
 fn allowed() -> Vec<String> {
-    std::env::var("FASTPILOT_VARS")
+    crate::config::var("FASTPILOT_VARS")
         .unwrap_or_default()
         .split(',')
         .map(|v| v.trim().to_owned())

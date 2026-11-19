@@ -236,7 +236,7 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 
-## Tools (9)
+## Tools (10)
 
 | Tool | Fungsi |
 |---|---|
@@ -248,6 +248,7 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
 | `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
 | `state` | Simpan/muat login (web: cookies + localStorage) supaya test berikutnya tidak perlu login: `save` / `load` / `list` / `delete`. File hanya bisa dibaca pemiliknya, kedaluwarsa setelah 30 hari (`FASTPILOT_STATE_EXPIRE_DAYS`), dan dienkripsi AES-256-GCM bila `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) di-set. Sama dengan langkah `saveState` / `loadState` |
+| `config` | Lihat dan ubah pengaturan (`~/.fastpilot/config.toml`) lewat chat: `list` / `get` / `set` / `unset`, berlaku di langkah berikutnya tanpa restart. Agent hanya boleh **memperketat** batasan (`allowed_domains`, `confirm_actions`, `vars`, `state_expire_days`); path program dan lokasi (`chrome`, `claude`, `dir`, `ios_runner`) hanya bisa diubah user lewat `fastpilot config set` |
 | `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 
 ## Contoh

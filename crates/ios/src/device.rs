@@ -98,7 +98,7 @@ pub fn parse_profile(bytes: &[u8], app: &str) -> Option<Profile> {
 /// Device build of the runner (`ios-runner/build.sh --device`), overridable with
 /// `FASTPILOT_IOS_RUNNER_DEVICE`.
 pub fn device_build_dir() -> PathBuf {
-    std::env::var_os("FASTPILOT_IOS_RUNNER_DEVICE")
+    fastpilot_core::config::var_os("FASTPILOT_IOS_RUNNER_DEVICE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build-device")))
 }

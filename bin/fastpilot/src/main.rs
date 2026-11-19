@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 const USAGE: &str = "usage: fastpilot <command> [--headful]
 
 commands:
+  config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
   mcp     serve MCP over stdio (what MCP clients run)
@@ -36,6 +37,42 @@ env:
   FASTPILOT_HEADFUL  1 to show the browser window
   FASTPILOT_LOG      tracing filter, e.g. debug (logs go to stderr)";
 
+/// `fastpilot config [list | get KEY | set KEY VALUE | unset KEY | path]`: the user's own
+/// settings (no guard-rail limits: people decide).
+fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    use fastpilot_core::config;
+    let key = || args.get(1).map(|k| k.to_lowercase()).ok_or("missing setting key; see `fastpilot config list`");
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => println!("{}", config::describe()),
+        "path" => println!("{}", config::path().display()),
+        "get" => {
+            let k = key()?;
+            config::setting(&k).ok_or(format!("unknown setting `{k}`"))?;
+            match config::effective(&k) {
+                config::Source::Env(v) => println!("{v}  (env FASTPILOT_{})", k.to_uppercase()),
+                config::Source::File(v) => println!("{v}"),
+                config::Source::Default => println!("(default)"),
+            }
+        }
+        "set" => {
+            let k = key()?;
+            let v = args.get(2..).map(|r| r.join(" ")).filter(|v| !v.is_empty()).ok_or("set needs a value")?;
+            let p = config::write(&k, Some(&v))?;
+            println!("{k} = {v}  ({})", p.display());
+            if std::env::var(format!("FASTPILOT_{}", k.to_uppercase())).is_ok() {
+                println!("note: FASTPILOT_{} is set in the environment and wins over the file", k.to_uppercase());
+            }
+        }
+        "unset" => {
+            let k = key()?;
+            let p = config::write(&k, None)?;
+            println!("{k} removed  ({})", p.display());
+        }
+        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path)").into()),
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // stdout belongs to the MCP transport; logs always go to stderr.
@@ -46,11 +83,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
-    let headful = flag("--headful") || std::env::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1");
+    let headful = flag("--headful") || fastpilot_core::config::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1");
     let web = LaunchOptions { headless: !headful, executable: None };
 
     match args.first().map(String::as_str) {
         Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
+        Some("config") => config_cmd(&args[1..]),
         Some("daemon") if args.len() == 1 => cli::daemon(web).await,
         _ if cli::command_of(&args).is_some() => {
             // Blocking client: one request to the daemon (started on demand).
@@ -101,7 +139,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             };
             let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
             let opts = run::Options {
-                model: value("--model"),
+                model: value("--model").or_else(|| fastpilot_core::config::var("FASTPILOT_MODEL").ok().filter(|m| !m.is_empty())),
                 max_steps: value("--max-steps").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(30).max(1),
                 junit: value("--junit").map(Into::into),
                 html: value("--html").map(Into::into),

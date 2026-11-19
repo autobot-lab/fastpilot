@@ -129,8 +129,8 @@ pub struct Memory {
 
 impl Memory {
     pub fn from_env() -> Self {
-        let root = std::env::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".fastpilot"));
-        let mode = match std::env::var("FASTPILOT_MEMORY").as_deref() {
+        let root = fastpilot_core::config::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".fastpilot"));
+        let mode = match fastpilot_core::config::var("FASTPILOT_MEMORY").as_deref() {
             Ok("readonly") => Mode::ReadOnly,
             Ok("off") => Mode::Off,
             _ => Mode::ReadWrite,

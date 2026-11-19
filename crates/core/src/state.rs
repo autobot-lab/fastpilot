@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 const MAGIC: &[u8] = b"FPSTATE1";
 
 pub fn dir() -> PathBuf {
-    std::env::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("states")
+    crate::config::var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("states")
 }
 
 fn check_name(name: &str) -> Result<(), String> {
@@ -32,7 +32,7 @@ fn path(name: &str) -> Result<PathBuf, String> {
 }
 
 fn key() -> Result<Option<Key<Aes256Gcm>>, String> {
-    let Some(hex) = std::env::var("FASTPILOT_STATE_KEY").ok().filter(|k| !k.is_empty()) else { return Ok(None) };
+    let Some(hex) = crate::config::var("FASTPILOT_STATE_KEY").ok().filter(|k| !k.is_empty()) else { return Ok(None) };
     let bytes: Vec<u8> = (0..hex.len())
         .step_by(2)
         .map(|i| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()))
@@ -47,7 +47,7 @@ fn now() -> u64 {
 }
 
 fn max_age_days() -> u64 {
-    std::env::var("FASTPILOT_STATE_EXPIRE_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(30)
+    crate::config::var("FASTPILOT_STATE_EXPIRE_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(30)
 }
 
 /// Write `state` as `name`; returns the path and whether it was encrypted.

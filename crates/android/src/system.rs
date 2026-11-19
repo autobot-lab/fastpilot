@@ -22,7 +22,7 @@ pub enum Policy {
 
 impl Policy {
     pub fn from_env() -> Self {
-        match std::env::var("FASTPILOT_PERMISSIONS").as_deref() {
+        match fastpilot_core::config::var("FASTPILOT_PERMISSIONS").as_deref() {
             Ok("allow") => Self::Allow,
             Ok("keep") => Self::Keep,
             _ => Self::Deny,
