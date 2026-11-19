@@ -7,6 +7,7 @@ mod pool;
 mod report;
 mod run;
 mod stability;
+mod ui;
 
 use std::error::Error;
 
@@ -19,6 +20,7 @@ commands:
   doctor [web|android|ios|run|all]   is this machine ready? each gap with its fix
   setup [web|android|ios] [--yes]    apply the fixes doctor found, asking before each
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
+  ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1 + token)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
   mcp     serve MCP over stdio (what MCP clients run)
@@ -109,6 +111,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
         Some("config") => config_cmd(&args[1..]),
         Some("doctor") => doctor::doctor(&args[1..]).await,
+        Some("ui") => ui::ui(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,
         Some("daemon") if args.len() == 1 => cli::daemon(web).await,
         _ if cli::command_of(&args).is_some() => {
@@ -161,7 +164,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
             let opts = run::Options {
                 model: value("--model").or_else(|| fastpilot_core::config::var("FASTPILOT_MODEL").ok().filter(|m| !m.is_empty())),
-                max_steps: value("--max-steps").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(30).max(1),
+                // --max-steps (the user, on the command line) over the setting, else 30.
+                max_steps: value("--max-steps")
+                    .map(|n| n.parse::<usize>())
+                    .transpose()?
+                    .or_else(|| fastpilot_core::config::var("FASTPILOT_MAX_STEPS").ok().and_then(|n| n.trim().parse().ok()))
+                    .unwrap_or(30)
+                    .max(1),
                 junit: value("--junit").map(Into::into),
                 html: value("--html").map(Into::into),
                 record: flag("--record"),

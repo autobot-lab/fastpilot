@@ -24,15 +24,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::pool::{Device, Pool};
 
 /// Exploration / judgment (PRD §12.5: the larger model); `model_explore` setting overrides.
+pub const DEFAULT_EXPLORE: &str = "claude-opus-5-5";
+pub const DEFAULT_REPLAY: &str = "claude-haiku-5-5";
+
 pub fn model_explore() -> String {
-    fastpilot_core::config::var("FASTPILOT_MODEL_EXPLORE").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| "claude-opus-5-5".into())
+    fastpilot_core::config::var("FASTPILOT_MODEL_EXPLORE").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_EXPLORE.into())
 }
 /// Replaying a path-memory hint (PRD §12.5: the fast model); `model_replay` setting overrides.
 pub fn model_replay() -> String {
-    fastpilot_core::config::var("FASTPILOT_MODEL_REPLAY").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| "claude-haiku-5-5".into())
+    fastpilot_core::config::var("FASTPILOT_MODEL_REPLAY").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_REPLAY.into())
 }
 /// One Claude Code invocation may take this long before it is stopped.
 const CASE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// One Claude Code session per test attempt: `test_timeout` minutes (settings), else 30.
+fn case_timeout() -> Duration {
+    fastpilot_core::config::var("FASTPILOT_TEST_TIMEOUT")
+        .ok()
+        .and_then(|m| m.trim().parse::<u64>().ok())
+        .filter(|m| *m > 0)
+        .map(|m| Duration::from_secs(m * 60))
+        .unwrap_or(CASE_TIMEOUT)
+}
 
 const SYSTEM: &str = "You are fastpilot's QA agent running one test case unattended in CI. Nobody is watching and \
 nobody can answer questions: decide for yourself, and always finish.
@@ -351,10 +364,17 @@ async fn claude_session(prompt: &str, model: &str, addr: &str, token: &str) -> S
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prompt.as_bytes()).await;
     }
-    let out = match tokio::time::timeout(CASE_TIMEOUT, child.wait_with_output()).await {
+    let limit = case_timeout();
+    let out = match tokio::time::timeout(limit, child.wait_with_output()).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Session { turns: 0, usage: Usage::default(), failure: Some(format!("Claude Code: {e}")) },
-        Err(_) => return Session { turns: 0, usage: Usage::default(), failure: Some(format!("Claude Code did not finish within {} min", CASE_TIMEOUT.as_secs() / 60)) },
+        Err(_) => {
+            return Session {
+                turns: 0,
+                usage: Usage::default(),
+                failure: Some(format!("stopped: the test took longer than {} min (test_timeout)", limit.as_secs() / 60)),
+            };
+        }
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let result: Value = stdout.lines().rev().find_map(|l| serde_json::from_str(l).ok()).unwrap_or_default();

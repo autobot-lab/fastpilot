@@ -43,6 +43,15 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "confirm_actions", help: "taps on elements named like these need `confirm: true` (`default` = delete, pay, buy, transfer, ...)", rule: Rule::TightenOnly },
     Setting { key: "vars", help: "environment variables flows may read as ${NAME}; their values are masked as ***", rule: Rule::TightenOnly },
     Setting { key: "state_expire_days", help: "saved login state is refused after this many days (default 30)", rule: Rule::TightenOnly },
+    Setting { key: "block_actions", help: "taps on elements whose text contains one of these words are always refused, even with `confirm: true` (case-insensitive)", rule: Rule::TightenOnly },
+    Setting { key: "allow_app_install", help: "installApp / uninstallApp steps may run (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_app_reset", help: "clearState / clearKeychain may wipe app data (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_physical_devices", help: "sessions may use real phones; false = emulators and simulators only (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_device_settings", help: "android/ios steps may change device settings: setNetwork, setLocation, setPermissions, setLocale (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages (default true)", rule: Rule::TightenOnly },
+    Setting { key: "upload_dirs", help: "uploadFile only takes files inside these folders; empty = any", rule: Rule::TightenOnly },
+    Setting { key: "max_steps", help: "`fastpilot run`: tool calls the AI may make per test (default 30)", rule: Rule::TightenOnly },
+    Setting { key: "test_timeout", help: "`fastpilot run`: minutes one test may take before it is stopped and failed (default: no limit)", rule: Rule::TightenOnly },
     Setting { key: "headful", help: "show the browser window (default false: headless, never in the way)", rule: Rule::Free },
     Setting { key: "model", help: "`fastpilot run`: pin one Claude model for every test", rule: Rule::Free },
     Setting { key: "model_replay", help: "`fastpilot run`: model that replays path memory (default claude-haiku-5-5)", rule: Rule::Free },
@@ -197,18 +206,48 @@ pub fn effective(key: &str) -> Source {
     }
 }
 
+/// Like [`effective`], but the file as it is now: what the next run will apply, also for guard
+/// rails this process has pinned (`fastpilot ui` shows and edits these).
+pub fn current(key: &str) -> Source {
+    let name = format!("FASTPILOT_{}", key.to_uppercase());
+    match std::env::var(&name) {
+        Ok(v) => Source::Env(v),
+        Err(_) => match file_values().remove(key) {
+            Some(v) => Source::File(v),
+            None => Source::Default,
+        },
+    }
+}
+
 pub fn setting(key: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|s| s.key == key)
 }
 
-/// List items; hosts and words compare lowercase, variable names (`vars`) keep their case.
+/// List items; hosts and words compare lowercase, variable names (`vars`) and folders keep their case.
 fn items_of(key: &str, v: &str) -> Vec<String> {
-    let fold = |s: &str| if key == "vars" { s.to_owned() } else { s.to_lowercase() };
+    let fold = |s: &str| if matches!(key, "vars" | "upload_dirs") { s.to_owned() } else { s.to_lowercase() };
     v.split(',').map(|s| fold(s.trim())).filter(|s| !s.is_empty()).collect()
 }
 
+/// Settings whose value is a list.
+pub const LISTS: &[&str] = &["allowed_domains", "confirm_actions", "vars", "block_actions", "upload_dirs"];
+
 /// Settings whose value is a whole number.
-const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "retry_budget", "breaker", "daemon_idle"];
+const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "retry_budget", "breaker", "daemon_idle", "max_steps", "test_timeout"];
+
+/// Settings whose value is true / false.
+pub const FLAGS: &[&str] =
+    &["headful", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script"];
+
+/// A true/false setting (`allow_*` default to true, the others to false).
+pub fn flag(key: &str) -> bool {
+    let name = format!("FASTPILOT_{}", key.to_uppercase());
+    match var(&name).ok().map(|v| v.trim().to_lowercase()) {
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(v) if matches!(v.as_str(), "0" | "false" | "no" | "off") => false,
+        _ => key.starts_with("allow_"),
+    }
+}
 
 const BOOLS: &[&str] = &["true", "false", "on", "off", "yes", "no", "1", "0"];
 const MEMORY_MODES: &[&str] = &["rw", "readonly", "off"];
@@ -219,13 +258,15 @@ fn invalid(key: &str, value: &str) -> Option<String> {
     if NUMBERS.contains(&key) && v.parse::<u64>().is_err() {
         let unit = match key {
             "retry_budget" | "breaker" => "runs",
+            "max_steps" => "steps",
+            "test_timeout" => "minutes",
             "state_expire_days" => "days",
             _ => "seconds",
         };
         return Some(format!("`{key}` takes a whole number of {unit}, not `{value}`"));
     }
-    if key == "headful" && !BOOLS.contains(&v.to_lowercase().as_str()) {
-        return Some(format!("`headful` takes true or false, not `{value}`"));
+    if FLAGS.contains(&key) && !BOOLS.contains(&v.to_lowercase().as_str()) {
+        return Some(format!("`{key}` takes true or false, not `{value}`"));
     }
     if key == "memory" && !MEMORY_MODES.contains(&v) {
         return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
@@ -248,6 +289,28 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
             let days = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok());
             matches!((days(old).or(Some(30)), days(new)), (Some(a), Some(b)) if b <= a)
         }
+        // More words always blocked, never fewer.
+        "block_actions" => o.iter().all(|w| n.contains(w)),
+        // Like allowed_domains: a list, and it may only shrink.
+        "upload_dirs" => !n.is_empty() && (o.is_empty() || n.iter().all(|d| o.contains(d))),
+        // A permission may be taken away, not given back.
+        k if k.starts_with("allow_") => {
+            let on = |v: Option<&str>| v.map(|v| !matches!(v.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(true);
+            !on(new) || on(old)
+        }
+        "max_steps" => {
+            let n_ = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok());
+            matches!((n_(old).or(Some(30)), n_(new)), (Some(a), Some(b)) if b <= a)
+        }
+        // No value = no limit.
+        "test_timeout" => {
+            let m = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok()).filter(|m| *m > 0);
+            match (m(old), m(new)) {
+                (_, None) => m(old).is_none(),
+                (None, Some(_)) => true,
+                (Some(a), Some(b)) => b <= a,
+            }
+        }
         _ => false,
     }
 }
@@ -255,11 +318,14 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
 /// Parse a command-line or tool value into TOML: lists for list settings, booleans and numbers
 /// where they look like one, else a string.
 fn to_toml(key: &str, value: &str) -> toml::Value {
-    if matches!(key, "allowed_domains" | "confirm_actions" | "vars") {
-        return toml::Value::Array(items_of(key, value).into_iter().map(toml::Value::String).collect());
+    if LISTS.contains(&key) {
+        // Stored as written (hosts lowercase); comparisons fold case where it does not matter.
+        let items = value.split(',').map(str::trim).filter(|s| !s.is_empty());
+        let items: Vec<String> = if key == "allowed_domains" { items.map(str::to_lowercase).collect() } else { items.map(str::to_owned).collect() };
+        return toml::Value::Array(items.into_iter().map(toml::Value::String).collect());
     }
     let v = value.trim();
-    if key == "headful" {
+    if FLAGS.contains(&key) {
         return toml::Value::Boolean(matches!(v.to_lowercase().as_str(), "true" | "on" | "yes" | "1"));
     }
     if NUMBERS.contains(&key) {
@@ -519,5 +585,32 @@ mod tests {
         // state_expire_days: shorter only (default 30).
         assert!(tightens("state_expire_days", None, Some("7")));
         assert!(!tightens("state_expire_days", Some("7"), Some("90")));
+    }
+
+    /// C2: the new guard rails only get stricter through the agent's `config` tool.
+    #[test]
+    fn new_guard_rails_tighten_only() {
+        assert!(tightens("block_actions", None, Some("Bayar")));
+        assert!(tightens("block_actions", Some("bayar"), Some("Bayar,Hapus")), "case does not matter");
+        assert!(!tightens("block_actions", Some("bayar"), None));
+        for k in ["allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script"] {
+            assert!(tightens(k, None, Some("false")), "{k}: switch off");
+            assert!(!tightens(k, Some("false"), Some("true")), "{k}: switch back on");
+            assert!(!tightens(k, Some("false"), None), "{k}: unset = on");
+            assert!(setting(k).is_some_and(|s| s.rule == Rule::TightenOnly), "{k}");
+        }
+        assert!(tightens("upload_dirs", None, Some("/a")));
+        assert!(tightens("upload_dirs", Some("/a,/b"), Some("/a")));
+        assert!(!tightens("upload_dirs", Some("/a"), Some("/a,/etc")));
+        assert!(!tightens("upload_dirs", Some("/a"), None));
+        assert!(tightens("max_steps", None, Some("20")) && !tightens("max_steps", Some("20"), Some("40")) && !tightens("max_steps", None, Some("31")));
+        assert!(tightens("test_timeout", None, Some("10")) && tightens("test_timeout", Some("10"), Some("5")));
+        assert!(!tightens("test_timeout", Some("10"), Some("30")) && !tightens("test_timeout", Some("10"), None));
+        // Values are checked; words keep their case in the file.
+        assert!(invalid("allow_eval_script", "maybe").is_some() && invalid("allow_eval_script", "off").is_none());
+        assert!(invalid("test_timeout", "10m").is_some());
+        assert_eq!(to_toml("block_actions", "Bayar, Lanjut"), toml::Value::Array(vec!["Bayar".into(), "Lanjut".into()]));
+        assert_eq!(to_toml("allowed_domains", "Toko.COM"), toml::Value::Array(vec!["toko.com".into()]));
+        assert_eq!(to_toml("allow_eval_script", "off"), toml::Value::Boolean(false));
     }
 }

@@ -683,7 +683,12 @@ async fn guard_risky(d: &dyn Driver, sel: &Selector, confirmed: bool) -> Result<
 }
 
 async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[String]) -> Result<()> {
-    if confirmed || words.is_empty() {
+    guard_tap(d, sel, confirmed, words, &crate::policy::blocked_words()).await
+}
+
+/// `block_actions` (always, confirmed or not), then `confirm_actions` (unless confirmed).
+async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[String], blocked: &[String]) -> Result<()> {
+    if (confirmed || words.is_empty()) && blocked.is_empty() {
         return Ok(());
     }
     let name = match d.snapshot().await.ok().and_then(|s| s.resolve(sel, Intent::Tap).ok().map(|e| e.node.name.clone())) {
@@ -693,6 +698,14 @@ async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words
             _ => return Ok(()),
         },
     };
+    if let Some(w) = crate::policy::block_match(&name, blocked) {
+        return Err(Error::Blocked(format!(
+            "{sel} (\"{name}\") is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it, only the user can change it in fastpilot settings"
+        )));
+    }
+    if confirmed {
+        return Ok(());
+    }
     match crate::policy::risky_match(&name, words) {
         Some(w) => Err(Error::Blocked(format!(
             "{sel} (\"{name}\") looks like a risky action (\"{w}\", FASTPILOT_CONFIRM_ACTIONS): if it is intended, \
@@ -702,9 +715,37 @@ async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words
     }
 }
 
+/// The `allow_*` permissions and `upload_dirs` (settings, pinned at start like every guard rail).
+fn permitted(d: &dyn Driver, step: &Step) -> Result<()> {
+    let refuse = |what: &str, key: &str| Err(Error::Blocked(format!("{what} is turned off ({key} = false); only the user can change it in fastpilot settings")));
+    let mobile = matches!(d.platform(), Platform::Android | Platform::Ios);
+    match step {
+        Step::EvalScript(_) if !crate::config::flag("allow_eval_script") => refuse("evalScript", "allow_eval_script"),
+        Step::ClearState(_) | Step::ClearKeychain if !crate::config::flag("allow_app_reset") => refuse("wiping app data (clearState / clearKeychain)", "allow_app_reset"),
+        Step::InstallApp(_) | Step::UninstallApp(_) if !crate::config::flag("allow_app_install") => refuse("installing or uninstalling apps", "allow_app_install"),
+        Step::SetNetwork(_) | Step::SetLocation { .. } | Step::SetPermissions { .. } | Step::SetLocale { .. }
+            if mobile && !crate::config::flag("allow_device_settings") =>
+        {
+            refuse("changing device settings (network, location, permissions, locale)", "allow_device_settings")
+        }
+        Step::UploadFile { files, .. } => {
+            let dirs = crate::policy::upload_dirs();
+            match files.iter().find(|f| !crate::policy::upload_allowed(std::path::Path::new(f), &dirs)) {
+                Some(f) => Err(Error::Blocked(format!(
+                    "uploadFile `{f}` is outside the allowed upload folders (upload_dirs: {})",
+                    dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+                ))),
+                None => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
 fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: bool) -> StepFuture<'a> {
     Box::pin(async move {
         let subst = |s: &str| ctx.subst(s);
+        permitted(d, step)?;
         match step {
             Step::Confirmed(inner) => return exec_with(d, inner, ctx, true).await,
             Step::OpenUrl(url) => d.open(&subst(url)?).await?,
@@ -804,6 +845,8 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::StopApp(app) => d.stop_app(app.as_deref().map(subst).transpose()?.as_deref()).await?,
             Step::ClearState(app) => d.clear_state(app.as_deref().map(subst).transpose()?.as_deref()).await?,
             Step::ClearKeychain => d.clear_keychain().await?,
+            Step::InstallApp(path) => d.install_app(&subst(path)?).await?,
+            Step::UninstallApp(app) => d.uninstall_app(&subst(app)?).await?,
             Step::CopyTextFrom(sel) => {
                 retry(ACTION_TIMEOUT, || async {
                     let snap = d.snapshot().await?;

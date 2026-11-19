@@ -40,6 +40,10 @@ pub enum Step {
     StopApp(Option<String>),
     ClearState(Option<String>),
     ClearKeychain,
+    /// `installApp: path/to/app.apk` (android) or `.app` (ios simulator).
+    InstallApp(String),
+    /// `uninstallApp: com.example.app`.
+    UninstallApp(String),
     CopyTextFrom(Selector),
     PasteText,
     WaitForAnimationToEnd(Option<Duration>),
@@ -362,6 +366,8 @@ impl Step {
             }),
             "stopApp" | "killApp" => Self::StopApp(app_arg(arg)?),
             "clearState" => Self::ClearState(app_arg(arg)?),
+            "installApp" => Self::InstallApp(string(arg)?),
+            "uninstallApp" => Self::UninstallApp(app_arg(arg)?.ok_or("expects the app id: `uninstallApp: com.example.app`")?),
             "clearKeychain" => {
                 none()?;
                 Self::ClearKeychain
@@ -828,6 +834,8 @@ impl Step {
             Self::StopApp(a) => format!("stopApp{}", a.as_deref().map(|a| format!(" {a}")).unwrap_or_default()),
             Self::ClearState(a) => format!("clearState{}", a.as_deref().map(|a| format!(" {a}")).unwrap_or_default()),
             Self::ClearKeychain => "clearKeychain".into(),
+            Self::InstallApp(p) => format!("installApp {}", crate::quote(p)),
+            Self::UninstallApp(a) => format!("uninstallApp {a}"),
             Self::CopyTextFrom(s) => format!("copyTextFrom {s}"),
             Self::PasteText => "pasteText".into(),
             Self::WaitForAnimationToEnd(_) => "waitForAnimationToEnd".into(),
@@ -897,7 +905,7 @@ impl Step {
             Self::OpenUrl(s) | Self::EvalScript(s) => vec![s],
             Self::InputText { text, .. } => vec![text],
             Self::StartSession { target: Some(t), .. } => vec![t],
-            Self::StopApp(Some(a)) | Self::ClearState(Some(a)) => vec![a],
+            Self::StopApp(Some(a)) | Self::ClearState(Some(a)) | Self::InstallApp(a) | Self::UninstallApp(a) => vec![a],
             Self::LaunchApp { app, launch } => std::iter::once(app.as_str())
                 .chain(launch.env.iter().map(|(_, v)| v.as_str()))
                 .chain(launch.arguments.iter().flat_map(|(_, v)| match v {
@@ -1144,6 +1152,8 @@ impl Step {
             Self::StopApp(None) => s("stopApp"),
             Self::ClearState(Some(a)) => one("clearState", s(a)),
             Self::ClearState(None) => s("clearState"),
+            Self::InstallApp(p) => one("installApp", s(p)),
+            Self::UninstallApp(a) => one("uninstallApp", s(a)),
             Self::ClearKeychain => s("clearKeychain"),
             Self::CopyTextFrom(x) => one("copyTextFrom", sel(x)),
             Self::PasteText => s("pasteText"),
@@ -1307,7 +1317,7 @@ fn unknown(cmd: &str) -> String {
             "unknown step `{cmd}` (supported: launchApp, openUrl, openLink, tapOn, longPressOn, doubleTapOn, inputText, eraseText, \
              hideKeyboard, copyTextFrom, pasteText, assertVisible, assertNotVisible, extendedWaitUntil, scroll, \
              scrollUntilVisible, swipe, back, pressKey, selectOption, uploadFile, evalScript, stopApp, killApp, \
-             clearState, clearKeychain, waitForAnimationToEnd, takeScreenshot, inputRandom*, runFlow, repeat, \
+             clearState, clearKeychain, installApp, uninstallApp, waitForAnimationToEnd, takeScreenshot, inputRandom*, runFlow, repeat, \
              retry, session, parallel)"
         )
     }
