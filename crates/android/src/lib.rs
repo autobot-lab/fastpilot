@@ -127,10 +127,50 @@ fn intent_extras(args: &[(String, LaunchArg)]) -> Result<String> {
         .map(|v| v.join(" "))
 }
 
+/// Package names, components (`com.x/.Main$Inner`), locales (`en-US,id`), timezones
+/// (`Etc/GMT+7`). Values that reach the device's `sh` are also quoted with [`sh_quote`]; this keeps
+/// shell syntax (`; & | $( ) \` ' "` and spaces) out of the agent's shell, which has no `sh`.
 fn shell_safe(s: &str) -> Result<&str> {
-    let ok = !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/:-?=&%#+~@,$".contains(c));
+    let ok = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/:$+,-".contains(c));
     if ok { Ok(s) } else { Err(CoreError::Flow(format!("unsafe characters in `{s}`"))) }
+}
+
+/// URLs opened with an intent (`?`, `&`, `#`, `%` ... are part of them). Only for the agent's shell
+/// (`Runtime.exec`, no `sh`), never for `adb shell`.
+fn url_safe(s: &str) -> Result<&str> {
+    let ok = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/:-?=&%#+~@,$".contains(c));
+    if ok { Ok(s) } else { Err(CoreError::Flow(format!("unsafe characters in `{s}`"))) }
+}
+
+// Commands for `adb shell` (the device's `sh -c`): every value quoted, whatever it contains.
+fn permission_cmd(pkg: &str, perm: &str, grant: fastpilot_core::Grant) -> String {
+    use fastpilot_core::Grant;
+    let (pkg, p) = (sh_quote(pkg), sh_quote(perm));
+    match grant {
+        Grant::Allow => format!("pm grant {pkg} {p}"),
+        Grant::Deny => format!("pm revoke {pkg} {p}; pm set-permission-flags {pkg} {p} user-set user-fixed"),
+        Grant::Unset => format!("pm revoke {pkg} {p}; pm clear-permission-flags {pkg} {p} user-set user-fixed"),
+    }
+}
+
+fn locale_cmd(pkg: &str, locale: &str) -> String {
+    format!("cmd locale set-app-locales {} --locales {}", sh_quote(pkg), sh_quote(locale))
+}
+
+fn timezone_cmd(tz: &str) -> String {
+    format!("cmd alarm set-timezone {}", sh_quote(tz))
+}
+
+fn notification_cmd(title: &str, body: &str) -> String {
+    format!("cmd notification post -S bigtext -t {} fastpilot {}", sh_quote(title), sh_quote(if body.is_empty() { title } else { body }))
+}
+
+fn uninstall_cmd(app: &str) -> String {
+    format!("pm uninstall {}", sh_quote(app))
+}
+
+fn launch_cmd(component: &str, extras: &str) -> String {
+    format!("am start -W -n {} {extras}", sh_quote(component))
 }
 
 /// `(serial, state)` of attached devices; available AVDs.
@@ -663,11 +703,6 @@ fn permissions(name: &str) -> Vec<String> {
     short.iter().map(|p| format!("android.permission.{p}")).collect()
 }
 
-/// Single-quoted for `sh -c` (the adb shell service runs one).
-fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 fn keycode(key: &str) -> Option<u32> {
     Some(match key.to_ascii_lowercase().as_str() {
         "enter" | "return" => 66,
@@ -693,7 +728,7 @@ fn keycode(key: &str) -> Option<u32> {
 impl Driver for AndroidDriver {
     /// `package`, `package/activity`, or a URL (opened with an ACTION_VIEW intent).
     async fn open(&self, target: &str) -> Result<()> {
-        let target = shell_safe(target)?;
+        let target = if target.contains("://") { url_safe(target)? } else { shell_safe(target)? };
         let cmd = if target.contains("://") {
             format!("am start -W -a android.intent.action.VIEW -d '{target}'")
         } else {
@@ -859,17 +894,12 @@ impl Driver for AndroidDriver {
     }
 
     async fn set_permissions(&self, app: Option<&str>, perms: &[(String, fastpilot_core::Grant)]) -> Result<()> {
-        use fastpilot_core::Grant;
         let pkg = self.app_or(app)?;
         let pkg = shell_safe(&pkg)?;
         for (name, grant) in perms {
             for p in permissions(name) {
                 let p = shell_safe(&p)?;
-                let cmd = match grant {
-                    Grant::Allow => format!("pm grant {pkg} {p}"),
-                    Grant::Deny => format!("pm revoke {pkg} {p}; pm set-permission-flags {pkg} {p} user-set user-fixed"),
-                    Grant::Unset => format!("pm revoke {pkg} {p}; pm clear-permission-flags {pkg} {p} user-set user-fixed"),
-                };
+                let cmd = permission_cmd(pkg, p, *grant);
                 let out = self.adb.shell(&self.serial, &cmd).await?;
                 if out.contains("Exception") || out.contains("Unknown permission") || out.contains("not a changeable") {
                     return Err(CoreError::Flow(format!("permission `{name}` ({p}): {}", out.trim())));
@@ -906,13 +936,13 @@ impl Driver for AndroidDriver {
     async fn set_locale(&self, locale: Option<&str>, timezone: Option<&str>) -> Result<()> {
         if let Some(l) = locale {
             let pkg = self.app_or(None)?;
-            let out = self.adb.shell(&self.serial, &format!("cmd locale set-app-locales {} --locales {}", shell_safe(&pkg)?, shell_safe(l)?)).await?;
+            let out = self.adb.shell(&self.serial, &locale_cmd(shell_safe(&pkg)?, shell_safe(l)?)).await?;
             if !out.trim().is_empty() {
                 return Err(CoreError::Flow(format!("locale `{l}`: {}", out.trim())));
             }
         }
         if let Some(tz) = timezone {
-            let out = self.adb.shell(&self.serial, &format!("cmd alarm set-timezone {}", shell_safe(tz)?)).await?;
+            let out = self.adb.shell(&self.serial, &timezone_cmd(shell_safe(tz)?)).await?;
             if out.contains("rror") || out.contains("nvalid") {
                 return Err(CoreError::Flow(format!("timezone `{tz}`: {}", out.trim())));
             }
@@ -922,7 +952,7 @@ impl Driver for AndroidDriver {
 
     /// Posts a notification from the shell (real push needs the app's server and FCM).
     async fn push_notification(&self, _app: Option<&str>, title: &str, body: &str, _payload: Option<&Value>) -> Result<()> {
-        let cmd = format!("cmd notification post -S bigtext -t {} fastpilot {}", quote(title), quote(if body.is_empty() { title } else { body }));
+        let cmd = notification_cmd(title, body);
         let out = self.adb.shell(&self.serial, &cmd).await?;
         if !out.contains("posting") {
             return Err(CoreError::Driver(format!("notification: {}", out.trim())));
@@ -1041,7 +1071,7 @@ impl Driver for AndroidDriver {
     }
 
     async fn uninstall_app(&self, app: &str) -> Result<()> {
-        let out = self.adb.shell(&self.serial, &format!("pm uninstall {}", shell_safe(app)?)).await.map_err(|e| CoreError::Driver(e.to_string()))?;
+        let out = self.adb.shell(&self.serial, &uninstall_cmd(shell_safe(app)?)).await.map_err(|e| CoreError::Driver(e.to_string()))?;
         if out.contains("Success") { Ok(()) } else { Err(CoreError::Driver(format!("uninstallApp {app}: {}", out.trim()))) }
     }
 
@@ -1068,7 +1098,7 @@ impl Driver for AndroidDriver {
         // Through adb's shell (`sh` on the device), not the agent's: UiAutomation's
         // executeShellCommand splits on spaces and would ignore the quoting of the extras.
         let extras = intent_extras(&launch.arguments)?;
-        let cmd = format!("am start -W -n {} {extras}", self.component(app).await?);
+        let cmd = launch_cmd(shell_safe(&self.component(app).await?)?, &extras);
         let out = self.adb.shell(&self.serial, &cmd).await.map_err(|e| CoreError::Driver(e.to_string()))?;
         if out.contains("Error") {
             return Err(CoreError::Driver(out.trim().to_owned()));
@@ -1081,6 +1111,69 @@ impl Driver for AndroidDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security review (High): values from a flow reached the device's `sh -c` unquoted
+    /// (`appId: "com.x/.Main&<cmd>"`), so a flow could run any command on the device. Each `adb shell`
+    /// command is run here through a real `sh`, with `pm`/`cmd`/`am` replaced by stubs that only
+    /// record their arguments: no payload may run, and each value must arrive as one argument.
+    #[cfg(unix)]
+    #[test]
+    fn adb_shell_values_cannot_inject_commands() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-adb-sh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).expect("dir");
+        let marker = dir.join("INJECTED");
+        let log = dir.join("args");
+        for prog in ["pm", "cmd", "am"] {
+            let stub = dir.join("bin").join(prog);
+            std::fs::write(&stub, format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\n", log.display())).expect("stub");
+            std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).expect("chmod");
+        }
+        let run = |cmd: &str| -> Vec<String> {
+            let _ = std::fs::remove_file(&log);
+            let status = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(cmd)
+                .env("PATH", format!("{}:/usr/bin:/bin", dir.join("bin").display()))
+                .status()
+                .expect("sh");
+            assert!(status.success(), "{cmd}");
+            std::fs::read_to_string(&log).unwrap_or_default().lines().map(str::to_owned).collect()
+        };
+        let touch = format!("touch {}", marker.display());
+        let payloads = [
+            format!("com.x/.Main;{touch}"),
+            format!("com.x/.Main&{touch}"),
+            format!("com.x/.Main$({touch})"),
+            format!("com.x/.Main`{touch}`"),
+            format!("com.x/.Main' ; {touch} ; '"),
+            format!("com.x/.Main|{touch}"),
+        ];
+        for p in &payloads {
+            // App ids, locales and timezones with shell syntax are refused before any command...
+            assert!(shell_safe(p).is_err(), "shell_safe let through {p:?}");
+            // ... and every command quotes its values anyway (notification text is free text).
+            for cmd in [
+                uninstall_cmd(p),
+                launch_cmd(p, "--es k 'v'"),
+                locale_cmd(p, p),
+                timezone_cmd(p),
+                notification_cmd(p, p),
+                permission_cmd(p, p, fastpilot_core::Grant::Allow),
+                permission_cmd(p, p, fastpilot_core::Grant::Deny),
+            ] {
+                let args = run(&cmd);
+                assert!(!marker.exists(), "injected by {cmd}");
+                assert!(args.iter().any(|a| a == p), "{p:?} did not arrive as one argument of {cmd}: {args:?}");
+            }
+        }
+        // Legitimate values still pass.
+        for ok in ["com.x", "com.x/.Main", "com.x/.Main$Inner", "en-US,id", "Asia/Jakarta", "Etc/GMT+7"] {
+            assert_eq!(shell_safe(ok).ok(), Some(ok));
+        }
+        assert!(url_safe("https://x.test/a?b=1&c=%20#f").is_ok() && url_safe("https://x.test/;rm").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn converts_agent_nodes() {
