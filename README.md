@@ -359,7 +359,7 @@ Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa
 | `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
 | `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
 | `state` | Simpan/muat login (web: cookies + localStorage) supaya test berikutnya tidak perlu login: `save` / `load` / `list` / `delete`. File hanya bisa dibaca pemiliknya, kedaluwarsa setelah 30 hari (`FASTPILOT_STATE_EXPIRE_DAYS`), dan dienkripsi AES-256-GCM bila `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) di-set. Sama dengan langkah `saveState` / `loadState` |
-| `config` | Lihat dan ubah pengaturan (`~/.fastpilot/config.toml`) lewat chat: `list` / `get` / `set` / `unset`, berlaku di langkah berikutnya tanpa restart. Agent hanya boleh **memperketat** batasan (`allowed_domains`, `confirm_actions`, `vars`, `state_expire_days`); path program dan lokasi (`chrome`, `claude`, `dir`, `ios_runner`) hanya bisa diubah user lewat `fastpilot config set` |
+| `config` | Lihat dan ubah pengaturan (`~/.fastpilot/config.toml`) lewat chat: `list` / `get` / `set` / `unset`. Agent hanya boleh **memperketat** batasan (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, izin `allow_*`, `upload_dirs`, `max_steps`, `test_timeout`); pengetatan langsung berlaku, pelonggaran baru setelah restart. Path program, lokasi, dan mesin lain (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) hanya bisa diubah user lewat `fastpilot config set` atau `fastpilot ui` |
 | `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 
 ## Contoh

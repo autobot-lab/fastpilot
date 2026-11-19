@@ -101,12 +101,32 @@ fn render(v: &toml::Value) -> Option<String> {
 /// with the guard rails silently off.
 pub fn check() -> Result<(), String> {
     let p = path();
-    match std::fs::read_to_string(&p) {
-        Ok(text) => text.parse::<toml::Table>().map(|_| ()).map_err(|e| {
-            format!("{} is not valid TOML, so its settings (guard rails included) would be ignored: fix or delete it\n{e}", p.display())
-        }),
-        Err(_) => Ok(()),
+    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(()) };
+    let table = text.parse::<toml::Table>().map_err(|e| {
+        format!("{} is not valid TOML, so its settings (guard rails included) would be ignored: fix or delete it\n{e}", p.display())
+    })?;
+    // Values fastpilot would misread (a hand-edited `flow_timeout = "x"`, `allowed_domains = 5`)
+    // stop it just the same, with the key and the reason.
+    for (k, v) in &table {
+        let Some(s) = setting(k) else { continue };
+        let why = if LISTS.contains(&s.key) {
+            match v {
+                toml::Value::Array(items) if items.iter().all(toml::Value::is_str) => None,
+                toml::Value::String(_) => None,
+                _ => Some(format!("`{k}` takes a list of text, e.g. {k} = [\"a\", \"b\"]")),
+            }
+        } else {
+            match render(v) {
+                Some(text) if matches!(v, toml::Value::Array(_)) => Some(format!("`{k}` takes one value, not a list (`{text}`)")),
+                Some(text) => invalid(s.key, &text),
+                None => Some(format!("`{k}` has a value fastpilot cannot read")),
+            }
+        };
+        if let Some(why) = why {
+            return Err(format!("{}: {why}; fix or delete it", p.display()));
+        }
     }
+    Ok(())
 }
 
 /// The file's values (key → value as an env string), re-read when the file changes. A file that
@@ -274,6 +294,26 @@ fn invalid(key: &str, value: &str) -> Option<String> {
     }
     if key == "memory" && !MEMORY_MODES.contains(&v) {
         return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
+    }
+    if key == "max_steps" && v == "0" {
+        return Some("`max_steps` takes at least 1 step".into());
+    }
+    if key == "adb_server" {
+        let ok = v.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && !h.contains('/') && p.parse::<u16>().is_ok_and(|p| p > 0));
+        if !ok {
+            return Some(format!("`adb_server` takes host:port, e.g. 127.0.0.1:15037, not `{value}`"));
+        }
+    }
+    if key == "chrome_endpoint" {
+        let host = ["http://", "https://", "ws://", "wss://"].iter().find_map(|s| v.strip_prefix(s)).map(|r| r.split('/').next().unwrap_or(""));
+        if host.is_none_or(str::is_empty) {
+            return Some(format!("`chrome_endpoint` takes http://host:port or ws://host:port/devtools/browser/..., not `{value}`"));
+        }
+    }
+    if matches!(key, "model" | "model_replay" | "model_explore")
+        && !(v.starts_with("claude-") && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'))
+    {
+        return Some(format!("`{key}` takes a Claude model id such as claude-haiku-5-5, not `{value}`"));
     }
     None
 }
@@ -623,6 +663,45 @@ mod tests {
         // state_expire_days: shorter only (default 30).
         assert!(tightens("state_expire_days", None, Some("7")));
         assert!(!tightens("state_expire_days", Some("7"), Some("90")));
+    }
+
+    /// QA #6: values that would be misread are refused, from `config set` and from the file.
+    #[test]
+    fn loose_values_are_refused() {
+        for (k, v) in [
+            ("max_steps", "0"),
+            ("adb_server", "notaserver"),
+            ("adb_server", "host:99999"),
+            ("chrome_endpoint", "evil.example:9222"),
+            ("chrome_endpoint", "http://"),
+            ("model_explore", "not-a-model"),
+            ("model", "gpt-4o"),
+        ] {
+            assert!(invalid(k, v).is_some(), "{k} = {v} accepted");
+        }
+        for (k, v) in [("max_steps", "1"), ("adb_server", "127.0.0.1:15037"), ("chrome_endpoint", "http://127.0.0.1:19222"), ("chrome_endpoint", "ws://h:1/devtools/browser/x"), ("model_replay", "claude-haiku-5-5")] {
+            assert!(invalid(k, v).is_none(), "{k} = {v} refused");
+        }
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-config-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("FASTPILOT_CONFIG", &file) };
+        for (text, want) in [
+            ("flow_timeout = \"x\"\n", "flow_timeout"),
+            ("headful = \"maybe\"\n", "headful"),
+            ("allowed_domains = 5\n", "list of text"),
+            ("max_steps = [1]\n", "one value"),
+        ] {
+            std::fs::write(&file, text).expect("write");
+            let e = check().expect_err(text);
+            assert!(e.contains(want) && e.contains("fix or delete it"), "{text}: {e}");
+        }
+        std::fs::write(&file, "headful = \"yes\"\nallowed_domains = \"a.com\"\nflow_timeout = 60\nunknown_key = 1\n").expect("write");
+        assert!(check().is_ok());
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// C2: the new guard rails only get stricter through the agent's `config` tool.
