@@ -63,7 +63,8 @@ async fn web_sessions_on_a_remote_chrome() {
     let profile = std::env::temp_dir().join(format!("fp-remote-chrome-{}", std::process::id()));
     std::fs::create_dir_all(&profile).expect("profile");
     let child = std::process::Command::new(exe)
-        .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--user-agent=fp-remote-chrome/1"])
+        // No keychain (see mcp_login.rs): an isolated HOME has none, and macOS would ask for one.
+        .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--use-mock-keychain", "--password-store=basic", "--user-agent=fp-remote-chrome/1"])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("about:blank")
         .stdout(std::process::Stdio::null())

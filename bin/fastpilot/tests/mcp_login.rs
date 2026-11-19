@@ -220,7 +220,9 @@ async fn attach_to_running_chrome_over_mcp() {
     // Its own profile and a port Chrome picks (read back from the profile): a fixed port would
     // attach to whatever Chrome already listens there, e.g. the user's own.
     let mut chrome = tokio::process::Command::new(exe)
-        .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "about:blank"])
+        // No keychain: with an isolated HOME there is none, and macOS would block Chrome on a
+        // "Keychain Not Found" dialog (fastpilot's own Chrome has the same flags).
+        .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "--use-mock-keychain", "--password-store=basic", "about:blank"])
         .arg(format!("--user-data-dir={}", profile.display()))
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
