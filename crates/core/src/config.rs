@@ -1,7 +1,9 @@
 //! Settings: environment variables, then `~/.fastpilot/config.toml` (or `FASTPILOT_CONFIG`),
 //! then built-in defaults. Every `FASTPILOT_*` setting is read through [`var`], so a value written
 //! to the file (by `fastpilot config set` or the `config` tool) applies to the next read, without a
-//! restart. Keys in the file are the variable names without the prefix, lowercase:
+//! restart. Guard rails ([`Rule::TightenOnly`]) are the exception: a running process only follows a
+//! file change that makes them stricter; a looser value (or a file that no longer parses) applies
+//! from the next start. Keys in the file are the variable names without the prefix, lowercase:
 //!
 //! ```toml
 //! allowed_domains = ["shop.example.com", "*.staging.example.com"]
@@ -84,6 +86,18 @@ fn render(v: &toml::Value) -> Option<String> {
     })
 }
 
+/// The file is there but does not parse: commands refuse to start (see [`check`]) rather than run
+/// with the guard rails silently off.
+pub fn check() -> Result<(), String> {
+    let p = path();
+    match std::fs::read_to_string(&p) {
+        Ok(text) => text.parse::<toml::Table>().map(|_| ()).map_err(|e| {
+            format!("{} is not valid TOML, so its settings (guard rails included) would be ignored: fix or delete it\n{e}", p.display())
+        }),
+        Err(_) => Ok(()),
+    }
+}
+
 /// The file's values (key → value as an env string), re-read when the file changes. A file that
 /// does not parse counts as empty, with a warning.
 pub fn file_values() -> BTreeMap<String, String> {
@@ -114,12 +128,34 @@ fn key_of(name: &str) -> Option<String> {
     name.strip_prefix("FASTPILOT_").map(str::to_lowercase)
 }
 
+/// Guard-rail values in force in this process, per file: the first read pins the value, and later
+/// file changes only replace it when they are stricter ([`tightens`]). A shell, an edited file or
+/// `fastpilot config set` can loosen them for the next start, never under a running session.
+static GUARD: Mutex<BTreeMap<(PathBuf, String), Option<String>>> = Mutex::new(BTreeMap::new());
+
+fn from_file(key: &str) -> Option<String> {
+    let value = file_values().remove(key);
+    if setting(key).is_none_or(|s| s.rule != Rule::TightenOnly) {
+        return value;
+    }
+    let mut guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    let pinned = guard.entry((path(), key.to_owned())).or_insert_with(|| value.clone());
+    if *pinned != value {
+        if tightens(key, pinned.as_deref(), value.as_deref()) {
+            *pinned = value;
+        } else {
+            tracing::warn!(key, "config file loosens a guard rail: ignored until fastpilot restarts");
+        }
+    }
+    pinned.clone()
+}
+
 /// Like `std::env::var` for a `FASTPILOT_*` name, falling back to the config file.
 pub fn var(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
         Ok(v) => Ok(v),
         Err(std::env::VarError::NotPresent) if !SECRETS.contains(&name) => key_of(name)
-            .and_then(|k| file_values().remove(&k))
+            .and_then(|k| from_file(&k))
             .ok_or(std::env::VarError::NotPresent),
         Err(e) => Err(e),
     }
@@ -142,7 +178,7 @@ pub fn effective(key: &str) -> Source {
     let name = format!("FASTPILOT_{}", key.to_uppercase());
     match std::env::var(&name) {
         Ok(v) => Source::Env(v),
-        Err(_) => match file_values().remove(key) {
+        Err(_) => match from_file(key) {
             Some(v) => Source::File(v),
             None => Source::Default,
         },
@@ -153,12 +189,18 @@ pub fn setting(key: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|s| s.key == key)
 }
 
-fn items(v: &str) -> Vec<String> {
-    v.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()
+/// List items; hosts and words compare lowercase, variable names (`vars`) keep their case.
+fn items_of(key: &str, v: &str) -> Vec<String> {
+    let fold = |s: &str| if key == "vars" { s.to_owned() } else { s.to_lowercase() };
+    v.split(',').map(|s| fold(s.trim())).filter(|s| !s.is_empty()).collect()
 }
+
+/// Settings whose value is a whole number.
+const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "retry_budget", "breaker", "daemon_idle"];
 
 /// Whether `new` is at least as strict as `old` for a guard-rail setting (`None` = unset).
 pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
+    let items = |v: &str| items_of(key, v);
     let (o, n) = (old.map(items).unwrap_or_default(), new.map(items).unwrap_or_default());
     match key {
         // Empty means "any host": any list is stricter than none, and a list may only shrink.
@@ -179,7 +221,7 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
 /// where they look like one, else a string.
 fn to_toml(key: &str, value: &str) -> toml::Value {
     if matches!(key, "allowed_domains" | "confirm_actions" | "vars") {
-        return toml::Value::Array(items(value).into_iter().map(toml::Value::String).collect());
+        return toml::Value::Array(items_of(key, value).into_iter().map(toml::Value::String).collect());
     }
     match value.trim() {
         "true" | "on" | "yes" => toml::Value::Boolean(true),
@@ -194,6 +236,12 @@ pub fn write(key: &str, value: Option<&str>) -> Result<PathBuf, String> {
     let s = setting(key).ok_or_else(|| {
         format!("unknown setting `{key}`; known: {}", SETTINGS.iter().map(|s| s.key).collect::<Vec<_>>().join(", "))
     })?;
+    if let Some(v) = value
+        && NUMBERS.contains(&s.key)
+        && v.trim().parse::<u64>().is_err()
+    {
+        return Err(format!("`{}` takes a whole number of {}, not `{v}`", s.key, if s.key == "retry_budget" || s.key == "breaker" { "runs" } else if s.key == "state_expire_days" { "days" } else { "seconds" }));
+    }
     let p = path();
     let mut table: toml::Table = match std::fs::read_to_string(&p) {
         Ok(text) => text.parse().map_err(|e| format!("{} is not valid TOML: {e}", p.display()))?,
@@ -211,7 +259,20 @@ pub fn write(key: &str, value: Option<&str>) -> Result<PathBuf, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     let text = format!("# fastpilot settings (`fastpilot config`); environment variables win.\n{}", toml::to_string(&table).map_err(|e| e.to_string())?);
-    std::fs::write(&p, text).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
+    // Owner-only, and atomic: a reader never sees a half-written file.
+    let tmp = p.with_extension(format!("toml.{}.tmp", std::process::id()));
+    let written = {
+        use std::io::Write;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        o.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes())).and_then(|()| std::fs::rename(&tmp, &p))
+    };
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write {}: {e}", p.display()));
+    }
     *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(p)
 }
@@ -273,12 +334,64 @@ mod tests {
         assert!(write("frobnicate", Some("1")).expect_err("unknown").contains("unknown setting"));
         assert!(describe().contains("confirm_actions") && describe().contains("[agent: stricter only]"));
 
-        // A broken file is ignored, not fatal.
+        // A broken file: `check` refuses it; in a running process the guard rails stay as they were.
         std::fs::write(&file, "allowed_domains = [").expect("write");
-        assert!(var("FASTPILOT_ALLOWED_DOMAINS").is_err());
+        assert!(check().expect_err("broken").contains("not valid TOML"));
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com,*.b.com"), "not switched off");
         unsafe {
             std::env::remove_var("FASTPILOT_CONFIG");
             std::env::remove_var("FASTPILOT_FLOW_TIMEOUT");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// P0 review: a guard rail loosened in the file (by a shell, an editor or `config set`) does not
+    /// apply to the running process; a stricter value does. Values are checked and kept as typed.
+    #[test]
+    fn guard_rails_only_tighten_while_running() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-config-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        let _ = std::fs::remove_file(&file);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", &file);
+            std::env::remove_var("FASTPILOT_ALLOWED_DOMAINS");
+            std::env::remove_var("FASTPILOT_VARS");
+            std::env::remove_var("FASTPILOT_HEADFUL");
+        }
+        write("allowed_domains", Some("a.com,b.com")).expect("set");
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com,b.com"));
+        // Looser in the file: still the old value here, for `get` and the `config` tool too.
+        std::fs::write(&file, "headful = true\n").expect("write");
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com,b.com"), "emptied file");
+        assert_eq!(var("FASTPILOT_HEADFUL").as_deref(), Ok("1"), "other settings stay live");
+        std::fs::write(&file, "allowed_domains = [\"a.com\", \"evil.com\"]\n").expect("write");
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com,b.com"), "wider list");
+        assert_eq!(effective("allowed_domains"), Source::File("a.com,b.com".into()));
+        // Stricter: applies at once.
+        write("allowed_domains", Some("a.com")).expect("set");
+        assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com"));
+
+        // `vars` keeps the case of variable names (`${DEMO_PASS}` is looked up as written).
+        write("vars", Some("DEMO_PASS, Api_Key")).expect("set");
+        assert_eq!(var("FASTPILOT_VARS").as_deref(), Ok("DEMO_PASS,Api_Key"));
+        // Numbers are numbers.
+        for key in NUMBERS {
+            assert!(write(key, Some("abc")).expect_err("not a number").contains("whole number"), "{key}");
+        }
+        assert!(write("flow_timeout", Some("1.5")).is_err() && write("flow_timeout", Some("90")).is_ok());
+        // Owner-only file, no temporary file left behind.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 1, "only config.toml");
+        unsafe {
+            std::env::remove_var("FASTPILOT_CONFIG");
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -297,6 +410,7 @@ mod tests {
         // vars: fewer only.
         assert!(tightens("vars", Some("A,B"), Some("A")));
         assert!(!tightens("vars", Some("A"), Some("A,HOME_TOKEN")));
+        assert!(!tightens("vars", Some("DEMO_PASS"), Some("demo_pass")), "another variable");
         // state_expire_days: shorter only (default 30).
         assert!(tightens("state_expire_days", None, Some("7")));
         assert!(!tightens("state_expire_days", Some("7"), Some("90")));

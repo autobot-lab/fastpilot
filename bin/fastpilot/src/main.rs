@@ -65,6 +65,9 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             if std::env::var(format!("FASTPILOT_{}", k.to_uppercase())).is_ok() {
                 println!("note: FASTPILOT_{} is set in the environment and wins over the file", k.to_uppercase());
             }
+            if config::setting(&k).is_some_and(|s| s.rule == config::Rule::TightenOnly) {
+                println!("note: a guard rail; a running fastpilot (MCP server, daemon) only takes a stricter value, a looser one after restart");
+            }
         }
         "unset" => {
             let k = key()?;
@@ -86,6 +89,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
+    // A config file that does not parse would switch the guard rails off: stop instead
+    // (`config path` still answers, so the user finds the file).
+    let path_only = args.first().is_some_and(|a| a == "config") && args.get(1).is_some_and(|a| a == "path");
+    if !path_only && let Err(e) = fastpilot_core::config::check() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     let headful = flag("--headful") || fastpilot_core::config::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1");
     let web = LaunchOptions { headless: !headful, executable: None };
 

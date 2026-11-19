@@ -173,6 +173,9 @@ Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung ta
 
 Pengaturan dibaca berurutan: **env** (mis. `-e` di MCP config) → **file** `~/.fastpilot/config.toml` (atau
 path di `FASTPILOT_CONFIG`) → default. File dibaca ulang saat berubah, jadi tidak perlu restart server.
+Kecuali batasan: fastpilot yang sedang jalan hanya mengikuti nilai yang lebih ketat. Nilai yang lebih
+longgar baru berlaku setelah restart (server MCP atau `fastpilot daemon stop`). File yang tidak valid
+membuat fastpilot berhenti dengan pesan error, tidak diam-diam diabaikan.
 
 ```bash
 fastpilot config list                              # semua kunci, nilai, dan asalnya
@@ -198,6 +201,9 @@ Lewat chat, agent memakai tool `config` dengan aturan:
   `daemon_idle`): bebas.
 - Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env.
 - Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
+- Batasan ini melindungi dari agent yang hanya memakai tool fastpilot. Agent yang juga punya akses
+  shell atau file (mis. Bash di Claude Code) bisa mengubah file lalu me-restart fastpilot. Untuk itu,
+  set batasan lewat **env** di konfigurasi MCP, atau batasi akses shell agent.
 
 Nama kunci = nama env tanpa `FASTPILOT_` dan huruf kecil (`FASTPILOT_FLOW_TIMEOUT` → `flow_timeout`).
 
