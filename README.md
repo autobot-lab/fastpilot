@@ -59,7 +59,9 @@ fastpilot doctor
 - **run:** Claude Code (`claude`) untuk `fastpilot run`.
 
 `fastpilot doctor android` (atau `web`, `ios`) hanya mengecek satu platform dan keluar dengan kode ≠ 0
-kalau platform itu belum siap. Untuk memperbaiki yang bisa diperbaiki otomatis (pasang Chrome lewat
+kalau platform itu belum siap. `fastpilot doctor` tanpa argumen menampilkan semua platform, tapi kode
+keluarnya hanya ditentukan oleh web (≠ 0 bila ada ✗ di web), aturan yang sama dengan `setup`. Di CI,
+sebut platform yang dipakai, mis. `fastpilot doctor web android`. Untuk memperbaiki yang bisa diperbaiki otomatis (pasang Chrome lewat
 Homebrew, unduh image Android, buat AVD `fastpilot_api35`, nyalakan emulator):
 
 ```bash

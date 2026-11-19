@@ -47,6 +47,9 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
     for area in ["web:", "android:", "ios:", "run:"] {
         assert!(out.contains(area), "{area} missing in\n{out}");
     }
+    // No platform named: a ✗ in web fails `doctor` (as it fails `setup`), so CI can rely on it.
+    let (ok, out) = run(&["doctor"], Some("/nonexistent/chrome"));
+    assert!(!ok && out.contains("✗ Chrome"), "plain doctor with web ✗ must exit ≠ 0: {out}");
     // ... and fails while a ✗ is left (here web, which no setup run can fix without a terminal).
     let (ok, out) = run(&["setup"], Some("/nonexistent/chrome"));
     assert!(!ok && !out.contains("  done") && !out.contains("  started"), "{out}");
@@ -56,6 +59,9 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
     if std::path::Path::new("/Applications/Google Chrome.app").exists() || std::path::Path::new("/usr/bin/chromium").exists() {
         let (ok, out) = run(&["doctor", "web"], None);
         assert!(ok && out.contains("✓ Chrome") && out.contains("starts headless"), "{out}");
+        // Web ready: a ✗ in a platform nobody named (Android, iOS, run) does not fail a plain `doctor`.
+        let (ok, out) = run(&["doctor"], None);
+        assert!(ok, "plain doctor with web ✓ exits 0: {out}");
         let (ok, out) = run(&["setup", "web"], None);
         assert!(ok && out.contains("nothing to set up"), "web ready, nothing left: {out}");
     }
