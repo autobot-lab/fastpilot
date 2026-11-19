@@ -1,0 +1,72 @@
+# Tag vX.Y.Z (or run by hand on a branch as a dry run): build the release archives for macOS
+# (arm64 + x86_64) and Linux x86_64 with the Android agent embedded, then attach them and their
+# .sha256 to the GitHub release vX.Y.Z. A dry run keeps them as workflow artifacts only.
+name: release
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versions agree
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          grep -q "\"version\": \"$version\"" packaging/npm/package.json || { echo "packaging/npm/package.json is not at $version"; exit 1; }
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $version"; exit 1; fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK (platform 35, build tools) for the agent APK
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+      - run: agent-android/build.sh
+      - run: scripts/package.sh --target ${{ matrix.target }}
+      - name: Smoke run
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          f=$(ls dist/*.tar.gz); d=$(basename "$f" .tar.gz)
+          tar -xzf "$f" -C dist && "dist/$d/fastpilot" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastpilot-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+  release:
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: scripts/publish.sh
+        env:
+          GH_TOKEN: ${{ github.token }}

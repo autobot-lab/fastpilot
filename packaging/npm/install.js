@@ -1,5 +1,5 @@
-// postinstall: download this version's prebuilt fastpilot for the platform from the GitLab
-// package registry, check its SHA-256, and unpack it into ./vendor.
+// postinstall: download this version's prebuilt fastpilot for the platform from the GitHub
+// release, check its SHA-256, and unpack it into ./vendor.
 // FASTPILOT_DOWNLOAD_BASE: a mirror; FASTPILOT_SKIP_DOWNLOAD=1: skip (use your own binary).
 "use strict";
 const crypto = require("crypto");
@@ -9,7 +9,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const { version } = require("./package.json");
-const base = process.env.FASTPILOT_DOWNLOAD_BASE || "https://gitlab.com/api/v4/projects/88423537/packages/generic/fastpilot";
+const base = process.env.FASTPILOT_DOWNLOAD_BASE || "https://github.com/autobot-lab/fastpilot/releases/download";
 const targets = {
   "darwin-arm64": "aarch64-apple-darwin",
   "darwin-x64": "x86_64-apple-darwin",
@@ -26,11 +26,11 @@ async function main() {
   if (process.env.FASTPILOT_SKIP_DOWNLOAD === "1") return;
   const target = targets[`${process.platform}-${process.arch}`];
   if (!target) {
-    throw new Error(`no prebuilt fastpilot for ${process.platform}-${process.arch}; build it from source: https://gitlab.com/autobot-lab/fastpilot#build`);
+    throw new Error(`no prebuilt fastpilot for ${process.platform}-${process.arch}; build it from source: https://github.com/autobot-lab/fastpilot#build`);
   }
   const name = `fastpilot-${version}-${target}`;
-  const archive = await get(`${base}/${version}/${name}.tar.gz`);
-  const want = (await get(`${base}/${version}/${name}.tar.gz.sha256`)).toString().split(/\s+/)[0];
+  const archive = await get(`${base}/v${version}/${name}.tar.gz`);
+  const want = (await get(`${base}/v${version}/${name}.tar.gz.sha256`)).toString().split(/\s+/)[0];
   const got = crypto.createHash("sha256").update(archive).digest("hex");
   if (want !== got) throw new Error(`checksum mismatch for ${name}.tar.gz (expected ${want}, got ${got})`);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fastpilot-"));
