@@ -110,8 +110,64 @@ pub fn risky_match(name: &str, words: &[String]) -> Option<String> {
     words.iter().find(|w| joined.contains(&format!(" {w} "))).cloned()
 }
 
+/// The host of an endpoint (`ws://user:pw@host:9222/x`, `http://[::1]:9222`, `host:5037`) when it
+/// is not this machine: Chrome DevTools and adb have no password and no encryption, so anything
+/// else should be an SSH tunnel to 127.0.0.1.
+pub fn remote_host(endpoint: &str) -> Option<String> {
+    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = match host_port.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => host_port.rsplit_once(':').map_or(host_port, |(h, _)| h),
+    }
+    .to_ascii_lowercase();
+    let loopback = host == "localhost"
+        || host.ends_with(".localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    (!loopback).then_some(host)
+}
+
+/// `endpoint` with any `user:password@` replaced by `***@`, for logs and `doctor`.
+pub fn redact_userinfo(endpoint: &str) -> String {
+    let (scheme, rest) = endpoint.split_once("://").map_or(("", endpoint), |(s, r)| (s, r));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let authority = match authority.rsplit_once('@') {
+        Some((_, host)) => format!("***@{host}"),
+        None => authority.to_owned(),
+    };
+    if scheme.is_empty() { format!("{authority}{tail}") } else { format!("{scheme}://{authority}{tail}") }
+}
+
+/// `text` (an error about `endpoint`) with the endpoint's `user:password@` replaced by `***@`.
+pub fn redact_userinfo_in(text: &str, endpoint: &str) -> String {
+    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    match authority.rsplit_once('@') {
+        Some((userinfo, _)) if !userinfo.is_empty() => text.replace(&format!("{userinfo}@"), "***@"),
+        _ => text.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// Security review (Low): a remote Chrome / adb endpoint gets a warning unless it is this machine.
+    #[test]
+    fn remote_endpoints_are_told_apart_from_loopback() {
+        for local in ["http://127.0.0.1:9222", "ws://localhost:9222/devtools/browser/x", "127.0.0.1:15037", "http://[::1]:9222", "127.1.2.3:5037"] {
+            assert_eq!(remote_host(local), None, "{local}");
+        }
+        assert_eq!(remote_host("ws://evil.example:9222").as_deref(), Some("evil.example"));
+        assert_eq!(remote_host("http://u:pw@192.168.1.5:9222/json").as_deref(), Some("192.168.1.5"));
+        assert_eq!(remote_host("10.0.0.2:5037").as_deref(), Some("10.0.0.2"));
+        assert_eq!(remote_host("http://127.0.0.1.evil.example:9222").as_deref(), Some("127.0.0.1.evil.example"));
+        assert_eq!(redact_userinfo("http://u:pw@host:9222/json?x=1"), "http://***@host:9222/json?x=1");
+        assert_eq!(redact_userinfo("host:5037"), "host:5037");
+        assert_eq!(redact_userinfo_in("CDP websocket: u:pw@host:9222/json: refused", "http://u:pw@host:9222"), "CDP websocket: ***@host:9222/json: refused");
+    }
+
     use super::*;
 
     #[test]

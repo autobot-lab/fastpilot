@@ -68,15 +68,25 @@ fn macos() -> bool {
     cfg!(target_os = "macos")
 }
 
+/// `!` for an endpoint on another host: nothing protects that connection on the network.
+fn not_this_machine(area: &'static str, key: &str, host: &str, what: &str) -> Check {
+    check(area, "remote", Status::Warn, format!("{key} points at {host}, not this machine: {what} has no password and no encryption"))
+        .hint("reach it through an SSH tunnel and use 127.0.0.1 (README: device di mesin lain)")
+}
+
 pub async fn web() -> Vec<Check> {
     let mut out = Vec::new();
     if let Some(endpoint) = fastpilot_web::chrome_endpoint() {
+        if let Some(host) = fastpilot_core::policy::remote_host(&endpoint) {
+            out.push(not_this_machine("web", "chrome_endpoint", &host, "DevTools"));
+        }
+        let shown = fastpilot_core::policy::redact_userinfo(&endpoint);
         let connected = tokio::time::timeout(Duration::from_secs(10), fastpilot_web::Browser::connect(Some(&endpoint))).await;
         out.push(match connected {
-            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT)")),
-            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint}: {e}"))
+            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT)")),
+            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown}: {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint)))
                 .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)"),
-            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint} did not answer within 10 s"))
+            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown} did not answer within 10 s"))
                 .hint("is the SSH tunnel open?"),
         });
         return out;
@@ -171,12 +181,15 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
         Ok(s) => s,
         Err(e) => return vec![check("android", "adb", Status::Fail, e)],
     };
-    let mut out = vec![match fastpilot_android::Adb::new().await {
+    let warn = fastpilot_core::policy::remote_host(&server).map(|host| not_this_machine("android", "adb_server", &host, "adb"));
+    let mut out: Vec<Check> = warn.into_iter().collect();
+    out.push(match fastpilot_android::Adb::new().await {
         Ok(_) => check("android", "adb", Status::Ok, format!("adb server {server} (FASTPILOT_ADB_SERVER)")),
         Err(e) => {
-            return vec![check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (README: device di mesin lain)")];
+            out.push(check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (README: device di mesin lain)"));
+            return out;
         }
-    }];
+    });
     out.push(if fastpilot_android::agent_embedded() {
         check("android", "agent", Status::Ok, "UiAutomation agent built in")
     } else {
