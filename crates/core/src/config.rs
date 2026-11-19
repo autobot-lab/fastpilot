@@ -146,13 +146,17 @@ static GUARD: Mutex<BTreeMap<(PathBuf, String), Option<String>>> = Mutex::new(BT
 
 fn from_file(key: &str) -> Option<String> {
     let value = file_values().remove(key);
-    if setting(key).is_none_or(|s| s.rule != Rule::TightenOnly) {
+    let Some(rule) = setting(key).map(|s| s.rule).filter(|r| *r != Rule::Free) else {
         return value;
-    }
+    };
     let mut guard = GUARD.lock().unwrap_or_else(|e| e.into_inner());
     let pinned = guard.entry((path(), key.to_owned())).or_insert_with(|| value.clone());
     if *pinned != value {
-        if tightens(key, pinned.as_deref(), value.as_deref()) {
+        // Program paths and endpoints (`HumanOnly`): what the process started with, until it restarts;
+        // an edited file must not send the next session (and the secrets typed in it) elsewhere.
+        if rule == Rule::HumanOnly {
+            tracing::warn!(key, "config file changes a program path or endpoint: ignored until fastpilot restarts");
+        } else if tightens(key, pinned.as_deref(), value.as_deref()) {
             *pinned = value;
         } else {
             tracing::warn!(key, "config file loosens a guard rail: ignored until fastpilot restarts");
@@ -166,7 +170,7 @@ fn from_file(key: &str) -> Option<String> {
 /// it before a rail's first use (an agent with a shell, between reading a page and the first risky
 /// tap) does not count either.
 pub fn pin_guard_rails() {
-    for s in SETTINGS.iter().filter(|s| s.rule == Rule::TightenOnly) {
+    for s in SETTINGS.iter().filter(|s| s.rule != Rule::Free) {
         let _ = from_file(s.key);
     }
 }
@@ -494,6 +498,40 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 1, "only config.toml");
+        unsafe {
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Security review (Medium): program paths and endpoints (`chrome`, `chrome_endpoint`,
+    /// `adb_server`, ...) were read live, so an agent editing the file sent the next session of a
+    /// running MCP server / daemon to another Chrome. Pinned at start like the guard rails.
+    #[test]
+    fn human_only_settings_are_pinned_at_start() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-config-human-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        let human: Vec<&str> = SETTINGS.iter().filter(|s| s.rule == Rule::HumanOnly).map(|s| s.key).collect();
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", &file);
+            for k in &human {
+                std::env::remove_var(format!("FASTPILOT_{}", k.to_uppercase()));
+            }
+        }
+        std::fs::write(&file, "chrome_endpoint = \"http://127.0.0.1:9222\"\nchrome = \"/opt/chrome\"\n").expect("write");
+        pin_guard_rails();
+        // Changed, added or removed in the file afterwards: this process keeps what it started with.
+        std::fs::write(&file, "chrome_endpoint = \"ws://evil.example:9222\"\nadb_server = \"evil.example:5037\"\n").expect("write");
+        assert_eq!(var("FASTPILOT_CHROME_ENDPOINT").as_deref(), Ok("http://127.0.0.1:9222"));
+        assert!(var("FASTPILOT_ADB_SERVER").is_err(), "added after start");
+        assert_eq!(var("FASTPILOT_CHROME").as_deref(), Ok("/opt/chrome"), "removed after start");
+        assert_eq!(effective("chrome_endpoint"), Source::File("http://127.0.0.1:9222".into()));
+        // Free settings stay live.
+        std::fs::write(&file, "headful = true\n").expect("write");
+        assert_eq!(var("FASTPILOT_HEADFUL").as_deref(), Ok("1"));
         unsafe {
             std::env::remove_var("FASTPILOT_CONFIG");
         }

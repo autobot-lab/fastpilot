@@ -249,15 +249,19 @@ Lewat chat, agent memakai tool `config` dengan aturan:
 - **Batasan** (tabel di atas, plus `vars`): agent hanya boleh memperketat (menambah kata/domain,
   mematikan izin, menurunkan batas). Melonggarkan atau menghapusnya hanya oleh user lewat
   `fastpilot config` atau `fastpilot ui`.
-- **Program dan lokasi** (`chrome`, `claude`, `dir`, `ios_runner`): hanya user.
+- **Program, lokasi, dan mesin lain** (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`):
+  hanya user. fastpilot yang sedang jalan memakai nilai saat ia mulai; perubahan file berlaku setelah restart.
 - **Lainnya** (`headful`, `model*`, `flow_timeout`, `retry_budget`, `breaker`, device default, `memory`,
   `daemon_idle`): bebas.
 - Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env. Token relay
   extension dibuat acak untuk tiap sesi; `FASTPILOT_RELAY_TOKEN` hanya untuk browser tanpa native messaging.
 - Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
-- Batasan ini melindungi dari agent yang hanya memakai tool fastpilot. Agent yang juga punya akses
-  shell atau file (mis. Bash di Claude Code) bisa mengubah file lalu me-restart fastpilot. Untuk itu,
-  set batasan lewat **env** di konfigurasi MCP, atau batasi akses shell agent.
+- Batasan ini melindungi dari agent yang hanya memakai tool fastpilot. Proses fastpilot yang sedang
+  jalan (server MCP, daemon, `run`) mengunci batasan dan kunci "hanya user" sejak ia mulai, jadi file
+  yang diubah di tengah jalan tidak berpengaruh. Tapi agent yang juga punya akses shell atau file
+  (mis. Bash di Claude Code) bisa mengubah file lalu me-restart fastpilot (`fastpilot daemon stop`).
+  Itu batas desain: set batasan lewat **env** di konfigurasi MCP, dan tolak akses itu di izin agent,
+  mis. di Claude Code `"deny": ["Bash(fastpilot config:*)", "Bash(fastpilot daemon:*)", "Edit(~/.fastpilot/**)"]`.
 
 Nama kunci = nama env tanpa `FASTPILOT_` dan huruf kecil (`FASTPILOT_FLOW_TIMEOUT` → `flow_timeout`).
 
