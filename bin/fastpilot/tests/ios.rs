@@ -18,6 +18,9 @@ async fn call(client: &Client, tool: &'static str, args: Value) -> (bool, String
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
+/// One simulator and one runner: the tests take turns.
+static SIMULATOR: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn demo_app() -> Option<String> {
     let app = format!("{ROOT}/ios-runner/build/Build/Products/Debug-iphonesimulator/FastpilotDemo.app");
     let built = std::path::Path::new(&app).exists()
@@ -40,6 +43,7 @@ const IOS_LOGIN: &str = r#"
 
 #[tokio::test]
 async fn ios_login_over_mcp() {
+    let _sim = SIMULATOR.lock().await;
     let Some(app) = demo_app() else {
         return eprintln!("skipping: run ios-runner/build.sh first");
     };
@@ -130,6 +134,7 @@ async fn ios_login_over_mcp() {
 /// env value never appears in fastpilot's output.
 #[tokio::test]
 async fn ios_launch_app_arguments_and_env() {
+    let _sim = SIMULATOR.lock().await;
     let Some(app) = demo_app() else {
         return eprintln!("skipping: run ios-runner/build.sh first");
     };

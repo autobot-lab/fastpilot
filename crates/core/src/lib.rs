@@ -2,6 +2,7 @@
 //! the flow DSL and the flow engine. Drivers (web, android, ios) live in their own crates.
 
 pub mod config;
+pub mod live;
 mod device;
 mod dsl;
 mod engine;
@@ -225,6 +226,10 @@ pub trait Driver: Send + Sync {
     /// Maestro `launchApp`: package / package/activity / bundleId.
     async fn launch_app(&self, app: &str) -> Result<()> {
         self.open(app).await
+    }
+    /// Where `fastpilot ui` can watch this session (web sessions on fastpilot's own Chrome).
+    fn live_screen(&self) -> Option<live::Screen> {
+        None
     }
     /// `installApp`: put an app (apk / .app) on the device.
     async fn install_app(&self, _path: &str) -> Result<()> {

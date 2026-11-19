@@ -262,17 +262,237 @@ function pageDevice() {
     h("p", { class: "muted" }, "Model AI dan Secret ada di Pengaturan: ", h("a", { class: "lk", href: "#/settings/model" }, "Model AI"), " · ", h("a", { class: "lk", href: "#/settings/secret" }, "Secret"), ".")));
 }
 
+// ---- live (C7a) ----
+const PLATFORM = { web: "chrome · milik fastpilot", android: "android", ios: "ios" };
+let liveTimer = null;
+let liveSel = null; // "pid:id"
+let liveBig = null; // "pid:id" shown large
+const liveCards = new Map(); // key -> { el, img, text }
+
+function stopLive() {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  // Ending the streams ends the screencasts on the server.
+  stopWatching();
+  liveCards.clear();
+  document.getElementById("live-root")?.remove();
+}
+
+function stepLine(steps) {
+  const pick = (st) => steps.findIndex((s) => s.state === st);
+  const running = pick("running"), stopped = steps.findIndex((s) => s.state === "blocked" || s.state === "failed");
+  const at = running >= 0 ? running : stopped >= 0 ? stopped : steps.map((s) => s.state).lastIndexOf("done");
+  if (at < 0) return steps.length ? `0/${steps.length} langkah` : "Belum ada langkah";
+  return `Langkah ${at + 1}/${steps.length} · ${steps[at].label}`;
+}
+
+function sessionStatus(s) {
+  const f = s.flow;
+  if (!f) return { text: "Siap · menunggu langkah", cls: "" };
+  if (f.steps.some((x) => x.state === "blocked")) return { text: "Diblokir Batasan", cls: "bad" };
+  if (f.steps.some((x) => x.state === "failed")) return { text: "Gagal", cls: "bad" };
+  if (!f.finished) return { text: "Sedang berjalan", cls: "run" };
+  return { text: `Selesai · ${f.steps.filter((x) => x.state === "done").length}/${f.steps.length} lolos`, cls: "ok" };
+}
+
+// Read the MJPEG stream with fetch and show each JPEG as a blob URL: works in every browser,
+// shows a static page's single frame, and stops (abort) when the view goes away.
+async function watch(img, url, onFirst, onError) {
+  const ctl = new AbortController();
+  img._stop = () => ctl.abort();
+  let shown = null;
+  try {
+    const r = await fetch(url, { signal: ctl.signal });
+    if (!r.ok) throw new Error((await r.text()).replace(/^fastpilot ui: /, "").trim());
+    const reader = r.body.getReader();
+    let buf = new Uint8Array(0);
+    const find = (hay, needle, from) => {
+      outer: for (let i = from; i <= hay.length - needle.length; i++) {
+        for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+        return i;
+      }
+      return -1;
+    };
+    const sep = new TextEncoder().encode("\r\n\r\n");
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(buf.length + value.length);
+      merged.set(buf); merged.set(value, buf.length); buf = merged;
+      for (;;) {
+        const h = find(buf, sep, 0);
+        if (h < 0) break;
+        const head = new TextDecoder().decode(buf.slice(0, h));
+        const m = /Content-Length:\s*(\d+)/i.exec(head);
+        if (!m) { buf = buf.slice(h + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < h + 4 + len) break;
+        const jpeg = buf.slice(h + 4, h + 4 + len);
+        buf = buf.slice(h + 4 + len);
+        const next = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+        img.src = next;
+        if (shown) URL.revokeObjectURL(shown); else onFirst();
+        shown = next;
+      }
+    }
+    if (!shown) throw new Error("tidak ada gambar dari sesi ini");
+  } catch (e) {
+    if (e.name !== "AbortError") onError(e.message || String(e));
+  }
+}
+
+function stopWatching(root) {
+  (root || document).querySelectorAll("img.screen").forEach((i) => { if (i._stop) i._stop(); i._stop = null; });
+}
+
+function screenEl(s, big) {
+  const key = `${s.pid}:${s.id}`;
+  if (!s.watchable) {
+    return h("div", { class: "screen-box none" }, h("span", {}, s.platform === "web"
+      ? "Chrome milikmu (attach) tidak ditampilkan di sini."
+      : `Layar ${s.platform} langsung menyusul. Langkahnya tetap terlihat di bawah.`));
+  }
+  const fps = big ? 8 : 2, w = big ? 1280 : 480;
+  const img = h("img", { class: "screen", alt: `Layar sesi ${s.id}` });
+  const status = h("div", { class: "screen-state" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("span", {}, "Menyambung ke layar…"));
+  const box = h("div", { class: "screen-box" }, img, status);
+  watch(img, `/api/live/frames?pid=${s.pid}&session=${encodeURIComponent(s.id)}&fps=${fps}&w=${w}`, () => status.remove(), (why) => {
+    status.replaceChildren(h("span", { class: "bad" }, "Layar tidak bisa ditampilkan: " + why),
+      h("button", { class: "btn sm", onclick: () => { const c = liveCards.get(key); if (c) { stopWatching(c.el); c.el.remove(); } liveCards.delete(key); renderLive(lastLive); } }, "Coba lagi"));
+    if (!box.contains(status)) box.append(status);
+  });
+  return box;
+}
+
+let lastLive = { sessions: [] };
+
+function card(s) {
+  const key = `${s.pid}:${s.id}`;
+  const text = h("div", { class: "card-text" });
+  const el = h("article", { class: "lcard", tabindex: "0", "aria-label": `Sesi ${s.id}`,
+    onclick: (e) => { if (e.target.closest("button")) return; liveSel = key; renderLive(lastLive); } },
+    h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
+    screenEl(s, false), text);
+  el.addEventListener("keydown", (e) => { if (e.key === "Enter") { liveSel = key; renderLive(lastLive); } });
+  return { el, text };
+}
+
+function fillCard(c, s) {
+  const st = sessionStatus(s);
+  const steps = s.flow ? s.flow.steps : [];
+  c.text.replaceChildren(
+    h("div", {}, h("div", { class: "l" }, stepLine(steps)), h("div", { class: "d " + st.cls }, st.text, s.kind ? ` · ${s.kind === "mcp" ? "Claude Code / MCP" : s.kind === "daemon" ? "CLI" : "fastpilot run"}` : "")),
+    s.watchable ? h("button", { class: "btn sm", onclick: () => { liveBig = `${s.pid}:${s.id}`; renderLive(lastLive); } }, icon("expand", "sm"), "Perbesar") : null);
+}
+
+function stepsPanel(s) {
+  const steps = s.flow ? s.flow.steps : [];
+  const items = steps.map((x, i) => {
+    const n = `${i + 1} · `;
+    if (x.state === "running") return h("li", { class: "now" }, h("span", { class: "i" }, icon("play", "sm")), h("span", {}, n, x.label), h("span", { class: "r" }, "sedang berjalan"));
+    if (x.state === "done") return h("li", {}, h("span", { class: "i ok" }, "✓"), h("span", {}, n, x.label));
+    if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "gagal"));
+    if (x.state === "blocked") return h("li", { class: "blk" }, h("span", { class: "i" }, icon("lock", "sm")), h("span", {}, n, x.label),
+      h("span", { class: "r" }, "diblokir · ", h("a", { class: "lk bad", href: "#/settings/limits" }, "Lihat Batasan")));
+    if (x.state === "skipped") return h("li", { class: "muted" }, h("span", { class: "i" }, "–"), h("span", {}, n, x.label, " · dilewati"));
+    return h("li", { class: x.will_block ? "warnline" : "" }, h("span", { class: "i" }, x.will_block ? icon("lock", "sm") : "○"), h("span", {}, n, x.label),
+      x.will_block ? h("span", { class: "r" }, x.will_block, " · ", h("a", { class: "lk bad", href: "#/settings/limits" }, "Lihat Batasan")) : null);
+  });
+  return h("div", { class: "grp steps-grp" },
+    h("div", { class: "gh" }, icon("tests"), `riwayat langkah · ${s.id} (${s.platform} · sesi yang dipilih)`),
+    items.length ? h("ul", { class: "steps" }, items) : h("div", { class: "empty small" }, "Sesi ini belum menjalankan langkah."));
+}
+
+function liveEmpty() {
+  return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · kosong"),
+    h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "Belum ada test yang berjalan"),
+      h("span", {}, "Sesi dari Claude Code (MCP), CLI, atau ", code("fastpilot run"), " muncul di sini secara live, tanpa mengganggu Chrome atau HP-mu."),
+      h("span", {}, "Coba: ", code("fastpilot open https://example.com"))));
+}
+
+function renderLive(data) {
+  lastLive = data;
+  const sessions = data.sessions || [];
+  const running = sessions.filter((s) => s.flow && !s.flow.finished).length;
+  $top().replaceChildren(icon("live"), "Live",
+    sessions.length ? h("span", { class: "pill" }, `● ${sessions.length} sesi · ${running} berjalan · headless`) : h("span", { class: "pill grey" }, "○ Tidak ada sesi berjalan"));
+  if (!sessions.length) {
+    stopWatching();
+    liveCards.clear();
+    $body().replaceChildren(liveEmpty());
+    return;
+  }
+  const keys = new Set(sessions.map((s) => `${s.pid}:${s.id}`));
+  for (const [k, c] of [...liveCards.entries()]) {
+    if (!keys.has(k)) { stopWatching(c.el); c.el.remove(); liveCards.delete(k); }
+  }
+  if (!liveSel || !keys.has(liveSel)) liveSel = [...keys][0];
+  if (liveBig && !keys.has(liveBig)) liveBig = null;
+  // Built once and updated in place: moving an <img> would restart its stream.
+  let root = document.getElementById("live-root");
+  if (!root) {
+    for (const c of liveCards.values()) stopWatching(c.el);
+    liveCards.clear();
+    root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }));
+    $body().replaceChildren(root);
+  }
+  const grid = document.getElementById("live-grid");
+  for (const s of sessions) {
+    const k = `${s.pid}:${s.id}`;
+    let c = liveCards.get(k);
+    if (!c) { c = card(s); liveCards.set(k, c); grid.append(c.el); }
+    fillCard(c, s);
+    c.el.classList.toggle("sel", k === liveSel);
+  }
+  const sel = sessions.find((s) => `${s.pid}:${s.id}` === liveSel);
+  document.getElementById("live-steps").replaceChildren(...(sel ? [stepsPanel(sel)] : []));
+  if (liveBig) {
+    const b = sessions.find((s) => `${s.pid}:${s.id}` === liveBig);
+    if (b) {
+      const close = () => { liveBig = null; document.querySelectorAll(".zoom").forEach((x) => stopWatching(x)); renderLive(lastLive); };
+      if (!document.querySelector(".zoom") || document.querySelector(".zoom").dataset.key !== liveBig) {
+        const ov = h("div", { class: "zoom", role: "dialog", "aria-modal": "true", "aria-label": `Layar ${b.id}`, "data-key": liveBig },
+          h("div", { class: "zoom-in" }, h("div", { class: "lh" }, h("span", { class: "pf web" }, "web"), h("span", { class: "mono" }, b.id),
+            h("button", { class: "btn sm right", onclick: close }, icon("close", "sm"), "Tutup")), screenEl(b, true)));
+        ov.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+        document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); });
+        document.body.append(ov);
+        ov.querySelector("button").focus();
+      }
+    }
+  } else {
+    document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); });
+  }
+}
+
+async function pollLive() {
+  if (!location.hash.startsWith("#/live")) return;
+  try {
+    renderLive(await api("/api/live"));
+  } catch (e) {
+    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Tidak bisa membaca sesi: " + e.message));
+  }
+  liveTimer = setTimeout(pollLive, 1000);
+}
+
 // ---- router ----
 function render() {
   if (!S) return;
-  const hash = location.hash || "#/settings/limits";
+  const hash = location.hash || "#/live";
   const [, page, sub] = hash.split("/");
+  if (page !== "live") { stopLive(); document.querySelectorAll(".zoom").forEach((x) => { stopWatching(x); x.remove(); }); }
   document.querySelectorAll(".rail a").forEach((a) => {
     const on = a.dataset.nav === page;
     a.classList.toggle("on", on);
     if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
-  if (page === "device") {
+  if (page === "live") {
+    if (!liveTimer) {
+      $top().replaceChildren(icon("live"), "Live");
+      $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca sesi…")));
+      pollLive();
+    }
+  } else if (page === "device") {
     if (!doctorCache && !doctorBusy) loadDoctor(false);
     pageDevice();
   } else {

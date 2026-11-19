@@ -34,6 +34,7 @@ impl SessionRegistry {
         if self.sessions.contains_key(&id) {
             return Err(Error::Session(format!("session `{id}` already exists")));
         }
+        crate::live::session_started(&id, &driver.platform().to_string(), driver.live_screen());
         self.sessions.insert(id.clone(), Arc::from(driver));
         self.active = Some(id);
         Ok(())
@@ -51,6 +52,7 @@ impl SessionRegistry {
             let still_same = self.sessions.get(id).is_some_and(|cur| Arc::ptr_eq(cur, d));
             if !after.sessions.contains_key(id) && still_same {
                 self.sessions.remove(id);
+                crate::live::session_ended(id);
             }
         }
         for (id, d) in after.sessions {
@@ -68,6 +70,7 @@ impl SessionRegistry {
     pub async fn close_all(&mut self) {
         self.active = None;
         for (id, d) in std::mem::take(&mut self.sessions) {
+            crate::live::session_ended(&id);
             if let Err(e) = d.close().await {
                 tracing::warn!(session = %id, error = %e, "session cleanup failed");
             }
@@ -78,6 +81,7 @@ impl SessionRegistry {
         if self.active.as_deref() == Some(id) {
             self.active = None;
         }
+        crate::live::session_ended(id);
         self.sessions.remove(id)
     }
 
@@ -266,6 +270,8 @@ struct Ctx {
     /// Per session: the step index of the last tap-like action and the screen before it,
     /// while only checks followed it (failure triage, see `StepRecord::after_no_effect`).
     last_action: Mutex<HashMap<String, (usize, Snapshot)>>,
+    /// This flow in the Live panel (`crate::live`), when the process publishes one.
+    live: Option<u64>,
 }
 
 fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -309,6 +315,7 @@ pub async fn run_flow(
         clipboard: Mutex::new(None),
         recording: Mutex::new(None),
         last_action: Mutex::new(HashMap::new()),
+        live: crate::live::flow_started(live_plan(flow)),
     };
     let mut baselines: Vec<(SessionId, Option<Snapshot>)> = Vec::new();
     let mut active = opts.session.clone().or_else(|| reg.active().map(str::to_owned));
@@ -328,6 +335,7 @@ pub async fn run_flow(
                 if *reset {
                     reg.remove(id);
                 }
+                crate::live::step_started(ctx.live, index, Some(id), None);
                 let res = start_session(reg, launcher, id, *platform, target.as_deref(), device.as_deref()).await;
                 if res.is_ok() {
                     active = Some(id.clone());
@@ -402,6 +410,7 @@ pub async fn run_flow(
     if let Some(a) = &active {
         let _ = reg.set_active(a);
     }
+    crate::live::flow_finished(ctx.live);
 
     let mut records = ctx.records.into_inner().unwrap_or_else(|p| p.into_inner());
     records.sort_by_key(|r| r.index);
@@ -580,6 +589,7 @@ fn check_only(step: &Step) -> bool {
 
 async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx) -> bool {
     let t0 = Instant::now();
+    crate::live::step_started(ctx.live, index, Some(sid), d.live_screen());
     let stable = match step_ref(step) {
         Some(sel) => durable(d, sel).await,
         None => None,
@@ -631,6 +641,7 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
         Ok(o) => (o, None),
         Err(e) => (None, Some(e)),
     };
+    crate::live::step_finished(ctx.live, index, session, error.as_ref().map_or(Ok(()), |e| Err((matches!(e, Error::Blocked(_)), e.to_string()))));
     ctx.record(StepRecord {
         index,
         session: session.map(str::to_owned),
@@ -674,6 +685,53 @@ async fn masks_for(d: &dyn Driver, ignore: &[Selector], shot: &[u8]) -> Result<V
         out.push(crate::visual::Mask { x: px(b.x - ox), y: px(b.y - oy), w: px(b.w) + 2, h: px(b.h) + 2 });
     }
     Ok(out)
+}
+
+/// The flow's leaf steps for the Live panel, numbered like `run_flow` numbers them, each with
+/// what a guard rail will say about it (judged from the step alone, before it runs).
+fn live_plan(flow: &Flow) -> Vec<(String, Option<String>, Option<String>)> {
+    let mut out = Vec::new();
+    for fs in &flow.steps {
+        match &fs.step {
+            Step::Parallel(branches) => {
+                for b in branches {
+                    out.extend(b.steps.iter().map(|s| (s.step.label(), will_block(&s.step), Some(b.session.clone()))));
+                }
+            }
+            step => out.push((step.label(), will_block(step), None)),
+        }
+    }
+    out
+}
+
+/// What the guard rails will refuse about `step`, in the words of the Live panel.
+fn will_block(step: &Step) -> Option<String> {
+    let flag_off = |key: &str| !crate::config::flag(key);
+    let (inner, confirmed) = match step {
+        Step::Confirmed(inner) => (&**inner, true),
+        other => (other, false),
+    };
+    match inner {
+        Step::TapOn(sel) | Step::LongPressOn(sel) | Step::DoubleTapOn(sel) => {
+            let (Selector::Text(name) | Selector::Role { name: Some(name), .. }) = sel else { return None };
+            if let Some(w) = crate::policy::block_match(name, &crate::policy::blocked_words()) {
+                return Some(format!("akan diblokir: teks berisi \"{w}\" (block_actions)"));
+            }
+            match crate::policy::risky_match(name, &crate::policy::risky_words()) {
+                Some(w) if !confirmed => Some(format!("akan berhenti: butuh confirm: true (\"{w}\", confirm_actions)")),
+                _ => None,
+            }
+        }
+        Step::OpenUrl(url) if !url.contains("${") && !crate::policy::url_allowed(url, &crate::policy::allowed_domains()) => {
+            Some("akan diblokir: domain di luar allowed_domains".into())
+        }
+        Step::EvalScript(_) if flag_off("allow_eval_script") => Some("akan diblokir: evalScript dimatikan (allow_eval_script)".into()),
+        Step::ClearState(_) | Step::ClearKeychain if flag_off("allow_app_reset") => Some("akan diblokir: hapus data app dimatikan (allow_app_reset)".into()),
+        Step::InstallApp(_) | Step::UninstallApp(_) if flag_off("allow_app_install") => {
+            Some("akan diblokir: install/uninstall app dimatikan (allow_app_install)".into())
+        }
+        _ => None,
+    }
 }
 
 /// FASTPILOT_CONFIRM_ACTIONS: a tap on an element named like a risky action ("Hapus akun",

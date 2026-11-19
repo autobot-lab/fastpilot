@@ -81,6 +81,18 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
+/// Run a command that hosts sessions while publishing them to the Live panel of `fastpilot ui`.
+async fn live<F, Fut, T>(f: F, kind: &str) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    fastpilot_core::live::enable(kind);
+    let out = f().await;
+    fastpilot_core::live::disable();
+    out
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // stdout belongs to the MCP transport; logs always go to stderr.
@@ -108,12 +120,12 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let web = LaunchOptions { headless: !headful, executable: None };
 
     match args.first().map(String::as_str) {
-        Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
+        Some("mcp") => live(|| fastpilot_mcp::serve_stdio(web), "mcp").await,
         Some("config") => config_cmd(&args[1..]),
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,
-        Some("daemon") if args.len() == 1 => cli::daemon(web).await,
+        Some("daemon") if args.len() == 1 => live(|| cli::daemon(web), "daemon").await,
         _ if cli::command_of(&args).is_some() => {
             // Blocking client: one request to the daemon (started on demand).
             let argv = args.clone();
@@ -177,7 +189,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 web,
             };
-            run::run(std::path::Path::new(path), opts).await
+            live(|| run::run(std::path::Path::new(path), opts), "run").await
         }
         Some("ios") if args.get(1).map(String::as_str) == Some("doctor") => {
             match fastpilot_ios::device::doctor(args.get(2).map(String::as_str)).await {
