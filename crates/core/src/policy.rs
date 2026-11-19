@@ -140,6 +140,16 @@ pub fn redact_userinfo(endpoint: &str) -> String {
     if scheme.is_empty() { format!("{authority}{tail}") } else { format!("{scheme}://{authority}{tail}") }
 }
 
+/// `text` (an error about `endpoint`) with the endpoint's `user:password@` replaced by `***@`.
+pub fn redact_userinfo_in(text: &str, endpoint: &str) -> String {
+    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    match authority.rsplit_once('@') {
+        Some((userinfo, _)) if !userinfo.is_empty() => text.replace(&format!("{userinfo}@"), "***@"),
+        _ => text.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -155,6 +165,7 @@ mod tests {
         assert_eq!(remote_host("http://127.0.0.1.evil.example:9222").as_deref(), Some("127.0.0.1.evil.example"));
         assert_eq!(redact_userinfo("http://u:pw@host:9222/json?x=1"), "http://***@host:9222/json?x=1");
         assert_eq!(redact_userinfo("host:5037"), "host:5037");
+        assert_eq!(redact_userinfo_in("CDP websocket: u:pw@host:9222/json: refused", "http://u:pw@host:9222"), "CDP websocket: ***@host:9222/json: refused");
     }
 
     use super::*;

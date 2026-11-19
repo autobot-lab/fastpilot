@@ -41,7 +41,7 @@ impl Browser {
             if let Some(host) = fastpilot_core::policy::remote_host(&endpoint) {
                 tracing::warn!(host, "chrome_endpoint is not this machine: DevTools has no password or encryption, use an SSH tunnel to 127.0.0.1");
             }
-            let b = Self::connect(Some(&endpoint)).await.map_err(|e| Error::Launch(format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT): {e}")))?;
+            let b = Self::connect(Some(&endpoint)).await.map_err(|e| Error::Launch(format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT): {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint))))?;
             b.own.store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(b);
         }

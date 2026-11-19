@@ -80,14 +80,13 @@ pub async fn web() -> Vec<Check> {
         if let Some(host) = fastpilot_core::policy::remote_host(&endpoint) {
             out.push(not_this_machine("web", "chrome_endpoint", &host, "DevTools"));
         }
-        let endpoint = fastpilot_core::policy::redact_userinfo(&endpoint);
-        let endpoint = endpoint.as_str();
+        let shown = fastpilot_core::policy::redact_userinfo(&endpoint);
         let connected = tokio::time::timeout(Duration::from_secs(10), fastpilot_web::Browser::connect(Some(&endpoint))).await;
         out.push(match connected {
-            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT)")),
-            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint}: {e}"))
+            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT)")),
+            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown}: {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint)))
                 .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)"),
-            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint} did not answer within 10 s"))
+            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown} did not answer within 10 s"))
                 .hint("is the SSH tunnel open?"),
         });
         return out;
