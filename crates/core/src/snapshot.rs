@@ -458,11 +458,20 @@ impl Snapshot {
                 .iter()
                 .find(|e| &e.r#ref == r)
                 .ok_or_else(|| Error::NotFound(format!("{r} is not on screen"))),
-            Selector::Id(id) => self
-                .entries
-                .iter()
-                .find(|e| e.node.id.as_deref() == Some(id))
-                .ok_or_else(not_found),
+            // Several matches: an action needs `index` (or a ref); an existence check needs one.
+            Selector::Id(_) | Selector::Role { name: None, .. } => match self.matching(sel).as_slice() {
+                [] => Err(not_found()),
+                [one] => Ok(one),
+                [first, ..] if intent == Intent::Find => Ok(first),
+                many => Err(Error::Ambiguous {
+                    selector: sel.to_string(),
+                    candidates: many.iter().take(5).map(|e| line(e, false)).collect(),
+                }),
+            },
+            Selector::Nth { of, index } => {
+                let all = self.matching(of);
+                all.get(*index).copied().ok_or_else(|| Error::NotFound(format!("{sel}: only {} element(s) match {of}", all.len())))
+            }
             Selector::Focused => self
                 .entries
                 .iter()
@@ -471,22 +480,31 @@ impl Snapshot {
             Selector::Point(_) => Err(Error::Unsupported(
                 "point selectors are handled by the driver".into(),
             )),
-            Selector::Role { role, name } => {
+            Selector::Role { role, name: Some(n) } => {
                 let pool: Vec<&Entry> = self
                     .entries
                     .iter()
                     .filter(|e| e.node.role.eq_ignore_ascii_case(role))
                     .collect();
-                match name {
-                    None => pool.first().copied().ok_or_else(not_found),
-                    Some(n) => pick(sel, &pool, n, intent, false).ok_or_else(not_found)?,
-                }
+                pick(sel, &pool, n, intent, false).ok_or_else(not_found)?
             }
             Selector::Text(t) => {
                 let pool: Vec<&Entry> = self.entries.iter().collect();
                 pick(sel, &pool, t, intent, intent == Intent::Find).ok_or_else(not_found)?
             }
         }
+    }
+
+    /// Every element an `id` or a nameless `role` selects, in document order (what `index` counts).
+    pub fn matching(&self, sel: &Selector) -> Vec<&Entry> {
+        self.entries
+            .iter()
+            .filter(|e| match sel {
+                Selector::Id(id) => e.node.id.as_deref() == Some(id),
+                Selector::Role { role, name: None } => e.node.role.eq_ignore_ascii_case(role),
+                _ => false,
+            })
+            .collect()
     }
 
     /// Nearest alternatives shown when a step fails, so the AI can pick a ref.
@@ -876,6 +894,47 @@ mod tests {
         // Secure values are never matched or shown.
         assert!(s.resolve(&text("hunter2"), Intent::Find).is_err());
         assert!(!s.render(None, 120).contains("hunter2"));
+    }
+
+    /// E2: `{ role: button }` (no name) or an `id` on several elements used to act on the first one
+    /// silently. Actions now fail `ambiguous` with the candidates; existence checks still pass.
+    #[test]
+    fn role_without_name_and_duplicate_id_are_ambiguous_for_actions() {
+        let mut refs = RefRegistry::default();
+        let id = |role: &str, name: &str, id: &str| Node { id: Some(id.into()), ..n(role, name) };
+        let s = Snapshot::build(
+            "t",
+            "u",
+            vec![id("button", "Simpan", "act"), id("button", "Hapus", "act"), id("textfield", "Email", "email"), n("link", "Bantuan")],
+            &mut refs,
+        );
+        let role = |r: &str| Selector::Role { role: r.into(), name: None };
+        for (sel, intent) in [(role("button"), Intent::Tap), (Selector::Id("act".into()), Intent::Tap), (Selector::Id("act".into()), Intent::Type)] {
+            match s.resolve(&sel, intent) {
+                Err(Error::Ambiguous { candidates, .. }) => {
+                    assert!(candidates.len() == 2 && candidates[0].contains("Simpan") && candidates[1].contains("Hapus"), "{sel}: {candidates:?}");
+                }
+                other => panic!("{sel} {intent:?}: expected ambiguous, got {:?}", other.map(|e| e.r#ref.clone())),
+            }
+        }
+        // A single match is not ambiguous; existence checks (Find) only need one.
+        assert_eq!(s.resolve(&role("link"), Intent::Tap).map(|e| e.node.name.as_str()).ok(), Some("Bantuan"));
+        assert_eq!(s.resolve(&Selector::Id("email".into()), Intent::Type).map(|e| e.node.name.as_str()).ok(), Some("Email"));
+        assert!(s.resolve(&role("button"), Intent::Find).is_ok());
+
+        // `index` (0-based, document order) picks one; out of range says how many match.
+        let parse = |src: &str| Selector::parse_yaml(src).expect(src);
+        let name = |src: &str| s.resolve(&parse(src), Intent::Tap).map(|e| e.node.name.clone()).ok();
+        assert_eq!(name("{ role: button, index: 1 }").as_deref(), Some("Hapus"));
+        assert_eq!(name("{ id: act, index: 0 }").as_deref(), Some("Simpan"));
+        let err = s.resolve(&parse("{ id: act, index: 2 }"), Intent::Tap).map(|e| e.r#ref.clone()).expect_err("out of range");
+        assert!(matches!(&err, Error::NotFound(m) if m.contains("only 2")), "{err}");
+        assert_eq!(parse("{ role: button, index: 1 }").to_string(), "{role: button, index: 1}");
+        let back = serde_yaml::to_string(&parse("{ id: act, index: 1 }").to_yaml()).expect("yaml");
+        assert_eq!(Selector::parse_yaml(&back).expect("round trip"), parse("{ id: act, index: 1 }"));
+        for bad in ["{ text: Simpan, index: 0 }", "{ role: button, name: Simpan, index: 0 }", "{ ref: e1, index: 0 }", "{ id: act, index: -1 }", "{ id: act, index: x }"] {
+            assert!(Selector::parse_yaml(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
