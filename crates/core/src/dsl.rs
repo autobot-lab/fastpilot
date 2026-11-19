@@ -1684,11 +1684,24 @@ mod tests {
 
     #[test]
     fn check_flow_reports_semantic_errors() {
-        // SAFETY: test-only env mutation; only this test reads these variables.
+        // FASTPILOT_VARS is also read and changed by the config tests: hold ENV_LOCK, restore after.
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
         unsafe {
             std::env::set_var("FP_TEST_PASS", "x");
             std::env::set_var("FASTPILOT_VARS", "FP_TEST_PASS,FP_DEFINITELY_UNSET");
         }
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: still under ENV_LOCK (dropped before `_env`).
+                unsafe {
+                    std::env::remove_var("FP_TEST_PASS");
+                    std::env::remove_var("FASTPILOT_VARS");
+                }
+            }
+        }
+        let _restore = Restore;
         let errs = check_flow(LOGIN, &[]).expect_err("web2 is unknown");
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].to_string(), "line 7: branch 2: unknown session `web2`");

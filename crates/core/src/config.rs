@@ -408,9 +408,11 @@ mod tests {
         write("allowed_domains", Some("a.com")).expect("set");
         assert_eq!(var("FASTPILOT_ALLOWED_DOMAINS").as_deref(), Ok("a.com"));
 
-        // `vars` keeps the case of variable names (`${DEMO_PASS}` is looked up as written).
+        // `vars` keeps the case of variable names (`${DEMO_PASS}` is looked up as written). Checked
+        // in the file: other tests read FASTPILOT_VARS without ENV_LOCK, and a read that lands
+        // while FASTPILOT_CONFIG points here pins `vars` unset, which this wider list cannot loosen.
         write("vars", Some("DEMO_PASS, Api_Key")).expect("set");
-        assert_eq!(var("FASTPILOT_VARS").as_deref(), Ok("DEMO_PASS,Api_Key"));
+        assert_eq!(file_values().get("vars").map(String::as_str), Some("DEMO_PASS,Api_Key"));
         // Numbers are numbers.
         for key in NUMBERS {
             assert!(write(key, Some("abc")).expect_err("not a number").contains("whole number"), "{key}");
