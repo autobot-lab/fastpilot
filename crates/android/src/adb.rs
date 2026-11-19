@@ -13,7 +13,9 @@ const SERVER: &str = "127.0.0.1:5037";
 #[derive(Clone)]
 pub struct Adb;
 
-pub(crate) fn sdk_tool(rel: &str, name: &str) -> String {
+/// An Android SDK tool (`platform-tools/adb`, `emulator/emulator`, ...): its path under
+/// ANDROID_HOME / ANDROID_SDK_ROOT / ~/Library/Android/sdk, else the bare `name` (PATH).
+pub fn sdk_tool(rel: &str, name: &str) -> String {
     for var in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
         if let Some(home) = std::env::var_os(var) {
             let p = std::path::Path::new(&home).join(rel);

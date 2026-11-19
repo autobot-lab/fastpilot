@@ -233,7 +233,8 @@ fn active_port_url() -> Option<String> {
     Some(format!("ws://127.0.0.1:{port}{path}"))
 }
 
-fn find_chrome() -> Option<PathBuf> {
+/// The Chrome/Chromium fastpilot would launch (`chrome` setting, else well-known places, else PATH).
+pub fn find_chrome() -> Option<PathBuf> {
     if let Some(p) = fastpilot_core::config::var_os("FASTPILOT_CHROME") {
         return Some(PathBuf::from(p));
     }
