@@ -1,6 +1,9 @@
-//! adb server protocol (smart sockets + sync) spoken directly over TCP to 127.0.0.1:5037,
-//! so actions never spawn the `adb` CLI (PRD §7.4). The server itself is started once if needed.
+//! adb server protocol (smart sockets + sync) spoken directly over TCP to the adb server
+//! (127.0.0.1:5037, or `FASTPILOT_ADB_SERVER` for devices on another machine), so actions never
+//! spawn the `adb` CLI (PRD §7.4). A local server is started once if needed.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -8,10 +11,33 @@ use tokio::net::TcpStream;
 
 use crate::Error;
 
-const SERVER: &str = "127.0.0.1:5037";
+const LOCAL: &str = "127.0.0.1:5037";
 
+/// The adb server to talk to: `FASTPILOT_ADB_SERVER` (or config `adb_server`), else the local one.
 #[derive(Clone)]
-pub struct Adb;
+pub struct Adb {
+    server: String,
+    /// Set when the server was configured: it may run on another machine, where its own
+    /// `adb forward` ports would be, so ports are forwarded by fastpilot instead.
+    configured: bool,
+}
+
+/// `host:port` of a configured adb server, or why it is not one.
+pub fn configured_server() -> Option<Result<String, String>> {
+    let v = fastpilot_core::config::var("FASTPILOT_ADB_SERVER").ok()?;
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let ok = v.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok());
+    Some(if ok { Ok(v.to_owned()) } else { Err(format!("FASTPILOT_ADB_SERVER `{v}` is not host:port (e.g. 127.0.0.1:15037)")) })
+}
+
+/// Local ports fastpilot forwards itself, per (server, serial, device socket): reused, so a
+/// session that reconnects does not open another listener.
+/// (server, serial, device socket) → local port.
+type ForwardKey = (String, String, String);
+static FORWARDS: Mutex<Option<HashMap<ForwardKey, u16>>> = Mutex::new(None);
 
 /// An Android SDK tool (`platform-tools/adb`, `emulator/emulator`, ...): its path under
 /// ANDROID_HOME / ANDROID_SDK_ROOT / ~/Library/Android/sdk, else the bare `name` (PATH).
@@ -35,9 +61,19 @@ pub fn sdk_tool(rel: &str, name: &str) -> String {
 
 impl Adb {
     /// Connect to the adb server, starting it once (`adb start-server`) if it is not running.
+    /// A configured server is never started here: it belongs to the machine it runs on.
     pub async fn new() -> Result<Self, Error> {
-        if TcpStream::connect(SERVER).await.is_ok() {
-            return Ok(Self);
+        if let Some(server) = configured_server() {
+            let server = server.map_err(Error::Adb)?;
+            return match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&server)).await {
+                Ok(Ok(_)) => Ok(Self { server, configured: true }),
+                _ => Err(Error::Adb(format!(
+                    "cannot reach the adb server at {server} (FASTPILOT_ADB_SERVER); is the SSH tunnel open and `adb start-server` running on that machine?"
+                ))),
+            };
+        }
+        if TcpStream::connect(LOCAL).await.is_ok() {
+            return Ok(Self { server: LOCAL.into(), configured: false });
         }
         let adb = sdk_tool("platform-tools/adb", "adb");
         let status = tokio::process::Command::new(&adb)
@@ -48,11 +84,16 @@ impl Adb {
         if !status.success() {
             return Err(Error::Adb(format!("`{adb} start-server` failed")));
         }
-        Ok(Self)
+        Ok(Self { server: LOCAL.into(), configured: false })
+    }
+
+    /// The server this client talks to (`host:port`).
+    pub fn server(&self) -> &str {
+        &self.server
     }
 
     async fn open(&self, service: &str) -> Result<TcpStream, Error> {
-        let mut s = TcpStream::connect(SERVER).await.map_err(|e| Error::Adb(format!("adb server: {e}")))?;
+        let mut s = TcpStream::connect(&self.server).await.map_err(|e| Error::Adb(format!("adb server {}: {e}", self.server)))?;
         s.set_nodelay(true).ok();
         s.write_all(format!("{:04x}{service}", service.len()).as_bytes()).await.map_err(Error::io)?;
         status(&mut s).await?;
@@ -99,12 +140,51 @@ impl Adb {
         Ok(s)
     }
 
-    /// `adb forward tcp:0 <remote>`; returns the allocated local port.
+    /// A stream to a device socket (`tcp:7912`, `localabstract:...`) through the server itself.
+    pub async fn connect_device(&self, serial: &str, remote: &str) -> Result<TcpStream, Error> {
+        let mut s = self.transport(serial).await?;
+        s.write_all(format!("{:04x}{remote}", remote.len()).as_bytes()).await.map_err(Error::io)?;
+        status(&mut s).await?;
+        Ok(s)
+    }
+
+    /// `adb forward tcp:0 <remote>`; returns the local port. With a configured (possibly remote)
+    /// server, fastpilot listens on 127.0.0.1 here and carries each connection through the
+    /// server ([`Adb::connect_device`]); a server's own forward would open the port on its machine.
     pub async fn forward(&self, serial: &str, remote: &str) -> Result<u16, Error> {
+        if self.configured {
+            return self.forward_here(serial, remote).await;
+        }
         let mut s = self.open(&format!("host-serial:{serial}:forward:tcp:0;{remote}")).await?;
         status(&mut s).await?;
         let port = read_len_string(&mut s).await?;
         port.trim().parse().map_err(|_| Error::Adb(format!("bad forward port {port:?}")))
+    }
+
+    async fn forward_here(&self, serial: &str, remote: &str) -> Result<u16, Error> {
+        let key = (self.server.clone(), serial.to_owned(), remote.to_owned());
+        if let Some(port) = FORWARDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&key) {
+            return Ok(*port);
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(Error::io)?;
+        let port = listener.local_addr().map_err(Error::io)?.port();
+        let (adb, serial_owned, remote_owned) = (self.clone(), serial.to_owned(), remote.to_owned());
+        tokio::spawn(async move {
+            while let Ok((mut local, _)) = listener.accept().await {
+                let (adb, serial, remote) = (adb.clone(), serial_owned.clone(), remote_owned.clone());
+                tokio::spawn(async move {
+                    match adb.connect_device(&serial, &remote).await {
+                        Ok(mut device) => {
+                            local.set_nodelay(true).ok();
+                            let _ = tokio::io::copy_bidirectional(&mut local, &mut device).await;
+                        }
+                        Err(e) => tracing::debug!(serial, remote, error = %e, "forwarded connection refused"),
+                    }
+                });
+            }
+        });
+        FORWARDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, port);
+        Ok(port)
     }
 
     /// Push bytes with the sync protocol (`SEND`/`DATA`/`DONE`).

@@ -243,4 +243,8 @@ const DEVICES: &str = r#"# Devices and attach modes
   tunnel. Simulator-only there: clearKeychain, setLocation, pushNotification, allow/deny permissions,
   recording. Setup guide: docs/real-devices.md.
 - Android phone: `device: android-device:<serial>`; unauthorized/offline phones are listed with the fix.
+- Another machine (set by the user, never by an agent): `adb_server` / FASTPILOT_ADB_SERVER `host:port`
+  (devices behind that adb server; emulator console steps then fail) and `chrome_endpoint` /
+  FASTPILOT_CHROME_ENDPOINT (every web session on that Chrome, still one BrowserContext each; file paths
+  are that machine's). Both through an SSH tunnel.
 "#;

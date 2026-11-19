@@ -349,3 +349,69 @@ async fn android_launch_app_arguments() {
     assert!(!ok && out.contains("iOS only") && !out.contains("abc"), "{out}");
     client.cancel().await.expect("shutdown");
 }
+
+/// A TCP relay in front of `target` (stands in for an SSH tunnel); counts connections.
+async fn tunnel(target: &'static str) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = count.clone();
+    tokio::spawn(async move {
+        while let Ok((mut a, _)) = listener.accept().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                if let Ok(mut b) = tokio::net::TcpStream::connect(target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+                }
+            });
+        }
+    });
+    (port, count)
+}
+
+/// D2: devices behind a configured adb server (here through a relay, as through an SSH tunnel):
+/// the agent and the WebView are reached through the server itself, not through a port the
+/// server would open on its own machine.
+#[tokio::test(flavor = "multi_thread")]
+async fn android_through_a_configured_adb_server() {
+    let _device = DEVICE.lock().await;
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let (port, connections) = tunnel("127.0.0.1:5037").await;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
+        c.arg("mcp")
+            .current_dir(root)
+            .env("DEMO_PASS", "rahasia123")
+            .env("FASTPILOT_VARS", "DEMO_PASS")
+            .env("FASTPILOT_ADB_SERVER", format!("127.0.0.1:{port}"))
+            .env("FASTPILOT_ANDROID_SERIAL", serial().unwrap_or_default());
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    // The login screen first: on a loaded machine the first input right after a slow launch
+    // can miss its 5 s (seen on main too); this test is about the transport.
+    let flow = ANDROID_LOGIN.replacen(
+        "- launchApp: com.fastpilot.demo/.LoginActivity\n",
+        "- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n",
+        1,
+    );
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    assert!(out.contains("= \"Pembayaran\""), "WebView reached through the server: {out}");
+    assert!(connections.load(std::sync::atomic::Ordering::SeqCst) > 3, "traffic did not go through the configured server");
+    // The emulator console is only on the emulator's machine.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setLocation: { latitude: -6.2, longitude: 106.8 }\n", "session": "and1" })).await;
+    assert!(!ok && out.contains("FASTPILOT_ADB_SERVER"), "{out}");
+    client.cancel().await.expect("shutdown");
+
+    // Nothing listening there: a clear error, and no local adb server is started in its place.
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
+        c.arg("mcp").current_dir(root).env("FASTPILOT_ADB_SERVER", "127.0.0.1:1");
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: x, platform: android }\n" })).await;
+    assert!(!ok && out.contains("cannot reach the adb server at 127.0.0.1:1"), "{out}");
+    client.cancel().await.expect("shutdown");
+}

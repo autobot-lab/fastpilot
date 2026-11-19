@@ -286,6 +286,8 @@ Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | model untuk `fastpilot run` (lihat di bawah) |
 | `FASTPILOT_CONFIG` | lokasi file pengaturan (default `~/.fastpilot/config.toml`) |
+| `FASTPILOT_ADB_SERVER` | adb server di mesin lain, `host:port` (lihat [Device di mesin lain](#device-di-mesin-lain)) |
+| `FASTPILOT_CHROME_ENDPOINT` | Chrome di mesin lain untuk semua sesi web: `http://host:port` atau `ws://...` |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 
 ## Tools (10)
@@ -471,6 +473,55 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 ```bash
 FASTPILOT_IOS_TEAM=<team id> FASTPILOT_IOS_BUNDLE_PREFIX=com.<nama>.fastpilot ios-runner/build.sh --device <udid>
 ```
+
+## Device di mesin lain
+
+Emulator Android dan Chrome bisa berjalan di mesin lain (mis. PC Linux dengan KVM), sementara fastpilot
+dan agent AI tetap di laptop. Semua lalu lintas lewat **SSH tunnel**; port debug tidak pernah dibuka ke
+jaringan.
+
+> Port adb (5037) dan port remote debugging Chrome memberi kendali penuh atas device dan browser,
+> tanpa password. Jangan pernah membukanya ke internet atau LAN (`adb -a`, `--remote-debugging-address=0.0.0.0`).
+> Biarkan keduanya mendengarkan di `127.0.0.1` mesin itu dan sambungkan lewat SSH.
+
+**Android.** Di mesin device: nyalakan emulator/HP seperti biasa (`adb devices` menampilkannya). Di laptop:
+
+```bash
+ssh -N -L 15037:127.0.0.1:5037 user@mesin-device
+```
+
+```bash
+fastpilot config set adb_server 127.0.0.1:15037      # atau env FASTPILOT_ADB_SERVER
+fastpilot doctor android                             # adb server 127.0.0.1:15037 ✓, device ✓
+```
+
+- Pakai port lokal selain 5037, supaya tidak tertukar dengan adb server di laptop sendiri.
+- fastpilot meneruskan koneksi ke agent dan WebView lewat adb server itu sendiri, jadi cukup satu tunnel.
+- Yang hanya bisa dari mesin emulator: `setLocation`, `setNetwork` (throttling) dan perintah konsol
+  emulator lain (ditolak dengan pesan jelas), serta `session start_device` (menyalakan AVD).
+
+**Chrome.** Di mesin itu, jalankan Chrome dengan profil terpisah dan port debug hanya di localhost:
+
+```bash
+google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/fastpilot-chrome
+```
+
+Di laptop:
+
+```bash
+ssh -N -L 19222:127.0.0.1:9222 user@mesin-device
+```
+
+```bash
+fastpilot config set chrome_endpoint http://127.0.0.1:19222   # atau env FASTPILOT_CHROME_ENDPOINT
+fastpilot doctor web                                          # remote Chrome at http://127.0.0.1:19222 ✓
+```
+
+- Tiap sesi tetap mendapat `BrowserContext` sendiri (cookie dan storage terpisah); fastpilot tidak
+  menyalakan Chrome lokal.
+- Path file dibaca oleh mesin Chrome: `target` lokal (`examples/demo/login.html`), `uploadFile`, dan
+  unduhan memakai sistem file mesin itu. Pakai URL `http(s)://` untuk aplikasi yang dites.
+- `adb_server` dan `chrome_endpoint` hanya bisa diubah user (`fastpilot config set`), tidak oleh agent.
 
 ## Bench
 

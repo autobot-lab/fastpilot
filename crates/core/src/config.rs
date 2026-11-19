@@ -59,6 +59,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "claude", help: "`fastpilot run`: the claude CLI to drive", rule: Rule::HumanOnly },
     Setting { key: "dir", help: "where runs, memory, states and baselines go (default ./.fastpilot)", rule: Rule::HumanOnly },
     Setting { key: "ios_runner", help: "iOS runner build folder (default ios-runner/build)", rule: Rule::HumanOnly },
+    Setting { key: "adb_server", help: "adb server for Android devices on another machine, host:port (e.g. 127.0.0.1:15037 through an SSH tunnel)", rule: Rule::HumanOnly },
+    Setting { key: "chrome_endpoint", help: "remote Chrome for web sessions: http://host:port or ws://... (through an SSH tunnel; never expose the port)", rule: Rule::HumanOnly },
 ];
 
 /// Never read from the file.
