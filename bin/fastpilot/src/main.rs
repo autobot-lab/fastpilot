@@ -70,6 +70,9 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             if config::setting(&k).is_some_and(|s| s.rule == config::Rule::TightenOnly) {
                 println!("note: a guard rail; a running fastpilot (MCP server, daemon) only takes a stricter value, a looser one after restart");
             }
+            if config::setting(&k).is_some_and(|s| s.rule == config::Rule::HumanOnly) {
+                println!("note: a running fastpilot (MCP server, daemon) keeps its value until it restarts");
+            }
         }
         "unset" => {
             let k = key()?;
