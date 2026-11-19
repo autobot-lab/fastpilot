@@ -216,28 +216,34 @@ async fn attach_to_running_chrome_over_mcp() {
         return eprintln!("skipping: no Chrome");
     };
     let profile = std::env::temp_dir().join(format!("fastpilot-e2e-attach-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&profile);
+    // Its own profile and a port Chrome picks (read back from the profile): a fixed port would
+    // attach to whatever Chrome already listens there, e.g. the user's own.
     let mut chrome = tokio::process::Command::new(exe)
-        .args(["--headless=new", "--remote-debugging-port=9339", "--no-first-run", "about:blank"])
+        .args(["--headless=new", "--remote-debugging-port=0", "--no-first-run", "about:blank"])
         .arg(format!("--user-data-dir={}", profile.display()))
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .expect("chrome");
-    let mut ready = false;
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect("127.0.0.1:9339").await.is_ok() {
-            ready = true;
+    let mut port = None;
+    for _ in 0..100 {
+        port = std::fs::read_to_string(profile.join("DevToolsActivePort")).ok().and_then(|t| t.lines().next()?.trim().parse::<u16>().ok());
+        if let Some(p) = port
+            && tokio::net::TcpStream::connect(("127.0.0.1", p)).await.is_ok()
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(ready, "chrome debugging port");
+    let port = port.expect("chrome debugging port");
+    let endpoint = format!("http://127.0.0.1:{port}");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
         c.arg("mcp").current_dir(root);
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
-    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "mine", "mode": "attach", "endpoint": "http://127.0.0.1:9339", "target": "examples/demo/widgets.html" })).await;
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "mine", "mode": "attach", "endpoint": endpoint, "target": "examples/demo/widgets.html" })).await;
     assert!(ok && out.contains("screen \"Widgets\""), "{out}");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: Buka detail\n- assertVisible: Detail terbuka\n" })).await;
     assert!(ok, "{out}");
@@ -245,7 +251,7 @@ async fn attach_to_running_chrome_over_mcp() {
     assert!(ok);
     client.cancel().await.expect("shutdown");
     // Detaching must leave the user's tab alive.
-    let body = fastpilot_web::http_get("127.0.0.1:9339", "/json/list").await.expect("json list");
+    let body = fastpilot_web::http_get(&format!("127.0.0.1:{port}"), "/json/list").await.expect("json list");
     assert!(body.contains("widgets.html"), "{body}");
     let _ = chrome.kill().await;
     let _ = std::fs::remove_dir_all(profile);

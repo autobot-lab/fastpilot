@@ -168,6 +168,11 @@ async fn start(port: u16) -> Result<Arc<Relay>, Error> {
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
         .map_err(|e| Error::Launch(format!("extension relay on 127.0.0.1:{port}: {e}")))?;
+    serve(port, listener)
+}
+
+/// The relay on a listener that is already bound (tests bind port 0 and keep it).
+fn serve(port: u16, listener: TcpListener) -> Result<Arc<Relay>, Error> {
     let relay = Arc::new(Relay { port, extension: Mutex::new(None), arrived: Notify::new(), token: Mutex::new(new_token()?) });
     lock(relays()).push(relay.clone());
     let r = relay.clone();
@@ -295,8 +300,10 @@ mod tests {
     /// tab the extension attached, and `/extension` only checked a token when one was configured.
     #[tokio::test]
     async fn both_routes_need_the_session_token() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0").expect("port").local_addr().expect("addr").port();
-        let relay = start(port).await.expect("relay");
+        // Bound once and kept: probing a free port and binding it again raced other tests.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let relay = serve(port, listener).expect("relay");
         let token = lock(&relay.token).clone();
         assert_eq!(token.len(), 64, "256 random bits, hex");
 
