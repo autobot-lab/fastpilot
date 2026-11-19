@@ -206,7 +206,7 @@ rerun it or add `waitForAnimationToEnd` before the tap.
 | ambiguous | several fuzzy matches, or an `id` / nameless `role` on several elements in an action | pick one of the listed refs, or add `index: N` to an `id` / `role` selector |
 | not_actionable | hidden, disabled, animating or covered | dismiss the overlay / wait for the state with assertVisible |
 | timeout | the driver did not answer in time | retry; check the page |
-| blocked | a guard rail refused the step: a host outside allowed_domains, a risky tap (confirm_actions), a button the user always blocks (block_actions), a permission the user turned off (allow_eval_script, allow_app_reset, allow_app_install, allow_device_settings, allow_physical_devices), or a file outside upload_dirs | stay inside the limits; `confirm: true` only lifts confirm_actions, and only when the test case means that tap. Report the rest to the user, never work around it |
+| blocked | a guard rail refused the step: a host outside allowed_domains, a risky tap (confirm_actions), a button the user always blocks (block_actions), a permission the user turned off (allow_eval_script, allow_app_reset, allow_app_install, allow_device_settings, allow_physical_devices), or a file outside upload_dirs (a `point` tap counts as the element under it, and is refused when that element cannot be told) | stay inside the limits; `confirm: true` only lifts confirm_actions, and only when the test case means that tap. Report the rest to the user, never work around it |
 | unsupported | step or platform not available on this driver/phase | use a supported step |
 | script_error | evalScript threw | fix the expression |
 | session | unknown / duplicate session | start or switch sessions |

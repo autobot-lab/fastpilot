@@ -749,12 +749,22 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
     if (confirmed || words.is_empty()) && blocked.is_empty() {
         return Ok(());
     }
-    let name = match d.snapshot().await.ok().and_then(|s| s.resolve(sel, Intent::Tap).ok().map(|e| e.node.name.clone())) {
-        Some(n) => n,
-        None => match sel {
-            Selector::Text(t) | Selector::Role { name: Some(t), .. } => t.clone(),
-            _ => return Ok(()),
-        },
+    let name = if let Selector::Point(p) = sel {
+        // A tap by coordinates is checked against what is under it; when that cannot be told, the
+        // rules win (fail closed).
+        point_target(d, *p).await.ok_or_else(|| {
+            Error::Blocked(format!(
+                "{sel}: cannot tell which element is at this point (no snapshot, or no element covers it) while block_actions / confirm_actions are on; tap it by text or ref"
+            ))
+        })?
+    } else {
+        match d.snapshot().await.ok().and_then(|s| s.resolve(sel, Intent::Tap).ok().map(|e| e.node.name.clone())) {
+            Some(n) => n,
+            None => match sel {
+                Selector::Text(t) | Selector::Role { name: Some(t), .. } => t.clone(),
+                _ => return Ok(()),
+            },
+        }
     };
     if let Some(w) = crate::policy::block_match(&name, blocked) {
         return Err(Error::Blocked(format!(
@@ -771,6 +781,22 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
         ))),
         None => Ok(()),
     }
+}
+
+/// The name a tap at viewport point `p` lands on: the deepest named element whose box covers it
+/// (a nameless icon in a "Pay" button is the button), or "" when only nameless elements cover it.
+/// `None` when it cannot be told: no snapshot, or no element covers the point. Snapshot boxes are
+/// page coordinates; taps are viewport coordinates, so the scroll offset is added.
+async fn point_target(d: &dyn Driver, p: crate::Point) -> Option<String> {
+    let snap = d.snapshot().await.ok()?;
+    let (ox, oy) = d.viewport().await.map_or((0.0, 0.0), |v| (v.x, v.y));
+    let at = crate::Point { x: p.x + ox, y: p.y + oy };
+    let covering: Vec<&crate::snapshot::Entry> = snap.entries.iter().filter(|e| e.node.bounds.is_some_and(|b| b.contains(at))).collect();
+    if covering.is_empty() {
+        return None;
+    }
+    let named = covering.iter().filter(|e| !e.node.name.is_empty()).max_by_key(|e| e.depth);
+    Some(named.map(|e| e.node.name.clone()).unwrap_or_default())
 }
 
 /// The `allow_*` permissions and `upload_dirs` (settings, pinned at start like every guard rail).
@@ -1483,6 +1509,85 @@ mod tests {
         async fn eval_script(&self, _: &str) -> Result<Value> {
             Ok(Value::String("Login".into()))
         }
+    }
+
+    /// A page scrolled down 100 px with a "Bayar sekarang" button (and a nameless icon in it) and a
+    /// "Batal" button; `fail` makes every snapshot fail.
+    struct PointPage {
+        fail: bool,
+        refs: Mutex<RefRegistry>,
+    }
+
+    #[async_trait]
+    impl Driver for PointPage {
+        async fn open(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn snapshot(&self) -> Result<Snapshot> {
+            if self.fail {
+                return Err(Error::Driver("snapshot failed".into()));
+            }
+            let at = |n: Node, x: f64, y: f64, w: f64, h: f64| Node { bounds: Some(Rect { x, y, w, h }), ..n };
+            let icon = at(node("image", ""), 12.0, 128.0, 16.0, 16.0);
+            let pay = Node { children: vec![icon], ..at(node("button", "Bayar sekarang"), 8.0, 123.0, 120.0, 30.0) };
+            let page = Node { children: vec![pay, at(node("button", "Batal"), 200.0, 123.0, 80.0, 30.0)], ..at(node("group", ""), 0.0, 0.0, 400.0, 400.0) };
+            let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+            Ok(Snapshot::build("Checkout", "fake://", vec![page], &mut refs))
+        }
+        async fn viewport(&self) -> Option<Rect> {
+            Some(Rect { x: 0.0, y: 100.0, w: 400.0, h: 300.0 })
+        }
+        async fn tap(&self, _: &Selector) -> Result<()> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &Selector, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn scroll(&self, _: Direction, _: Option<&Selector>) -> Result<()> {
+            Ok(())
+        }
+        async fn swipe(&self, _: Point, _: Point) -> Result<()> {
+            Ok(())
+        }
+        async fn back(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn wait_idle(&self, _: Duration) -> Result<()> {
+            Ok(())
+        }
+        async fn eval_script(&self, _: &str) -> Result<Value> {
+            Ok(Value::Null)
+        }
+    }
+
+    /// Security review (High): `tapOn: { point: [x, y] }` skipped block_actions and confirm_actions,
+    /// so a button refused by its text could be tapped by its coordinates.
+    #[tokio::test]
+    async fn point_taps_obey_block_and_confirm_rules() {
+        let page = PointPage { fail: false, refs: Mutex::default() };
+        // Viewport point (60, 33) is page point (60, 133): on "Bayar sekarang" (scrolled 100 px).
+        let pt = |x: f64, y: f64| Selector::Point(Point { x, y });
+        let bayar = ["bayar".to_owned()];
+        let e = guard_tap(&page, &pt(60.0, 33.0), true, &[], &bayar).await.expect_err("blocked by its text");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+        // The nameless icon inside the button is the button.
+        assert!(guard_tap(&page, &pt(15.0, 30.0), true, &[], &bayar).await.is_err(), "icon in the pay button");
+        // confirm_actions: refused unless confirmed.
+        assert!(guard_tap(&page, &pt(60.0, 33.0), false, &bayar, &[]).await.is_err());
+        assert!(guard_tap(&page, &pt(60.0, 33.0), true, &bayar, &[]).await.is_ok());
+        // Another button: allowed.
+        assert!(guard_tap(&page, &pt(220.0, 33.0), false, &bayar, &bayar).await.is_ok(), "Batal");
+        // Nothing known at the point (an empty spot: nameless containers are not in the snapshot), or
+        // no snapshot, while a rule is on: refused (fail closed).
+        let e = guard_tap(&page, &pt(300.0, 250.0), false, &[], &bayar).await.expect_err("empty spot");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("cannot tell")), "{e}");
+        let broken = PointPage { fail: true, refs: Mutex::default() };
+        assert!(guard_tap(&broken, &pt(60.0, 33.0), false, &[], &bayar).await.is_err(), "no snapshot");
+        // No rule: nothing to check.
+        assert!(guard_tap(&broken, &pt(60.0, 33.0), false, &[], &[]).await.is_ok());
     }
 
     struct FakeLauncher;
