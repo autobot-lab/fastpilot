@@ -23,61 +23,51 @@ dan diff, bukan view hierarchy mentah.
 
 Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-improvements.md](docs/research-improvements.md).
 
-## Instal (binary siap pakai)
+## Mulai cepat
 
-macOS (Apple Silicon / Intel) dan Linux x86_64, tanpa Rust:
+### 1. Pasang
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh   # ke ~/.local/bin
-npm install -g fastpilot                                                                 # atau lewat npm
-brew install autobot-lab/fastpilot/fastpilot                                             # atau Homebrew (tap)
-```
-
-Skrip dan paket npm mengunduh arsip rilis dari GitHub Releases dan mengecek SHA-256-nya sebelum memasang.
-Versi tertentu: `FASTPILOT_VERSION=0.1.0`; lokasi lain: `FASTPILOT_INSTALL_DIR=/usr/local/bin`.
-Android sudah tertanam di binary; iOS tetap butuh Xcode dan runner dari checkout (`ios-runner/build.sh`).
-Setelah itu lanjut ke langkah 3 di bawah. Cara merilis: [docs/releasing.md](docs/releasing.md).
-
-## Mulai cepat dengan Claude Code
-
-### 1. Prasyarat
-
-- [Rust](https://rustup.rs) 1.88+ dan Google Chrome (atau Chromium; set `FASTPILOT_CHROME` kalau lokasinya tidak standar).
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`).
-- Opsional, untuk Android: Android SDK (platform-tools, emulator, build-tools, platform 35), JDK 17, dan satu AVD.
-- Opsional, untuk iOS: Xcode 16+ dengan simulator iOS.
-
-### 2. Build dan pasang (atau pakai binary siap pakai di atas)
+macOS (Apple Silicon / Intel) dan Linux x86_64, tanpa Rust. Pilih salah satu:
 
 ```bash
-git clone https://github.com/autobot-lab/fastpilot.git
+npm install -g fastpilot
 ```
 
 ```bash
-cd fastpilot
+curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
 ```
 
-Kalau mau Android, bangun agent APK dulu, karena APK itu di-embed ke binary saat build:
+- npm dan skrip mengunduh arsip rilis dari [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
+  dan mengecek SHA-256-nya sebelum memasang. Skrip memasang ke `~/.local/bin`; lokasi lain:
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.1.1`.
+- Tanpa instal: `npx -y fastpilot mcp`.
+- Homebrew belum tersedia (repo tap belum dibuat).
+- Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
+  (`ios-runner/build.sh`, lihat [Build dari source](#build-dari-source)).
+
+### 2. Cek dan siapkan mesin
 
 ```bash
-agent-android/build.sh
+fastpilot doctor
 ```
 
-Kalau mau iOS, bangun runner XCUITest dan demo app:
+`doctor` mengecek tiap platform dan menampilkan ✓/!/✗ dengan petunjuk perbaikan:
+
+- **web:** Chrome ditemukan dan bisa dinyalakan headless.
+- **android:** `adb`, agent tertanam, device/emulator menyala, AVD tersedia.
+- **ios:** Xcode, simulator, runner XCUITest.
+- **run:** Claude Code (`claude`) untuk `fastpilot run`.
+
+`fastpilot doctor android` (atau `web`, `ios`) hanya mengecek satu platform dan keluar dengan kode ≠ 0
+kalau platform itu belum siap. Untuk memperbaiki yang bisa diperbaiki otomatis (pasang Chrome lewat
+Homebrew, unduh image Android, buat AVD `fastpilot_api35`, nyalakan emulator):
 
 ```bash
-ios-runner/build.sh
+fastpilot setup android
 ```
 
-Pasang binary ke `~/.cargo/bin`, yang biasanya sudah ada di `PATH`:
-
-```bash
-cargo install --path bin/fastpilot --locked
-```
-
-```bash
-fastpilot --version
-```
+`setup` menanyakan tiap perbaikan (y/N) sebelum menjalankannya; `--yes` untuk menyetujui semuanya. Di luar
+terminal (CI, agent) `setup` hanya mencetak rencananya.
 
 ### 3. Daftarkan ke Claude Code
 
@@ -93,7 +83,10 @@ claude mcp list
 
 `fastpilot` harus tampil dengan status connected. Variabel di `FASTPILOT_VARS` adalah satu-satunya variabel
 yang boleh dipakai flow lewat `${NAMA}`, dan nilainya selalu tampil sebagai `***` di output. Untuk melihat
-browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1`.
+browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1` (atau `fastpilot config set headful true`).
+
+Diuji dengan Claude Code dan Claude Desktop. Klien MCP lain (Cursor, Codex, Gemini CLI) memakai cara yang
+sama (`fastpilot mcp` lewat stdio), tapi belum diuji.
 
 ### 4. Jalankan test lewat Claude
 
@@ -108,9 +101,9 @@ kali ini `session start` mengembalikan *hint* dari run sebelumnya, sehingga test
 
 **Android:**
 
-1. Nyalakan emulator, lewat Android Studio atau minta Claude: *"pakai fastpilot, start_device AVD
-   Small_Phone_API_35"*. Daftar AVD bisa dilihat dengan `session devices`.
-2. Pasang demo app:
+1. Nyalakan emulator: `fastpilot setup android`, lewat Android Studio, atau minta Claude: *"pakai
+   fastpilot, start_device AVD Small_Phone_API_35"*. Daftar AVD bisa dilihat dengan `session devices`.
+2. Pasang demo app (dari checkout, setelah `agent-android/build.sh`):
 
    ```bash
    adb install -r examples/demo-android/out/fastpilot-demo.apk
@@ -138,7 +131,8 @@ untuk menyalakan runner.
 
 Tulis test case Markdown seperti `tests/login.md`: judul, `id`, `platform`, `target`, lalu langkah dan
 harapan dalam bahasa biasa. Tidak perlu menulis selector atau script; Claude yang menyusun flow-nya.
-Simpan secret di MCP config (`-e NAMA=nilai`, lalu tambahkan `NAMA` ke `FASTPILOT_VARS`).
+Simpan secret di MCP config (`-e NAMA=nilai`, lalu tambahkan `NAMA` ke `FASTPILOT_VARS`), bukan di file
+config.
 
 ### Claude Desktop
 
@@ -149,7 +143,7 @@ Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_c
 {
   "mcpServers": {
     "fastpilot": {
-      "command": "/Users/NAMA/.cargo/bin/fastpilot",
+      "command": "/Users/NAMA/.local/bin/fastpilot",
       "args": ["mcp"],
       "env": { "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123", "FASTPILOT_DIR": "/Users/NAMA/fastpilot-runs" }
     }
@@ -157,24 +151,64 @@ Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_c
 }
 ```
 
-Claude Desktop tidak menjalankan server dari folder proyek. Karena itu, pakai path command absolut, URL atau
-path absolut di `target`, dan set `FASTPILOT_DIR` ke folder hasil yang bisa ditulisi.
+Claude Desktop tidak menjalankan server dari folder proyek. Karena itu, pakai path command absolut (lihat
+`which fastpilot`; `~/.local/bin` untuk skrip instal, `~/.cargo/bin` untuk `cargo install`), URL atau path
+absolut di `target`, dan set `FASTPILOT_DIR` ke folder hasil yang bisa ditulisi.
 
 ### Kalau ada masalah
 
+Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung tampil.
+
 | Pesan | Solusi |
 |---|---|
-| `Chrome not found` | Pasang Chrome, atau set `-e FASTPILOT_CHROME=/path/ke/chrome` |
+| `Chrome not found` | Pasang Chrome (`fastpilot setup web`), atau `fastpilot config set chrome /path/ke/chrome` |
 | `variable X is not allowed` | Tambahkan `X` ke `FASTPILOT_VARS` di MCP config |
-| `agent APK not embedded` | Jalankan `agent-android/build.sh`, lalu `cargo install --path bin/fastpilot --locked` lagi |
-| `runner not built` | Jalankan `ios-runner/build.sh` |
-| `no Android device` | Nyalakan emulator atau sambungkan device (`adb devices`) |
+| `agent APK not embedded` | Pakai binary rilis (npm/curl), atau `agent-android/build.sh` lalu build ulang |
+| `runner not built` | Jalankan `ios-runner/build.sh` dari checkout |
+| `no Android device` | `fastpilot setup android`, atau sambungkan device (`adb devices`) |
+| `... is set by the environment` (tool `config`) | Nilai dari env MCP config selalu menang; ubah di sana |
 | Log detail | Tambahkan `-e FASTPILOT_LOG=debug` (log ke stderr server MCP) |
 
-## Build
+## Pengaturan
 
-Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium (atau set `FASTPILOT_CHROME`). Untuk Android
-dan iOS, artefak on-device dibangun dari source (tanpa download):
+Pengaturan dibaca berurutan: **env** (mis. `-e` di MCP config) → **file** `~/.fastpilot/config.toml` (atau
+path di `FASTPILOT_CONFIG`) → default. File dibaca ulang saat berubah, jadi tidak perlu restart server.
+
+```bash
+fastpilot config list                              # semua kunci, nilai, dan asalnya
+fastpilot config set allowed_domains "staging.contoh.com,*.contoh.com"
+fastpilot config get flow_timeout
+fastpilot config unset allowed_domains
+fastpilot config path
+```
+
+```toml
+# ~/.fastpilot/config.toml
+allowed_domains = ["staging.contoh.com", "*.contoh.com"]
+headful = true
+flow_timeout = 600
+```
+
+Lewat chat, agent memakai tool `config` dengan aturan:
+
+- **Batasan** (`allowed_domains`, `confirm_actions`, `vars`, `state_expire_days`): agent hanya boleh
+  memperketat. Melonggarkan atau menghapusnya hanya lewat `fastpilot config` oleh user.
+- **Program dan lokasi** (`chrome`, `claude`, `dir`, `ios_runner`): hanya user.
+- **Lainnya** (`headful`, `model*`, `flow_timeout`, `retry_budget`, `breaker`, device default, `memory`,
+  `daemon_idle`): bebas.
+- Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env.
+- Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
+
+Nama kunci = nama env tanpa `FASTPILOT_` dan huruf kecil (`FASTPILOT_FLOW_TIMEOUT` → `flow_timeout`).
+
+## Build dari source
+
+Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium. Untuk Android dan iOS, artefak on-device
+dibangun dari source (tanpa download):
+
+```bash
+git clone https://github.com/autobot-lab/fastpilot.git && cd fastpilot
+```
 
 ```bash
 agent-android/build.sh
@@ -185,14 +219,15 @@ ios-runner/build.sh
 ```
 
 ```bash
-cargo build --release
+cargo install --path bin/fastpilot --locked
 ```
 
 - `agent-android/build.sh` butuh Android SDK (build-tools + platform 35) dan JDK 17. Hasilnya adalah agent
-  APK (di-embed ke binary saat `cargo build`) dan demo APK.
+  APK (di-embed ke binary saat build, jadi jalankan sebelum `cargo`) dan demo APK.
 - `ios-runner/build.sh` butuh Xcode 16+. Hasilnya adalah runner XCUITest dan demo app.
-
-Binary ada di `target/release/fastpilot`.
+- `cargo install` memasang ke `~/.cargo/bin`; `cargo build --release` saja menaruhnya di
+  `target/release/fastpilot`.
+- Cara merilis: [docs/releasing.md](docs/releasing.md).
 
 ## Konfigurasi MCP
 
@@ -220,6 +255,9 @@ atau `.mcp.json`:
 `%APPDATA%\Claude\claude_desktop_config.json` di Windows): blok `mcpServers` yang sama. Claude Desktop tidak
 menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`openUrl`.
 
+Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa ditaruh di
+`~/.fastpilot/config.toml`; lihat [Pengaturan](#pengaturan). Env selalu menang.
+
 | Env | Fungsi |
 |---|---|
 | `FASTPILOT_VARS` | daftar variabel (dipisah koma) yang boleh dipakai flow lewat `${NAMA}`; nilainya selalu disamarkan `***` di output |
@@ -234,6 +272,8 @@ menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`open
 | `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`) |
 | `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | kunci AES-256 (64 hex) untuk mengenkripsi login tersimpan / umur maksimalnya (default 30 hari) |
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
+| `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | model untuk `fastpilot run` (lihat di bawah) |
+| `FASTPILOT_CONFIG` | lokasi file pengaturan (default `~/.fastpilot/config.toml`) |
 | `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
 
 ## Tools (10)
@@ -363,18 +403,19 @@ fastpilot close
 Menjalankan test case bahasa natural (`tests/*.md`) tanpa sesi chat: fastpilot memanggil **Claude Code
 milik user** (`claude -p`, login dan langganan user sendiri) dan memberinya tool fastpilot lewat MCP.
 fastpilot tidak memanggil API model sendiri, jadi **tidak perlu API key**. Syaratnya `claude` ter-install
-dan sudah login sekali (`claude`); lokasi lain bisa diatur lewat `FASTPILOT_CLAUDE`.
+dan sudah login sekali (`claude`); lokasi lain: `fastpilot config set claude /path/ke/claude`.
 
 ```bash
 DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
-  ./target/release/fastpilot run tests/ --junit junit.xml --html report.html
+  fastpilot run tests/ --junit junit.xml --html report.html
 ```
 
 - Claude Code hanya mendapat tool fastpilot: tool bawaan (shell, file, web) dimatikan dan izin tool
-  fastpilot disetujui otomatis, karena tidak ada yang menunggu di depan layar.
+  fastpilot disetujui otomatis, karena tidak ada yang menunggu di depan layar. Tool `report` dan `config`
+  tidak diberikan.
 - Test dengan hint path memory diputar ulang oleh model cepat (`claude-haiku-5-5`); bila replay gagal
-  atau belum ada hint, model besar (`claude-opus-5-5`) melanjutkan dari layar terakhir. `--model` memaksa
-  satu model, `--max-steps` membatasi jumlah panggilan tool per test (default 30).
+  atau belum ada hint, model besar (`claude-opus-5-5`) melanjutkan dari layar terakhir (keduanya bisa
+  diganti: `model_replay`, `model_explore`). `--model` (atau `model`) memaksa satu model, `--max-steps` membatasi jumlah panggilan tool per test (default 30).
 - Kegagalan diulang selama `FASTPILOT_RETRY_BUDGET` (default 3) masih ada; retry yang lolos = flaky.
   Setelah `FASTPILOT_BREAKER` (default 3) kegagalan infra beruntun, sisa test dilewati sebagai infra.
 - `--workers N` menjalankan N test sekaligus. Tiap test punya Chrome sendiri; device Android dan simulator
@@ -466,18 +507,21 @@ cargo test
 - `bin/fastpilot/tests/android.rs` menguji login Android, WebView, dan skenario web+Android paralel di
   device/emulator yang menyala.
 - `bin/fastpilot/tests/ios.rs` menguji login di iOS simulator.
+- `bin/fastpilot/tests/cli.rs`, `cli_shell.rs`, `config_web.rs`, `state_web.rs`, `policy_web.rs` dan
+  lainnya menguji CLI, daemon shell, pengaturan, login tersimpan, dan guard rail di Chrome sungguhan.
 - Test yang butuh Chrome, device, atau simulator otomatis di-skip kalau tidak tersedia.
+- CI GitHub hanya build (`cargo build --workspace --all-targets --locked`); test dijalankan lokal.
 
 ## Layout
 
 ```
-crates/core      Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, assert, SessionRegistry
+crates/core      config (env → config.toml), policy, Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, assert, SessionRegistry
 crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserContext
 crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
 crates/ios       simctl/devicectl + XCUITest runner, usbmux, Web Inspector, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
-crates/mcp       rmcp stdio server, 8 tools, docs
-bin/fastpilot    entrypoint: `mcp`, `bench [web|android]`, `stability <flow> --runs N`
+crates/mcp       rmcp stdio server, 10 tools, docs
+bin/fastpilot    entrypoint: `mcp`, shell CLI + daemon, `run`, `doctor`/`setup`, `config`, `bench`, `stability`
 agent-android/   instrumentation APK (Java, UiAutomation), dibangun tanpa Gradle
 ios-runner/      XCUITest runner + demo app iOS
 examples/        demo web (login, widgets), demo Android
