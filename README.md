@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 
 - npm dan skrip mengunduh arsip rilis dari [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   dan mengecek SHA-256-nya sebelum memasang. Skrip memasang ke `~/.local/bin`; lokasi lain:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.1.1`.
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.1.2`.
 - Tanpa instal: `npx -y fastpilot mcp`.
 - Homebrew belum tersedia (repo tap belum dibuat).
 - Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
