@@ -551,11 +551,17 @@ fn step_ref(step: &Step) -> Option<&Selector> {
 /// Refs are only valid in this session; path memory needs what they pointed at.
 async fn durable(d: &dyn Driver, sel: &Selector) -> Option<Selector> {
     let snap = d.snapshot().await.ok()?;
-    let node = &snap.resolve(sel, Intent::Find).ok()?.node;
+    let entry = snap.resolve(sel, Intent::Find).ok()?;
+    let node = &entry.node;
     if !node.name.is_empty() {
-        Some(Selector::Role { role: node.role.clone(), name: Some(node.name.clone()) })
-    } else {
-        node.id.clone().map(Selector::Id)
+        return Some(Selector::Role { role: node.role.clone(), name: Some(node.name.clone()) });
+    }
+    // An id several elements share replays as an action only with its index.
+    let by_id = Selector::Id(node.id.clone()?);
+    let same = snap.matching(&by_id);
+    match same.iter().position(|e| e.r#ref == entry.r#ref) {
+        Some(index) if same.len() > 1 => Some(Selector::Nth { of: Box::new(by_id), index }),
+        _ => Some(by_id),
     }
 }
 

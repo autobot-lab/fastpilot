@@ -17,6 +17,9 @@ pub enum Selector {
     Point(Point),
     /// The element that currently has input focus (`inputText: "..."` without `into`).
     Focused,
+    /// `{ role: button, index: 1 }` / `{ id: x, index: 0 }`: the n-th (0-based, document order) of
+    /// several elements an `id` or a nameless `role` matches.
+    Nth { of: Box<Selector>, index: usize },
 }
 
 impl Selector {
@@ -44,6 +47,13 @@ impl Selector {
             }
             Self::Point(p) => map(vec![("point", Yaml::Sequence(vec![p.x.into(), p.y.into()]))]),
             Self::Focused => Yaml::Null,
+            Self::Nth { of, index } => match of.to_yaml() {
+                Yaml::Mapping(mut m) => {
+                    m.insert(Yaml::String("index".into()), Yaml::Number((*index as u64).into()));
+                    Yaml::Mapping(m)
+                }
+                other => other,
+            },
         }
     }
 
@@ -55,11 +65,15 @@ impl Selector {
             Yaml::Mapping(map) => {
                 let mut found = Vec::new();
                 let mut name = None;
+                let mut index = None;
                 for (k, val) in map {
                     let key = k.as_str().ok_or("selector keys must be strings")?;
                     match key {
                         "ref" | "text" | "id" | "role" | "point" => found.push((key, val)),
                         "name" => name = Some(scalar(val, "name")?),
+                        "index" => {
+                            index = Some(val.as_u64().ok_or("`index` must be a whole number (0 = the first)")? as usize);
+                        }
                         k if extra_keys.contains(&k) => {}
                         other => {
                             return Err(format!(
@@ -76,7 +90,10 @@ impl Selector {
                 if name.is_some() && *key != "role" {
                     return Err("`name` is only valid together with `role`".into());
                 }
-                Ok(match *key {
+                if index.is_some() && !(*key == "id" || (*key == "role" && name.is_none())) {
+                    return Err("`index` is only valid with `id` or with `role` without `name`".into());
+                }
+                let sel = match *key {
                     "ref" => Self::Ref(scalar(val, "ref")?),
                     "text" => Self::Text(scalar(val, "text")?),
                     "id" => Self::Id(scalar(val, "id")?),
@@ -85,6 +102,10 @@ impl Selector {
                         name,
                     },
                     _ => Self::Point(point(val)?),
+                };
+                Ok(match index {
+                    Some(index) => Self::Nth { of: Box::new(sel), index },
+                    None => sel,
                 })
             }
             _ => Err("selector must be a string or a map".into()),
@@ -136,6 +157,10 @@ impl fmt::Display for Selector {
             Self::Id(id) => write!(f, "{{id: {id}}}"),
             Self::Point(p) => write!(f, "[{}, {}]", p.x, p.y),
             Self::Focused => f.write_str("(focused)"),
+            Self::Nth { of, index } => {
+                let inner = of.to_string();
+                write!(f, "{}, index: {index}}}", inner.strip_suffix('}').unwrap_or(&inner))
+            }
         }
     }
 }

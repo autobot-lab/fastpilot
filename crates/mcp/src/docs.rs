@@ -100,6 +100,11 @@ Never XPath.
 - tapOn prefers interactive nodes, inputText prefers text fields.
 - Several exact matches: the first (topmost) wins. Several fuzzy matches: the step fails `ambiguous`
   and lists candidates; pick one by ref.
+- `{ id: x }` matching several elements, or `{ role: button }` without `name` matching several: an
+  action (tapOn, inputText, longPressOn, ...) fails `ambiguous` with the candidates instead of using the
+  first. Pick one with `index` (0-based, document order): `{ role: button, index: 1 }`,
+  `{ id: item, index: 0 }`, or by ref. `index` is only for `id` and for `role` without `name`.
+  Existence checks (assertVisible, scrollUntilVisible, `when: visible`) pass with any match.
 - Refs follow the element while it exists (session-scoped); a ref never jumps to another element.
 - `snapshot { filter: "batal" }` finds nodes with their ancestors; `coords: true` adds boxes.
 
@@ -197,7 +202,7 @@ rerun it or add `waitForAnimationToEnd` before the tap.
 | Reason | Meaning | What to do |
 |---|---|---|
 | not_found | no node matched before the timeout | use a candidate ref, or assertVisible with a longer timeout |
-| ambiguous | several fuzzy matches | pick one of the listed refs |
+| ambiguous | several fuzzy matches, or an `id` / nameless `role` on several elements in an action | pick one of the listed refs, or add `index: N` to an `id` / `role` selector |
 | not_actionable | hidden, disabled, animating or covered | dismiss the overlay / wait for the state with assertVisible |
 | timeout | the driver did not answer in time | retry; check the page |
 | blocked | a guard rail refused the step: a host outside FASTPILOT_ALLOWED_DOMAINS, or a risky tap (FASTPILOT_CONFIRM_ACTIONS) | stay on the allowed hosts; for an intended risky tap add `confirm: true` to the step |
