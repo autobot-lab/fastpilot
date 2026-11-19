@@ -214,7 +214,12 @@ flow_timeout = 600
 ```
 
 **Lewat browser:** `fastpilot ui` membuka halaman Live, Pengaturan, dan Device di browser default (hanya
-`127.0.0.1`, port acak, token di link; `--no-open` hanya mencetak link-nya, `--port N` memilih port).
+`127.0.0.1`, port acak; `--no-open` hanya mencetak link-nya, `--port N` memilih port, `--help` bantuan).
+Link-nya berisi kode **sekali pakai** yang berlaku 10 menit; begitu dibuka, kode ditukar ke cookie sesi
+dan tidak berlaku lagi (jalankan `fastpilot ui` lagi untuk link baru). Jalankan `fastpilot ui` sendiri,
+bukan lewat agent AI: siapa pun yang membuka halamannya bisa melonggarkan batasan. Kalau
+`config.toml` rusak, halaman Pengaturan menampilkan error-nya dan tidak menyimpan apa pun sampai file
+diperbaiki.
 Isinya Model AI untuk `fastpilot run`, Batasan & izin, nama Secret (nilainya tidak pernah tampil), dan
 hasil `doctor` dengan tombol Cek ulang. Perubahan dari halaman ini adalah perubahan user: boleh
 melonggarkan, ditulis atomik ke file (mode 600), dan berlaku mulai run berikutnya. Semua aset dan font

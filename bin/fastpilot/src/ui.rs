@@ -1,10 +1,14 @@
 //! `fastpilot ui`: the local settings and device page (C1+C2), served by this binary.
 //!
 //! - Listens on 127.0.0.1 only, on a random port (`--port N` to pick one).
-//! - The URL printed at start carries a random token; opening it sets an HttpOnly, SameSite=Strict
-//!   cookie and redirects to the page without the token. Every request needs that cookie (or the
-//!   token), a `Host` of 127.0.0.1/localhost on this port (no DNS rebinding) and, when a browser
-//!   sends one, our own `Origin`. Changes are POSTs with JSON from our own Origin only.
+//! - The link printed at start carries a one-time code (valid 10 minutes). Opening it trades the
+//!   code for a session cookie with a different random value (HttpOnly, SameSite=Strict) and
+//!   redirects to the page without it; the code is then spent. The browser is opened through a
+//!   local redirect file (owner-only), so the code never appears in another process' arguments.
+//!   Every request needs that cookie, a `Host` of 127.0.0.1/localhost on this port (no DNS
+//!   rebinding) and, when a browser sends one, our own `Origin`. Changes are POSTs with JSON from
+//!   our own Origin only.
+//! - Run it yourself, not through an agent: whoever holds the session can loosen the limits.
 //! - Everything (HTML, CSS, JS, icons, fonts) is inside the binary: no CDN, works offline.
 //! - Changes made here are the user's: they may loosen guard rails, and like every change they
 //!   apply from the next run (running fastpilot processes keep the rails they started with).
@@ -31,8 +35,45 @@ use crate::doctor;
 type Res<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 pub struct Ui {
-    token: String,
+    /// The one-time code of the printed link, until it is used or expires.
+    code: std::sync::Mutex<Option<(String, std::time::Instant)>>,
+    /// The session cookie handed out for the code (never equal to it).
+    session: String,
     port: u16,
+}
+
+/// How long the printed link works.
+const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+const USAGE: &str = "usage: fastpilot ui [--no-open] [--port N]
+
+Opens the local settings, device and Live page in your browser (only on this computer).
+  --no-open   print the link instead of opening the browser
+  --port N    listen on port N (1024-65535); default: a free port
+
+The link works once and for 10 minutes. Run fastpilot ui yourself, not through an AI agent:
+whoever opens the page can loosen the limits.";
+
+impl Ui {
+    pub fn new(port: u16) -> Res<Self> {
+        Ok(Self { code: std::sync::Mutex::new(Some((random_hex(32)?, std::time::Instant::now()))), session: random_hex(32)?, port })
+    }
+
+    fn code(&self) -> String {
+        self.code.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(c, _)| c.clone()).unwrap_or_default()
+    }
+
+    /// Spend the code: true once, for the right code within its time.
+    fn redeem(&self, given: &str) -> bool {
+        let mut slot = self.code.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_ref() {
+            Some((c, at)) if same(c, given) && at.elapsed() < CODE_TTL => {
+                *slot = None;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Settings the page shows and changes; nothing else can be written through it.
@@ -55,17 +96,46 @@ const KEYS: &[&str] = &[
 ];
 
 pub async fn ui(args: &[String]) -> Res<()> {
-    let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1));
-    let port: u16 = value("--port").map(|p| p.parse()).transpose().map_err(|_| "--port takes a number")?.unwrap_or(0);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let port = listener.local_addr()?.port();
-    let state = Arc::new(Ui { token: random_hex(32)?, port });
-    let url = format!("http://127.0.0.1:{port}/?token={}", state.token);
-    println!("{url}");
-    println!("fastpilot ui: only this computer can open it; keep the link to yourself. Ctrl-C stops it.");
-    if !args.iter().any(|a| a == "--no-open") {
-        open_browser(&url);
+    let mut port: u16 = 0;
+    let mut open = true;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-h" | "--help" | "help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            "--no-open" => open = false,
+            "--port" => {
+                let v = it.next().ok_or("--port needs a number (1024-65535)")?;
+                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).ok_or_else(|| format!("--port {v}: use a number from 1024 to 65535"))?;
+            }
+            other => return Err(format!("unknown option `{other}`\n\n{USAGE}").into()),
+        }
     }
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            return Err(format!("port {port} is already in use (another fastpilot ui?): pick another with --port, or leave --port out for a free one").into());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(format!("port {port} may not be used by this user: pick one from 1024 to 65535, or leave --port out").into());
+        }
+        Err(e) => return Err(format!("cannot listen on 127.0.0.1:{port}: {e}").into()),
+    };
+    let port = listener.local_addr()?.port();
+    let state = Arc::new(Ui::new(port)?);
+    let url = format!("http://127.0.0.1:{port}/?code={}", state.code());
+    if open {
+        match open_browser(&url) {
+            Ok(()) => println!("fastpilot ui: opened in your browser. If it did not open, use this link (once, within 10 minutes):\n{url}"),
+            Err(e) => println!("fastpilot ui: could not open a browser ({e}); open this link (once, within 10 minutes):\n{url}"),
+        }
+    } else {
+        println!("{url}");
+        println!("fastpilot ui: open the link above once, within 10 minutes (only this computer can).");
+    }
+    println!("Ctrl-C stops it.");
     axum::serve(listener, router(state)).await?;
     Ok(())
 }
@@ -89,11 +159,32 @@ fn random_hex(bytes: usize) -> Res<String> {
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn open_browser(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    if let Err(e) = std::process::Command::new(opener).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
-        eprintln!("could not open a browser ({opener}: {e}); open the link above yourself");
+/// Open `url` in the default browser through an owner-only redirect file, so the link (and its
+/// code) is not in the opener's arguments, where other processes could read it.
+fn open_browser(url: &str) -> Res<()> {
+    let dir = std::env::temp_dir().join(format!("fastpilot-ui-{}", random_hex(8)?));
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(&dir)?;
+    let file = dir.join("open.html");
+    {
+        use std::io::Write;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&file)?;
+        write!(f, r#"<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url={url}"><title>fastpilot</title>"#)?;
     }
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let spawned = std::process::Command::new(opener).arg(&file).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    // The browser reads it right away; the code in it works once anyway.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        let _ = std::fs::remove_dir_all(dir);
+    });
+    spawned.map(|_| ()).map_err(|e| format!("{opener}: {e}").into())
 }
 
 /// Same length and bytes, without an early exit on the first difference.
@@ -117,36 +208,45 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
     let ours = [format!("127.0.0.1:{}", ui.port), format!("localhost:{}", ui.port)];
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
     if !ours.iter().any(|o| o == host) {
-        return refuse(StatusCode::MISDIRECTED_REQUEST, "wrong Host: open the 127.0.0.1 link printed by `fastpilot ui`");
+        return refuse(StatusCode::MISDIRECTED_REQUEST, "Host salah: buka link 127.0.0.1 yang dicetak `fastpilot ui`");
     }
     let origin = headers.get(header::ORIGIN).and_then(|h| h.to_str().ok());
     if let Some(o) = origin
         && !ours.iter().any(|h| o == format!("http://{h}"))
     {
-        return refuse(StatusCode::FORBIDDEN, "requests from other sites are refused");
+        return refuse(StatusCode::FORBIDDEN, "permintaan dari situs lain ditolak");
     }
     if req.method() != Method::GET && req.method() != Method::HEAD {
         let json = headers.get(header::CONTENT_TYPE).and_then(|h| h.to_str().ok()).is_some_and(|c| c.starts_with("application/json"));
         if origin.is_none() || !json {
-            return refuse(StatusCode::FORBIDDEN, "changes are only accepted from the fastpilot ui page");
+            return refuse(StatusCode::FORBIDDEN, "perubahan hanya diterima dari halaman fastpilot ui");
         }
     }
-    let query_token = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token="))).map(str::to_owned);
-    let cookie_ok = cookie(headers, &cookie_name(ui.port)).is_some_and(|c| same(&c, &ui.token));
-    match query_token {
-        Some(t) if same(&t, &ui.token) => {
-            if req.method() == Method::GET && req.uri().path() == "/" {
-                // Trade the token in the address bar for a cookie, and drop it from the URL.
-                let mut r = Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, "/").body(Body::empty()).unwrap_or_default();
-                if let Ok(v) = HeaderValue::from_str(&format!("{}={}; HttpOnly; SameSite=Strict; Path=/", cookie_name(ui.port), ui.token)) {
-                    r.headers_mut().insert(header::SET_COOKIE, v);
-                }
-                return r;
-            }
+    let code = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("code="))).map(str::to_owned);
+    let cookie_ok = cookie(headers, &cookie_name(ui.port)).is_some_and(|c| same(&c, &ui.session));
+    if let Some(code) = code {
+        if req.method() != Method::GET || req.uri().path() != "/" {
+            return refuse(StatusCode::UNAUTHORIZED, "kode akses hanya untuk membuka halaman");
         }
-        Some(_) => return refuse(StatusCode::UNAUTHORIZED, "wrong token: use the link printed by `fastpilot ui`"),
-        None if cookie_ok => {}
-        None => return refuse(StatusCode::UNAUTHORIZED, "open the link printed by `fastpilot ui` (it carries the access token)"),
+        if !ui.redeem(&code) {
+            if cookie_ok {
+                // Already in: an old link (reload, history) just goes to the page.
+                return Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, "/").body(Body::empty()).unwrap_or_default();
+            }
+            return refuse(
+                StatusCode::UNAUTHORIZED,
+                "link ini sudah dipakai atau kedaluwarsa (berlaku sekali, 10 menit). Jalankan `fastpilot ui` lagi untuk link baru.",
+            );
+        }
+        // Trade the code for the session cookie, and drop it from the address bar.
+        let mut r = Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, "/").body(Body::empty()).unwrap_or_default();
+        if let Ok(v) = HeaderValue::from_str(&format!("{}={}; HttpOnly; SameSite=Strict; Path=/", cookie_name(ui.port), ui.session)) {
+            r.headers_mut().insert(header::SET_COOKIE, v);
+        }
+        return r;
+    }
+    if !cookie_ok {
+        return refuse(StatusCode::UNAUTHORIZED, "buka link yang dicetak `fastpilot ui` (berisi kode akses sekali pakai)");
     }
     let mut r = next.run(req).await;
     let h = r.headers_mut();
@@ -241,7 +341,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
 async fn asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
     match static_file(&path) {
         Some((ty, body)) => ([(header::CONTENT_TYPE, ty)], body).into_response(),
-        None => refuse(StatusCode::NOT_FOUND, "no such file"),
+        None => refuse(StatusCode::NOT_FOUND, "file tidak ada"),
     }
 }
 
@@ -269,6 +369,10 @@ fn shown(key: &str, v: &str) -> Value {
 }
 
 async fn settings() -> Response {
+    // A file that does not parse: say so, and show nothing as if it were the settings in force.
+    if let Err(e) = config::check() {
+        return axum::Json(json!({ "path": config::path().display().to_string(), "error": e, "settings": [] })).into_response();
+    }
     let list: Vec<Value> = KEYS
         .iter()
         .filter_map(|k| config::setting(k))
@@ -285,14 +389,44 @@ async fn settings() -> Response {
     axum::Json(json!({ "path": config::path().display().to_string(), "settings": list, "defaults": defaults })).into_response()
 }
 
+/// Why an item of a list setting is not valid there (the page's own checks; `config set` and
+/// the file are checked by fastpilot itself).
+fn bad_item(key: &str, item: &str) -> Option<String> {
+    match key {
+        "allowed_domains" => {
+            let host = item.strip_prefix("*.").unwrap_or(item);
+            let ok = !host.is_empty()
+                && host.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+                && !item.contains("://");
+            (!ok).then(|| format!("\"{item}\" bukan nama domain: tulis host saja, mis. toko.com atau *.toko.com (tanpa https:// dan path)"))
+        }
+        "vars" => {
+            let ok = item.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && item.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok {
+                Some(format!("\"{item}\" bukan nama variabel: huruf, angka, dan _ saja, mis. DEMO_PASS"))
+            } else if item.to_ascii_uppercase().starts_with("FASTPILOT_") {
+                Some(format!("\"{item}\" adalah pengaturan fastpilot sendiri, bukan secret yang boleh dibaca flow"))
+            } else {
+                None
+            }
+        }
+        "upload_dirs" => (!(item.starts_with('/') || item.starts_with("~/"))).then(|| format!("\"{item}\": tulis folder lengkap, mis. ~/fastpilot/fixtures atau /Users/nama/fixtures")),
+        "confirm_actions" | "block_actions" => (item.chars().count() > 60).then(|| "kata terlalu panjang (maksimal 60 huruf)".to_owned()),
+        _ => None,
+    }
+}
+
 async fn change(axum::Json(body): axum::Json<Value>) -> Response {
+    if let Err(e) = config::check() {
+        return refuse(StatusCode::CONFLICT, &format!("file pengaturan rusak, perbaiki dulu sebelum menyimpan: {e}"));
+    }
     let Some(key) = body["key"].as_str().filter(|k| KEYS.contains(k)) else {
-        return refuse(StatusCode::BAD_REQUEST, "this setting cannot be changed here");
+        return refuse(StatusCode::BAD_REQUEST, "pengaturan ini tidak bisa diubah di sini");
     };
     if std::env::var(format!("FASTPILOT_{}", key.to_uppercase())).is_ok() {
         return refuse(
             StatusCode::CONFLICT,
-            &format!("`{key}` is set by the environment (FASTPILOT_{}), which wins over the settings file: change it there", key.to_uppercase()),
+            &format!("`{key}` diatur lewat environment (FASTPILOT_{}), yang menang atas file pengaturan: ubah di sana", key.to_uppercase()),
         );
     }
     let value = match &body["value"] {
@@ -305,11 +439,14 @@ async fn change(axum::Json(body): axum::Json<Value>) -> Response {
         Value::Array(items) => {
             let items: Vec<&str> = items.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).collect();
             if items.iter().any(|s| s.contains(',')) {
-                return refuse(StatusCode::BAD_REQUEST, "an item may not contain a comma");
+                return refuse(StatusCode::BAD_REQUEST, "satu item tidak boleh berisi koma");
+            }
+            if let Some(why) = items.iter().find_map(|i| bad_item(key, i)) {
+                return refuse(StatusCode::BAD_REQUEST, &why);
             }
             (!items.is_empty()).then(|| items.join(","))
         }
-        Value::Object(_) => return refuse(StatusCode::BAD_REQUEST, "unexpected value"),
+        Value::Object(_) => return refuse(StatusCode::BAD_REQUEST, "nilai tidak dikenal"),
     };
     match config::write(key, value.as_deref()) {
         Ok(_) => settings().await,
@@ -371,7 +508,7 @@ const BOUNDARY: &str = "fpframe";
 /// connection that only screencasts; it ends when the page stops showing the stream.
 async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
     let (Some(pid), Some(session)) = (q.get("pid").and_then(|p| p.parse::<u32>().ok()), q.get("session")) else {
-        return refuse(StatusCode::BAD_REQUEST, "pid and session are needed");
+        return refuse(StatusCode::BAD_REQUEST, "pid dan session wajib diisi");
     };
     let fps = q.get("fps").and_then(|f| f.parse::<u64>().ok()).unwrap_or(2).clamp(1, 15);
     let width = q.get("w").and_then(|w| w.parse::<u32>().ok()).unwrap_or(480).clamp(160, 1920);
@@ -382,11 +519,11 @@ async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> R
         .find(|s| &s.id == session)
         .and_then(|s| s.screen);
     let Some(screen) = screen else {
-        return refuse(StatusCode::NOT_FOUND, "no watchable session by that name (only web sessions on fastpilot's own Chrome are)");
+        return refuse(StatusCode::NOT_FOUND, "tidak ada sesi yang bisa ditonton dengan nama itu (hanya sesi web di Chrome milik fastpilot)");
     };
     let cast = match fastpilot_web::Screencast::start(&screen.ws, &screen.target, width, if width > 800 { 70 } else { 55 }).await {
         Ok(c) => c,
-        Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("the screen cannot be shown: {e}")),
+        Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("layar tidak bisa ditampilkan: {e}")),
     };
     let rx = cast.frames();
     let period = std::time::Duration::from_millis(1000 / fps);

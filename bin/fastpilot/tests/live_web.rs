@@ -50,6 +50,17 @@ fn get(port: u16, path: &str, cookie: Option<&str>, limit: usize) -> (u16, Vec<u
     (status, raw[split + 4..].to_vec())
 }
 
+/// Trade the one-time code for the session cookie (`name=value`).
+fn login(port: u16, code: &str) -> String {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    write!(s, "GET /?code={code} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").expect("write");
+    let mut head = String::new();
+    s.read_to_string(&mut head).expect("read");
+    head.lines()
+        .find_map(|l| l.to_ascii_lowercase().starts_with("set-cookie:").then(|| l["set-cookie:".len()..].trim().split(';').next().unwrap_or("").to_owned()))
+        .expect("session cookie")
+}
+
 struct Ui(std::process::Child);
 impl Drop for Ui {
     fn drop(&mut self) {
@@ -75,9 +86,9 @@ async fn live_panel_shows_a_running_web_session() {
     BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut line).expect("url");
     let _ui = Ui(child);
     let rest = line.trim().strip_prefix("http://127.0.0.1:").expect("url").to_owned();
-    let (port, token) = rest.split_once("/?token=").expect("token");
+    let (port, code) = rest.split_once("/?code=").expect("code");
     let port: u16 = port.parse().expect("port");
-    let cookie = format!("fp_ui_{port}={token}");
+    let cookie = login(port, code);
 
     let (status, body) = get(port, "/api/live", Some(&cookie), 1 << 20);
     assert_eq!(status, 200);
