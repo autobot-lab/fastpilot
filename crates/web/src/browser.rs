@@ -26,7 +26,19 @@ pub struct Browser {
 }
 
 impl Browser {
+    /// fastpilot's own Chrome, or the remote one in `FASTPILOT_CHROME_ENDPOINT` (config
+    /// `chrome_endpoint`): either way every session gets its own `BrowserContext`.
     pub async fn launch(opts: LaunchOptions) -> Result<Arc<Self>, Error> {
+        if opts.executable.is_none()
+            && let Some(endpoint) = chrome_endpoint()
+        {
+            return Self::connect(Some(&endpoint)).await.map_err(|e| Error::Launch(format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT): {e}")));
+        }
+        Self::launch_local(opts).await
+    }
+
+    /// Always a Chrome process of our own (`doctor` checks this one separately).
+    pub async fn launch_local(opts: LaunchOptions) -> Result<Arc<Self>, Error> {
         let exe = opts.executable.or_else(find_chrome).ok_or(Error::ChromeNotFound)?;
         reap_orphans();
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -100,7 +112,10 @@ impl Browser {
                 let host = e.trim_start_matches("http://").trim_end_matches('/');
                 let v: Value = serde_json::from_str(&http_get(host, "/json/version").await?)
                     .map_err(|_| Error::Unexpected("/json/version"))?;
-                v["webSocketDebuggerUrl"].as_str().ok_or(Error::Unexpected("webSocketDebuggerUrl"))?.to_owned()
+                let ws = v["webSocketDebuggerUrl"].as_str().ok_or(Error::Unexpected("webSocketDebuggerUrl"))?;
+                // Chrome names itself as it sees itself (its own port behind a tunnel): use the
+                // address we reached it at.
+                with_host(ws, host)
             }
             None => active_port_url().ok_or(Error::Launch(
                 "no DevToolsActivePort found; enable chrome://inspect/#remote-debugging in Chrome (M144+) or pass a cdp endpoint".into(),
@@ -220,6 +235,20 @@ pub async fn http_get(host: &str, path: &str) -> Result<String, Error> {
     }
 }
 
+/// `FASTPILOT_CHROME_ENDPOINT` / config `chrome_endpoint`: a remote Chrome for every web
+/// session (`ws://...` or `http://host:port`).
+pub fn chrome_endpoint() -> Option<String> {
+    fastpilot_core::config::var("FASTPILOT_CHROME_ENDPOINT").ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+/// `ws://a:1/devtools/browser/x` with `host` (`b:2`) in place of `a:1`.
+fn with_host(ws: &str, host: &str) -> String {
+    match ws.split_once("://").and_then(|(scheme, rest)| rest.split_once('/').map(|(_, path)| (scheme, path))) {
+        Some((scheme, path)) => format!("{scheme}://{host}/{path}"),
+        None => ws.to_owned(),
+    }
+}
+
 fn active_port_url() -> Option<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let candidates = [
@@ -258,6 +287,12 @@ pub fn find_chrome() -> Option<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn websocket_url_takes_the_address_we_reached() {
+        assert_eq!(with_host("ws://127.0.0.1:9222/devtools/browser/abc", "127.0.0.1:15222"), "ws://127.0.0.1:15222/devtools/browser/abc");
+        assert_eq!(with_host("wss://h/devtools/browser/x", "a:1"), "wss://a:1/devtools/browser/x");
+    }
 
     /// #9: a Chrome left by a killed fastpilot (its `--user-data-dir` points at a profile whose
     /// pid is gone) must be killed, not only have its profile deleted.

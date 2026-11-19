@@ -6,7 +6,7 @@ mod cdp;
 mod page;
 mod relay;
 
-pub use browser::{Browser, LaunchOptions, find_chrome, http_get};
+pub use browser::{Browser, LaunchOptions, chrome_endpoint, find_chrome, http_get};
 pub use page::WebPage;
 pub use relay::{DEFAULT_PORT as RELAY_PORT, extension_page, native_host as relay_native_host};
 

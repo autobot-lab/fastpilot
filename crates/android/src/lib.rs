@@ -19,7 +19,7 @@ use fastpilot_web::{Browser, WebPage, http_get};
 use serde_json::json;
 use tokio::net::TcpStream;
 
-pub use adb::{Adb, sdk_tool};
+pub use adb::{Adb, configured_server, sdk_tool};
 
 /// Whether this build carries the Android agent APK (release builds do).
 pub fn agent_embedded() -> bool {
@@ -415,6 +415,14 @@ impl AndroidDriver {
     async fn console(&self, args: &[&str]) -> Result<()> {
         if !self.serial.starts_with("emulator-") {
             return Err(CoreError::Unsupported(format!("`{}` needs an emulator (its console); {} is a device", args.join(" "), self.serial)));
+        }
+        // `adb emu` talks to the console port on this machine, not through the adb server.
+        if adb::configured_server().is_some() {
+            return Err(CoreError::Unsupported(format!(
+                "`{}` needs the emulator console, which only the machine running the emulator reaches; FASTPILOT_ADB_SERVER points at {}",
+                args.join(" "),
+                self.adb.server()
+            )));
         }
         let out = tokio::process::Command::new(adb::sdk_tool("platform-tools/adb", "adb"))
             .args(["-s", &self.serial, "emu"])

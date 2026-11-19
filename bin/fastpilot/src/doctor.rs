@@ -70,6 +70,17 @@ fn macos() -> bool {
 
 pub async fn web() -> Vec<Check> {
     let mut out = Vec::new();
+    if let Some(endpoint) = fastpilot_web::chrome_endpoint() {
+        let connected = tokio::time::timeout(Duration::from_secs(10), fastpilot_web::Browser::connect(Some(&endpoint))).await;
+        out.push(match connected {
+            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {endpoint} (FASTPILOT_CHROME_ENDPOINT)")),
+            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint}: {e}"))
+                .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)"),
+            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {endpoint} did not answer within 10 s"))
+                .hint("is the SSH tunnel open?"),
+        });
+        return out;
+    }
     match fastpilot_web::find_chrome() {
         None => {
             let mut c = check("web", "Chrome", Status::Fail, "no Chrome or Chromium found").hint(if macos() {
@@ -85,7 +96,7 @@ pub async fn web() -> Vec<Check> {
         Some(path) => {
             let launched = tokio::time::timeout(
                 Duration::from_secs(25),
-                fastpilot_web::Browser::launch(fastpilot_web::LaunchOptions { headless: true, executable: Some(path.clone()) }),
+                fastpilot_web::Browser::launch_local(fastpilot_web::LaunchOptions { headless: true, executable: Some(path.clone()) }),
             )
             .await;
             out.push(match launched {
@@ -102,6 +113,9 @@ pub async fn web() -> Vec<Check> {
 
 pub async fn android() -> Vec<Check> {
     let mut out = Vec::new();
+    if let Some(server) = fastpilot_android::configured_server() {
+        return android_remote(server).await;
+    }
     let adb = fastpilot_android::sdk_tool("platform-tools/adb", "adb");
     let sdk_hint = if macos() {
         "install the Android SDK (Android Studio, or `brew install --cask android-commandlinetools`), then set ANDROID_HOME"
@@ -148,6 +162,34 @@ pub async fn android() -> Vec<Check> {
                 .fix("create the emulator fastpilot_api35", &avdmanager, &["create", "avd", "-n", "fastpilot_api35", "-k", &image, "-d", "pixel_6"]),
         );
     }
+    out
+}
+
+/// Devices behind a configured adb server (another machine): no local SDK needed.
+async fn android_remote(server: Result<String, String>) -> Vec<Check> {
+    let server = match server {
+        Ok(s) => s,
+        Err(e) => return vec![check("android", "adb", Status::Fail, e)],
+    };
+    let mut out = vec![match fastpilot_android::Adb::new().await {
+        Ok(_) => check("android", "adb", Status::Ok, format!("adb server {server} (FASTPILOT_ADB_SERVER)")),
+        Err(e) => {
+            return vec![check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (README: device di mesin lain)")];
+        }
+    }];
+    out.push(if fastpilot_android::agent_embedded() {
+        check("android", "agent", Status::Ok, "UiAutomation agent built in")
+    } else {
+        check("android", "agent", Status::Fail, "this fastpilot build has no Android agent")
+            .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
+    });
+    let devices = fastpilot_android::device::list().await.unwrap_or_default();
+    let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| format!("{} ({})", d.id, d.name)).collect();
+    out.push(if ready.is_empty() {
+        check("android", "device", Status::Warn, format!("no device on the adb server {server}")).hint("start the emulator or connect the phone on that machine")
+    } else {
+        check("android", "device", Status::Ok, ready.join(", "))
+    });
     out
 }
 
