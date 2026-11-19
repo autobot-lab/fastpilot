@@ -152,6 +152,6 @@ h2.gh{margin:0;font-weight:500}
 .chip.preset:hover{background:var(--soft)}
 .chip.preset:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .top .pill.bad{background:var(--bad-soft);color:var(--bad)}
-dialog.zoom{border:var(--bw) solid var(--ink);border-radius:var(--r);padding:0;width:min(1280px,calc(100% - 64px));max-height:calc(100% - 64px);overflow:hidden;background:var(--card);color:var(--ink)}
+dialog.zoom{margin:auto;border:var(--bw) solid var(--ink);border-radius:var(--r);padding:0;width:min(1280px,calc(100% - 64px));max-height:calc(100% - 64px);overflow:hidden;background:var(--card);color:var(--ink)}
 dialog.zoom::backdrop{background:rgba(20,25,32,.55)}
 dialog.zoom .screen-box{aspect-ratio:auto;height:min(78vh,820px)}
