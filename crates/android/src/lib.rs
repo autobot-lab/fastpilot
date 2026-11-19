@@ -19,7 +19,12 @@ use fastpilot_web::{Browser, WebPage, http_get};
 use serde_json::json;
 use tokio::net::TcpStream;
 
-pub use adb::Adb;
+pub use adb::{Adb, sdk_tool};
+
+/// Whether this build carries the Android agent APK (release builds do).
+pub fn agent_embedded() -> bool {
+    !AGENT_APK.is_empty()
+}
 pub use agent::{Agent, Endpoint};
 pub use system::Policy;
 use system::Kind;

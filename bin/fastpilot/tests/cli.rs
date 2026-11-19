@@ -24,3 +24,36 @@ fn bench_tokens_reports_snapshot_diff_and_flow() {
     // The point of text snapshots: far cheaper than a screenshot.
     assert!(tokens("screenshot") > 5 * snap, "{text}");
 }
+
+#[test]
+fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
+    let run = |args: &[&str], chrome: Option<&str>| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+        c.args(args).current_dir(ROOT).stdin(std::process::Stdio::null());
+        if let Some(p) = chrome {
+            c.env("FASTPILOT_CHROME", p);
+        }
+        let out = c.output().expect("run");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    // A Chrome that does not exist: web fails, with the fix.
+    let (ok, out) = run(&["doctor", "web"], Some("/nonexistent/chrome"));
+    assert!(!ok && out.contains("✗ Chrome") && out.contains("does not start") && out.contains("fastpilot config set chrome"), "{out}");
+    // Unknown platform.
+    let (ok, out) = run(&["doctor", "windows"], None);
+    assert!(!ok && out.contains("unknown platform"), "{out}");
+    // Every area is listed; `setup` without a terminal never runs anything.
+    let (_, out) = run(&["doctor"], None);
+    for area in ["web:", "android:", "ios:", "run:"] {
+        assert!(out.contains(area), "{area} missing in\n{out}");
+    }
+    let (ok, out) = run(&["setup"], Some("/nonexistent/chrome"));
+    assert!(ok && !out.contains("  done") && !out.contains("  started"), "{out}");
+    if out.contains("can be applied") {
+        assert!(out.contains("plan (run in a terminal"), "{out}");
+    }
+    if std::path::Path::new("/Applications/Google Chrome.app").exists() || std::path::Path::new("/usr/bin/chromium").exists() {
+        let (ok, out) = run(&["doctor", "web"], None);
+        assert!(ok && out.contains("✓ Chrome") && out.contains("starts headless"), "{out}");
+    }
+}

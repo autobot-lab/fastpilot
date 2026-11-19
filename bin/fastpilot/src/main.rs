@@ -2,6 +2,7 @@
 
 mod bench;
 mod cli;
+mod doctor;
 mod pool;
 mod report;
 mod run;
@@ -15,6 +16,8 @@ use tracing_subscriber::EnvFilter;
 const USAGE: &str = "usage: fastpilot <command> [--headful]
 
 commands:
+  doctor [web|android|ios|run|all]   is this machine ready? each gap with its fix
+  setup [web|android|ios] [--yes]    apply the fixes doctor found, asking before each
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
@@ -89,6 +92,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     match args.first().map(String::as_str) {
         Some("mcp") => fastpilot_mcp::serve_stdio(web).await,
         Some("config") => config_cmd(&args[1..]),
+        Some("doctor") => doctor::doctor(&args[1..]).await,
+        Some("setup") => doctor::setup(&args[1..]).await,
         Some("daemon") if args.len() == 1 => cli::daemon(web).await,
         _ if cli::command_of(&args).is_some() => {
             // Blocking client: one request to the daemon (started on demand).
