@@ -1,10 +1,20 @@
 {
   "manifest_version": 3,
   "name": "fastpilot attach",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lets fastpilot (running on this machine) drive the current tab through chrome.debugger.",
-  "permissions": ["debugger", "storage", "activeTab"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "fastpilot: attach this tab" },
-  "options_page": "options.html"
+  "permissions": [
+    "debugger",
+    "storage",
+    "activeTab",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "fastpilot: attach this tab"
+  },
+  "options_page": "options.html",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoRJVYMuWLwakGG4MYvfmMXE4uISN9ysIhFbpCQiZdmdN42KKb0mYrj7gmL4dTbl4LF9NAkx7X9VXktt9gs5U+zuJaPS7mojEchQ36W6LeFpOQj2mPGg5YYFOAIYl6OE69KiX1ESmACW4s46RLGcPXXPcaZxsgcsmZgewCfsP0b3ibmXMJJLM4h8KEYDRoZHRVglrt3feDUV9b544JMt/0gppkQZ/SKxYXyjVGkGGAfLvFXA3tbVaMnzHUksW+LY0fX5XTwQJQ4VEv7MfQ33/SGNFcpy+knFHMo/Nz7hYjsdXaeCl7eFfZ5bayYbjytIFQ2ueWI36uK5VQNOVxrOcwIDAQAB"
 }
