@@ -61,7 +61,11 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         "set" => {
             let k = key()?;
-            let v = args.get(2..).map(|r| r.join(" ")).filter(|v| !v.is_empty()).ok_or("set needs a value")?;
+            let v = args
+                .get(2..)
+                .map(|r| r.join(" "))
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| format!("set needs a value; to clear `{k}`, use `fastpilot config unset {k}`"))?;
             let p = config::write(&k, Some(&v))?;
             println!("{k} = {v}  ({})", p.display());
             if std::env::var(format!("FASTPILOT_{}", k.to_uppercase())).is_ok() {
