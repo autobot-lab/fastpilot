@@ -88,6 +88,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Started by Chrome as the native messaging host of the fastpilot extension (relay token).
+    if let Some(origin) = args.first().filter(|a| a.starts_with("chrome-extension://")) {
+        return Ok(fastpilot_web::relay_native_host(origin)?);
+    }
     let flag = |name: &str| args.iter().any(|a| a == name);
     // A config file that does not parse would switch the guard rails off: stop instead
     // (`config path` still answers, so the user finds the file).

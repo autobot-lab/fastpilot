@@ -9,6 +9,20 @@ async function settings() {
   return { port, token };
 }
 
+// The relay's token changes with every fastpilot session. fastpilot hands it over through native
+// messaging (host dev.fastpilot.relay, registered when a session waits for the extension): web
+// pages cannot reach it. The token in the options is only the fallback (FASTPILOT_RELAY_TOKEN).
+async function relayToken(port, fallback) {
+  try {
+    const r = await chrome.runtime.sendNativeMessage("dev.fastpilot.relay", { port });
+    if (r && r.token) return r.token;
+    if (r && r.error) console.warn("fastpilot:", r.error);
+  } catch (e) {
+    console.warn("fastpilot: native host unavailable, using the token from the options:", e && e.message);
+  }
+  return fallback;
+}
+
 function badge(text, color) {
   chrome.action.setBadgeText({ text });
   if (color) chrome.action.setBadgeBackgroundColor({ color });
@@ -26,7 +40,8 @@ async function detach(reason) {
 }
 
 async function attach(tab) {
-  const { port, token } = await settings();
+  const { port, token: fallback } = await settings();
+  const token = await relayToken(port, fallback);
   await chrome.debugger.attach({ tabId: tab.id }, "1.3");
   const ws = new WebSocket(`ws://127.0.0.1:${port}/extension?token=${encodeURIComponent(token)}`);
   // An active WebSocket keeps the service worker alive; the ping keeps traffic flowing.

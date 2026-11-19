@@ -204,7 +204,8 @@ Lewat chat, agent memakai tool `config` dengan aturan:
 - **Program dan lokasi** (`chrome`, `claude`, `dir`, `ios_runner`): hanya user.
 - **Lainnya** (`headful`, `model*`, `flow_timeout`, `retry_budget`, `breaker`, device default, `memory`,
   `daemon_idle`): bebas.
-- Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env.
+- Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env. Token relay
+  extension dibuat acak untuk tiap sesi; `FASTPILOT_RELAY_TOKEN` hanya untuk browser tanpa native messaging.
 - Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
 - Batasan ini melindungi dari agent yang hanya memakai tool fastpilot. Agent yang juga punya akses
   shell atau file (mis. Bash di Claude Code) bisa mengubah file lalu me-restart fastpilot. Untuk itu,
@@ -443,7 +444,9 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 
 - **Chrome sehari-hari tanpa restart**: muat `extension-chrome/` (chrome://extensions → Developer mode →
   Load unpacked), minta `session { action: start, mode: attach, endpoint: extension }`, lalu klik tombol
-  extension di tab yang mau dikendalikan. Detail di [extension-chrome/README.md](extension-chrome/README.md).
+  extension di tab yang mau dikendalikan. Relay hanya menerima koneksi yang membawa token acak per sesi;
+  extension mengambilnya lewat native messaging (tidak bisa dijangkau halaman web). Detail di
+  [extension-chrome/README.md](extension-chrome/README.md).
 - **iPhone/iPad dan ponsel Android fisik**: lihat [docs/real-devices.md](docs/real-devices.md). Ringkasnya:
   cek kesiapan dengan `fastpilot ios doctor`, build runner untuk iPhone, lalu mulai sesi dengan
   `device: ios-device:<udid>` atau `device: android-device:<serial>`.

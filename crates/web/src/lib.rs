@@ -8,7 +8,7 @@ mod relay;
 
 pub use browser::{Browser, LaunchOptions, find_chrome, http_get};
 pub use page::WebPage;
-pub use relay::{DEFAULT_PORT as RELAY_PORT, extension_page};
+pub use relay::{DEFAULT_PORT as RELAY_PORT, extension_page, native_host as relay_native_host};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

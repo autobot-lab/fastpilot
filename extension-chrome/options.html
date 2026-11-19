@@ -3,7 +3,8 @@
 <style>body { font: 14px system-ui, sans-serif; margin: 16px; } label { display: block; margin: 8px 0; } input { width: 220px; }</style></head>
 <body>
 <h1>fastpilot attach</h1>
-<p>fastpilot listens on 127.0.0.1 only. Match <code>FASTPILOT_RELAY_TOKEN</code> if you set one.</p>
+<p>fastpilot listens on 127.0.0.1 only and gets its token to this extension by itself (native messaging).
+Fill the token only if fastpilot runs with <code>FASTPILOT_RELAY_TOKEN</code> and the native host is not available.</p>
 <label>Relay port <input id="port" type="number" min="1" max="65535"></label>
 <label>Token <input id="token" type="password"></label>
 <button id="save">Save</button> <span id="saved"></span>

@@ -66,3 +66,39 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
         assert!(ok && out.contains("nothing to set up"), "web ready, nothing left: {out}");
     }
 }
+
+/// Chrome starts `fastpilot chrome-extension://<id>/` as the native messaging host: the relay token
+/// goes to the fastpilot extension only (length-prefixed JSON on stdin/stdout).
+#[test]
+fn native_host_hands_the_relay_token_to_the_fastpilot_extension_only() {
+    use std::io::{Read, Write};
+    let home = std::env::temp_dir().join(format!("fastpilot-native-host-{}", std::process::id()));
+    std::fs::create_dir_all(home.join(".fastpilot/relay")).expect("dir");
+    std::fs::write(home.join(".fastpilot/relay/9555.token"), "c0ffee\n").expect("token");
+    let ask = |origin: &str, body: &str| -> String {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .arg(origin)
+            .env("HOME", &home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(&(body.len() as u32).to_le_bytes()).expect("len");
+        stdin.write_all(body.as_bytes()).expect("body");
+        drop(stdin);
+        let mut out = Vec::new();
+        child.stdout.take().expect("stdout").read_to_end(&mut out).expect("read");
+        assert!(child.wait().expect("wait").success());
+        let len = u32::from_le_bytes(out[..4].try_into().expect("4 bytes")) as usize;
+        assert_eq!(out.len(), 4 + len, "one framed reply");
+        String::from_utf8(out[4..].to_vec()).expect("utf-8")
+    };
+    let ours = "chrome-extension://iehmgkdbiojkipljgbaljojdmdfpjeeg/";
+    assert_eq!(ask(ours, r#"{"port":9555}"#), r#"{"token":"c0ffee"}"#);
+    let other = ask("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/", r#"{"port":9555}"#);
+    assert!(other.contains("not the fastpilot extension") && !other.contains("c0ffee"), "{other}");
+    assert!(ask(ours, r#"{"port":9556}"#).contains("no fastpilot relay is waiting on port 9556"));
+    assert!(ask(ours, "nope").contains("error"));
+    let _ = std::fs::remove_dir_all(home);
+}
