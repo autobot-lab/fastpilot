@@ -92,6 +92,22 @@ browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1` (atau `fastpilot 
 Diuji dengan Claude Code dan Claude Desktop. Klien MCP lain (Cursor, Codex, Gemini CLI) memakai cara yang
 sama (`fastpilot mcp` lewat stdio), tapi belum diuji.
 
+**Opsional: Agent Skill.** [`skills/fastpilot/SKILL.md`](skills/fastpilot/SKILL.md) (format
+[Agent Skills](https://agentskills.io)) mengajari agent cara memakai fastpilot: alur `session` →
+`run_flow` → `report`, hint path memory, secret sebagai `${NAMA}`, dan batasan yang tidak boleh diakali.
+Claude Code memuatnya otomatis saat tugasnya cocok:
+
+```bash
+mkdir -p ~/.claude/skills && cp -R skills/fastpilot ~/.claude/skills/        # semua proyek
+```
+
+```bash
+mkdir -p .claude/skills && cp -R /path/ke/fastpilot/skills/fastpilot .claude/skills/   # satu proyek
+```
+
+Tanpa checkout: unduh foldernya dari GitHub (`skills/fastpilot/`). Klien lain yang mendukung format Agent
+Skills memakai folder yang sama di lokasi skill masing-masing (belum diuji).
+
 ### 4. Jalankan test lewat Claude
 
 Buka `claude` di folder yang sama, lalu beri perintah dalam bahasa biasa, misalnya:
@@ -608,6 +624,7 @@ agent-android/   instrumentation APK (Java, UiAutomation), dibangun tanpa Gradle
 ios-runner/      XCUITest runner + demo app iOS
 examples/        demo web (login, widgets), demo Android
 tests/           test case bahasa natural
+skills/fastpilot Agent Skill (SKILL.md) untuk agent AI
 ```
 
 ## Batasan yang diketahui
