@@ -108,9 +108,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     let flag = |name: &str| args.iter().any(|a| a == name);
     // A config file that does not parse would switch the guard rails off: stop instead
-    // (`config path` still answers, so the user finds the file).
+    // (`config path` still answers, so the user finds the file, and `ui` shows the error).
     let path_only = args.first().is_some_and(|a| a == "config") && args.get(1).is_some_and(|a| a == "path");
-    if !path_only && let Err(e) = fastpilot_core::config::check() {
+    let ui = args.first().is_some_and(|a| a == "ui");
+    if !path_only && !ui && let Err(e) = fastpilot_core::config::check() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

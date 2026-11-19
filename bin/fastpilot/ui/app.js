@@ -50,7 +50,7 @@ async function api(path, body) {
 let S = null; // { path, settings: [...], defaults }
 let savedAt = null;
 let doctorCache = null;
-const get = (key) => S.settings.find((s) => s.key === key);
+const get = (key) => (S && S.settings ? S.settings.find((s) => s.key === key) : undefined);
 
 async function loadSettings() {
   S = await api("/api/settings");
@@ -199,8 +199,30 @@ function pageSecret() {
         h("div", { class: "d" }, "Isi nilainya di konfigurasi MCP, misalnya ", code("claude mcp add fastpilot -e DEMO_PASS=… -- fastpilot mcp"), ", atau sebagai environment saat menjalankan fastpilot.")))));
 }
 
+// The settings file does not parse: say what and where, and offer nothing to change (the server
+// refuses to save until it is fixed; fastpilot itself stops with the same error).
+function pageBroken() {
+  const reload = async () => {
+    try { await loadSettings(); } catch (e) { toast("Gagal memuat ulang: " + e.message); }
+    render();
+  };
+  return h("section", { class: "panel" },
+    h("h2", {}, "Pengaturan"),
+    h("div", { class: "err big-err", role: "alert" },
+      h("b", {}, "File pengaturan rusak. "),
+      "Test tidak akan jalan, dan tidak ada perubahan yang bisa disimpan, sampai file ini diperbaiki atau dihapus.",
+      h("div", { class: "path" }, code(S.path)),
+      h("pre", { class: "errtext" }, S.error)),
+    h("div", { class: "btns" }, h("button", { class: "btn p", onclick: reload }, icon("refresh", "sm"), "Muat ulang setelah diperbaiki")),
+    h("p", { class: "muted" }, "Sama dengan pesan ", code("fastpilot config list"), ". Menghapus file mengembalikan semua ke bawaan."));
+}
+
 function pageSettings(sub) {
   topSettings();
+  if (S.error) {
+    $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secret" ? sub : "limits"), pageBroken()));
+    return;
+  }
   const page = sub === "model" ? pageModel() : sub === "secret" ? pageSecret() : pageLimits();
   $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secret" ? sub : "limits"), page));
   if (sub === "model" && !doctorCache) loadDoctor(false);
@@ -500,7 +522,14 @@ function render() {
   }
 }
 
-window.addEventListener("hashchange", () => { render(); document.getElementById("main").focus({ preventScroll: true }); });
+window.addEventListener("hashchange", async () => {
+  // Settings are read again on the way in: the file may have changed (or broken) meanwhile.
+  if (location.hash.startsWith("#/settings")) {
+    try { await loadSettings(); } catch (e) { toast("Gagal memuat pengaturan: " + e.message); }
+  }
+  render();
+  document.getElementById("main").focus({ preventScroll: true });
+});
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadSettings();
