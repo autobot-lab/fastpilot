@@ -345,6 +345,23 @@ dijalankan lewat CDP:
 - assertVisible: "Pembayaran berhasil"
 ```
 
+Membuka app ke server staging atau mode debug tanpa build ulang (`launchApp` dengan `arguments` dan `env`):
+
+```yaml
+- launchApp:
+    appId: com.contoh.app
+    arguments: { server: "https://staging.contoh.id", debug: true, retries: 3, fitur: [baru, beta] }
+    env: { API_TOKEN: "${STAGING_TOKEN}" }   # hanya iOS
+```
+
+- `arguments`: di Android menjadi intent extras (teks, angka bulat, `true`/`false`, daftar teks tanpa
+  koma; dibaca dengan `getIntent().getStringExtra(...)` dan sejenisnya), di iOS menjadi launch argument
+  `-server https://...` (dibaca dengan `UserDefaults.standard.string(forKey: "server")`).
+- `env` (iOS): environment app (`ProcessInfo.processInfo.environment`). Nilainya selalu tampil `***`
+  di output dan laporan; run yang direkam hanya menyimpan referensi `${NAMA}`, jadi taruh secret di
+  `FASTPILOT_VARS`. Nama yang mengubah cara app dimuat (`DYLD_*`, `LD_*`, `MALLOC*`, `OBJC_*`,
+  `XPC_*`) dan `FASTPILOT_*` ditolak.
+
 Lintas platform dalam satu `run_flow` ([tests/login-cross-platform.md](tests/login-cross-platform.md)):
 
 ```yaml

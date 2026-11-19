@@ -320,3 +320,32 @@ async fn android_device_control() {
     assert!(adb_shell("dumpsys notification --noredact").contains("Pesanan dikirim"));
     client.cancel().await.expect("shutdown");
 }
+
+/// E1: `launchApp` arguments arrive as typed intent extras (the demo lists them); `env` is
+/// refused on Android with the way to do it.
+#[tokio::test]
+async fn android_launch_app_arguments() {
+    let _device = DEVICE.lock().await;
+    if prepare().is_none() {
+        return eprintln!("skipping: no Android device or demo APK");
+    }
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let flow = r#"
+- session: { start: la, platform: android }
+- launchApp:
+    appId: com.fastpilot.demo/.LoginActivity
+    arguments: { server: "https://staging.contoh.id/api?a=1&b='2'", retries: 3, debug: true, tags: [satu, "dua tiga"] }
+- assertVisible: "extra debug=true"
+- assertVisible: "extra retries=3"
+- assertVisible: "extra server=https://staging.contoh.id/api?a=1&b='2'"
+- assertVisible: "extra tags=satu|dua tiga"
+- launchApp: com.fastpilot.demo/.LoginActivity
+- assertNotVisible: { text: "extra debug=true", timeout: 3000 }
+"#;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- launchApp: { appId: com.fastpilot.demo, env: { API_TOKEN: abc } }\n", "session": "la" })).await;
+    assert!(!ok && out.contains("iOS only") && !out.contains("abc"), "{out}");
+    client.cancel().await.expect("shutdown");
+}

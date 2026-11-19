@@ -125,3 +125,39 @@ async fn ios_login_over_mcp() {
     assert!(!ok && out.contains("app_crashed"), "{out}");
     client.cancel().await.expect("shutdown");
 }
+
+/// E1: `launchApp` arguments reach the app as UserDefaults and `env` as its environment; the
+/// env value never appears in fastpilot's output.
+#[tokio::test]
+async fn ios_launch_app_arguments_and_env() {
+    let Some(app) = demo_app() else {
+        return eprintln!("skipping: run ios-runner/build.sh first");
+    };
+    let device = std::env::var("FASTPILOT_IOS_DEVICE").unwrap_or_else(|_| "iPhone 16".into());
+    let _ = std::process::Command::new("xcrun").args(["simctl", "boot", &device]).output();
+    let _ = std::process::Command::new("xcrun").args(["simctl", "bootstatus", &device, "-b"]).output();
+    let out = std::process::Command::new("xcrun").args(["simctl", "install", "booted", &app]).output().expect("simctl");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
+        c.arg("mcp").current_dir(ROOT).env("FP_DEMO_TOKEN_SRC", "tok-9f8e7d").env("FASTPILOT_VARS", "FP_DEMO_TOKEN_SRC");
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let flow = r#"
+- session: { start: il, platform: ios }
+- launchApp:
+    appId: com.fastpilot.demo
+    arguments: { fpServer: "https://staging.contoh.id", fpDebug: true, fpTags: [satu, "dua tiga"] }
+    env: { FP_DEMO_TOKEN: "${FP_DEMO_TOKEN_SRC}" }
+- assertVisible: "arg fpServer=https://staging.contoh.id"
+- assertVisible: "arg fpDebug=true"
+- assertVisible: "arg fpTags=satu|dua tiga"
+- assertVisible: "env FP_DEMO_TOKEN set (10 chars)"
+"#;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    println!("{out}");
+    assert!(ok, "{out}");
+    assert!(out.contains("env {FP_DEMO_TOKEN=***}") && !out.contains("tok-9f8e7d"), "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- launchApp: { appId: com.fastpilot.demo, env: { DYLD_INSERT_LIBRARIES: /tmp/x.dylib } }\n", "session": "il" })).await;
+    assert!(!ok && out.contains("DYLD_INSERT_LIBRARIES") && out.contains("refused"), "{out}");
+    client.cancel().await.expect("shutdown");
+}

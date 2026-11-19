@@ -141,6 +141,44 @@ impl Viewport {
     }
 }
 
+/// A `launchApp` argument value: Android intent extra (`--es`/`--ei`/`--el`/`--ez`/`--esa`), iOS
+/// launch argument `-key value` (read with `UserDefaults`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaunchArg {
+    Str(String),
+    Int(i64),
+    Bool(bool),
+    List(Vec<String>),
+}
+
+/// `launchApp` extras: `arguments` (Android and iOS) and `env` (iOS process environment).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Launch {
+    pub arguments: Vec<(String, LaunchArg)>,
+    pub env: Vec<(String, String)>,
+}
+
+impl Launch {
+    pub fn is_empty(&self) -> bool {
+        self.arguments.is_empty() && self.env.is_empty()
+    }
+}
+
+/// Why an environment variable name may not be passed to an app under test: it would change how
+/// the app (or its loader) runs rather than what it reads, or reach into fastpilot itself.
+pub fn launch_env_refused(name: &str) -> Option<String> {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Some(format!("env name `{name}` must be letters, digits and _"));
+    }
+    let upper = name.to_ascii_uppercase();
+    ["DYLD_", "LD_", "FASTPILOT_", "__XPC_", "MALLOC", "OBJC_", "CFNETWORK_", "NSZOMBIE", "XPC_"]
+        .iter()
+        .find(|p| upper.starts_with(*p))
+        .map(|p| format!("env name `{name}` is refused: `{p}*` variables change how the app or the system loads it"))
+}
+
 /// `setNetwork`: offline, or online with optional throttling.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Network {
@@ -187,6 +225,13 @@ pub trait Driver: Send + Sync {
     /// Maestro `launchApp`: package / package/activity / bundleId.
     async fn launch_app(&self, app: &str) -> Result<()> {
         self.open(app).await
+    }
+    /// `launchApp` with `arguments` / `env` (values already substituted).
+    async fn launch_app_with(&self, app: &str, launch: &Launch) -> Result<()> {
+        if launch.is_empty() {
+            return self.launch_app(app).await;
+        }
+        Err(Error::Unsupported("launchApp `arguments` / `env` are for Android and iOS apps".into()))
     }
     /// Which platform this driver drives (for `when: { platform: ... }`).
     fn platform(&self) -> Platform {

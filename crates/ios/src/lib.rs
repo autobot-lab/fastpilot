@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use fastpilot_android::{Agent, Policy};
 use fastpilot_core::{
-    Direction, Driver, Error as CoreError, Intent, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
+    Direction, Driver, Error as CoreError, Intent, Launch, LaunchArg, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
 };
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1425,22 +1425,66 @@ impl Driver for IosDriver {
 
     /// Maestro semantics: terminate and relaunch (with the `setLocale` launch settings).
     async fn launch_app(&self, app: &str) -> Result<()> {
+        self.launch_app_with(app, &Launch::default()).await
+    }
+
+    /// `arguments` → launch arguments `-key value` (the app reads them with `UserDefaults`);
+    /// `env` → `launchEnvironment` (`ProcessInfo.processInfo.environment`).
+    async fn launch_app_with(&self, app: &str, launch: &Launch) -> Result<()> {
         let (locale, tz) = lock(&self.locale).clone();
         let mut args = Vec::new();
         if let Some(l) = &locale {
             let lang = l.split(['-', '_']).next().unwrap_or(l);
             args.extend(["-AppleLanguages".to_owned(), format!("({lang})"), "-AppleLocale".to_owned(), l.replace('-', "_")]);
         }
-        let env: serde_json::Map<String, Value> = tz.into_iter().map(|t| ("TZ".to_owned(), json!(t))).collect();
+        args.extend(launch_arguments(&launch.arguments));
+        let mut env: serde_json::Map<String, Value> = tz.into_iter().map(|t| ("TZ".to_owned(), json!(t))).collect();
+        for (k, v) in &launch.env {
+            if let Some(why) = fastpilot_core::launch_env_refused(k) {
+                return Err(CoreError::Flow(why));
+            }
+            env.insert(k.clone(), json!(v));
+        }
         self.call("launch", json!({ "bundleId": app, "args": args, "env": env })).await?;
         *lock(&self.bundle) = app.to_owned();
         Ok(())
     }
 }
 
+/// `launchApp` arguments as iOS launch arguments: `-key value`, read by the app through
+/// `UserDefaults` (lists in property-list form, booleans as YES/NO).
+fn launch_arguments(args: &[(String, LaunchArg)]) -> Vec<String> {
+    let plist = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    args.iter()
+        .flat_map(|(k, v)| {
+            let v = match v {
+                LaunchArg::Str(s) => s.clone(),
+                LaunchArg::Int(n) => n.to_string(),
+                LaunchArg::Bool(b) => (if *b { "YES" } else { "NO" }).to_owned(),
+                LaunchArg::List(items) => format!("({})", items.iter().map(|i| plist(i)).collect::<Vec<_>>().join(",")),
+            };
+            [format!("-{k}"), v]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_arguments_are_user_defaults() {
+        let args = vec![
+            ("server".to_owned(), LaunchArg::Str("https://staging".into())),
+            ("debug".to_owned(), LaunchArg::Bool(true)),
+            ("retries".to_owned(), LaunchArg::Int(3)),
+            ("tags".to_owned(), LaunchArg::List(vec!["a b".into(), "c\"d".into()])),
+        ];
+        assert_eq!(
+            launch_arguments(&args),
+            ["-server", "https://staging", "-debug", "YES", "-retries", "3", "-tags", r#"("a b","c\"d")"#]
+        );
+    }
 
     /// Issue #4: the first action on a screen that just appeared waits out its transition.
     #[test]

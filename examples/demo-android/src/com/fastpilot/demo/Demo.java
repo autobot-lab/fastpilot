@@ -48,6 +48,17 @@ public final class Demo {
             setTitle("Login");
             LinearLayout l = column(this);
             l.addView(text(this, "Masuk ke Akun", 24));
+            // launchApp `arguments` arrive as intent extras: show them, sorted, for the tests.
+            Bundle extras = getIntent().getExtras();
+            if (extras != null) {
+                java.util.List<String> keys = new java.util.ArrayList<>(extras.keySet());
+                java.util.Collections.sort(keys);
+                for (String k : keys) {
+                    Object v = extras.get(k);
+                    String shown = v instanceof String[] ? String.join("|", (String[]) v) : String.valueOf(v);
+                    l.addView(text(this, "extra " + k + "=" + shown, 14));
+                }
+            }
             EditText email = new EditText(this);
             email.setHint("Email");
             email.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);

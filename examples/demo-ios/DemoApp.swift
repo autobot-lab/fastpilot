@@ -52,6 +52,21 @@ final class LoginViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Login"
+        // launchApp `arguments` (UserDefaults) and `env`, shown for the tests; env values only
+        // by length, like a real app would never print a token.
+        var launch: [UIView] = []
+        if let server = UserDefaults.standard.string(forKey: "fpServer") {
+            launch.append(label("arg fpServer=\(server)"))
+        }
+        if UserDefaults.standard.object(forKey: "fpDebug") != nil {
+            launch.append(label("arg fpDebug=\(UserDefaults.standard.bool(forKey: "fpDebug"))"))
+        }
+        if let tags = UserDefaults.standard.array(forKey: "fpTags") as? [String] {
+            launch.append(label("arg fpTags=\(tags.joined(separator: "|"))"))
+        }
+        if let token = ProcessInfo.processInfo.environment["FP_DEMO_TOKEN"] {
+            launch.append(label("env FP_DEMO_TOKEN set (\(token.count) chars)"))
+        }
         for (f, name) in [(email, "Email"), (password, "Password")] {
             f.placeholder = name
             f.accessibilityIdentifier = name.lowercased()
@@ -74,7 +89,7 @@ final class LoginViewController: UIViewController {
         submit.addTarget(self, action: #selector(login), for: .touchUpInside)
 
         stack([label("Masuk ke Akun", font: .preferredFont(forTextStyle: .title1)),
-               email, password, rememberRow, submit, error, button("Lupa password?")], in: self)
+               email, password, rememberRow, submit, error, button("Lupa password?")] + launch, in: self)
     }
 
     override func viewWillAppear(_ animated: Bool) {

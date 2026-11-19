@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use fastpilot_core::{
-    Direction, Driver, Error as CoreError, Intent, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
+    Direction, Driver, Error as CoreError, Intent, Launch, LaunchArg, Node, Platform, Point, Rect, RefRegistry, Result, Selector, Snapshot, Value,
 };
 use fastpilot_web::{Browser, WebPage, http_get};
 use serde_json::json;
@@ -91,6 +91,38 @@ fn checksum(bytes: &[u8]) -> String {
 }
 
 /// Shell arguments come from the AI: allow only what package names, components and URLs need.
+/// One word for the device shell, whatever it contains.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `am start` extras: `--es` text, `--ei`/`--el` whole numbers, `--ez` booleans, `--esa` text lists.
+/// `am` splits lists on `,` and keeps the backslash of `\,`, so an item with a comma cannot arrive
+/// as written: refused rather than changed.
+fn intent_extras(args: &[(String, LaunchArg)]) -> Result<String> {
+    args.iter()
+        .map(|(k, v)| {
+            let q = sh_quote(k);
+            Ok(match v {
+                LaunchArg::Str(s) => format!("--es {q} {}", sh_quote(s)),
+                LaunchArg::Int(n) if i32::try_from(*n).is_ok() => format!("--ei {q} {n}"),
+                LaunchArg::Int(n) => format!("--el {q} {n}"),
+                LaunchArg::Bool(b) => format!("--ez {q} {b}"),
+                LaunchArg::List(items) => {
+                    if let Some(i) = items.iter().find(|i| i.contains(',')) {
+                        return Err(CoreError::Unsupported(format!(
+                            "launchApp argument `{k}`: list item {} has a comma, which Android's `am start` cannot pass in a list; pass it as a separate text argument",
+                            fastpilot_core::quote(i)
+                        )));
+                    }
+                    format!("--esa {q} {}", sh_quote(&items.join(",")))
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|v| v.join(" "))
+}
+
 fn shell_safe(s: &str) -> Result<&str> {
     let ok = !s.is_empty()
         && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/:-?=&%#+~@,$".contains(c));
@@ -415,6 +447,19 @@ impl AndroidDriver {
     }
 
     /// The app under test is `pkg` from now on; forget crashes of earlier runs.
+    /// `package/activity` as given, or the launcher activity of `package`.
+    async fn component(&self, target: &str) -> Result<String> {
+        if target.contains('/') {
+            return Ok(target.to_owned());
+        }
+        let out = self.shell(&format!("cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {target}")).await?;
+        let comp = out.lines().last().unwrap_or("").trim().to_owned();
+        if !comp.contains('/') {
+            return Err(CoreError::NotFound(format!("no launcher activity for {target}")));
+        }
+        Ok(comp)
+    }
+
     async fn track(&self, target: &str) {
         if target.contains("://") {
             return;
@@ -634,15 +679,8 @@ impl Driver for AndroidDriver {
         let target = shell_safe(target)?;
         let cmd = if target.contains("://") {
             format!("am start -W -a android.intent.action.VIEW -d '{target}'")
-        } else if target.contains('/') {
-            format!("am start -W -n {target}")
         } else {
-            let out = self.shell(&format!("cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {target}")).await?;
-            let comp = out.lines().last().unwrap_or("").trim().to_owned();
-            if !comp.contains('/') {
-                return Err(CoreError::NotFound(format!("no launcher activity for {target}")));
-            }
-            format!("am start -W -n {comp}")
+            format!("am start -W -n {}", self.component(target).await?)
         };
         let out = self.shell(&cmd).await?;
         if out.contains("Error") {
@@ -981,10 +1019,34 @@ impl Driver for AndroidDriver {
 
     /// Maestro semantics: stop the app, then start it fresh.
     async fn launch_app(&self, app: &str) -> Result<()> {
-        let pkg = shell_safe(app)?.split('/').next().unwrap_or(app);
+        self.launch_app_with(app, &Launch::default()).await
+    }
+
+    /// `arguments` become intent extras; Android apps get no process environment from
+    /// `am start`, so `env` is refused with the way to do it instead.
+    async fn launch_app_with(&self, app: &str, launch: &Launch) -> Result<()> {
+        if let Some((k, _)) = launch.env.first() {
+            return Err(CoreError::Unsupported(format!(
+                "launchApp `env` ({k}) is iOS only: an Android app gets no environment from `am start`; pass it as `arguments` (intent extras)"
+            )));
+        }
+        let app = shell_safe(app)?;
+        let pkg = app.split('/').next().unwrap_or(app);
         self.shell(&format!("am force-stop {pkg}")).await?;
         *self.web.lock().await = None;
-        self.open(app).await
+        if launch.arguments.is_empty() {
+            return self.open(app).await;
+        }
+        // Through adb's shell (`sh` on the device), not the agent's: UiAutomation's
+        // executeShellCommand splits on spaces and would ignore the quoting of the extras.
+        let extras = intent_extras(&launch.arguments)?;
+        let cmd = format!("am start -W -n {} {extras}", self.component(app).await?);
+        let out = self.adb.shell(&self.serial, &cmd).await.map_err(|e| CoreError::Driver(e.to_string()))?;
+        if out.contains("Error") {
+            return Err(CoreError::Driver(out.trim().to_owned()));
+        }
+        self.track(app).await;
+        Ok(())
     }
 }
 
@@ -1010,5 +1072,22 @@ mod tests {
         let email = snap.resolve(&Selector::Id("email".into()), Intent::Type).map(|e| e.node.bounds);
         assert_eq!(email.ok().flatten().map(|b| b.center()), Some(Point { x: 360.0, y: 130.0 }));
         assert!(shell_safe("com.x/.Main").is_ok() && shell_safe("x; rm -rf /").is_err());
+    }
+
+    #[test]
+    fn launch_arguments_become_quoted_intent_extras() {
+        let args = vec![
+            ("server".to_owned(), LaunchArg::Str("https://staging.x/api?a=1&b='2' ; reboot".into())),
+            ("retries".to_owned(), LaunchArg::Int(3)),
+            ("big".to_owned(), LaunchArg::Int(5_000_000_000)),
+            ("debug".to_owned(), LaunchArg::Bool(true)),
+            ("tags".to_owned(), LaunchArg::List(vec!["a".into(), "b c".into()])),
+        ];
+        assert_eq!(
+            intent_extras(&args).expect("extras"),
+            r"--es 'server' 'https://staging.x/api?a=1&b='\''2'\'' ; reboot' --ei 'retries' 3 --el 'big' 5000000000 --ez 'debug' true --esa 'tags' 'a,b c'"
+        );
+        let comma = [("tags".to_owned(), LaunchArg::List(vec!["b,c".into()]))];
+        assert!(intent_extras(&comma).is_err_and(|e| e.to_string().contains("has a comma")));
     }
 }
