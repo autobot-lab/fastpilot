@@ -47,13 +47,16 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
     for area in ["web:", "android:", "ios:", "run:"] {
         assert!(out.contains(area), "{area} missing in\n{out}");
     }
+    // ... and fails while a ✗ is left (here web, which no setup run can fix without a terminal).
     let (ok, out) = run(&["setup"], Some("/nonexistent/chrome"));
-    assert!(ok && !out.contains("  done") && !out.contains("  started"), "{out}");
+    assert!(!ok && !out.contains("  done") && !out.contains("  started"), "{out}");
     if out.contains("can be applied") {
         assert!(out.contains("plan (run in a terminal"), "{out}");
     }
     if std::path::Path::new("/Applications/Google Chrome.app").exists() || std::path::Path::new("/usr/bin/chromium").exists() {
         let (ok, out) = run(&["doctor", "web"], None);
         assert!(ok && out.contains("✓ Chrome") && out.contains("starts headless"), "{out}");
+        let (ok, out) = run(&["setup", "web"], None);
+        assert!(ok && out.contains("nothing to set up"), "web ready, nothing left: {out}");
     }
 }

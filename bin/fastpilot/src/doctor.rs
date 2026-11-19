@@ -273,15 +273,23 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
     let list = checks(&areas(args)?).await;
     println!("{}\n", render(&list));
     let fixes: Vec<&Fix> = list.iter().flat_map(|c| c.fixes.iter()).collect();
+    // A ✗ left after setup (nothing to fix it with, skipped, failed, or only planned) fails the run,
+    // for the same areas as `doctor`, so CI does not go on with a platform that is not ready.
     if fixes.is_empty() {
         let manual = list.iter().filter(|c| c.status != Status::Ok).count();
         println!("{}", if manual == 0 { "nothing to set up" } else { "nothing fastpilot can install itself: follow the → hints above" });
+        if failed(&list, args) {
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if !interactive && !yes {
         println!("plan (run in a terminal to be asked for each step, or add --yes):");
         for f in &fixes {
             println!("  - {}: {} {}", f.what, f.program, f.args.join(" "));
+        }
+        if failed(&list, args) {
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -313,7 +321,17 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
             Err(e) => println!("  could not run {}: {e}", f.program),
         }
     }
-    println!("\nnow: fastpilot doctor");
+    // What is left after the fixes decides the exit status.
+    let after = checks(&areas(args)?).await;
+    let left: Vec<&Check> = after.iter().filter(|c| c.status != Status::Ok).collect();
+    if left.is_empty() {
+        println!("\nall set");
+    } else {
+        println!("\nstill to do:\n{}", render(&left.into_iter().cloned().collect::<Vec<_>>()));
+    }
+    if failed(&after, args) {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

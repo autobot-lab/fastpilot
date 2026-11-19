@@ -67,7 +67,9 @@ fastpilot setup android
 ```
 
 `setup` menanyakan tiap perbaikan (y/N) sebelum menjalankannya; `--yes` untuk menyetujui semuanya. Di luar
-terminal (CI, agent) `setup` hanya mencetak rencananya.
+terminal (CI, agent) `setup` hanya mencetak rencananya. Seperti `doctor`, `setup` keluar dengan kode ≠ 0
+kalau sesudahnya masih ada ✗ (yang tidak bisa diperbaiki otomatis, dilewati, gagal, atau baru direncanakan)
+di platform yang disebut, atau di web bila tidak ada platform yang disebut.
 
 ### 3. Daftarkan ke Claude Code
 
@@ -173,8 +175,9 @@ Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung ta
 
 Pengaturan dibaca berurutan: **env** (mis. `-e` di MCP config) → **file** `~/.fastpilot/config.toml` (atau
 path di `FASTPILOT_CONFIG`) → default. File dibaca ulang saat berubah, jadi tidak perlu restart server.
-Kecuali batasan: fastpilot yang sedang jalan hanya mengikuti nilai yang lebih ketat. Nilai yang lebih
-longgar baru berlaku setelah restart (server MCP atau `fastpilot daemon stop`). File yang tidak valid
+Kecuali batasan: nilainya dikunci saat fastpilot mulai (server MCP, daemon shell, `fastpilot run`), dan
+selama jalan hanya nilai yang lebih ketat yang diikuti. Nilai yang lebih longgar baru berlaku setelah
+restart (server MCP atau `fastpilot daemon stop`), juga kalau batasan itu belum pernah dipakai. File yang tidak valid
 membuat fastpilot berhenti dengan pesan error, tidak diam-diam diabaikan.
 
 ```bash
