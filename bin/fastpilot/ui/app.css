@@ -46,20 +46,20 @@ a{color:inherit}
 .btn.sm{padding:5px 10px;font-size:12.5px}
 .btn[disabled]{opacity:.5;cursor:default;box-shadow:none}
 code{font:500 12.5px var(--mono);background:var(--soft);border:1px solid var(--line);padding:1px 6px;border-radius:6px;color:var(--ink);overflow-wrap:anywhere}
-a.lk{color:var(--acc);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+a.lk{color:var(--acc-ink);font-weight:600;text-decoration:underline;text-underline-offset:3px}
 .chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
 .chip{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:3px 6px 3px 9px;font:500 12px var(--mono);white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
 .chip.x{background:var(--bad-soft);border-color:#f3c4c4;color:var(--bad)}
 .chip .rm{display:inline-flex;padding:1px;border-radius:4px;color:var(--faint)}
 .chip .rm:hover{color:var(--ink);background:var(--soft)}
 .chip.x .rm{color:var(--bad)}
-.add{display:inline-flex;align-items:center;gap:4px;border:1px dashed #b6bdc8;border-radius:6px;padding:2px 4px 2px 8px;background:var(--card)}
+.add{display:inline-flex;align-items:center;gap:4px;border:1px dashed #7d8796;border-radius:6px;padding:2px 4px 2px 8px;background:var(--card)}
 .add input{font:500 12px var(--mono);border:0;outline:none;width:170px;padding:2px 0;background:none;color:var(--ink)}
 .add input::placeholder{color:var(--faint)}
 .add button{font:500 12px var(--mono);color:var(--muted);padding:2px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:3px}
 .add button:hover{color:var(--ink);background:var(--soft)}
-select.sel{font:500 14px var(--sans);color:var(--ink);background:var(--card);border:1px solid #c9cfd8;border-radius:var(--r-sm);padding:6px 10px;min-width:190px}
-.tg{width:40px;height:22px;border-radius:999px;background:#c2c9d3;position:relative;flex:none;cursor:pointer}
+select.sel{font:500 14px var(--sans);color:var(--ink);background:var(--card);border:1px solid #8a94a3;border-radius:var(--r-sm);padding:6px 10px;min-width:190px}
+.tg{width:40px;height:22px;border-radius:999px;background:#8a94a3;position:relative;flex:none;cursor:pointer}
 .tg::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .12s}
 .tg[aria-checked="true"]{background:var(--acc)}.tg[aria-checked="true"]::after{left:21px}
 .tg[disabled]{opacity:.5;cursor:default}
@@ -140,10 +140,18 @@ select.sel{font:500 14px var(--sans);color:var(--ink);background:var(--card);bor
 .steps .warnline{color:var(--bad)}
 a.lk.bad{color:var(--bad)}
 .empty.small{padding:20px}
-.zoom{position:fixed;inset:0;background:rgba(20,25,32,.55);display:flex;align-items:center;justify-content:center;padding:32px;z-index:10}
-.zoom-in{background:var(--card);border:var(--bw) solid var(--ink);border-radius:var(--r);width:min(1280px,100%);max-height:100%;overflow:hidden;display:flex;flex-direction:column}
-.zoom .screen-box{aspect-ratio:auto;height:min(78vh,820px)}
 .big-err{margin:16px 0}
 .big-err .path{margin:8px 0}
 .errtext{white-space:pre-wrap;font:500 12px var(--mono);color:var(--bad);background:#fff;border:1px solid #f3c4c4;border-radius:6px;padding:8px 10px;margin-top:6px;overflow-x:auto}
 .btns{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
+/* wave 3 */
+.top h1{font:inherit;letter-spacing:inherit;margin:0}
+h2.gh{margin:0;font-weight:500}
+.chip.none{background:var(--soft);color:var(--muted);border-style:dashed}
+.chip.preset{cursor:pointer;color:var(--ink);border-color:#8a94a3}
+.chip.preset:hover{background:var(--soft)}
+.chip.preset:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.top .pill.bad{background:var(--bad-soft);color:var(--bad)}
+dialog.zoom{border:var(--bw) solid var(--ink);border-radius:var(--r);padding:0;width:min(1280px,calc(100% - 64px));max-height:calc(100% - 64px);overflow:hidden;background:var(--card);color:var(--ink)}
+dialog.zoom::backdrop{background:rgba(20,25,32,.55)}
+dialog.zoom .screen-box{aspect-ratio:auto;height:min(78vh,820px)}
