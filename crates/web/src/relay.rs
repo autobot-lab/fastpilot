@@ -155,6 +155,15 @@ pub fn native_host(origin: &str) -> std::io::Result<()> {
     stdout.flush()
 }
 
+/// A file deleted when this goes out of scope.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Same length and bytes, without an early exit on the first difference.
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -263,6 +272,9 @@ pub async fn extension_page(port: Option<u16>) -> Result<WebPage, Error> {
     let token = new_token()?;
     *lock(&relay.token) = token.clone();
     write_private(&token_file(port), &token).map_err(|e| Error::Launch(format!("extension relay token file: {e}")))?;
+    // The native host only needs it until the extension connects: removed then, and on every other
+    // way out of this wait (timeout, error, the request being dropped).
+    let token_on_disk = RemoveOnDrop(token_file(port));
     register_native_host();
     let waiting = async {
         loop {
@@ -275,7 +287,9 @@ pub async fn extension_page(port: Option<u16>) -> Result<WebPage, Error> {
             notified.await;
         }
     };
-    if tokio::time::timeout(Duration::from_secs(60), waiting).await.is_err() {
+    let waited = tokio::time::timeout(Duration::from_secs(60), waiting).await;
+    drop(token_on_disk);
+    if waited.is_err() {
         return Err(Error::Launch(format!(
             "the fastpilot extension did not connect to 127.0.0.1:{port} within 60s: load extension-chrome/ (chrome://extensions, \
              Developer mode, Load unpacked), then click its toolbar button on the tab to drive"
@@ -322,6 +336,65 @@ mod tests {
         cdp.send(Message::Text("{\"id\":1}".into())).await.expect("send");
         let got = tokio::time::timeout(Duration::from_secs(2), ext.next()).await.expect("frame").expect("open").expect("ok");
         assert_eq!(got.into_text().expect("text").as_str(), "{\"id\":1}");
+    }
+
+    /// Security review (Low): the token file stayed in ~/.fastpilot/relay after the session, with a
+    /// token anyone reading it could replay while the relay lives. It exists only while fastpilot
+    /// waits for the extension.
+    #[tokio::test]
+    async fn token_file_only_lives_while_waiting_for_the_extension() {
+        let _home = HomeGuard::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        serve(port, listener).expect("relay");
+        let file = token_file(port);
+        let session = tokio::spawn(extension_page(Some(port)));
+        let mut token = None;
+        for _ in 0..50 {
+            token = std::fs::read_to_string(&file).ok();
+            if token.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let token = token.expect("token file while waiting");
+        let _ext = connect(port, "/extension", Some(token.trim())).await.expect("extension with the token");
+        let mut gone = false;
+        for _ in 0..50 {
+            if !file.exists() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        session.abort();
+        assert!(gone, "token file still there after the extension connected: {}", file.display());
+    }
+
+    /// HOME pointed at a temp folder for the token file (restored on drop).
+    struct HomeGuard(Option<std::ffi::OsString>, PathBuf);
+
+    impl HomeGuard {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("fastpilot-relay-home-{}", std::process::id()));
+            let old = std::env::var_os("HOME");
+            // SAFETY: the only test of this crate that reads HOME.
+            unsafe { std::env::set_var("HOME", &dir) };
+            Self(old, dir)
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: as above.
+            unsafe {
+                match &self.0 {
+                    Some(h) => std::env::set_var("HOME", h),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
     }
 
     #[test]

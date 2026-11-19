@@ -65,6 +65,9 @@ impl Adb {
     pub async fn new() -> Result<Self, Error> {
         if let Some(server) = configured_server() {
             let server = server.map_err(Error::Adb)?;
+            if let Some(host) = fastpilot_core::policy::remote_host(&server) {
+                tracing::warn!(host, "adb_server is not this machine: adb has no password or encryption, use an SSH tunnel to 127.0.0.1");
+            }
             return match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&server)).await {
                 Ok(Ok(_)) => Ok(Self { server, configured: true }),
                 _ => Err(Error::Adb(format!(

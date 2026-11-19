@@ -570,6 +570,8 @@ fastpilot doctor web                                          # remote Chrome at
 - Path file dibaca oleh mesin Chrome: `target` lokal (`examples/demo/login.html`), `uploadFile`, dan
   unduhan memakai sistem file mesin itu. Pakai URL `http(s)://` untuk aplikasi yang dites.
 - `adb_server` dan `chrome_endpoint` hanya bisa diubah user (`fastpilot config set`), tidak oleh agent.
+- Bila host-nya bukan mesin ini (bukan `127.0.0.1`/`localhost`), `doctor` dan log memberi peringatan: DevTools
+  dan adb tidak punya password maupun enkripsi. `user:password@` di alamat disamarkan (`***@`) di `doctor` dan pesan error.
 
 ## Bench
 
