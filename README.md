@@ -234,7 +234,7 @@ Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 |---|---|
 | `allowed_domains` | sesi web hanya membuka host ini |
 | `confirm_actions` | tap pada elemen bernama begini butuh `confirm: true` (cocok per kata) |
-| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran") |
+| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran"). Tap koordinat (`point`) dicek terhadap elemen di titik itu; bila elemennya tidak bisa dipastikan, tap ditolak selama `block_actions`/`confirm_actions` aktif |
 | `allow_app_install` | langkah `installApp` / `uninstallApp` (bawaan: boleh) |
 | `allow_app_reset` | `clearState` / `clearKeychain` (bawaan: boleh) |
 | `allow_physical_devices` | sesi boleh memakai HP fisik; `false` = hanya emulator/simulator (bawaan: boleh) |
