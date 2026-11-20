@@ -138,8 +138,10 @@ You cannot change settings or schedules yourself. To propose one, end your reply
 ```fastpilot-proposal
 {\"kind\":\"schedule\",\"name\":\"Login harian\",\"tests\":\"/absolute/path/tests/login.md\",\"every\":\"day\",\"time\":\"09:00\",\"notify\":{\"webhook\":true,\"os\":false,\"github\":\"owner/repo\"}}
 ```
-(`every`: day, weekday or week; with week add \"day\": 1 = Monday ... 7 = Sunday; time is HH:MM on this computer; \
-tests is a folder of *.md test cases or one .md file)
+(`every`: day, weekday, week or hours; with week add \"day\": 1 = Monday ... 7 = Sunday; time is HH:MM on this \
+computer. For every N hours use {\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\"} with no time; \
+hours is 1-24, and from/to (the active window) are optional but go together. tests is a folder of *.md test cases or \
+one .md file)
 ```fastpilot-proposal
 {\"kind\":\"limits\",\"add\":{\"block_actions\":[\"Bayar\"],\"confirm_actions\":[\"hapus\"]},\"set\":{\"allow_eval_script\":false,\"max_steps\":20}}
 ```
@@ -408,16 +410,22 @@ fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
         Some("day") => schedule::Every::Day,
         Some("weekday") => schedule::Every::Weekday,
         Some("week") => schedule::Every::Week,
-        _ => return Err("waktu jadwal tidak jelas (setiap hari, hari kerja, atau mingguan)".into()),
+        Some("hours") => schedule::Every::Hours,
+        _ => return Err("The schedule's timing is unclear (daily, weekdays, weekly, or every N hours)".into()),
     };
+    let text = |k: &str| v[k].as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+    let hours = every == schedule::Every::Hours;
     let s = schedule::Schedule {
         id: String::new(),
         name: v["name"].as_str().unwrap_or("").trim().to_owned(),
         tests: v["tests"].as_str().unwrap_or("").trim().to_owned(),
         when: schedule::When {
             every,
-            time: v["time"].as_str().unwrap_or("").to_owned(),
+            time: if hours { String::new() } else { v["time"].as_str().unwrap_or("").to_owned() },
             day: (every == schedule::Every::Week).then(|| v["day"].as_u64().and_then(|d| u8::try_from(d).ok()).unwrap_or(0)),
+            hours: hours.then(|| v["hours"].as_u64().and_then(|n| u8::try_from(n).ok()).unwrap_or(0)),
+            from: if hours { text("from") } else { None },
+            to: if hours { text("to") } else { None },
         },
         notify: schedule::Notify {
             webhook: v["notify"]["webhook"].as_bool().unwrap_or(false),

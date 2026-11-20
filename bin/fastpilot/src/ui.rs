@@ -18,6 +18,7 @@
 //!   stream that exists only while the page shows it. The browser's DevTools address stays here.
 
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
@@ -171,6 +172,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
         .route("/api/schedules", get(schedules_api).post(schedules_change))
+        .route("/api/schedules/report", get(schedule_report))
         .route("/api/chat", get(chat_api).post(chat_send))
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/provider", get(provider_api).post(provider_change))
@@ -280,10 +282,13 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
-    );
+    // A route with its own, stricter policy (a sandboxed run report) keeps it.
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+        );
+    }
     r
 }
 
@@ -434,12 +439,79 @@ async fn schedules_api() -> Response {
         .iter()
         .map(|s| {
             let hook = std::fs::read_to_string(schedule::secret_path(&s.id)).ok().map(|u| schedule::mask_webhook(u.trim()));
-            json!({ "schedule": s, "when_text": schedule::describe(&s.when), "webhook": hook, "last": store.last.get(&s.id) })
+            let slots: Vec<String> = schedule::slots(&s.when).iter().map(|(h, m)| format!("{h:02}:{m:02}")).collect();
+            let last = store.last.get(&s.id);
+            json!({
+                "schedule": s, "when_text": schedule::describe(&s.when), "webhook": hook, "last": last,
+                "running": schedule::is_running(last), "slots": slots, "days": schedule::run_days(&s.when),
+                "tests_text": tests_text(&s.tests),
+            })
         })
         .collect();
     let cwd = std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned());
     let tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
-    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests })).into_response()
+    let found: Vec<Value> = tests.as_deref().map(|d| test_files(Path::new(d))).unwrap_or_default().into_iter().map(|(path, title)| json!({ "path": path, "title": title })).collect();
+    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests, "tests": found })).into_response()
+}
+
+/// The `.md` test cases in `dir`, with their titles (`# Title`, else the file name), by title.
+pub fn test_files(dir: &Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = std::fs::read_dir(dir)
+        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md")).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| {
+            let title = test_title(&p);
+            (p.to_string_lossy().into_owned(), title)
+        })
+        .collect();
+    out.sort_by_key(|a| a.1.to_lowercase());
+    out
+}
+
+/// A test case's title: its first `# ` line, else the file name.
+pub fn test_title(p: &Path) -> String {
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("# ").map(|x| x.trim().to_owned())).filter(|x| !x.is_empty()))
+        .unwrap_or_else(|| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// What a schedule runs, in the user's words: `Login` or `all 4 tests in tests`.
+fn tests_text(tests: &str) -> String {
+    let p = Path::new(tests);
+    if p.is_file() {
+        return test_title(p);
+    }
+    let n = test_files(p).len();
+    let folder = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| tests.to_owned());
+    // The project's own `tests` folder needs no name.
+    let in_folder = if folder == "tests" { String::new() } else { format!(" in {folder}") };
+    match n {
+        0 => format!("no tests yet{in_folder}"),
+        1 => format!("the 1 test{in_folder}"),
+        n => format!("all {n} tests{in_folder}"),
+    }
+}
+
+/// The HTML report of a schedule's last run, from the schedules' own report folder only. Sandboxed:
+/// the report shows tested pages' text, and must not reach this page's API.
+async fn schedule_report(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    use crate::schedule;
+    let id = q.get("id").cloned().unwrap_or_default();
+    let store = schedule::load();
+    let file = store.last.get(&id).and_then(|l| l.report.clone()).map(PathBuf::from);
+    let dir = std::fs::canonicalize(schedule::reports_dir()).ok();
+    let real = file.and_then(|f| std::fs::canonicalize(f).ok()).filter(|f| dir.as_ref().is_some_and(|d| f.starts_with(d)) && f.is_file());
+    match real.and_then(|f| std::fs::read(f).ok()) {
+        Some(body) => Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header("Content-Security-Policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from(body))
+            .unwrap_or_default(),
+        None => refuse(StatusCode::NOT_FOUND, "This run has no report (it may have been removed)."),
+    }
 }
 
 /// `{action: save, schedule, webhook?}`, `{action: enable|disable|delete|run|test, id}`.
@@ -449,7 +521,7 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
         "save" => match serde_json::from_value::<schedule::Schedule>(body["schedule"].clone()) {
             Ok(s) => schedule::save(s, body["webhook"].as_str()).map(|s| json!({ "id": s.id })),
-            Err(e) => Err(format!("Isi jadwal tidak lengkap ({e})")),
+            Err(e) => Err(format!("The schedule is incomplete ({e})")),
         },
         "enable" => schedule::set_enabled(&id, true).map(|()| json!({})),
         "disable" => schedule::set_enabled(&id, false).map(|()| json!({})),

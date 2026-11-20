@@ -1,6 +1,7 @@
-//! The Jadwal page as a user meets it (Design review): a refused save points at its field, the
-//! webhook and repo fields have their own labels, Escape closes the new-schedule panel, and after
-//! saving the focus is on the new schedule. Driven by fastpilot in Chrome; skips without Chrome.
+//! The Schedules page as a user meets it: the empty state, a refused save points at its field, the
+//! webhook field has its own label, Escape closes the new-schedule panel, "every 2 hours, 08:00–20:00"
+//! is created from the page (D5) with its Next time and OS entry, and after saving the focus is on
+//! the new schedule. Driven by fastpilot in Chrome; skips without Chrome.
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -48,7 +49,7 @@ impl Drop for Ui {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn jadwal_form_points_at_fields_and_keeps_focus() {
+async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     if !chrome_available() {
         return eprintln!("skipping: no Chrome");
     }
@@ -79,40 +80,51 @@ async fn jadwal_form_points_at_fields_and_keeps_focus() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "{out}");
     eval(&client, "location.hash = '#/schedules', 'ok'").await;
-    see(&client, "Belum ada jadwal").await;
+    // Empty state (v7 #s8).
+    see(&client, "Nothing is scheduled").await;
+    let btn = |label: &str| format!("[...document.querySelectorAll('button')].find(b => b.textContent.trim().endsWith({label:?}))");
 
-    // Escape closes the panel and gives focus back to "Jadwal baru".
-    eval(&client, "[...document.querySelectorAll('.top button')].find(b => b.textContent.includes('Jadwal baru')).click(), 'ok'").await;
-    see(&client, "Simpan jadwal").await;
+    // Escape closes the panel and gives focus back to "New schedule".
+    eval(&client, &format!("{}.click(), 'ok'", btn("New schedule"))).await;
+    see(&client, "Create schedule").await;
     assert_eq!(eval(&client, "document.activeElement.closest('.sched-form') ? 'in' : 'out'").await, "\"in\"");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- pressKey: Escape\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    assert_eq!(eval(&client, "!document.querySelector('.sched-form') && document.activeElement.textContent.includes('Jadwal baru')").await, "true");
+    assert_eq!(eval(&client, "!document.querySelector('.sched-form') && document.activeElement.textContent.includes('New schedule')").await, "true");
 
-    // Webhook and repo fields: labelled, shown when their box is ticked.
-    eval(&client, "[...document.querySelectorAll('.top button')].find(b => b.textContent.includes('Jadwal baru')).click(), 'ok'").await;
-    see(&client, "Simpan jadwal").await;
-    let hidden = eval(&client, "(() => { const w = document.querySelector('input[type=password]'); return String(!!w.closest('[hidden]')); })()").await;
-    assert_eq!(hidden, "\"true\"", "URL field hidden until Webhook is ticked");
-    let label = eval(&client, "(() => { const box = [...document.querySelectorAll('.ck')].find(l => l.textContent.includes('Webhook')).querySelector('input'); box.click(); const w = document.querySelector('input[type=password]'); return (w.closest('[hidden]') ? 'hidden' : 'shown') + ':' + w.closest('label.fld').querySelector('.l').textContent; })()").await;
-    assert_eq!(label, "\"shown:URL webhook\"");
+    // The form: Tests lists this project's saved tests by title; "How often" is a radio group.
+    eval(&client, &format!("{}.click(), 'ok'", btn("New schedule"))).await;
+    see(&client, "Create schedule").await;
+    let opts = eval(&client, "[...document.querySelector('.sched-form select').options].map(o => o.textContent).join('|')").await;
+    assert!(opts.contains("tests in this project") && opts.contains("Another folder or file"), "{opts}");
+    let kinds = eval(&client, "[...document.querySelectorAll('.seg [role=radio]')].map(b => b.textContent + ':' + b.getAttribute('aria-checked')).join('|')").await;
+    assert_eq!(kinds, "\"Fixed time:true|Every N hours:false|Weekdays:false|Weekly:false\"");
+    // Webhook field: labelled, shown when its box is ticked.
+    let label = eval(&client, "(() => { const box = [...document.querySelectorAll('.ck')].find(l => l.textContent.includes('Slack')).querySelector('input'); const w = document.querySelector('input[type=password]'); const before = w.closest('[hidden]') ? 'hidden' : 'shown'; box.click(); return before + '>' + (w.closest('[hidden]') ? 'hidden' : 'shown') + ':' + w.closest('label.fld').querySelector('.l').textContent; })()").await;
+    assert_eq!(label, "\"hidden>shown:Webhook URL\"");
+    eval(&client, "([...document.querySelectorAll('.ck')].find(l => l.textContent.includes('Slack')).querySelector('input').click(), 'ok')").await;
 
-    // A refused save: the reason under its field, the field marked and focused.
-    let err = eval(&client, "(() => { const f = document.querySelector('.sched-form'); const [name, tests] = f.querySelectorAll('input[type=text]'); name.value = 'Login pagi'; tests.value = 'tests/login.md'; const box = [...document.querySelectorAll('.ck')].find(l => l.textContent.includes('Webhook')).querySelector('input'); box.click(); [...f.querySelectorAll('button')].find(b => b.textContent === 'Simpan jadwal').click(); return 'ok'; })()").await;
-    assert_eq!(err, "\"ok\"");
-    see(&client, "path lengkap").await;
-    let at = eval(&client, "(() => { const e = [...document.querySelectorAll('.fld-err')].find(x => !x.hidden); const i = e.closest('.fld').querySelector('input'); return e.closest('.fld').querySelector('.l').textContent + ':' + i.getAttribute('aria-invalid') + ':' + (document.activeElement === i); })()").await;
-    assert_eq!(at, "\"Test:true:true\"");
-    // Design L2: the error is tied to its field and starts with a capital.
-    let tied = eval(&client, "(() => { const i = document.activeElement; const e = document.getElementById(i.getAttribute('aria-describedby')); return e.textContent.slice(0, 6); })()").await;
-    assert_eq!(tied, "\"Folder\"");
+    // Every N hours with an inverted window: the reason under the window, the field marked and focused.
+    let set = format!("(() => {{ const f = document.querySelector('.sched-form'); f.querySelector('[data-v=hours]').click(); const sel = f.querySelector('select'); sel.value = [...sel.options].find(o => o.textContent.includes('Another')).value; sel.dispatchEvent(new Event('change')); const t = [...f.querySelectorAll('input[type=text]')]; t[0].value = 'Checkout'; t[0].dispatchEvent(new Event('input')); t[1].value = '{ROOT}/tests/login.md'; f.querySelector('input[type=number]').value = '2'; const [a, b] = f.querySelectorAll('input[aria-label^=Active]'); a.value = '20:00'; b.value = '08:00'; {}.click(); return 'ok'; }})()", btn("Create schedule"));
+    eval(&client, &set).await;
+    see(&client, "ends before it starts").await;
+    let at = eval(&client, "(() => { const i = document.activeElement; return i.getAttribute('aria-label') + ':' + i.getAttribute('aria-invalid') + ':' + document.getElementById(i.getAttribute('aria-describedby')).textContent.slice(0, 10); })()").await;
+    assert_eq!(at, "\"Active from:true:The active\"");
 
-    // Fixed and saved: focus on the new schedule; Indonesian summary text in the list.
-    eval(&client, &format!("(() => {{ const f = document.querySelector('.sched-form'); f.querySelectorAll('input[type=text]')[1].value = '{ROOT}/tests/login.md'; [...f.querySelectorAll('button')].find(b => b.textContent === 'Simpan jadwal').click(); return 'ok'; }})()")).await;
-    see(&client, "Setiap hari 08:00").await;
+    // Fixed and created: the row says when, and Next is one of the 2-hour times.
+    eval(&client, &format!("(() => {{ const f = document.querySelector('.sched-form'); const [a, b] = f.querySelectorAll('input[aria-label^=Active]'); a.value = '08:00'; b.value = '20:00'; {}.click(); return 'ok'; }})()", btn("Create schedule"))).await;
+    see(&client, "every 2 hours, 08:00–20:00").await;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    assert_eq!(eval(&client, "document.activeElement.className + ':' + document.activeElement.textContent").await, "\"row-name:Login pagi\"");
-    assert!(home.join("LaunchAgents/dev.fastpilot.schedule.login-pagi.plist").exists());
+    assert_eq!(eval(&client, "document.activeElement.className + ':' + document.activeElement.textContent").await, "\"row-name:Checkout\"");
+    let next = eval(&client, "document.querySelector('tr[data-id=checkout] td.next').textContent").await;
+    let next = next.trim_matches('"').to_owned();
+    let time = next.rsplit(' ').next().unwrap_or("");
+    assert!(["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"].contains(&time), "Next: {next}");
+    assert_eq!(eval(&client, "document.querySelector('tr[data-id=checkout] td.last').textContent").await, "\"Not run yet\"");
+    let plist = std::fs::read_to_string(home.join("LaunchAgents/dev.fastpilot.schedule.checkout.plist")).expect("OS entry");
+    assert_eq!(plist.matches("<key>Hour</key>").count(), 7, "{plist}");
+    let heads = eval(&client, "[...document.querySelectorAll('.tbl th')].map(t => t.textContent).join('|')").await;
+    assert_eq!(heads, "\"Name|When|Next|Last|Notify|On|\"");
 
     // Design L4: the page says in its own words that fastpilot ui stopped (not "Failed to fetch").
     drop(_ui);

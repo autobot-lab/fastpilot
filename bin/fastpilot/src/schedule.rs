@@ -20,23 +20,36 @@ use serde_json::{Value, json};
 
 type Res<T> = Result<T, String>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Every {
+    #[default]
     Day,
     Weekday,
     Week,
+    /// Every `hours` hours (1–24), inside the optional `from`–`to` window, every day.
+    Hours,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct When {
     pub every: Every,
-    /// `HH:MM`, local time of this machine.
+    /// `HH:MM`, local time of this machine (not used by `hours`).
+    #[serde(default)]
     pub time: String,
     /// For `week`: 1 = Monday ... 7 = Sunday.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<u8>,
+    /// For `hours`: run every N hours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<u8>,
+    /// For `hours`: the active window, `HH:MM` to `HH:MM` (both or neither; none = all day from 00:00).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
+
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notify {
@@ -83,6 +96,14 @@ pub struct LastRun {
     /// What happened to each notification (`webhook: terkirim`, `github: gagal ...`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notified: Vec<String>,
+    /// Tests that passed, of how many (from the suite's summary line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// The `fastpilot schedule run` process, while it runs (Run now refuses a second one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -100,6 +121,11 @@ fn now_ms() -> u64 {
 /// `~/.fastpilot` (the folder of `config.toml`).
 fn home() -> PathBuf {
     fastpilot_core::config::path().parent().map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir)
+}
+
+/// Where scheduled runs keep their HTML reports.
+pub fn reports_dir() -> PathBuf {
+    home().join("schedules").join("reports")
 }
 
 fn store_path() -> PathBuf {
@@ -185,11 +211,11 @@ pub fn check_webhook(url: &str) -> Res<()> {
     let lower = url.to_ascii_lowercase();
     let local = ["http://127.0.0.1:", "http://127.0.0.1/", "http://localhost:", "http://localhost/", "http://[::1]:"].iter().any(|p| lower.starts_with(p));
     if !(lower.starts_with("https://") || local) || url.len() > 2000 || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("URL webhook harus https:// (http hanya untuk 127.0.0.1/localhost)".into());
+        return Err("The webhook URL must start with https:// (http only for 127.0.0.1 or localhost)".into());
     }
     let host = url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
     if host.is_empty() || host.contains('@') {
-        return Err("URL webhook tidak valid: tulis tanpa user:password@".into());
+        return Err("Write the webhook URL without user:password@".into());
     }
     Ok(())
 }
@@ -208,41 +234,97 @@ pub fn has_webhook(id: &str) -> bool {
 /// Whether `s` can be saved (also used for a chat proposal before it is shown).
 pub fn validate(s: &Schedule) -> Res<()> {
     if !valid_id(&s.id) {
-        return Err("Id jadwal hanya boleh huruf kecil, angka, dan -".into());
+        return Err("A schedule id may only use lowercase letters, digits and -".into());
     }
     if s.name.trim().is_empty() || s.name.chars().count() > 80 {
-        return Err("Nama jadwal wajib, 1–80 karakter".into());
+        return Err("Give the schedule a name (1–80 characters)".into());
     }
     let tests = Path::new(&s.tests);
     if !tests.is_absolute() || !tests.exists() {
-        return Err(format!("Folder atau file test tidak ditemukan: {} (tulis path lengkap)", s.tests));
+        return Err(format!("Tests not found: {}. Pick a test, or write the full path to a folder or a .md file", s.tests));
     }
     if tests.is_file() && tests.extension().is_none_or(|x| x != "md") {
-        return Err("File test harus .md (atau pilih foldernya)".into());
+        return Err("A test file must be a .md file (or pick its folder)".into());
     }
-    if hour_minute(&s.when.time).is_none() {
-        return Err("Jam harus HH:MM, mis. 08:00".into());
-    }
-    match (s.when.every, s.when.day) {
-        (Every::Week, Some(1..=7)) | (Every::Day | Every::Weekday, None) => {}
-        (Every::Week, _) => return Err("Pilih hari untuk jadwal mingguan".into()),
-        _ => return Err("Hari hanya untuk jadwal mingguan".into()),
-    }
+    check_when(&s.when)?;
     if let Some(repo) = &s.notify.github
         && !valid_repo(repo)
     {
-        return Err("Repo GitHub ditulis pemilik/nama, mis. autobot-lab/fastpilot".into());
+        return Err("Write the GitHub repo as owner/name, e.g. autobot-lab/fastpilot".into());
     }
     Ok(())
 }
 
-/// `Setiap hari 09:00`, `Hari kerja 08:00`, `Senin 07:00`.
-pub fn describe(w: &When) -> String {
-    const DAYS: [&str; 7] = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
+/// Whether the time part of a schedule makes sense; the reason in the user's words if not.
+pub fn check_when(w: &When) -> Res<()> {
+    if w.every == Every::Hours {
+        if w.day.is_some() {
+            return Err("A day is only for weekly schedules".into());
+        }
+        if !matches!(w.hours, Some(1..=24)) {
+            return Err("Every N hours: N must be a whole number from 1 to 24".into());
+        }
+        return match (w.from.as_deref(), w.to.as_deref()) {
+            (None, None) => Ok(()),
+            (Some(a), Some(b)) => match (hour_minute(a), hour_minute(b)) {
+                (Some(x), Some(y)) if x < y => Ok(()),
+                (Some(_), Some(_)) => Err(format!("The active window ends before it starts ({a}–{b}). Write it like 08:00–20:00")),
+                _ => Err("Write the active window as HH:MM, e.g. 08:00–20:00".into()),
+            },
+            _ => Err("Give both the start and the end of the active window, or leave both empty".into()),
+        };
+    }
+    if w.hours.is_some() || w.from.is_some() || w.to.is_some() {
+        return Err("Hours and an active window are only for \"every N hours\" schedules".into());
+    }
+    if hour_minute(&w.time).is_none() {
+        return Err("Write the time as HH:MM, e.g. 08:00".into());
+    }
+    match (w.every, w.day) {
+        (Every::Week, Some(1..=7)) | (Every::Day | Every::Weekday, None) => Ok(()),
+        (Every::Week, _) => Err("Pick a day for a weekly schedule".into()),
+        _ => Err("A day is only for weekly schedules".into()),
+    }
+}
+
+/// The times of day a schedule runs (local time), in order.
+pub fn slots(w: &When) -> Vec<(u8, u8)> {
+    if w.every != Every::Hours {
+        return hour_minute(&w.time).into_iter().collect();
+    }
+    let step = u16::from(w.hours.unwrap_or(24).clamp(1, 24)) * 60;
+    let mins = |t: Option<&str>, d: (u8, u8)| hour_minute(t.unwrap_or("")).unwrap_or(d);
+    let (a, b) = (mins(w.from.as_deref(), (0, 0)), mins(w.to.as_deref(), (23, 59)));
+    let (start, end) = (u16::from(a.0) * 60 + u16::from(a.1), u16::from(b.0) * 60 + u16::from(b.1));
+    (start..=end).step_by(usize::from(step)).map(|m| ((m / 60) as u8, (m % 60) as u8)).collect()
+}
+
+/// The days a schedule runs: `None` = every day, else 1 = Monday ... 7 = Sunday.
+pub fn run_days(w: &When) -> Option<Vec<u8>> {
     match w.every {
-        Every::Day => format!("Setiap hari {}", w.time),
-        Every::Weekday => format!("Hari kerja {}", w.time),
-        Every::Week => format!("{} {}", DAYS.get(usize::from(w.day.unwrap_or(1).clamp(1, 7)) - 1).unwrap_or(&"Senin"), w.time),
+        Every::Day | Every::Hours => None,
+        Every::Weekday => Some((1..=5).collect()),
+        Every::Week => Some(vec![w.day.unwrap_or(1).clamp(1, 7)]),
+    }
+}
+
+/// `daily 09:00`, `weekdays 08:00`, `Monday 07:00`, `every 2 hours, 08:00–20:00`.
+pub fn describe(w: &When) -> String {
+    const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    match w.every {
+        Every::Day => format!("daily {}", w.time),
+        Every::Weekday => format!("weekdays {}", w.time),
+        Every::Week => format!("{} {}", DAYS.get(usize::from(w.day.unwrap_or(1).clamp(1, 7)) - 1).unwrap_or(&"Monday"), w.time),
+        Every::Hours => {
+            let every = match w.hours.unwrap_or(1) {
+                1 => "every hour".to_owned(),
+                n => format!("every {n} hours"),
+            };
+            match (&w.from, &w.to) {
+                (Some(a), Some(b)) => format!("{every}, {a}–{b}"),
+                _ => every,
+            }
+        }
     }
 }
 
@@ -311,17 +393,13 @@ fn xml(s: &str) -> String {
 
 /// The launchd LaunchAgent for `s`.
 pub fn plist(s: &Schedule, exe: &str, path: &str, log: &Path) -> String {
-    let (h, m) = hour_minute(&s.when.time).unwrap_or((9, 0));
-    let entry = |day: Option<u8>| {
+    let entry = |(h, m): (u8, u8), day: Option<u8>| {
         // launchd: 0 and 7 are Sunday, 1 Monday.
         let day = day.map(|d| format!("<key>Weekday</key><integer>{}</integer>", d % 7)).unwrap_or_default();
         format!("<dict><key>Hour</key><integer>{h}</integer><key>Minute</key><integer>{m}</integer>{day}</dict>")
     };
-    let times = match s.when.every {
-        Every::Day => entry(None),
-        Every::Weekday => (1..=5).map(|d| entry(Some(d))).collect(),
-        Every::Week => entry(s.when.day),
-    };
+    let days: Vec<Option<u8>> = run_days(&s.when).map(|d| d.into_iter().map(Some).collect()).unwrap_or_else(|| vec![None]);
+    let times: String = days.iter().flat_map(|d| slots(&s.when).into_iter().map(move |t| entry(t, *d))).collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -352,13 +430,13 @@ fn systemd_word(s: &str) -> String {
 }
 
 pub fn systemd_units(s: &Schedule, exe: &str, path: &str) -> (String, String) {
-    let (h, m) = hour_minute(&s.when.time).unwrap_or((9, 0));
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let days = match s.when.every {
-        Every::Day => String::new(),
+        Every::Day | Every::Hours => String::new(),
         Every::Weekday => "Mon..Fri ".into(),
         Every::Week => format!("{} ", DAYS[usize::from(s.when.day.unwrap_or(1).clamp(1, 7)) - 1]),
     };
+    let calendar: String = slots(&s.when).iter().map(|(h, m)| format!("OnCalendar={days}*-*-* {h:02}:{m:02}:00\n")).collect();
     let service = format!(
         "[Unit]\nDescription=fastpilot schedule {id}\n\n[Service]\nType=oneshot\nEnvironment={}\nExecStart={} schedule run {id}\n",
         systemd_word(&format!("PATH={path}")),
@@ -366,7 +444,7 @@ pub fn systemd_units(s: &Schedule, exe: &str, path: &str) -> (String, String) {
         id = s.id
     );
     let timer = format!(
-        "[Unit]\nDescription=fastpilot schedule {id}\n\n[Timer]\nOnCalendar={days}*-*-* {h:02}:{m:02}:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n",
+        "[Unit]\nDescription=fastpilot schedule {id}\n\n[Timer]\n{calendar}Persistent=true\n\n[Install]\nWantedBy=timers.target\n",
         id = s.id
     );
     (service, timer)
@@ -376,14 +454,21 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-pub fn cron_line(s: &Schedule, exe: &str, path: &str) -> String {
-    let (h, m) = hour_minute(&s.when.time).unwrap_or((9, 0));
+/// One crontab line per minute-of-the-hour (every N hours from 08:30 is `30 8,10,12 ...`).
+pub fn cron_lines(s: &Schedule, exe: &str, path: &str) -> Vec<String> {
     let dow = match s.when.every {
-        Every::Day => "*".to_owned(),
+        Every::Day | Every::Hours => "*".to_owned(),
         Every::Weekday => "1-5".to_owned(),
         Every::Week => (s.when.day.unwrap_or(1) % 7).to_string(),
     };
-    format!("{m} {h} * * {dow} PATH={} {} schedule run {} # fastpilot-schedule:{}", shell_quote(path), shell_quote(exe), s.id, s.id)
+    let mut by_minute: std::collections::BTreeMap<u8, Vec<String>> = Default::default();
+    for (h, m) in slots(&s.when) {
+        by_minute.entry(m).or_default().push(h.to_string());
+    }
+    by_minute
+        .iter()
+        .map(|(m, hours)| format!("{m} {} * * {dow} PATH={} {} schedule run {} # fastpilot-schedule:{}", hours.join(","), shell_quote(path), shell_quote(exe), s.id, s.id))
+        .collect()
 }
 
 fn run_cmd(cmd: &str, args: &[&str], stdin: Option<&str>) -> Res<String> {
@@ -470,7 +555,7 @@ pub fn install(s: &Schedule) -> Res<()> {
         }
         Backend::Cron => {
             let mut lines = crontab_without(&s.id)?;
-            lines.push(cron_line(s, &exe, &path));
+            lines.extend(cron_lines(s, &exe, &path));
             write_crontab(&lines)?;
         }
     }
@@ -527,7 +612,7 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
         None => {}
     }
     if s.notify.webhook && !has_webhook(&s.id) {
-        return Err("Isi URL webhook dulu, atau matikan notifikasi webhook".into());
+        return Err("Enter the webhook URL first, or turn off the webhook notification".into());
     }
     if s.enabled {
         install(&s)?;
@@ -542,7 +627,7 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
 
 pub fn set_enabled(id: &str, on: bool) -> Res<()> {
     let mut store = load();
-    let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("jadwal tidak ditemukan")?;
+    let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;
     s.enabled = on;
     if on { install(s)? } else { uninstall(id)? }
     save_store(&store)
@@ -551,7 +636,7 @@ pub fn set_enabled(id: &str, on: bool) -> Res<()> {
 pub fn delete(id: &str) -> Res<()> {
     let mut store = load();
     if !store.schedules.iter().any(|x| x.id == id) {
-        return Err("jadwal tidak ditemukan".into());
+        return Err("Schedule not found".into());
     }
     uninstall(id)?;
     let _ = std::fs::remove_file(secret_path(id));
@@ -560,22 +645,53 @@ pub fn delete(id: &str) -> Res<()> {
     save_store(&store)
 }
 
-/// Start `fastpilot schedule run <id>` in the background (Jalankan sekarang).
-pub fn start_now(id: &str) -> Res<()> {
-    if !load().schedules.iter().any(|x| x.id == id) {
-        return Err("jadwal tidak ditemukan".into());
+/// Whether a run of this schedule is going on now: started, not finished, and its process alive
+/// (a run that started under a minute ago may not have written its process id yet).
+pub fn is_running(last: Option<&LastRun>) -> bool {
+    let Some(l) = last else { return false };
+    if l.passed.is_some() || l.finished_ms.is_some() {
+        return false;
     }
+    match l.pid {
+        Some(pid) => alive(pid),
+        None => now_ms().saturating_sub(l.started_ms) < 60_000,
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// Start `fastpilot schedule run <id>` in the background (Run now). Refused while it runs.
+pub fn start_now(id: &str) -> Res<()> {
+    let store = load();
+    let s = store.schedules.iter().find(|x| x.id == id).ok_or("Schedule not found")?;
+    if is_running(store.last.get(id)) {
+        return Err(format!("\"{}\" is already running. Wait until it finishes, then try again.", s.name));
+    }
+    // Marked as started now, so a second click right away is refused too.
+    let before = store.last.get(id).cloned();
+    set_last(id, LastRun { started_ms: now_ms(), ..Default::default() })?;
+    let undo = |e: String| {
+        let mut store = load();
+        match &before {
+            Some(l) => store.last.insert(id.to_owned(), l.clone()),
+            None => store.last.remove(id),
+        };
+        let _ = save_store(&store);
+        e
+    };
     let log = home().join("schedules").join(format!("{id}.log"));
-    std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
-    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
-    let err = out.try_clone().map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
-    std::process::Command::new(exe()?)
+    std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
+    let err = out.try_clone().map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
+    std::process::Command::new(exe().map_err(undo)?)
         .args(["schedule", "run", id])
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err)
         .spawn()
-        .map_err(|e| format!("Run tidak bisa dimulai: {e}"))?;
+        .map_err(|e| undo(format!("The run could not start: {e}")))?;
     Ok(())
 }
 
@@ -586,11 +702,19 @@ pub fn start_now(id: &str) -> Res<()> {
 pub async fn run(id: &str) -> Res<bool> {
     let store = load();
     let s = store.schedules.iter().find(|x| x.id == id).cloned().ok_or_else(|| format!("Jadwal `{id}` tidak ditemukan"))?;
+    // Another run of it is still going (an OS start during a long Run now): this one is skipped.
+    if let Some(l) = store.last.get(id)
+        && l.pid.is_some_and(|p| p != std::process::id())
+        && is_running(Some(l))
+    {
+        println!("\"{}\" is already running; this start is skipped.", s.name);
+        return Ok(true);
+    }
     let started = now_ms();
-    let reports = home().join("schedules").join("reports");
+    let reports = reports_dir();
     std::fs::create_dir_all(&reports).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
     let report = reports.join(format!("{id}-{started}.html"));
-    set_last(id, LastRun { started_ms: started, ..Default::default() })?;
+    set_last(id, LastRun { started_ms: started, pid: Some(std::process::id()), ..Default::default() })?;
     // Test cases name pages and files relative to the project (the folder above `tests/`), and
     // the OS scheduler starts us in `/`.
     let tests = Path::new(&s.tests);
@@ -608,7 +732,8 @@ pub async fn run(id: &str) -> Res<bool> {
     let passed = out.status.success();
     let summary = summarize(&text, passed);
     let report = report.exists().then(|| report.to_string_lossy().into_owned());
-    let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![] };
+    let (ok, total) = counts(&text).unzip();
+    let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None };
     if !passed {
         let msg = format!(
             "fastpilot: jadwal \"{}\" gagal — {summary}{}",
@@ -619,6 +744,13 @@ pub async fn run(id: &str) -> Res<bool> {
     }
     set_last(id, last)?;
     Ok(passed)
+}
+
+/// `(passed, total)` from the suite's summary line `3 tests: 2 passed, ...`.
+pub fn counts(output: &str) -> Option<(u64, u64)> {
+    let l = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed"))?;
+    let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok());
+    Some((num(" passed")?, num(" tests:")?))
 }
 
 /// The suite's own summary line (`3 tests: 2 passed, 1 failed, ...`) and the failed tests.
@@ -796,7 +928,7 @@ mod tests {
             id: "login-harian".into(),
             name: "Login <harian> & \"x\"".into(),
             tests: "/tmp".into(),
-            when: When { every, time: "08:05".into(), day },
+            when: When { every, time: "08:05".into(), day, ..Default::default() },
             notify: Notify::default(),
             enabled: true,
         }
@@ -811,7 +943,7 @@ mod tests {
         assert_eq!(hour_minute("08:05"), Some((8, 5)));
         assert!(hour_minute("24:00").is_none() && hour_minute("8:5").is_none());
         assert!(valid_repo("autobot-lab/fastpilot") && !valid_repo("a/../b") && !valid_repo("a") && !valid_repo("../x"));
-        assert_eq!(describe(&When { every: Every::Week, time: "07:00".into(), day: Some(1) }), "Senin 07:00");
+        assert_eq!(describe(&When { every: Every::Week, time: "07:00".into(), day: Some(1), ..Default::default() }), "Monday 07:00");
     }
 
     #[test]
@@ -838,8 +970,65 @@ mod tests {
         let (service, timer) = systemd_units(&s, "/opt/fast pilot/$HOME%/fastpilot", "/usr/bin");
         assert!(service.contains("ExecStart=\"/opt/fast pilot/$$HOME%%/fastpilot\" schedule run login-harian"), "{service}");
         assert!(timer.contains("OnCalendar=Mon..Fri *-*-* 08:05:00"), "{timer}");
-        let line = cron_line(&s, "/opt/it's/fastpilot", "/usr/bin");
+        let line = cron_lines(&s, "/opt/it's/fastpilot", "/usr/bin").join("\n");
         assert_eq!(line, "5 8 * * 1-5 PATH='/usr/bin' '/opt/it'\\''s/fastpilot' schedule run login-harian # fastpilot-schedule:login-harian");
+    }
+
+    fn hourly(n: u8, from: Option<&str>, to: Option<&str>) -> When {
+        When { every: Every::Hours, hours: Some(n), from: from.map(Into::into), to: to.map(Into::into), ..Default::default() }
+    }
+
+    /// D5: every N hours inside an active window becomes a fixed list of times for the OS scheduler.
+    #[test]
+    fn every_n_hours_becomes_fixed_times() {
+        let w = hourly(2, Some("08:00"), Some("20:00"));
+        assert_eq!(check_when(&w), Ok(()));
+        assert_eq!(slots(&w), vec![(8, 0), (10, 0), (12, 0), (14, 0), (16, 0), (18, 0), (20, 0)]);
+        assert_eq!(describe(&w), "every 2 hours, 08:00–20:00");
+        assert_eq!(slots(&hourly(4, None, None)), vec![(0, 0), (4, 0), (8, 0), (12, 0), (16, 0), (20, 0)]);
+        assert_eq!(describe(&hourly(1, None, None)), "every hour");
+        assert_eq!(slots(&hourly(1, None, None)).len(), 24);
+        assert_eq!(slots(&hourly(24, None, None)), vec![(0, 0)]);
+        assert_eq!(slots(&hourly(3, Some("08:30"), Some("17:00"))), vec![(8, 30), (11, 30), (14, 30)]);
+        // Refused, with a reason for people.
+        for (bad, why) in [
+            (hourly(0, None, None), "1 to 24"),
+            (hourly(25, None, None), "1 to 24"),
+            (When { every: Every::Hours, ..Default::default() }, "1 to 24"),
+            (hourly(2, Some("20:00"), Some("08:00")), "ends before it starts"),
+            (hourly(2, Some("08:00"), Some("08:00")), "ends before it starts"),
+            (hourly(2, Some("08:00"), None), "both the start and the end"),
+            (hourly(2, Some("8am"), Some("20:00")), "HH:MM"),
+            (When { every: Every::Day, time: "08:00".into(), hours: Some(2), ..Default::default() }, "only for"),
+        ] {
+            let e = check_when(&bad).expect_err("refused");
+            assert!(e.contains(why), "{bad:?}: {e}");
+        }
+
+        let s = Schedule { when: w, ..sched(Every::Day, None) };
+        let p = plist(&s, "/x/fastpilot", "/bin", Path::new("/tmp/x.log"));
+        assert_eq!(p.matches("<key>Hour</key>").count(), 7, "{p}");
+        assert!(p.contains("<key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer>") && !p.contains("<key>Weekday</key>"), "{p}");
+        let (_, timer) = systemd_units(&s, "/x/fastpilot", "/bin");
+        assert_eq!(timer.matches("OnCalendar=").count(), 7, "{timer}");
+        assert!(timer.contains("OnCalendar=*-*-* 08:00:00\n") && timer.contains("OnCalendar=*-*-* 20:00:00\n"), "{timer}");
+        assert_eq!(cron_lines(&s, "/x/fastpilot", "/bin"), vec!["0 8,10,12,14,16,18,20 * * * PATH='/bin' '/x/fastpilot' schedule run login-harian # fastpilot-schedule:login-harian"]);
+        // Fixed-time schedules keep their single entry.
+        assert_eq!(cron_lines(&sched(Every::Weekday, None), "/x", "/bin").len(), 1);
+    }
+
+    /// Schedules saved by v0.3.x (no `hours`, `from`, `to`) still read and run the same way.
+    #[test]
+    fn schedules_from_before_still_read() {
+        let old = r#"{"schedules":[{"id":"a","name":"A","tests":"/tmp","when":{"every":"weekday","time":"08:30"},"notify":{"os":true},"enabled":true},{"id":"b","name":"B","tests":"/tmp","when":{"every":"week","time":"07:00","day":7}}],"last":{"a":{"started_ms":1,"finished_ms":2,"passed":true,"summary":"1 dari 1 test lolos"}}}"#;
+        let store: Store = serde_json::from_str(old).expect("old file");
+        assert_eq!(store.schedules[0].when, When { every: Every::Weekday, time: "08:30".into(), ..Default::default() });
+        assert_eq!(slots(&store.schedules[1].when), vec![(7, 0)]);
+        assert!(validate(&store.schedules[0]).is_ok());
+        assert!(!is_running(store.last.get("a")));
+        let back = serde_json::to_string(&store.schedules[0]).expect("json");
+        assert!(!back.contains("hours") && !back.contains("from"), "{back}");
+        assert_eq!(counts("\n3 tests: 2 passed, 1 failed, 0 quarantined failures, in 2.0s\n"), Some((2, 3)));
     }
 
     #[test]
