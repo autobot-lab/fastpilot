@@ -26,6 +26,8 @@ pub const COMMANDS: &[&str] = &[
 
 const HELP: &str = "fastpilot shell commands (sessions stay open in a background daemon between commands)
 
+  first time? fastpilot demo (a demo folder to try)
+
   open <url|path|app> [--platform web|android|ios] [--device ID]   start a session or navigate it
   attach [endpoint]            drive your running Chrome (http://127.0.0.1:9222, extension, or autoConnect)
   close [--all]                close the session (--all: every session and the daemon)

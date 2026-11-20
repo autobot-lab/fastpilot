@@ -6,7 +6,9 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const bin = path.join(__dirname, "..", "vendor", "fastpilot");
-const r = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+// Under `npx`, MCP configs written by `fastpilot demo` / `init` should start `npx -y fastpilot mcp`.
+const env = process.env.npm_command === "exec" ? { ...process.env, FASTPILOT_VIA_NPX: "1" } : process.env;
+const r = spawnSync(bin, process.argv.slice(2), { stdio: "inherit", env });
 if (r.error) {
   console.error(`fastpilot: ${r.error.message} (reinstall the package, or set FASTPILOT_SKIP_DOWNLOAD=1 and put your own build on PATH)`);
   process.exit(1);

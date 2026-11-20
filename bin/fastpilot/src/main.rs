@@ -3,6 +3,7 @@
 mod bench;
 mod chat;
 mod cli;
+mod demo;
 mod doctor;
 mod github;
 mod keystore;
@@ -31,6 +32,8 @@ commands:
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
+  demo [folder] [--android]          demo pages, example tests and .mcp.json in a new folder: a first test
+                                     without the repository (--android: install the demo app)
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)
   schedule [list|run ID|remove ID]   scheduled runs (made in `fastpilot ui`, Jadwal; run by launchd/systemd/cron)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
@@ -209,6 +212,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,
         Some("schedule") => schedule::cli(&args[1..]).await,
+        Some("demo") => demo::demo(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,
         Some("daemon") if args.len() == 1 => live(|| cli::daemon(web), "daemon").await,
         _ if cli::command_of(&args).is_some() => {
