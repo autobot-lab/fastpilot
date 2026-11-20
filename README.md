@@ -135,7 +135,7 @@ fastpilot doctor
 
 More details, including the technical ones, are in the **[full guide](docs/guide.md)** (currently in Indonesian):
 
-- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios-coming-in-v033-for-now-from-a-checkout)
+- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios)
 - [Claude Desktop](docs/guide.md#claude-desktop)
 - [All settings](docs/guide.md#settings)
 - [Devices on another machine](docs/guide.md#devices-on-another-computer) and [physical phones](docs/real-devices.md)

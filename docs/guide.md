@@ -64,10 +64,11 @@ on the connected device or emulator (`--device SERIAL` if there are several). Th
 *"Use fastpilot, run tests/login-android.md"*. Its last step tries to press "Bayar" and
 expects fastpilot to refuse it.
 
-### iOS (coming in v0.3.3; for now from a checkout)
+### iOS
 
-iOS needs Xcode and the XCUITest runner built from a checkout (`ios-runner/build.sh`, see
-[Build from source](#build-from-source)).
+iOS needs a Mac with Xcode. Run `fastpilot setup ios` once: it builds the iPhone test runner with your
+Xcode (about 5 minutes) and starts an iPhone simulator. From a checkout, `ios-runner/build.sh` does the same
+(see [Build from source](#build-from-source)), and also builds the demo app below.
 
 **iOS (simulator):**
 
@@ -131,7 +132,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 
 - npm and the script download the release archive from [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   and check its SHA-256 before installing. The script installs to `~/.local/bin`. For another location:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.3.2`.
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.4.0`.
 - Without installing: `npx -y fastpilot mcp`.
 - Homebrew is not available yet (the tap repo does not exist yet).
 - The Android agent is already built into the release binary. iOS still needs Xcode and the runner from a checkout
