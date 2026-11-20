@@ -10,6 +10,7 @@ mod fix;
 mod history_api;
 mod memory_api;
 mod init;
+mod ios_setup;
 mod github;
 mod keystore;
 mod provider;

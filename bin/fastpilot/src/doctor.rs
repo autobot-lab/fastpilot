@@ -234,8 +234,13 @@ pub async fn ios() -> Vec<Check> {
     }
     out.push(match fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator) {
         Some(p) => check("ios", "runner", Status::Ok, p.display().to_string()),
-        None => check("ios", "runner", Status::Fail, "XCUITest runner not built")
-            .hint("from a fastpilot checkout: ios-runner/build.sh (or set `fastpilot config set ios_runner <build dir>`)"),
+        None => {
+            let mut c = check("ios", "runner", Status::Fail, "iPhone test runner not set up").hint("fastpilot setup ios (builds it once with your Xcode, about 5 minutes)");
+            if let Ok(exe) = std::env::current_exe() {
+                c = c.fix("Build the iPhone test runner with your Xcode (about 5 minutes, once)", exe.to_string_lossy().as_ref(), &["setup", "ios", "--yes"]);
+            }
+            c
+        }
     });
     out
 }
@@ -345,6 +350,10 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
         return Ok(());
     }
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    // F3: `setup ios` builds the iPhone test runner itself (G7 steps), also without a checkout.
+    if areas(args)? == ["ios"] {
+        return crate::ios_setup::setup(yes).await;
+    }
     let interactive = std::io::stdin().is_terminal();
     let list = checks(&areas(args)?).await;
     println!("{}\n", render(&list));

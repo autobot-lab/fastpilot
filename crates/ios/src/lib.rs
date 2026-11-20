@@ -539,7 +539,7 @@ impl IosDriver {
             let runner = lock(runners()).get(&udid).cloned();
             return Self::connected(udid, std::sync::Arc::new(agent), runner).await;
         }
-        let xctestrun = xctestrun().ok_or(Error::Runner("runner not built: run ios-runner/build.sh".into()))?;
+        let xctestrun = xctestrun().ok_or(Error::Runner("the iPhone test runner is not set up yet: run `fastpilot setup ios` once (it builds it with your Xcode)".into()))?;
         let mut child = Command::new("xcodebuild")
             .arg("test-without-building")
             .arg("-xctestrun")
