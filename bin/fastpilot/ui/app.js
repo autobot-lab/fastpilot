@@ -161,6 +161,9 @@ const MODELS = [
 
 // Who drives `fastpilot run`: Claude Code, or an OpenAI-compatible API (B2).
 let provData = null, provBusy = false, provResult = null;
+// What the user picked and typed but did not save yet: the page is redrawn (device check done,
+// Simpan busy, a refused save) and must not throw it away. The API key is never kept here.
+let provDraft = null;
 const PROV_LABEL = { claude: "Claude Code (bawaan, tanpa API key)", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama (lokal)", custom: "Lainnya (OpenAI-compatible)" };
 
 async function loadProvider() {
@@ -174,6 +177,7 @@ async function provAction(body) {
   try {
     const r = await api("/api/provider", body);
     provResult = { ok: true, text: r.message };
+    if (body.action === "save") provDraft = null;
     if (body.action !== "test") toast(r.message, true);
   } catch (e) {
     provResult = { ok: false, text: e.message };
@@ -186,13 +190,18 @@ async function provAction(body) {
 function providerGroup() {
   if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "penggerak test"), h("div", { class: "empty small" }, "Membaca…")); }
   if (provData.error) return h("div", { class: "err", role: "alert" }, "Tidak bisa membaca penyedia: " + provData.error);
+  const preset0 = (n) => provData.presets.find((p) => p.name === n) || {};
+  const d = provDraft || { provider: provData.provider, base_url: provData.base_url || preset0(provData.provider).base_url || "", model: provData.model || "" };
   const pick = h("select", { class: "sel", "aria-label": "Penyedia model untuk fastpilot run", disabled: provData.env.provider },
-    provData.presets.map((p) => h("option", { value: p.name, selected: p.name === provData.provider }, PROV_LABEL[p.name] || p.name)));
+    provData.presets.map((p) => h("option", { value: p.name, selected: p.name === d.provider }, PROV_LABEL[p.name] || p.name)));
   const preset = (n) => provData.presets.find((p) => p.name === n) || {};
   const hosted = (n) => ["openai", "openrouter", "groq"].includes(n);
-  const url = h("input", { type: "text", class: "mono", value: provData.base_url || preset(provData.provider).base_url || "", placeholder: "https://…/v1", "aria-label": "Base URL" });
+  const url = h("input", { type: "text", class: "mono", value: d.base_url, placeholder: "https://…/v1", "aria-label": "Base URL" });
   const urlHint = h("span", { class: "s" });
-  const model = h("input", { type: "text", class: "mono", value: provData.model || "", placeholder: "mis. gpt-4.1-mini, llama3.1", "aria-label": "Id model" });
+  const model = h("input", { type: "text", class: "mono", value: d.model, placeholder: "mis. gpt-4.1-mini, llama3.1", "aria-label": "Id model" });
+  const keepDraft = () => { provDraft = { provider: pick.value, base_url: url.value, model: model.value }; };
+  url.addEventListener("input", keepDraft);
+  model.addEventListener("input", keepDraft);
   const k = provData.key || {};
   const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `tersimpan di ${k.where} · isi untuk mengganti` : "sk-…", "aria-label": "API key" });
   const detail = h("div", { class: "prov-fields" },
@@ -203,7 +212,7 @@ function providerGroup() {
         : k.has ? `Tersimpan di ${k.where}${k.origin ? `, hanya untuk ${k.origin}` : ""}. Tidak pernah ditampilkan lagi; kunci hanya dikirim ke server tempat ia disimpan.`
         : `Disimpan di ${k.where || "penyimpan kunci sistem"}, tidak di file pengaturan, dan hanya dikirim ke server ini. Ollama lokal tidak butuh kunci.`)));
   // Changing provider changes the server: the preset's URL replaces the previous one (Design must-fix).
-  let shownFor = provData.provider;
+  let shownFor = d.provider;
   const sync = () => {
     detail.hidden = pick.value === "claude";
     const p = preset(pick.value);
@@ -217,7 +226,7 @@ function providerGroup() {
       : pick.value === "custom" ? "Wajib diisi, mis. https://llm.kantor.id/v1. https wajib, kecuali ke komputer ini."
       : "Bawaan Ollama di komputer ini; ubah bila Ollama ada di port lain.";
   };
-  pick.addEventListener("change", sync);
+  pick.addEventListener("change", () => { sync(); keepDraft(); });
   sync();
   const btns = h("div", { class: "btns" },
     h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Simpan"),
