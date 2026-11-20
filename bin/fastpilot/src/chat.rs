@@ -107,6 +107,9 @@ struct Chat {
     conv: Option<String>,
     /// When loosening cards were made, for the hourly cap (M4).
     loosen_times: Vec<u64>,
+    /// D10b: the conversation so far for an agent on another provider (chat-completions messages,
+    /// without the system prompt). Dropped with the session (M6).
+    history: Vec<Value>,
 }
 
 /// D10a: one conversation per agent (agent id -> its Chat).
@@ -352,9 +355,15 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     if let Some(b) = crate::agents::block_actions(&me) {
         env["FASTPILOT_BLOCK_ACTIONS"] = json!(b);
     }
+    // D10b: an agent on another provider: the same tools, prompt and cards, another model loop.
+    if me.provider.as_deref().is_some_and(|p| p != "claude") {
+        let system = format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index(), context(), crate::agents::prompt(&me));
+        return turn_provider(agent, &me, text, bot, &system, &env).await;
+    }
     let mcp = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp"], "env": env } } });
     let mut cmd = tokio::process::Command::new(crate::run::claude_bin());
-    cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &crate::run::model_explore()])
+    let model = me.model.clone().unwrap_or_else(crate::run::model_explore);
+    cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &model])
         // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
         .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index(), context(), crate::agents::prompt(&me))])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
@@ -443,6 +452,86 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
             Err(format!("Claude Code berhenti tanpa jawaban ({}): {}", out.status, clip(err.trim(), 400)))
         }
     }
+}
+
+/// D10b: one Chat turn for an agent on an OpenAI-compatible provider. Its model gets the same
+/// fastpilot tools through a `fastpilot mcp` of its own (with the agent's environment, guard rails
+/// pinned at its start), never the `config` tool; its text goes through the same cards (M1-M15).
+async fn turn_provider(agent: &str, me: &crate::agents::Agent, text: &str, bot: u64, system: &str, env: &Value) -> Res<()> {
+    use rmcp::ServiceExt;
+    use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+    let p = crate::provider::Provider::for_agent(me.provider.as_deref().unwrap_or(""), me.model.as_deref().unwrap_or(""))
+        .map_err(|e| format!("{} cannot answer: {e}", me.name))?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let vars: Vec<(String, String)> = env.as_object().into_iter().flatten().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect();
+    let cmd = tokio::process::Command::new(exe).configure(move |c| {
+        c.arg("mcp").envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    });
+    let transport = TokioChildProcess::new(cmd).map_err(|e| format!("fastpilot's tools could not start: {e}"))?;
+    let tools_client = ().serve(transport).await.map_err(|e| format!("fastpilot's tools could not start: {e}"))?;
+    let result = provider_loop(agent, &p, &tools_client, text, bot, system).await;
+    let _ = tools_client.cancel().await;
+    result
+}
+
+async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client: &rmcp::service::RunningService<rmcp::RoleClient, ()>, text: &str, bot: u64, system: &str) -> Res<()> {
+    let tools: Vec<Value> = tools_client
+        .list_all_tools()
+        .await
+        .map_err(|e| format!("fastpilot's tools could not be listed: {e}"))?
+        .into_iter()
+        .filter_map(|t| serde_json::to_value(t).ok())
+        .filter(|t| t["name"] != "config")
+        .collect();
+    let tools = crate::provider::openai_tools(&tools);
+    let http = crate::provider::Provider::client()?;
+    let mut messages = vec![json!({ "role": "system", "content": system })];
+    messages.extend(chat_of(agent).history.clone());
+    messages.push(json!({ "role": "user", "content": text }));
+    for _ in 0..40 {
+        let body = json!({ "model": p.model, "messages": messages, "tools": tools, "tool_choice": "auto" });
+        let reply = tokio::time::timeout(Duration::from_secs(300), p.complete(&http, &body)).await.map_err(|_| format!("{} did not answer within 5 minutes", p.name))??;
+        let msg = reply["choices"][0]["message"].clone();
+        if let Some(t) = msg["content"].as_str().filter(|t| !t.trim().is_empty()) {
+            let t = fastpilot_core::redact(t);
+            with_bot(agent, bot, |m| {
+                if !m.text.is_empty() {
+                    m.text.push_str("\n\n");
+                }
+                m.text.push_str(t.trim());
+            });
+        }
+        let calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+        messages.push(json!({ "role": "assistant", "content": msg["content"].clone(), "tool_calls": if calls.is_empty() { Value::Null } else { Value::Array(calls.clone()) } }));
+        if calls.is_empty() {
+            break;
+        }
+        for c in calls {
+            let name = c["function"]["name"].as_str().unwrap_or("").to_owned();
+            let args = c["function"]["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or_else(|| json!({}));
+            let line = tool_line(&name, &args);
+            with_bot(agent, bot, |m| m.tools.push(line));
+            let out = if name == "config" || !tools.iter().any(|t| t["function"]["name"] == name.as_str()) {
+                "This tool is not available in Chat; settings change only through cards the user clicks.".to_owned()
+            } else {
+                let params = rmcp::model::CallToolRequestParams::new(name.clone()).with_arguments(args.as_object().cloned().unwrap_or_default());
+                match tools_client.call_tool(params).await {
+                    Ok(r) => r.content.iter().filter_map(|c| c.as_text()).map(|t| t.text.clone()).collect::<Vec<_>>().join("\n"),
+                    Err(e) => format!("error: {e}"),
+                }
+            };
+            messages.push(json!({ "role": "tool", "tool_call_id": c["id"].clone(), "content": clip(&fastpilot_core::redact(&out), 20_000) }));
+        }
+    }
+    // The next message goes on from here (not the system prompt; at most the last 80 messages, cut
+    // at a user message so no tool reply loses its call).
+    let mut keep: Vec<Value> = messages.into_iter().skip(1).collect();
+    while keep.len() > 80 {
+        let cut = keep.iter().skip(1).position(|m| m["role"] == "user").map(|i| i + 1).unwrap_or(keep.len());
+        keep.drain(..cut);
+    }
+    chat_of(agent).history = keep;
+    Ok(())
 }
 
 fn is_login_problem(text: &str) -> bool {
@@ -1183,7 +1272,9 @@ fn decide_setting(id: &str, data: &Value, apply: bool, confirm: Option<&str>) ->
     let note = if shown.level == change::Level::Loosen {
         // M6: the conversation that may have read a page does not go on with the looser limit.
         if let Some(agent) = card_agent(id) {
-            chat_of(&agent).session = None;
+            let mut c = chat_of(&agent);
+            c.session = None;
+            c.history.clear();
         }
         "Allowed. It starts from the next run, and your next message starts a new conversation. Saved in the activity log."
     } else {

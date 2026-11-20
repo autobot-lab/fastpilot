@@ -437,3 +437,11 @@ dialog.hist-dlg p{margin:0 0 18px;line-height:1.5}
 .ag-pad .chips{justify-content:flex-start}
 .ag-side .ag-pad .btn{align-self:flex-start}
 .prop.agent h3.gh{text-transform:none;font:500 14px var(--sans);color:var(--ink);letter-spacing:0}
+/* Agents: AI model (D10b, v7 #s4 step 6) */
+.ag-model{display:flex;flex-direction:column;gap:12px}
+.ag-models{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ag-mcard{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 12px;border:1px solid #8b94a3;border-radius:var(--r-sm);background:#fff;text-align:left}
+.ag-mcard.on{border:var(--bw) solid var(--ink);box-shadow:var(--sh-sm)}.ag-mcard .s{color:var(--muted);font-size:12.5px}
+.ag-mcard:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.ag-untested{display:inline-block;font:600 11px var(--sans);padding:1px 7px;border-radius:6px;background:var(--warn-soft);color:#8a520a;align-self:flex-start}
+.ag-model input{font:inherit;padding:8px 10px;border:var(--bw) solid var(--ink);border-radius:var(--r-sm)}

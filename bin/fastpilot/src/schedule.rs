@@ -734,7 +734,12 @@ pub async fn run(id: &str) -> Res<bool> {
     let tests = Path::new(&s.tests);
     let folder = if tests.is_file() { tests.parent() } else { Some(tests) };
     let project = folder.and_then(Path::parent).unwrap_or(Path::new("/"));
-    let out = tokio::process::Command::new(exe()?)
+    let mut cmd = tokio::process::Command::new(exe()?);
+    // D10b: an agent's schedule runs with that agent's provider and model, and its extra words.
+    for (k, v) in agent_env(s.agent.as_deref()) {
+        cmd.env(k, v);
+    }
+    let out = cmd
         .args(["run", &s.tests, "--html", &report.to_string_lossy()])
         // The schedule's name is the run's title in History (D7).
         .env("FASTPILOT_RUN_TITLE", &s.name)
@@ -767,6 +772,31 @@ pub fn counts(output: &str) -> Option<(u64, u64)> {
     let l = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed"))?;
     let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok());
     Some((num(" passed")?, num(" tests:")?))
+}
+
+/// The environment of a scheduled run for `agent`: its provider and model (D10b), its extra
+/// blocked words (stricter only), and its id for Live.
+pub fn agent_env(agent: Option<&str>) -> Vec<(String, String)> {
+    let Some(a) = agent.and_then(crate::agents::get) else { return vec![] };
+    let mut env = vec![("FASTPILOT_AGENT".to_owned(), a.id.clone())];
+    match (a.provider.as_deref(), a.model.as_deref()) {
+        (Some(p), Some(m)) if p != "claude" => {
+            env.push(("FASTPILOT_PROVIDER".into(), p.into()));
+            env.push(("FASTPILOT_PROVIDER_MODEL".into(), m.into()));
+            if let Some(base) = fastpilot_core::config::preset_base(p) {
+                env.push(("FASTPILOT_PROVIDER_BASE_URL".into(), base.into()));
+            }
+        }
+        (_, Some(m)) => {
+            env.push(("FASTPILOT_PROVIDER".into(), "claude".into()));
+            env.push(("FASTPILOT_MODEL".into(), m.into()));
+        }
+        _ => {}
+    }
+    if let Some(b) = crate::agents::block_actions(&a) {
+        env.push(("FASTPILOT_BLOCK_ACTIONS".into(), b));
+    }
+    env
 }
 
 /// The suite's own summary line (`3 tests: 2 passed, 1 failed, ...`) and the failed tests.
@@ -1055,5 +1085,34 @@ mod tests {
         assert_eq!(summarize("\n1 tests: 1 passed, 0 failed, 0 quarantined failures, in 2.0s\n", true), "1 dari 1 test lolos");
         assert_eq!(summarize("\n2 tests: 1 passed, 0 failed, 1 quarantined failures, in 2.0s\n", true), "1 dari 2 test lolos, 1 gagal di karantina");
         assert_eq!(summarize("error: fastpilot run needs Claude Code installed\n", false), "tidak jalan: error: fastpilot run needs Claude Code installed");
+    }
+
+    /// D10b: an agent's scheduled run uses its provider and model, its extra words, its id.
+    #[test]
+    fn an_agents_schedule_runs_with_its_model() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-sched-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("FASTPILOT_CONFIG", dir.join("config.toml")) };
+        let a = crate::agents::create(crate::agents::Agent {
+            name: "Groq tester".into(),
+            job: "x".into(),
+            devices: vec!["web".into()],
+            provider: Some("groq".into()),
+            model: Some("some-model".into()),
+            blocked: vec!["Confirm order".into()],
+            ..Default::default()
+        })
+        .expect("agent");
+        let env = agent_env(Some(&a.id));
+        let get = |k: &str| env.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("FASTPILOT_AGENT"), Some("groq-tester"));
+        assert_eq!((get("FASTPILOT_PROVIDER"), get("FASTPILOT_PROVIDER_MODEL")), (Some("groq"), Some("some-model")));
+        assert_eq!(get("FASTPILOT_PROVIDER_BASE_URL"), Some("https://api.groq.com/openai/v1"));
+        assert_eq!(get("FASTPILOT_BLOCK_ACTIONS"), Some("default,Confirm order"));
+        assert!(agent_env(None).is_empty() && agent_env(Some("nobody")).is_empty());
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
