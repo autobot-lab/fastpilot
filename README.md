@@ -1,37 +1,130 @@
 # fastpilot
 
-MCP server berupa **satu binary Rust** untuk QA automation full-AI di **Web, Android, dan iOS**. AI agent
-(Claude Code, Claude Desktop, Cursor, dll.) membaca test case bahasa natural, lalu menjalankan banyak langkah
-dalam **satu** `run_flow`, juga lintas platform dalam satu skenario. Hasilnya berupa snapshot teks ringkas
-dan diff, bukan view hierarchy mentah.
+QA otomatis yang dijalankan AI untuk **web, Android, dan iOS**, dalam **satu binary** di komputermu.
+Kamu menulis test dalam bahasa biasa; Claude Code menjalankannya lewat fastpilot (server MCP), juga lintas
+platform dalam satu skenario. Tanpa Appium, tanpa cloud, dan tombol pembayaran diblokir sejak awal.
 
-- **Web:** CDP langsung lewat satu WebSocket (tanpa Node/chromedriver). Mode *launch* (Chrome milik
-  fastpilot, satu `BrowserContext` per sesi) atau *attach* (Chrome milik user).
-- **Android:** protokol adb server ditulis di Rust, plus agent instrumentation (UiAutomation) yang
-  di-embed di binary. Konten WebView digabung ke snapshot dan dikendalikan lewat CDP.
-- **iOS (simulator dan iPhone):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari
-  source, tanpa Appium/WebDriverAgent. Konten WKWebView lewat Web Inspector.
-- DSL YAML kompatibel Maestro, ditambah `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
-  `selectOption`, `uploadFile`.
-- **Andal:**
-  - Auto-wait tanpa `sleep` (actionability, DOM/a11y quiet, navigasi, dan request yang dipicu aksi).
-  - Ref stabil: ref mengikuti elemen dan tidak pernah pindah ke elemen lain.
-  - Stop-early dengan alasan, kategori, dan kandidat.
-  - Dialog JS ditangani otomatis.
-- **Path memory:** flow yang lolos disimpan sebagai *hint* untuk replay dalam 1 round-trip berikutnya.
-  Evidence tiap run tersimpan di `.fastpilot/runs/`.
+## 10 menit pertama
 
-Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-improvements.md](docs/research-improvements.md).
+Butuh: macOS atau Linux, Chrome, dan [Claude Code](https://claude.com/claude-code) yang sudah login.
 
-## Mulai cepat
-
-### 1. Pasang
-
-macOS (Apple Silicon / Intel) dan Linux x86_64, tanpa Rust. Pilih salah satu:
+**1. Pasang** (± 1 menit)
 
 ```bash
 npm install -g fastpilot
 ```
+
+**2. Coba demo** (± 3 menit)
+
+```bash
+fastpilot demo && cd fastpilot-demo && claude
+```
+
+Ketik di Claude: *"Pakai fastpilot, jalankan tests/login.md lalu report"* (setujui server `fastpilot` saat
+Claude menanyakannya). Hasil: ✓ `login-ok` lolos, laporan di `.fastpilot/runs/`. `fastpilot demo` membuat
+halaman demo, contoh test, `.mcp.json` (fastpilot + password demo publik), dan Skill fastpilot di folder itu.
+
+**3. Pakai di proyekmu** (± 5 menit)
+
+```bash
+cd ~/proyek-kamu && fastpilot init
+```
+
+`init` mengecek mesin, mendaftarkan fastpilot ke Claude Code, memasang Skill, membuat `tests/contoh.md`,
+dan menampilkan Batasan; tiap perubahan ditanya dulu (`--yes` untuk menyetujui semua). Ubah `target` di
+`tests/contoh.md` ke URL aplikasimu, lalu minta Claude menjalankannya.
+
+### Kalau macet
+
+Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung tampil.
+
+| Lihat pesan | Lakukan |
+|---|---|
+| `Chrome atau Chromium tidak ditemukan` | `fastpilot setup web` |
+| fastpilot tidak muncul di Claude | `claude mcp list`, lalu `fastpilot init` lagi |
+| `blocked: … (block_actions, built-in list)` / "Diblokir Batasan" di Live | sengaja: tombol pembayaran dan hapus akun diblokir bawaan. Ubah di `fastpilot ui` → Pengaturan › Batasan & izin |
+| `evalScript is off while block_actions is on` | toggle "Jalankan JavaScript bebas" di Batasan & izin, atau `fastpilot config set allow_eval_script true` |
+| `looks like a risky action … confirm_actions` | tombol hapus/delete/remove: tulis langkahnya dengan `confirm: true` kalau memang dimaksud |
+| `build fastpilot ini tidak membawa agent Android` | pakai binary rilis (npm/curl), atau `agent-android/build.sh` lalu build ulang |
+| `runner XCUITest belum di-build` | `ios-runner/build.sh` dari checkout (iOS, lihat di bawah) |
+| `variable X is not allowed` | tambahkan `X` ke `FASTPILOT_VARS` di konfigurasi MCP |
+| Log detail | tambahkan `-e FASTPILOT_LOG=debug` (log ke stderr server MCP) |
+
+### Android
+
+```bash
+fastpilot setup android
+```
+
+```bash
+fastpilot demo --android
+```
+
+`setup android` menyiapkan SDK dan emulator (ditanya dulu tiap langkah); `demo --android` memasang app demo
+di device atau emulator yang tersambung (`--device SERIAL` kalau ada beberapa). Lalu di folder demo:
+*"Pakai fastpilot, jalankan tests/login-android.md"*. Langkah terakhirnya mencoba menekan "Bayar" dan
+mengharapkan fastpilot menolaknya.
+
+### iOS (menyusul di v0.3.3; sekarang dari checkout)
+
+iOS butuh Xcode dan runner XCUITest yang dibangun dari checkout (`ios-runner/build.sh`, lihat
+[Build dari source](#build-dari-source)).
+
+**iOS (simulator):**
+
+```bash
+xcrun simctl boot "iPhone 16"
+```
+
+```bash
+xcrun simctl install booted ios-runner/build/Build/Products/Debug-iphonesimulator/FastpilotDemo.app
+```
+
+Lalu minta Claude: *"Pakai fastpilot di platform ios, buka app com.fastpilot.demo, login pakai a@b.com /
+`${DEMO_PASS}`, pastikan 'Selamat datang, Budi' tampil."* Sesi iOS pertama butuh sekitar 20–30 detik
+untuk menyalakan runner.
+
+### Claude Desktop
+
+Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) atau
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows), lalu restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "fastpilot": {
+      "command": "/Users/NAMA/.local/bin/fastpilot",
+      "args": ["mcp"],
+      "env": { "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123", "FASTPILOT_DIR": "/Users/NAMA/fastpilot-runs" }
+    }
+  }
+}
+```
+
+Claude Desktop tidak menjalankan server dari folder proyek. Karena itu, pakai path command absolut (lihat
+`which fastpilot`; `~/.local/bin` untuk skrip instal, `~/.cargo/bin` untuk `cargo install`), URL atau path
+absolut di `target`, dan set `FASTPILOT_DIR` ke folder hasil yang bisa ditulisi.
+
+### Batasan aman bawaan
+
+Sejak 0.3.2, selama kamu belum mengisi daftarnya:
+
+- **Selalu diblokir** (`block_actions`): bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan,
+  place order, hapus akun, delete account. Dicocokkan per kata utuh ("Pay now" dan "Delete my account" kena,
+  "Paypal" tidak), juga dengan `confirm: true`.
+- **Butuh konfirmasi** (`confirm_actions`): hapus, delete, remove. AI harus menulis `confirm: true`.
+- **evalScript mati** selama daftar blokir aktif, karena script bisa menekan tombol yang diblokir. Nyalakan
+  sendiri lewat toggle "Jalankan JavaScript bebas" atau `fastpilot config set allow_eval_script true`;
+  AI tidak bisa menyalakannya.
+- **Mengosongkan:** tombol **Kosongkan** di `fastpilot ui` › Pengaturan › Batasan & izin, atau
+  `fastpilot config set block_actions ""`, lalu restart server MCP. Kembali ke bawaan:
+  `fastpilot config unset block_actions`. AI (lewat chat atau tool `config`) hanya bisa memperketat.
+
+Semua pengaturan: [Pengaturan](#pengaturan).
+
+## Detail pemasangan
+
+### Cara pasang lain
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
@@ -45,7 +138,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 - Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
   (`ios-runner/build.sh`, lihat [Build dari source](#build-dari-source)).
 
-### 2. Cek dan siapkan mesin
+### Cek dan siapkan mesin
 
 ```bash
 fastpilot doctor
@@ -73,9 +166,9 @@ terminal (CI, agent) `setup` hanya mencetak rencananya. Seperti `doctor`, `setup
 kalau sesudahnya masih ada ✗ (yang tidak bisa diperbaiki otomatis, dilewati, gagal, atau baru direncanakan)
 di platform yang disebut, atau di web bila tidak ada platform yang disebut.
 
-### 3. Daftarkan ke Claude Code
+### Daftarkan ke Claude Code secara manual
 
-Jalankan dari folder proyek yang mau dites. Untuk mencoba demo bawaan, jalankan dari folder `fastpilot`:
+`fastpilot init` melakukan ini untukmu. Manualnya, dari folder proyek:
 
 ```bash
 claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- fastpilot mcp
@@ -85,14 +178,14 @@ claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- 
 claude mcp list
 ```
 
-`fastpilot` harus tampil dengan status connected. Variabel di `FASTPILOT_VARS` adalah satu-satunya variabel
-yang boleh dipakai flow lewat `${NAMA}`, dan nilainya selalu tampil sebagai `***` di output. Untuk melihat
-browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1` (atau `fastpilot config set headful true`).
+`fastpilot` harus tampil dengan status connected. Variabel di `FASTPILOT_VARS` (Secret) adalah satu-satunya
+variabel yang boleh dipakai flow lewat `${NAMA}`, dan nilainya selalu tampil sebagai `***` di output. Untuk
+melihat browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1` (atau `fastpilot config set headful true`).
 
 Diuji dengan Claude Code dan Claude Desktop. Klien MCP lain (Cursor, Codex, Gemini CLI) memakai cara yang
 sama (`fastpilot mcp` lewat stdio), tapi belum diuji.
 
-**Opsional: Agent Skill.** [`skills/fastpilot/SKILL.md`](skills/fastpilot/SKILL.md) (format
+**Agent Skill** (`fastpilot init` dan `fastpilot demo` sudah memasangnya). [`skills/fastpilot/SKILL.md`](skills/fastpilot/SKILL.md) (format
 [Agent Skills](https://agentskills.io)) mengajari agent cara memakai fastpilot: alur `session` →
 `run_flow` → `report`, hint path memory, secret sebagai `${NAMA}`, dan batasan yang tidak boleh diakali.
 Claude Code memuatnya otomatis saat tugasnya cocok:
@@ -108,86 +201,33 @@ mkdir -p .claude/skills && cp -R /path/ke/fastpilot/skills/fastpilot .claude/ski
 Tanpa checkout: unduh foldernya dari GitHub (`skills/fastpilot/`). Klien lain yang mendukung format Agent
 Skills memakai folder yang sama di lokasi skill masing-masing (belum diuji).
 
-### 4. Jalankan test lewat Claude
-
-Buka `claude` di folder yang sama, lalu beri perintah dalam bahasa biasa, misalnya:
-
-> Pakai fastpilot, jalankan test case di `tests/login.md`. Password ada di `${DEMO_PASS}`.
-> Pakai `test_id` dari file, lalu tutup dengan `report`.
-
-Claude akan memanggil `docs` (sekali), `session start`, satu atau beberapa `run_flow`, lalu `report`.
-Hasilnya ada di `.fastpilot/runs/<waktu>-login-ok/report.md`. Jalankan perintah yang sama sekali lagi:
-kali ini `session start` mengembalikan *hint* dari run sebelumnya, sehingga test bisa selesai dalam satu `run_flow`.
-
-**Android:**
-
-1. Nyalakan emulator: `fastpilot setup android`, lewat Android Studio, atau minta Claude: *"pakai
-   fastpilot, start_device AVD Small_Phone_API_35"*. Daftar AVD bisa dilihat dengan `session devices`.
-2. Pasang demo app (dari checkout, setelah `agent-android/build.sh`):
-
-   ```bash
-   adb install -r examples/demo-android/out/fastpilot-demo.apk
-   ```
-
-3. Minta Claude: *"Pakai fastpilot, jalankan `tests/login-android.md`."*
-
-**iOS (simulator):**
-
-```bash
-xcrun simctl boot "iPhone 16"
-```
-
-```bash
-xcrun simctl install booted ios-runner/build/Build/Products/Debug-iphonesimulator/FastpilotDemo.app
-```
-
-Lalu minta Claude: *"Pakai fastpilot di platform ios, buka app com.fastpilot.demo, login pakai a@b.com /
-`${DEMO_PASS}`, pastikan 'Selamat datang, Budi' tampil."* Sesi iOS pertama butuh sekitar 20–30 detik
-untuk menyalakan runner.
-
-**Web + Android sekaligus:** *"Pakai fastpilot, jalankan `tests/login-cross-platform.md`."*
-
-### 5. Tes aplikasi sendiri
+### Menulis test sendiri
 
 Tulis test case Markdown seperti `tests/login.md`: judul, `id`, `platform`, `target`, lalu langkah dan
 harapan dalam bahasa biasa. Tidak perlu menulis selector atau script; Claude yang menyusun flow-nya.
-Simpan secret di MCP config (`-e NAMA=nilai`, lalu tambahkan `NAMA` ke `FASTPILOT_VARS`), bukan di file
-config.
+Simpan secret di konfigurasi MCP (`-e NAMA=nilai`, lalu tambahkan `NAMA` ke `FASTPILOT_VARS`), bukan di
+file config. Menjalankan test yang sama dua kali: kali kedua `session start` mengembalikan *hint* dari run
+sebelumnya, sehingga test bisa selesai dalam satu `run_flow`.
 
-### Claude Desktop
+## Fitur
 
-Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) atau
-`%APPDATA%\Claude\claude_desktop_config.json` (Windows), lalu restart Claude Desktop:
+- **Web:** CDP langsung lewat satu WebSocket (tanpa Node/chromedriver). Mode *launch* (Chrome milik
+  fastpilot, satu `BrowserContext` per sesi) atau *attach* (Chrome milik user).
+- **Android:** protokol adb server ditulis di Rust, plus agent instrumentation (UiAutomation) yang
+  di-embed di binary. Konten WebView digabung ke snapshot dan dikendalikan lewat CDP.
+- **iOS (simulator dan iPhone):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari
+  source, tanpa Appium/WebDriverAgent. Konten WKWebView lewat Web Inspector.
+- DSL YAML kompatibel Maestro, ditambah `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
+  `selectOption`, `uploadFile`.
+- **Andal:**
+  - Auto-wait tanpa `sleep` (actionability, DOM/a11y quiet, navigasi, dan request yang dipicu aksi).
+  - Ref stabil: ref mengikuti elemen dan tidak pernah pindah ke elemen lain.
+  - Stop-early dengan alasan, kategori, dan kandidat.
+  - Dialog JS ditangani otomatis.
+- **Path memory:** flow yang lolos disimpan sebagai *hint* untuk replay dalam 1 round-trip berikutnya.
+  Evidence tiap run tersimpan di `.fastpilot/runs/`.
 
-```json
-{
-  "mcpServers": {
-    "fastpilot": {
-      "command": "/Users/NAMA/.local/bin/fastpilot",
-      "args": ["mcp"],
-      "env": { "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123", "FASTPILOT_DIR": "/Users/NAMA/fastpilot-runs" }
-    }
-  }
-}
-```
-
-Claude Desktop tidak menjalankan server dari folder proyek. Karena itu, pakai path command absolut (lihat
-`which fastpilot`; `~/.local/bin` untuk skrip instal, `~/.cargo/bin` untuk `cargo install`), URL atau path
-absolut di `target`, dan set `FASTPILOT_DIR` ke folder hasil yang bisa ditulisi.
-
-### Kalau ada masalah
-
-Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung tampil.
-
-| Pesan | Solusi |
-|---|---|
-| `Chrome not found` | Pasang Chrome (`fastpilot setup web`), atau `fastpilot config set chrome /path/ke/chrome` |
-| `variable X is not allowed` | Tambahkan `X` ke `FASTPILOT_VARS` di MCP config |
-| `agent APK not embedded` | Pakai binary rilis (npm/curl), atau `agent-android/build.sh` lalu build ulang |
-| `runner not built` | Jalankan `ios-runner/build.sh` dari checkout |
-| `no Android device` | `fastpilot setup android`, atau sambungkan device (`adb devices`) |
-| `... is set by the environment` (tool `config`) | Nilai dari env MCP config selalu menang; ubah di sana |
-| Log detail | Tambahkan `-e FASTPILOT_LOG=debug` (log ke stderr server MCP) |
+Spesifikasi: [docs/PRD.md](docs/PRD.md). Riset improvement: [docs/research-improvements.md](docs/research-improvements.md).
 
 ## Pengaturan
 

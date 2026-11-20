@@ -25,7 +25,7 @@ impl Backend {
         match self {
             Self::Keychain => "macOS Keychain",
             Self::SecretService => "secret service (secret-tool)",
-            Self::File => "~/.fastpilot/keys (owner-only file)",
+            Self::File => "~/.fastpilot/keys (file khusus pemilik)",
         }
     }
 }
@@ -242,7 +242,7 @@ mod tests {
             std::env::remove_var("FASTPILOT_PROVIDER_BASE_URL");
             std::env::set_var("FASTPILOT_CONFIG", home.join("none.toml"));
         }
-        assert_eq!(set("openai", "  sk-test-abc123\n"), Ok("~/.fastpilot/keys (owner-only file)"));
+        assert_eq!(set("openai", "  sk-test-abc123\n"), Ok("~/.fastpilot/keys (file khusus pemilik)"));
         assert_eq!(get("openai").as_deref(), Some("sk-test-abc123"));
         // Tied to the server it may go to: the preset's, or the custom base URL.
         assert_eq!(origin("openai").as_deref(), Some("https://api.openai.com"));

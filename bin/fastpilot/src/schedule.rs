@@ -758,7 +758,7 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID>\n  schedules are made in `fastpilot ui` (Jadwal); the OS scheduler runs `fastpilot schedule run ID`";
+pub const USAGE: &str = "pemakaian: fastpilot schedule <list | run ID | remove ID>\n  Jadwal dibuat di `fastpilot ui` (menu Jadwal); penjadwal OS menjalankan `fastpilot schedule run ID`";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match (args.first().map(String::as_str), args.get(1)) {

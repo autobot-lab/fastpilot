@@ -24,49 +24,50 @@ pub const COMMANDS: &[&str] = &[
     "errors", "docs", "daemon", "help", "state", "diff",
 ];
 
-const HELP: &str = "fastpilot shell commands (sessions stay open in a background daemon between commands)
+const HELP: &str = "perintah shell fastpilot (sesi tetap terbuka di daemon latar belakang antar perintah)
 
-  first time? fastpilot demo (a demo folder to try) · fastpilot init (set up this folder)
+  baru pertama kali? fastpilot demo (folder demo untuk dicoba) · fastpilot init (siapkan folder ini)
 
-  open <url|path|app> [--platform web|android|ios] [--device ID]   start a session or navigate it
-  attach [endpoint]            drive your running Chrome (http://127.0.0.1:9222, extension, or autoConnect)
-  close [--all]                close the session (--all: every session and the daemon)
-  sessions | devices           list sessions / attached devices and simulators
-  snapshot [-i] [--json] [--full] [--coords] [--filter TEXT]   accessibility tree with refs (@e1 ...)
-  click|tap|dblclick|longpress <sel> [--confirm]   --confirm: a risky action (confirm_actions)
-  fill <sel> <text>            replace the content of a field
-  type <text>                  type into the focused field
-  clear [N]                    erase N characters (all without N)
-  press <key>                  Enter, Tab, Escape, ArrowDown, ...
-  select <sel> <option>        pick an option of a <select>
-  check|uncheck <sel>          set a checkbox / switch
-  upload <sel> <file>...       attach files to a file input
+  open <url|path|app> [--platform web|android|ios] [--device ID]   mulai sesi atau pindah halaman
+  attach [endpoint]            kendalikan Chrome-mu yang sedang jalan (http://127.0.0.1:9222, ekstensi, atau autoConnect)
+  close [--all]                tutup sesi (--all: semua sesi dan daemon)
+  sessions | devices           daftar sesi / device dan simulator yang tersambung
+  snapshot [-i] [--json] [--full] [--coords] [--filter TEKS]   pohon aksesibilitas dengan ref (@e1 ...)
+  click|tap|dblclick|longpress <sel> [--confirm]   --confirm: aksi berisiko yang disengaja (confirm_actions)
+  fill <sel> <teks>            ganti isi kolom
+  type <teks>                  ketik ke kolom yang sedang fokus
+  clear [N]                    hapus N karakter (semua tanpa N)
+  press <tombol>               Enter, Tab, Escape, ArrowDown, ...
+  select <sel> <opsi>          pilih opsi di <select>
+  check|uncheck <sel>          atur checkbox / switch
+  upload <sel> <file>...       lampirkan file ke input file
   scroll <up|down|left|right> [sel] | scrollto <sel> | swipe <x1> <y1> <x2> <y2>
   back | forward | reload
-  wait <ms|sel> [--gone] [--timeout MS] | wait --url <part>
-  assert <visible|hidden|text|contains|enabled> <sel> [text]
-  is <visible|enabled> <sel>   prints true or false
+  wait <ms|sel> [--gone] [--timeout MS] | wait --url <bagian>
+  assert <visible|hidden|text|contains|enabled> <sel> [teks]
+  is <visible|enabled> <sel>   mencetak true atau false
   get <text|url|title> [sel]
-  eval <js>                    run JavaScript (web, WebViews)
+  eval <js>                    jalankan JavaScript (web, WebView); mati selama Batasan memblokir tombol,
+                               kecuali `allow_eval_script = true`
   screenshot [path] [--annotate]
-  record <start [name]|stop>
+  record <start [nama]|stop>
   set viewport <preset|WxH> | set locale <locale> [timezone] | set geo <lat> <lon>
-  set network <offline|online> | set permission <name> <allow|deny|unset>
+  set network <offline|online> | set permission <nama> <allow|deny|unset>
   launch <app> | stop-app [app] | clear-state [app] | hide-keyboard
-  flow <file.yaml|-> [--keep-going] | check-flow <file.yaml|->   run / validate a DSL flow
-  state <save|load|delete> <name> | state list   saved login state (web: cookies + localStorage;
-                               encrypted with FASTPILOT_STATE_KEY, expires after 30 days)
-  diff screenshot <name> [--update] [--threshold 0.1] [--max-diff 0.002] [--ignore sel]...
-                               compare with the stored baseline (stored on first use)
-  errors                       recent console errors, failed requests, crashes
+  flow <file.yaml|-> [--keep-going] | check-flow <file.yaml|->   jalankan / periksa flow DSL
+  state <save|load|delete> <nama> | state list   login tersimpan (web: cookie + localStorage;
+                               dienkripsi dengan FASTPILOT_STATE_KEY, kedaluwarsa setelah 30 hari)
+  diff screenshot <nama> [--update] [--threshold 0.1] [--max-diff 0.002] [--ignore sel]...
+                               bandingkan dengan baseline tersimpan (disimpan saat pertama dipakai)
+  errors                       error console, request gagal, dan crash terbaru
   docs [dsl|selectors|errors|...]
   daemon <status|stop>
 
-selectors: @e7 (ref from snapshot), \"Masuk\" (text), #email (id), role=button:Masuk, 120,340 (point)
-options: --session NAME (default: $FASTPILOT_SESSION or default), --json (raw tool output),
-         --headed (show the browser; applies when the daemon starts)
-env: FASTPILOT_VARS / ${NAME} values are read by the daemon when it starts; restart it after changing them.
-other commands: mcp, run, bench, stability, ios doctor (`fastpilot` without arguments lists them)";
+selector: @e7 (ref dari snapshot), \"Masuk\" (teks), #email (id), role=button:Masuk, 120,340 (titik)
+opsi: --session NAMA (bawaan: $FASTPILOT_SESSION atau default), --json (output tool mentah),
+      --headed (tampilkan browser; berlaku saat daemon mulai)
+env: nilai FASTPILOT_VARS / ${NAMA} dibaca daemon saat mulai; restart daemon setelah mengubahnya.
+perintah lain: mcp, run, bench, stability, ios doctor (`fastpilot` tanpa argumen menampilkannya)";
 
 /// The page's URL from a snapshot (no evalScript: it works under the block lists).
 fn page_url(ctx: &Ctx, sid: &str) -> Res<Option<String>> {
@@ -131,7 +132,7 @@ pub async fn daemon(web: LaunchOptions) -> Res<()> {
     // Requests being handled: a long one (launching Chrome, a flow) is never cut by the idle exit.
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-    eprintln!("fastpilot daemon on {} (idle exit after {}s)", path.display(), idle.as_secs());
+    eprintln!("daemon fastpilot di {} (berhenti setelah {} detik menganggur)", path.display(), idle.as_secs());
     loop {
         let since = last.lock().map(|l| l.elapsed()).unwrap_or_default();
         let wait = idle.saturating_sub(since).max(Duration::from_secs(1));
@@ -178,7 +179,7 @@ pub async fn daemon(web: LaunchOptions) -> Res<()> {
 
 #[cfg(not(unix))]
 pub async fn daemon(_web: LaunchOptions) -> Res<()> {
-    Err("the fastpilot shell CLI needs a Unix socket (macOS or Linux); use `fastpilot mcp` instead".into())
+    Err("CLI shell fastpilot butuh Unix socket (macOS atau Linux); pakai `fastpilot mcp`".into())
 }
 
 async fn handle(fp: &FastPilot, req: &Value) -> Value {
@@ -210,12 +211,12 @@ fn send_once(req: &Value) -> std::io::Result<Value> {
     sock.write_all(format!("{req}\n").as_bytes())?;
     let mut line = String::new();
     BufReader::new(sock).read_line(&mut line)?;
-    serde_json::from_str(&line).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("no reply from the daemon: {e}")))
+    serde_json::from_str(&line).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("daemon tidak menjawab: {e}")))
 }
 
 #[cfg(not(unix))]
 fn send_once(_req: &Value) -> std::io::Result<Value> {
-    Err(std::io::Error::other("the fastpilot shell CLI needs macOS or Linux"))
+    Err(std::io::Error::other("CLI shell fastpilot butuh macOS atau Linux"))
 }
 
 /// Send a request, starting the daemon first when none answers.
@@ -257,7 +258,7 @@ fn start_daemon(headed: bool) -> Res<()> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Err(format!("the fastpilot daemon did not start; see {}", dir.join("daemon.log").display()).into())
+    Err(format!("daemon fastpilot tidak menyala; lihat {}", dir.join("daemon.log").display()).into())
 }
 
 /// Command-line selector → DSL selector YAML.
@@ -359,7 +360,7 @@ fn finish(ctx: &Ctx, v: &Value) -> Res<()> {
 }
 
 fn need<'a>(args: &'a [String], i: usize, what: &str) -> Res<&'a str> {
-    args.get(i).map(String::as_str).ok_or_else(|| format!("missing {what}; see `fastpilot help`").into())
+    args.get(i).map(String::as_str).ok_or_else(|| format!("kurang {what}; lihat `fastpilot help`").into())
 }
 
 /// Read `flow` input: a file, `-` for stdin, or inline YAML.
@@ -387,10 +388,10 @@ pub fn main(argv: &[String]) -> Res<()> {
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--session" => session = it.next().cloned().ok_or("--session needs a name")?,
+            "--session" => session = it.next().cloned().ok_or("--session butuh nama")?,
             "--json" => json = true,
             "--headed" | "--headful" => headed = true,
-            "--ignore" => ignores.push(it.next().cloned().ok_or("--ignore needs a selector")?),
+            "--ignore" => ignores.push(it.next().cloned().ok_or("--ignore butuh selector")?),
             "--platform" | "--device" | "--timeout" | "--filter" | "--url" | "--threshold" | "--max-diff" => {
                 let key = a.as_str();
                 opts.insert(key, it.next().cloned().ok_or_else(|| format!("{key} needs a value"))?);
@@ -417,9 +418,9 @@ pub fn main(argv: &[String]) -> Res<()> {
     match cmd {
         "help" => println!("{HELP}"),
         "open" => {
-            let given = arg(1, "a URL, path or app")?;
+            let given = arg(1, "URL, path, atau app")?;
             if given.starts_with("--") {
-                return Err(format!("unknown option `{given}` for open (see `fastpilot help`)").into());
+                return Err(format!("opsi `{given}` tidak dikenal untuk open (lihat `fastpilot help`)").into());
             }
             let target = abs_if_file(given);
             if ctx.has_session()? {
@@ -442,7 +443,7 @@ pub fn main(argv: &[String]) -> Res<()> {
         }
         "close" if flag("--all") => {
             send_once(&json!({ "op": "stop" })).ok();
-            println!("closed every session; daemon stopped");
+            println!("semua sesi ditutup; daemon berhenti");
         }
         "close" => finish(&ctx, &ctx.tool("session", json!({ "action": "stop", "id": sid }))?)?,
         "sessions" => {
@@ -488,23 +489,23 @@ pub fn main(argv: &[String]) -> Res<()> {
                 "longpress" => "longPressOn",
                 _ => "tapOn",
             };
-            let mut sel = selector(arg(1, "a selector")?);
+            let mut sel = selector(arg(1, "selector")?);
             if flag("--confirm") {
                 sel = confirmed(&sel);
             }
             step(format!("- {verb}: {sel}\n"))?;
         }
-        "fill" => step(format!("- inputText: {{ into: {}, text: {} }}\n", selector(arg(1, "a selector")?), q(&rest(2))))?,
+        "fill" => step(format!("- inputText: {{ into: {}, text: {} }}\n", selector(arg(1, "selector")?), q(&rest(2))))?,
         "type" => step(format!("- inputText: {}\n", q(&rest(1))))?,
         "clear" => step(match args.get(1) {
-            Some(n) => format!("- eraseText: {}\n", n.parse::<usize>().map_err(|_| "clear takes a number of characters")?),
+            Some(n) => format!("- eraseText: {}\n", n.parse::<usize>().map_err(|_| "clear memakai jumlah karakter")?),
             None => "- eraseText\n".into(),
         })?,
-        "press" => step(format!("- pressKey: {}\n", q(arg(1, "a key")?)))?,
-        "select" => step(format!("- selectOption: {{ from: {}, option: {} }}\n", selector(arg(1, "a selector")?), q(&rest(2))))?,
+        "press" => step(format!("- pressKey: {}\n", q(arg(1, "nama tombol")?)))?,
+        "select" => step(format!("- selectOption: {{ from: {}, option: {} }}\n", selector(arg(1, "selector")?), q(&rest(2))))?,
         "check" | "uncheck" => {
             let want = cmd == "check";
-            let sel = arg(1, "a selector")?;
+            let sel = arg(1, "selector")?;
             // Read the current state first, so check/uncheck are idempotent.
             let snap = ctx.tool("snapshot", json!({ "session": sid, "format": "json", "full": true }))?;
             let entries: Value = serde_json::from_str(&text_of(&snap)).unwrap_or_default();
@@ -513,27 +514,27 @@ pub fn main(argv: &[String]) -> Res<()> {
                 None => e["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(sel)) && e["role"] != "text",
             });
             match found {
-                Some(e) if (e["checked"] == true) == want => println!("already {}", if want { "checked" } else { "unchecked" }),
+                Some(e) if (e["checked"] == true) == want => println!("sudah {}", if want { "tercentang" } else { "tidak tercentang" }),
                 _ => step(format!("- tapOn: {}\n", selector(sel)))?,
             }
         }
         "upload" => {
             let files: Vec<String> = args.get(2..).unwrap_or_default().iter().map(|f| q(&abs_if_file(f))).collect();
             if files.is_empty() {
-                return Err("upload needs at least one file".into());
+                return Err("upload butuh paling sedikit satu file".into());
             }
-            step(format!("- uploadFile: {{ into: {}, files: [{}] }}\n", selector(arg(1, "a selector")?), files.join(", ")))?;
+            step(format!("- uploadFile: {{ into: {}, files: [{}] }}\n", selector(arg(1, "selector")?), files.join(", ")))?;
         }
         "scroll" => {
-            let dir = arg(1, "a direction (up, down, left, right)")?;
+            let dir = arg(1, "arah (up, down, left, right)")?;
             step(match args.get(2) {
                 Some(s) => format!("- scroll: {{ direction: {dir}, within: {} }}\n", selector(s)),
                 None => format!("- scroll: {dir}\n"),
             })?;
         }
-        "scrollto" => step(format!("- scrollUntilVisible: {}\n", selector(arg(1, "a selector")?)))?,
+        "scrollto" => step(format!("- scrollUntilVisible: {}\n", selector(arg(1, "selector")?)))?,
         "swipe" => {
-            let n: Vec<f64> = (1..=4).map(|i| arg(i, "x1 y1 x2 y2").and_then(|v| v.parse::<f64>().map_err(|_| "swipe takes four numbers".into()))).collect::<Res<_>>()?;
+            let n: Vec<f64> = (1..=4).map(|i| arg(i, "x1 y1 x2 y2").and_then(|v| v.parse::<f64>().map_err(|_| "swipe memakai empat angka".into()))).collect::<Res<_>>()?;
             step(format!("- swipe: {{ from: [{}, {}], to: [{}, {}] }}\n", n[0], n[1], n[2], n[3]))?;
         }
         "back" => step("- back\n".into())?,
@@ -545,7 +546,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             step(format!("- openUrl: {}\n", q(&url)))?;
         }
         "wait" => {
-            let timeout: u64 = opts.get("--timeout").map(|t| t.parse()).transpose().map_err(|_| "--timeout takes milliseconds")?.unwrap_or(10_000);
+            let timeout: u64 = opts.get("--timeout").map(|t| t.parse()).transpose().map_err(|_| "--timeout memakai milidetik")?.unwrap_or(10_000);
             if let Some(part) = opts.get("--url") {
                 let deadline = Instant::now() + Duration::from_millis(timeout);
                 loop {
@@ -555,13 +556,13 @@ pub fn main(argv: &[String]) -> Res<()> {
                         break;
                     }
                     if Instant::now() >= deadline {
-                        eprintln!("url is {url}, still without {part:?} after {timeout}ms");
+                        eprintln!("url sekarang {url}, masih tanpa {part:?} setelah {timeout} ms");
                         std::process::exit(1);
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
             } else {
-                let what = arg(1, "milliseconds or a selector")?;
+                let what = arg(1, "milidetik atau selector")?;
                 if let Ok(ms) = what.parse::<u64>() {
                     std::thread::sleep(Duration::from_millis(ms));
                 } else {
@@ -577,7 +578,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             }
         }
         "assert" | "is" => {
-            let kind = match arg(1, "visible, hidden, text, contains or enabled")? {
+            let kind = match arg(1, "visible, hidden, text, contains, atau enabled")? {
                 "visible" => "visible",
                 "hidden" | "not-visible" | "not_visible" => "not_visible",
                 "text" | "text_equals" => "text_equals",
@@ -585,7 +586,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                 "enabled" => "enabled",
                 other => return Err(format!("unknown check `{other}` (visible, hidden, text, contains, enabled)").into()),
             };
-            let mut a = json!({ "session": sid, "kind": kind, "selector": selector(arg(2, "a selector")?) });
+            let mut a = json!({ "session": sid, "kind": kind, "selector": selector(arg(2, "selector")?) });
             if matches!(kind, "text_equals" | "contains") {
                 a["text"] = json!(rest(3));
             }
@@ -595,7 +596,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                 println!("{}", v["ok"] == true);
             } else {
                 if let Some(t) = opts.get("--timeout") {
-                    a["timeout"] = json!(t.parse::<u64>().map_err(|_| "--timeout takes milliseconds")?);
+                    a["timeout"] = json!(t.parse::<u64>().map_err(|_| "--timeout memakai milidetik")?);
                 }
                 finish(&ctx, &ctx.tool("assert", a)?)?;
             }
@@ -603,7 +604,7 @@ pub fn main(argv: &[String]) -> Res<()> {
         "get" => {
             // Title and URL come from the snapshot: no evalScript, so they work with
             // allow_eval_script = false or block_actions set.
-            let what = arg(1, "text, url or title")?;
+            let what = arg(1, "text, url, atau title")?;
             if matches!(what, "url" | "title") {
                 let v = ctx.tool("snapshot", json!({ "session": sid, "format": "json" }))?;
                 if v["ok"] == false {
@@ -619,7 +620,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                 return Ok(());
             }
             let yaml = match what {
-                "text" | "value" => format!("- copyTextFrom: {}\n", selector(arg(2, "a selector")?)),
+                "text" | "value" => format!("- copyTextFrom: {}\n", selector(arg(2, "selector")?)),
                 other => return Err(format!("unknown `get {other}` (text, url, title)").into()),
             };
             let v = ctx.flow(&yaml, false)?;
@@ -644,7 +645,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             if v["ok"] == false {
                 return finish(&ctx, &v);
             }
-            let data = v["content"].as_array().into_iter().flatten().find_map(|b| b["data"].as_str()).ok_or("no image in the reply")?;
+            let data = v["content"].as_array().into_iter().flatten().find_map(|b| b["data"].as_str()).ok_or("tidak ada gambar di jawaban")?;
             use base64::Engine;
             let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
             let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
@@ -656,38 +657,38 @@ pub fn main(argv: &[String]) -> Res<()> {
                 println!("{marks}");
             }
         }
-        "record" => match arg(1, "start or stop")? {
+        "record" => match arg(1, "start atau stop")? {
             "start" => step(format!("- startRecording: {}\n", q(args.get(2).map_or("recording", String::as_str))))?,
             "stop" => step("- stopRecording\n".into())?,
             other => return Err(format!("unknown `record {other}` (start, stop)").into()),
         },
         "set" => {
-            let yaml = match arg(1, "viewport, locale, geo, network or permission")? {
+            let yaml = match arg(1, "viewport, locale, geo, network, atau permission")? {
                 "viewport" => {
                     let v = rest(2);
                     match v.split_once('x').map(|(w, h)| (w.trim().parse::<u32>(), h.trim().parse::<u32>())) {
                         Some((Ok(w), Ok(h))) => format!("- setViewport: {{ width: {w}, height: {h} }}\n"),
-                        _ if v.is_empty() => return Err("set viewport needs a preset (iPhone 15, Pixel 8, desktop) or WxH".into()),
+                        _ if v.is_empty() => return Err("set viewport butuh preset (iPhone 15, Pixel 8, desktop) atau LxT, mis. 390x844".into()),
                         _ => format!("- setViewport: {}\n", q(&v)),
                     }
                 }
                 "locale" => match args.get(3) {
-                    Some(tz) => format!("- setLocale: {{ locale: {}, timezone: {} }}\n", q(arg(2, "a locale")?), q(tz)),
-                    None => format!("- setLocale: {{ locale: {} }}\n", q(arg(2, "a locale")?)),
+                    Some(tz) => format!("- setLocale: {{ locale: {}, timezone: {} }}\n", q(arg(2, "locale")?), q(tz)),
+                    None => format!("- setLocale: {{ locale: {} }}\n", q(arg(2, "locale")?)),
                 },
-                "geo" | "location" => format!("- setLocation: {{ latitude: {}, longitude: {} }}\n", arg(2, "latitude")?, arg(3, "longitude")?),
-                "network" => format!("- setNetwork: {}\n", arg(2, "offline or online")?),
-                "permission" => format!("- setPermissions: {{ permissions: {{ {}: {} }} }}\n", arg(2, "a permission")?, arg(3, "allow, deny or unset")?),
+                "geo" | "location" => format!("- setLocation: {{ latitude: {}, longitude: {} }}\n", arg(2, "lintang (latitude)")?, arg(3, "bujur (longitude)")?),
+                "network" => format!("- setNetwork: {}\n", arg(2, "offline atau online")?),
+                "permission" => format!("- setPermissions: {{ permissions: {{ {}: {} }} }}\n", arg(2, "nama izin")?, arg(3, "allow, deny, atau unset")?),
                 other => return Err(format!("unknown `set {other}` (viewport, locale, geo, network, permission)").into()),
             };
             step(yaml)?;
         }
-        "launch" => step(format!("- launchApp: {}\n", q(arg(1, "an app id")?)))?,
+        "launch" => step(format!("- launchApp: {}\n", q(arg(1, "id app")?)))?,
         "stop-app" => step(args.get(1).map_or_else(|| "- stopApp\n".to_owned(), |a| format!("- stopApp: {}\n", q(a))))?,
         "clear-state" => step(args.get(1).map_or_else(|| "- clearState\n".to_owned(), |a| format!("- clearState: {}\n", q(a))))?,
         "hide-keyboard" => step("- hideKeyboard\n".into())?,
         "flow" => {
-            let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
+            let src = flow_source(arg(1, "file flow, - atau YAML")?)?;
             // A flow that does not start its own session runs in the shell's: say so up front.
             let open = ctx.has_session()?;
             if !src.contains("session:") && !open {
@@ -704,7 +705,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             finish(&ctx, &v)?;
         }
         "check-flow" => {
-            let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
+            let src = flow_source(arg(1, "file flow, - atau YAML")?)?;
             finish(&ctx, &ctx.tool("check_flow", json!({ "flow": src }))?)?;
         }
         "errors" => {
@@ -723,12 +724,12 @@ pub fn main(argv: &[String]) -> Res<()> {
         }
         "diff" => {
             if arg(1, "screenshot")? != "screenshot" {
-                return Err("only `diff screenshot <name>` exists".into());
+                return Err("yang ada hanya `diff screenshot <nama>`".into());
             }
-            let mut parts = vec![format!("name: {}", q(arg(2, "a baseline name")?))];
+            let mut parts = vec![format!("name: {}", q(arg(2, "nama baseline")?))];
             for (opt, key) in [("--threshold", "threshold"), ("--max-diff", "maxDiff")] {
                 if let Some(v) = opts.get(opt) {
-                    parts.push(format!("{key}: {}", v.parse::<f64>().map_err(|_| format!("{opt} takes a number from 0 to 1"))?));
+                    parts.push(format!("{key}: {}", v.parse::<f64>().map_err(|_| format!("{opt} memakai angka 0 sampai 1"))?));
                 }
             }
             if !ignores.is_empty() {
@@ -740,18 +741,18 @@ pub fn main(argv: &[String]) -> Res<()> {
             step(format!("- assertScreenshot: {{ {} }}\n", parts.join(", ")))?;
         }
         "state" => {
-            let action = arg(1, "save, load, list or delete")?;
+            let action = arg(1, "save, load, list, atau delete")?;
             let mut a = json!({ "action": action, "session": sid });
             if action != "list" {
-                a["name"] = json!(arg(2, "a state name")?);
+                a["name"] = json!(arg(2, "nama state")?);
             }
             finish(&ctx, &ctx.tool("state", a)?)?;
         }
         "docs" => finish(&ctx, &ctx.tool("docs", json!({ "topic": args.get(1).cloned().unwrap_or_else(|| "dsl".into()) }))?)?,
         "daemon" => match args.get(1).map(String::as_str) {
             Some("stop") => match send_once(&json!({ "op": "stop" })) {
-                Ok(_) => println!("daemon stopped (sessions closed)"),
-                Err(_) => println!("no daemon running"),
+                Ok(_) => println!("daemon berhenti (sesi ditutup)"),
+                Err(_) => println!("tidak ada daemon yang berjalan"),
             },
             Some("status") | None => match send_once(&json!({ "op": "ping" })) {
                 Ok(v) => {
@@ -759,7 +760,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                     println!("running (pid {}) on {}; sessions: {}", v["pid"], socket_path().display(), s["sessions"]);
                 }
                 Err(_) => {
-                    println!("not running ({})", socket_path().display());
+                    println!("tidak berjalan ({})", socket_path().display());
                     std::process::exit(1);
                 }
             },

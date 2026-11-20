@@ -401,7 +401,7 @@ fn provider_drives_a_run_without_claude_code() {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
     let (ok, out) = test("sk-test-provider-999");
-    assert!(ok && out.contains("ok: custom at") && out.contains("\"OK\""), "{out}");
+    assert!(ok && out.contains("ok: custom di") && out.contains("menjawab sebagai") && out.contains("\"OK\""), "{out}");
     let (ok, out) = test("sk-wrong-key-123");
     assert!(!ok && out.contains("401") && out.contains("Incorrect API key") && !out.contains("sk-wrong-key-123"), "{out}");
     let _ = std::fs::remove_dir_all(dir);

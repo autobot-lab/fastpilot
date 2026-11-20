@@ -168,10 +168,10 @@ pub fn install_hint(serial: &str, error: &str) -> Option<String> {
     })
 }
 
-const USAGE: &str = "usage: fastpilot demo [folder] [--force] [--android [--device SERIAL]]
-  folder     where to write the demo (default ./fastpilot-demo)
-  --force    write into a folder that already exists (files with the same name are replaced)
-  --android  also install the demo app on the attached Android device or emulator";
+const USAGE: &str = "pemakaian: fastpilot demo [folder] [--force] [--android [--device SERIAL]]
+  folder     tempat demo ditulis (bawaan ./fastpilot-demo)
+  --force    tulis ke folder yang sudah ada (file bernama sama diganti; .mcp.json lama dicadangkan)
+  --android  pasang juga app demo di device atau emulator Android yang tersambung";
 
 pub async fn demo(args: &[String]) -> Res<()> {
     let mut folder: Option<String> = None;

@@ -130,7 +130,7 @@ fn provider_settings_key_and_connection_test_from_the_page() {
     assert!(st == 200 && !body.contains("sk-wrong-1"), "{st} {body}");
     let v = get();
     assert_eq!((v["provider"].as_str(), v["model"].as_str(), v["key"]["has"].as_bool()), (Some("custom"), Some("fake-model"), Some(true)), "{v}");
-    assert!(v["key"]["where"].as_str().is_some_and(|w| w.contains("owner-only file")) && !v.to_string().contains("sk-wrong-1"), "{v}");
+    assert!(v["key"]["where"].as_str().is_some_and(|w| w.contains("file khusus pemilik")) && !v.to_string().contains("sk-wrong-1"), "{v}");
     let cfg = std::fs::read_to_string(home.join(".fastpilot/config.toml")).expect("config");
     assert!(cfg.contains("provider = \"custom\"") && !cfg.contains("sk-"), "{cfg}");
     let (st, body) = post(json!({ "action": "test" }));
