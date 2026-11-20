@@ -133,6 +133,8 @@ fn skill_library_is_valid_and_in_step_with_the_server() {
     let at = |s: &str| example.find(s).unwrap_or_else(|| panic!("{s} in the example"));
     assert!(at("Newly failing (New since last run)") < at("Still failing") && at("Still failing") < at("Flaky") && at("Flaky") < at("Blocked") && at("Blocked") < at("Passed ("));
     assert!(reg.contains("failing (no earlier run)"), "no earlier result: not 'newly failing'");
+    let headline = example.lines().find(|l| l.starts_with("Regression — ")).expect("headline");
+    assert!(headline.find("newly failing") < headline.find("passed"), "the headline counts lead with newly failing: {headline}");
 
     // Licence: the MIT notice of the skills adapted from petrkindlmann/qa-skills ships with fastpilot.
     let notices = std::fs::read_to_string(format!("{ROOT}/THIRD_PARTY_NOTICES")).expect("THIRD_PARTY_NOTICES");

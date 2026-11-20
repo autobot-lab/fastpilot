@@ -29,12 +29,12 @@ A regression re-runs the tests the user already saved (`tests/*.md`) and answers
    - **Blocked**: a guard rail stopped a step (`blocked`). Not a product bug; say which limit.
    - **Passed**.
 5. **Report** in this order (most important first): **Newly failing**, **Still failing**,
-   **Flaky**, **Blocked**, **Passed**. One line per test, with the failing step and the reason in
-   one plain sentence. Exact counts only; never round or guess.
+   **Flaky**, **Blocked**, **Passed**, in the headline counts too. One line per test, with the
+   failing step and the reason in one plain sentence. Exact counts only; never round or guess.
 
 Example, not real results:
 ```
-Regression — 15 tests — 11 passed, 1 newly failing, 1 still failing, 1 flaky, 1 blocked
+Regression — 15 tests — 1 newly failing, 1 still failing, 1 flaky, 1 blocked, 11 passed
 Newly failing (New since last run)
   ✗ Checkout with voucher SAVE10 — step "Check the 10% discount": the total stayed the same
 Still failing
