@@ -86,6 +86,14 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             match config::effective(&k) {
                 config::Source::Env(v) => println!("{v}  (env FASTPILOT_{})", k.to_uppercase()),
                 config::Source::File(v) => println!("{v}"),
+                // A provider's preset base URL is a real value, not "nothing set".
+                config::Source::Default if k == "provider_base_url" => {
+                    let p = config::var("FASTPILOT_PROVIDER").unwrap_or_default();
+                    match config::preset_base(p.trim()) {
+                        Some(url) => println!("{url}  (preset of {})", p.trim()),
+                        None => println!("(default)"),
+                    }
+                }
                 config::Source::Default => println!("(default)"),
             }
         }
@@ -96,8 +104,18 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
                 .map(|r| r.join(" "))
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| format!("set needs a value; to clear `{k}`, use `fastpilot config unset {k}`"))?;
+            let previous = (k == "provider").then(|| config::file_values().remove("provider")).flatten();
             let p = config::write(&k, Some(&v))?;
             println!("{k} = {v}  ({})", p.display());
+            // Another provider starts from its own preset: the previous one's base URL would get
+            // the new provider's key.
+            if k == "provider" && previous.as_deref() != Some(v.trim()) && config::file_values().contains_key("provider_base_url") {
+                config::write("provider_base_url", None)?;
+                match config::preset_base(v.trim()) {
+                    Some(url) => println!("note: provider_base_url removed; {v} uses {url}"),
+                    None => println!("note: provider_base_url removed; set the server: `fastpilot config set provider_base_url https://…/v1`"),
+                }
+            }
             if std::env::var(format!("FASTPILOT_{}", k.to_uppercase())).is_ok() {
                 println!("note: FASTPILOT_{} is set in the environment and wins over the file", k.to_uppercase());
             }

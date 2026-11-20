@@ -32,15 +32,39 @@ impl Provider {
     pub fn configured() -> Option<Result<Self, String>> {
         let var = |k: &str| fastpilot_core::config::var(k).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let name = var("FASTPILOT_PROVIDER").filter(|p| p != "claude")?;
-        Some(Self::resolve(&name, var("FASTPILOT_PROVIDER_BASE_URL"), var("FASTPILOT_PROVIDER_MODEL"), crate::keystore::get(&name)))
+        Some(Self::resolve(&name, var("FASTPILOT_PROVIDER_BASE_URL"), var("FASTPILOT_PROVIDER_MODEL"), crate::keystore::get_bound(&name)))
     }
 
-    fn resolve(name: &str, base_url: Option<String>, model: Option<String>, key: Option<String>) -> Result<Self, String> {
-        let preset = fastpilot_core::config::PROVIDERS.iter().find(|(p, _)| *p == name).ok_or_else(|| format!("unknown provider `{name}`"))?.1;
-        let base_url = base_url
-            .or_else(|| preset.map(str::to_owned))
-            .ok_or_else(|| format!("provider `{name}` needs a base URL: `fastpilot config set provider_base_url https://…/v1`"))?;
+    /// `key`: the key and the origin it was saved for (`None` for FASTPILOT_PROVIDER_API_KEY).
+    fn resolve(name: &str, base_url: Option<String>, model: Option<String>, key: Option<(String, Option<String>)>) -> Result<Self, String> {
+        use fastpilot_core::config::{origin, preset_base};
+        if !fastpilot_core::config::PROVIDERS.iter().any(|(p, _)| *p == name) {
+            return Err(format!("unknown provider `{name}`"));
+        }
+        let preset = preset_base(name);
+        let base_url = match (name, base_url) {
+            // A hosted preset talks to its own server only: another URL here is a leftover (or a
+            // mistake) and would get this provider's key.
+            ("openai" | "openrouter" | "groq", Some(url)) if origin(&url) != preset.and_then(origin) => {
+                return Err(format!(
+                    "provider `{name}` only talks to {}, but provider_base_url is {url}: `fastpilot config unset provider_base_url`, or use provider custom for another server",
+                    preset.unwrap_or_default()
+                ));
+            }
+            (_, url) => url.or_else(|| preset.map(str::to_owned)),
+        }
+        .ok_or_else(|| format!("provider `{name}` needs a base URL: `fastpilot config set provider_base_url https://…/v1`"))?;
         let model = model.ok_or_else(|| format!("provider `{name}` needs a model: `fastpilot config set provider_model <model id>`"))?;
+        // A stored key goes only to the server it was saved for.
+        if let Some((_, Some(saved_for))) = &key
+            && origin(&base_url).as_deref() != Some(saved_for.as_str())
+        {
+            return Err(format!(
+                "the `{name}` API key was saved for {saved_for}, not for {}: it is not sent there; run `fastpilot config set-key {name}` again for this server, or set provider_base_url back",
+                origin(&base_url).unwrap_or(base_url.clone())
+            ));
+        }
+        let key = key.map(|(k, _)| k);
         // A local Ollama needs no key; every hosted API does.
         if key.is_none() && name != "ollama" && fastpilot_core::policy::remote_host(&base_url).is_some() {
             return Err(format!("no API key for `{name}`: run `fastpilot config set-key {name}` (or set FASTPILOT_PROVIDER_API_KEY)"));
@@ -59,7 +83,7 @@ impl Provider {
             req = req.bearer_auth(k);
         }
         let mask = |s: String| match &self.key {
-            Some(k) => s.replace(k.as_str(), "***"),
+            Some(k) => mask_key(&s, k),
             None => s,
         };
         let resp = req.send().await.map_err(|e| mask(format!("{}: {e}", self.name)))?;
@@ -79,6 +103,42 @@ pub struct Outcome {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub failure: Option<String>,
+}
+
+/// `text` without `key`, and without the partly masked forms some APIs echo back
+/// (`sk-proj********1234`): any word starting with the key's first 6 characters becomes `***`.
+pub fn mask_key(text: &str, key: &str) -> String {
+    let text = text.replace(key, "***");
+    let prefix: String = key.chars().take(6).collect();
+    if prefix.chars().count() < 6 {
+        return text;
+    }
+    text.split_inclusive(char::is_whitespace)
+        .map(|w| {
+            let word = w.trim_end();
+            let trimmed = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+            if trimmed.starts_with(&prefix) { w.replacen(trimmed.trim_end_matches(['.', ',', ';', ')', '"', '\'']), "***", 1) } else { w.to_owned() }
+        })
+        .collect()
+}
+
+/// The origin a key for `provider` is tied to when it is saved now: the preset's server, or for
+/// custom (and a non-default ollama) the configured provider_base_url of that provider.
+pub fn key_origin(provider: &str) -> Result<String, String> {
+    use fastpilot_core::config::{file_values, origin, preset_base};
+    // The settings as they are now (env, then the file), not as this process pinned them at start:
+    // `fastpilot ui` saves the provider and its URL, then the key, in one request.
+    let now = |name: &str, key: &str| std::env::var(name).ok().or_else(|| file_values().remove(key)).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let current = now("FASTPILOT_PROVIDER", "provider");
+    let base = now("FASTPILOT_PROVIDER_BASE_URL", "provider_base_url");
+    let url = match provider {
+        "custom" | "ollama" if current.as_deref() == Some(provider) && base.is_some() => base,
+        "custom" => {
+            return Err("a custom key is tied to its server: `fastpilot config set provider custom` and `provider_base_url` first, then set-key".into());
+        }
+        p => preset_base(p).map(str::to_owned),
+    };
+    url.as_deref().and_then(origin).ok_or_else(|| format!("no server known for provider `{provider}`"))
 }
 
 /// The test's tools in the OpenAI `tools` format (from the MCP tool list).
@@ -193,15 +253,46 @@ mod tests {
 
     #[test]
     fn presets_and_missing_pieces() {
-        let p = Provider::resolve("openai", None, Some("m".into()), Some("sk-x".into())).expect("openai");
+        let key = |k: &str| Some((k.to_owned(), None));
+        let p = Provider::resolve("openai", None, Some("m".into()), key("sk-x")).expect("openai");
         assert_eq!((p.base_url.as_str(), p.model.as_str()), ("https://api.openai.com/v1", "m"));
         assert!(!format!("{p:?}").contains("sk-x"), "Debug never shows the key");
         let o = Provider::resolve("ollama", None, Some("llama".into()), None).expect("ollama needs no key");
         assert_eq!(o.base_url, "http://127.0.0.1:11434/v1");
         assert!(Provider::resolve("groq", None, Some("m".into()), None).expect_err("hosted needs a key").contains("fastpilot config set-key groq"));
-        assert!(Provider::resolve("openrouter", None, None, Some("k".into())).expect_err("model").contains("provider_model"));
-        assert!(Provider::resolve("custom", None, Some("m".into()), Some("k".into())).expect_err("base url").contains("provider_base_url"));
+        assert!(Provider::resolve("openrouter", None, None, key("k")).expect_err("model").contains("provider_model"));
+        assert!(Provider::resolve("custom", None, Some("m".into()), key("k")).expect_err("base url").contains("provider_base_url"));
         let c = Provider::resolve("custom", Some("http://127.0.0.1:9/v1/".into()), Some("m".into()), None).expect("local custom without key");
         assert_eq!(c.base_url, "http://127.0.0.1:9/v1");
+    }
+
+    /// QA / Design (Medium): after `provider custom` with its own server and a key saved for openai,
+    /// switching to openai kept the old base URL and sent the openai key there. A hosted preset now
+    /// only talks to its own server, and a stored key only goes to the origin it was saved for.
+    #[test]
+    fn a_key_goes_only_to_the_server_it_was_saved_for() {
+        let saved = |k: &str, o: &str| Some((k.to_owned(), Some(o.to_owned())));
+        let m = || Some("m".to_owned());
+        // openai with a leftover custom URL: refused, nothing is sent.
+        let e = Provider::resolve("openai", Some("http://127.0.0.1:18767/v1".into()), m(), saved("sk-o", "https://api.openai.com")).expect_err("leftover URL");
+        assert!(e.contains("only talks to https://api.openai.com/v1") && e.contains("unset provider_base_url"), "{e}");
+        // The same server spelled with a path is fine.
+        assert!(Provider::resolve("openai", Some("https://api.openai.com/v1/".into()), m(), saved("sk-o", "https://api.openai.com")).is_ok());
+        // A custom key saved for one server is not sent to another one.
+        let e = Provider::resolve("custom", Some("https://other.example/v1".into()), m(), saved("sk-c", "https://mine.example")).expect_err("other server");
+        assert!(e.contains("saved for https://mine.example, not for https://other.example") && !e.contains("sk-c"), "{e}");
+        assert!(Provider::resolve("custom", Some("https://mine.example/v2".into()), m(), saved("sk-c", "https://mine.example")).is_ok());
+        // An env key (no origin) is the person's choice for this run.
+        assert!(Provider::resolve("custom", Some("https://other.example/v1".into()), m(), Some(("sk-e".into(), None))).is_ok());
+    }
+
+    #[test]
+    fn provider_errors_never_echo_the_key() {
+        let k = "sk-openai-secret-777";
+        let echoed = "Incorrect API key provided: sk-opena********-777. You can find your key at https://x.";
+        let masked = mask_key(echoed, k);
+        assert!(!masked.contains("sk-opena") && !masked.contains("-777") && masked.contains("Incorrect API key provided: ***."), "{masked}");
+        assert_eq!(mask_key(&format!("bad {k} here"), k), "bad *** here");
+        assert_eq!(mask_key("nothing to hide", "short"), "nothing to hide");
     }
 }

@@ -79,6 +79,19 @@ pub const SETTINGS: &[Setting] = &[
 /// Never read from the file.
 const SECRETS: &[&str] = &["FASTPILOT_STATE_KEY", "FASTPILOT_TOKEN", "FASTPILOT_RELAY_TOKEN", "FASTPILOT_PROVIDER_API_KEY"];
 
+/// The preset base URL of `provider`, if it has one.
+pub fn preset_base(provider: &str) -> Option<&'static str> {
+    PROVIDERS.iter().find(|(p, _)| *p == provider).and_then(|(_, b)| *b)
+}
+
+/// `scheme://host[:port]` of a URL, lowercase: where a request (and a key) goes.
+pub fn origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    (!host_port.is_empty()).then(|| format!("{}://{}", scheme.to_ascii_lowercase(), host_port.to_ascii_lowercase()))
+}
+
 /// `provider` values and their default base URL (`None`: Claude Code, or set provider_base_url).
 pub const PROVIDERS: &[(&str, Option<&str>)] = &[
     ("claude", None),
@@ -787,6 +800,15 @@ mod tests {
         assert!(check().is_ok());
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn origins_and_presets() {
+        assert_eq!(origin("https://API.example.com:8443/v1?x=1").as_deref(), Some("https://api.example.com:8443"));
+        assert_eq!(origin("http://u:p@127.0.0.1:9/v1").as_deref(), Some("http://127.0.0.1:9"));
+        assert_eq!(origin("not a url"), None);
+        assert_eq!(preset_base("groq"), Some("https://api.groq.com/openai/v1"));
+        assert_eq!(preset_base("custom"), None);
     }
 
     /// B2: provider settings are checked, and the provider's base URL defaults per provider.
