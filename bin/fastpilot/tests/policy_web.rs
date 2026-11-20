@@ -62,7 +62,11 @@ async fn allowed_domains_and_confirmed_actions() {
     }
     let port = serve().await;
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_ALLOWED_DOMAINS", "localhost").env("FASTPILOT_CONFIRM_ACTIONS", "default");
+        // The built-in block list (v0.3.2) would refuse "Hapus akun" outright; this test is about
+        // confirm_actions, so its own settings file empties block_actions.
+        let file = std::env::temp_dir().join(format!("fp-policy-{}.toml", std::process::id()));
+        std::fs::write(&file, "block_actions = []\n").expect("config");
+        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_CONFIG", &file).env("FASTPILOT_ALLOWED_DOMAINS", "localhost").env("FASTPILOT_CONFIRM_ACTIONS", "default");
     });
     let Ok(client) = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await else {
         return eprintln!("skipping: server did not start");

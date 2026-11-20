@@ -96,9 +96,21 @@ function envNote(s) {
 function opt(label, desc, control, s, extra) {
   return h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, label), desc ? h("div", { class: "d" }, desc) : null, extra || null, s ? envNote(s) : null), control);
 }
+// Whether block_actions is in force: the built-in list unless emptied in the file (an empty
+// environment variable does not empty it).
+function blockingOn() {
+  const b = get("block_actions");
+  return !(b && b.source === "file" && Array.isArray(b.value) && !b.value.length);
+}
+// What a switch does now: allow_eval_script not set is off while block_actions is on (option C).
+function effectiveOn(key) {
+  const s = get(key);
+  if (s.value !== null) return !!s.value;
+  return key === "allow_eval_script" ? !blockingOn() : true;
+}
 function toggle(key, label) {
   const s = get(key);
-  const on = s.value === null ? true : !!s.value;
+  const on = effectiveOn(key);
   return h("button", {
     class: "tg", role: "switch", "aria-checked": String(on), "aria-label": label, disabled: s.source === "env",
     onclick: () => save(key, !on),
@@ -318,7 +330,7 @@ function pageLimits() {
       h("div", { class: "gh" }, icon("risk"), "aksi berisiko"),
       opt("Tombol yang selalu diblokir", "Juga dengan confirm: true. Garis putus-putus = kata bawaan.",
         chips("block_actions", { placeholder: "mis. Keluar", addLabel: "Tambah kata yang diblokir", red: true, empty: emptied("block_actions") ? "Dikosongkan: tidak ada yang diblokir" : "Belum ada" }), get("block_actions"),
-        h("div", { class: "d" }, "Kata bawaan cocok per kata utuh (\"pay\" kena \"Pay now\", tidak kena \"Paypal\"). Kata tambahanmu cocok kalau teks tombol ", h("b", {}, "berisi"), " kata itu: \"Keluar\" juga memblokir \"Keluarkan\". Selama ada kata di sini, JavaScript bebas (evalScript) ikut mati.")),
+        h("div", { class: "d" }, "Kata bawaan cocok per kata utuh (\"pay\" kena \"Pay now\", tidak kena \"Paypal\"). Kata tambahanmu cocok kalau teks tombol ", h("b", {}, "berisi"), " kata itu: \"Keluar\" juga memblokir \"Keluarkan\". Selama ada kata di sini, JavaScript bebas (evalScript) ikut mati, kecuali kamu menyalakan \"Jalankan JavaScript bebas\" di bawah.")),
       opt("Tombol yang butuh konfirmasi", "AI harus menulis confirm: true. Cocok per kata. Bawaan: hapus, delete, remove.",
         chips("confirm_actions", { placeholder: "mis. Arsipkan", addLabel: "Tambah kata konfirmasi", show: confirmShow, empty: emptied("confirm_actions") ? "Dikosongkan: tanpa konfirmasi" : "Belum ada" }), get("confirm_actions"))),
     h("div", { class: "grp" },
@@ -329,7 +341,10 @@ function pageLimits() {
       opt("Boleh ubah setting HP (jaringan, lokasi, izin app, bahasa)", "Contoh: mode offline, GPS palsu, izin kamera, bahasa HP", toggle("allow_device_settings", "Boleh ubah setting HP"), get("allow_device_settings"))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("lock"), "data & keamanan"),
-      opt("Jalankan JavaScript bebas di halaman", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script")),
+      opt("Jalankan JavaScript bebas di halaman", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script"),
+        get("allow_eval_script").value === null && blockingOn()
+          ? h("div", { class: "d warn" }, "Mati karena daftar blokir aktif (script bisa menekan tombol yang diblokir); nyalakan untuk mengizinkan.")
+          : null),
       opt("Boleh ambil alih sesi (Ambil alih di Live)", "Matikan bila agent-mu punya akses shell: input ambil alih tidak diperiksa Batasan. Berlaku untuk proses fastpilot yang mulai setelah ini.", toggle("allow_takeover", "Boleh ambil alih sesi"), get("allow_takeover")),
       opt("Folder yang boleh di-upload", "File yang diunggah test harus berasal dari folder ini.",
         chips("upload_dirs", { placeholder: "mis. ~/fixtures", addLabel: "Tambah folder", empty: "Folder mana saja" }), get("upload_dirs")),

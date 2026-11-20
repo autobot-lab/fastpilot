@@ -48,7 +48,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "allow_app_reset", help: "clearState / clearKeychain may wipe app data (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_physical_devices", help: "sessions may use real phones; false = emulators and simulators only (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_device_settings", help: "android/ios steps may change device settings: setNetwork, setLocation, setPermissions, setLocale (default true)", rule: Rule::TightenOnly },
-    Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages; not set: off while block_actions is on (a script could press a blocked button), on otherwise; `true` = on even then (people only)", rule: Rule::TightenOnly },
     Setting { key: "allow_takeover", help: "the user may take sessions over in `fastpilot ui` (Ambil alih); off for agents with a shell (default true)", rule: Rule::TightenOnly },
     Setting { key: "upload_dirs", help: "uploadFile only takes files inside these folders; empty = any", rule: Rule::TightenOnly },
     Setting { key: "max_steps", help: "`fastpilot run`: tool calls the AI may make per test (default 30)", rule: Rule::TightenOnly },
@@ -236,6 +236,17 @@ pub fn var(name: &str) -> Result<String, std::env::VarError> {
         Err(std::env::VarError::NotPresent) if !SECRETS.contains(&name) => key_of(name)
             .and_then(|k| from_file(&k))
             .ok_or(std::env::VarError::NotPresent),
+        Err(e) => Err(e),
+    }
+}
+
+/// Like [`var`], but an empty environment variable counts as not set: the built-in guard-rail lists
+/// are only emptied in the config file, by the user (Security Low 3: an empty
+/// `FASTPILOT_BLOCK_ACTIONS` in an MCP server entry an agent wrote must not switch them off).
+pub fn var_unless_empty_env(name: &str) -> Result<String, std::env::VarError> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Ok(v),
+        Ok(_) | Err(std::env::VarError::NotPresent) => key_of(name).and_then(|k| from_file(&k)).ok_or(std::env::VarError::NotPresent),
         Err(e) => Err(e),
     }
 }
@@ -429,6 +440,16 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
         }
         // Like allowed_domains: a list, and it may only shrink.
         "upload_dirs" => !n.is_empty() && (o.is_empty() || n.iter().all(|d| o.contains(d))),
+        // Option C (v0.3.2): not set = off while block_actions is on; `true` written out switches
+        // it on even then. So false < not set < true, and an agent may only go down.
+        "allow_eval_script" => {
+            let level = |v: Option<&str>| match v.map(|v| v.trim().to_lowercase()) {
+                None => 1,
+                Some(v) if matches!(v.as_str(), "0" | "false" | "no" | "off") => 0,
+                Some(_) => 2,
+            };
+            level(new) <= level(old)
+        }
         // A permission may be taken away, not given back.
         k if k.starts_with("allow_") => {
             let on = |v: Option<&str>| v.map(|v| !matches!(v.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(true);
@@ -526,6 +547,7 @@ pub fn describe() -> String {
             Source::Default => match s.key {
                 "block_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_BLOCKED.join(", ")),
                 "confirm_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_CONFIRM.join(", ")),
+                "allow_eval_script" => "off while block_actions is on, else on (default (bawaan))".to_owned(),
                 _ => "— (default)".to_owned(),
             },
         };
@@ -882,6 +904,11 @@ mod tests {
         assert!(tightens("confirm_actions", None, Some("hapus,delete,remove,keluar")));
         assert!(tightens("confirm_actions", Some(""), None));
         assert!(!tightens("confirm_actions", None, Some("hapus")));
+        // Option C: `allow_eval_script = true` unlocks evalScript while block_actions is on, so an
+        // agent may not write it (only the user), nor go from false back to not set.
+        assert!(!tightens("allow_eval_script", None, Some("true")), "agent cannot unlock evalScript");
+        assert!(tightens("allow_eval_script", Some("true"), None) && tightens("allow_eval_script", None, Some("false")));
+        assert!(!tightens("allow_eval_script", Some("false"), None));
         for k in ["allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script"] {
             assert!(tightens(k, None, Some("false")), "{k}: switch off");
             assert!(!tightens(k, Some("false"), Some("true")), "{k}: switch back on");

@@ -81,11 +81,20 @@ fn reinstalls_on_a_signature_mismatch() {
     assert!(!needs_uninstall("Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]"));
 }
 
+/// These tests press "Bayar" and run evalScript in the demo's WebView: since v0.3.2 the built-in
+/// limits refuse both, so they run with the lists emptied on purpose (a config file of their own).
+fn no_limits() -> std::path::PathBuf {
+    let file = std::env::temp_dir().join(format!("fp-android-limits-{}.toml", std::process::id()));
+    std::fs::write(&file, "block_actions = []\nconfirm_actions = []\n").expect("config");
+    file
+}
+
 fn server() -> TokioChildProcess {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
         c.arg("mcp")
             .current_dir(root)
+            .env("FASTPILOT_CONFIG", no_limits())
             .env("DEMO_PASS", "rahasia123")
             .env("FASTPILOT_VARS", "DEMO_PASS")
             .env("FASTPILOT_ANDROID_SERIAL", serial().unwrap_or_default());
@@ -386,6 +395,7 @@ async fn android_through_a_configured_adb_server() {
             .env("DEMO_PASS", "rahasia123")
             .env("FASTPILOT_VARS", "DEMO_PASS")
             .env("FASTPILOT_ADB_SERVER", format!("127.0.0.1:{port}"))
+            .env("FASTPILOT_CONFIG", no_limits())
             .env("FASTPILOT_ANDROID_SERIAL", serial().unwrap_or_default());
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");

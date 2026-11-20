@@ -36,6 +36,8 @@ impl Shell {
             .env("FASTPILOT_DIR", self.dir.join("fp"))
             .env("FASTPILOT_VARS", "DEMO_PASS")
             .env("DEMO_PASS", "rahasia123")
+            // v0.3.2 (F5, option C): scripts are off under the built-in block list; these tests run them.
+            .env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true")
             .env_remove("FASTPILOT_SESSION");
         if let Some(idle) = self.idle {
             c.env("FASTPILOT_DAEMON_IDLE", idle);
@@ -185,6 +187,12 @@ fn get_title_without_eval_and_flow_without_a_session() {
     assert!(ok, "{out}");
     let (ok, out) = run(&["get", "title"]);
     assert!(ok && out.trim() == "Login", "get title: {out}");
+    // `reload` and `wait --url` read the URL from the snapshot too (scripts are off here, as under
+    // the built-in block list of v0.3.2).
+    let (ok, out) = run(&["reload"]);
+    assert!(ok, "reload without scripts: {out}");
+    let (ok, out) = run(&["wait", "--url", "login.html", "--timeout", "3000"]);
+    assert!(ok && out.trim().ends_with("examples/demo/login.html"), "wait --url without scripts: {out}");
     let (ok, out) = run(&["get", "url"]);
     assert!(ok && out.trim().starts_with("file://") && out.trim().ends_with("examples/demo/login.html"), "get url: {out}");
     // evalScript itself is still refused.

@@ -59,7 +59,7 @@ async fn screenshots_are_in_css_pixels() {
         return eprintln!("skipping: no Chrome");
     }
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT);
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT);
     });
     let Ok(client) = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await else {
         return eprintln!("skipping: server did not start");

@@ -96,7 +96,7 @@ async fn web_sessions_on_a_remote_chrome() {
     assert!(out.status.success() && text.contains(&format!("remote Chrome at {endpoint}")), "{text}");
 
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_CHROME_ENDPOINT", &endpoint).env("FASTPILOT_CHROME", "/nonexistent/chrome");
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("FASTPILOT_CHROME_ENDPOINT", &endpoint).env("FASTPILOT_CHROME", "/nonexistent/chrome");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let page = format!("file://{ROOT}/examples/demo/login.html");
@@ -114,7 +114,7 @@ async fn web_sessions_on_a_remote_chrome() {
 
     // A remote Chrome that is not there: a clear error naming the setting.
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_CHROME_ENDPOINT", "http://127.0.0.1:1");
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("FASTPILOT_CHROME_ENDPOINT", "http://127.0.0.1:1");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: x, platform: web }\n" })).await;

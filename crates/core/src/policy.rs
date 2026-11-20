@@ -30,15 +30,55 @@ pub const DEFAULT_BLOCKED: &[&str] =
 /// ("Hapus filter" is not blocked, only confirmed).
 pub const DEFAULT_CONFIRM: &[&str] = &["hapus", "delete", "remove"];
 
-/// A configured list: `None` when the setting is not set anywhere (env or file), `Some(empty)` when
-/// it was emptied on purpose.
+/// A configured list: `None` when the setting is not set, `Some(empty)` when it was emptied on
+/// purpose. Emptied means the config file (`[]`: the user, through `fastpilot ui` or `fastpilot
+/// config`): an empty environment variable does not count (Security Low 3: an MCP server entry an
+/// agent wrote must not switch the built-in lists off).
 fn configured(var: &str) -> Option<Vec<String>> {
-    crate::config::var(var).ok().map(|v| v.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+    crate::config::var_unless_empty_env(var).ok().map(|v| v.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
 }
 
-/// `block_actions` items as the engine matches them: `default` (or nothing set) becomes the
-/// built-in words, wrapped in spaces (` pay `) = whole words only; the user's own words stay as
-/// they are and match inside text.
+/// Text as the rules compare it: lower case, zero-width characters and soft hyphens removed,
+/// fullwidth letters and digits as plain ones, every kind of space as one space (Security Low 4:
+/// "Ｐａｙ", "Pa\u{200b}y" and "Pay\u{a0}now" are "pay", "pay now").
+pub fn normalize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let c = match c {
+            '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{00ad}' | '\u{180e}' => continue,
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
+            c if c.is_whitespace() => ' ',
+            c => c,
+        };
+        out.extend(c.to_lowercase());
+    }
+    out.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// The words of `text` (letters and digits), normalized.
+fn tokens(text: &str) -> Vec<String> {
+    normalize(text).split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(str::to_owned).collect()
+}
+
+/// Whether `phrase` occurs in `name` as whole words, in order, with at most `gap` other words
+/// between two of its words ("delete account" in "Delete my account" with a gap of 1).
+fn phrase_in(name: &[String], phrase: &[String], gap: usize) -> bool {
+    let Some(first) = phrase.first() else { return false };
+    (0..name.len()).filter(|&i| &name[i] == first).any(|start| {
+        let mut at = start;
+        phrase[1..].iter().all(|w| match name.iter().enumerate().skip(at + 1).take(gap + 1).find(|(_, t)| *t == w) {
+            Some((i, _)) => {
+                at = i;
+                true
+            }
+            None => false,
+        })
+    })
+}
+
+/// `block_actions` items as the engine matches them ([`block_rules`]): `default` (or nothing set)
+/// becomes the built-in words, wrapped in spaces (` pay `) = whole words only; the user's own
+/// words stay as they are and match inside text.
 pub fn expand_blocked(items: Option<Vec<String>>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in items.unwrap_or_else(|| vec!["default".to_owned()]) {
@@ -92,10 +132,21 @@ pub fn url_allowed(url: &str, allowed: &[String]) -> bool {
     })
 }
 
-/// Words that always block a tap (`block_actions`; built-in ones wrapped in spaces, see
-/// [`expand_blocked`]).
+/// Words that always block a tap (`block_actions`), as people read them (built-in ones included).
 pub fn blocked_words() -> Vec<String> {
+    block_rules().into_iter().map(|w| w.trim().to_owned()).collect()
+}
+
+/// [`blocked_words`] as [`block_match`] takes them: built-in ones wrapped in spaces (whole words).
+pub fn block_rules() -> Vec<String> {
     expand_blocked(configured("FASTPILOT_BLOCK_ACTIONS"))
+}
+
+/// Option C (v0.3.2): while any word is blocked, `evalScript` is off unless the user switched it on
+/// on purpose (`allow_eval_script = true`, in the file or the environment); a script could press a
+/// blocked button. An agent cannot set it (see `config::tightens`).
+pub fn eval_unlocked() -> bool {
+    crate::config::var("FASTPILOT_ALLOW_EVAL_SCRIPT").is_ok_and(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// A blocked word found in an element's text.
@@ -106,13 +157,15 @@ pub struct BlockHit {
     pub builtin: bool,
 }
 
-/// The blocked word `name` contains, case-insensitive: the user's words anywhere in the text, the
-/// built-in ones as whole words.
+/// The blocked word `name` contains, case-insensitive and normalized ([`normalize`]): the user's
+/// words anywhere in the text, the built-in ones as whole words, a phrase with up to one word
+/// between its words ("Delete my account", "Place your order").
 pub fn block_match(name: &str, words: &[String]) -> Option<BlockHit> {
-    let lower = name.to_lowercase();
+    let text = normalize(name);
+    let name_tokens = tokens(name);
     words.iter().find_map(|w| {
         let whole = w.len() > 2 && w.starts_with(' ') && w.ends_with(' ');
-        let hit = if whole { risky_match(name, &[w.trim().to_owned()]).is_some() } else { lower.contains(w.as_str()) };
+        let hit = if whole { phrase_in(&name_tokens, &tokens(w), 1) } else { !w.trim().is_empty() && text.contains(normalize(w).as_str()) };
         hit.then(|| BlockHit { word: w.trim().to_owned(), builtin: whole })
     })
 }
@@ -158,11 +211,11 @@ pub fn expand_risky(words: Option<Vec<String>>) -> Vec<String> {
     words
 }
 
-/// The risky word `name` contains, matched as whole words ("pay" matches "Pay now", not "Paypal").
+/// The risky word `name` contains, matched as whole words ("pay" matches "Pay now", not "Paypal"),
+/// after [`normalize`].
 pub fn risky_match(name: &str, words: &[String]) -> Option<String> {
-    let tokens: Vec<String> = name.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(str::to_owned).collect();
-    let joined = format!(" {} ", tokens.join(" "));
-    words.iter().find(|w| joined.contains(&format!(" {w} "))).cloned()
+    let name = tokens(name);
+    words.iter().find(|w| phrase_in(&name, &tokens(w), 0)).cloned()
 }
 
 /// The host of an endpoint (`ws://user:pw@host:9222/x`, `http://[::1]:9222`, `host:5037`) when it
@@ -260,12 +313,27 @@ mod tests {
         for (name, word) in [("Pay now", "pay"), ("CHECKOUT", "checkout"), ("Buat Pesanan", "buat pesanan"), ("Hapus akun saya", "hapus akun"), ("Delete account", "delete account")] {
             assert_eq!(block_match(name, &all).map(|h| h.word).as_deref(), Some(word), "{name}");
         }
+        // Security Low 4: hidden characters, fullwidth letters, odd spaces, a word in between.
+        for (name, word) in [
+            ("Pa\u{200b}y now", "pay"),
+            ("Ｐａｙ ｎｏｗ", "pay"),
+            ("Bayar\u{a0}sekarang", "bayar"),
+            ("CHECK\u{00ad}OUT", "checkout"),
+            ("Delete my account", "delete account"),
+            ("Hapus  akun   saya", "hapus akun"),
+            ("Place your order", "place order"),
+        ] {
+            assert_eq!(block_match(name, &all).map(|h| h.word).as_deref(), Some(word), "{name:?}");
+        }
+        assert_eq!(block_match("Delete this old account", &all), None, "two words between: not the phrase");
+        assert_eq!(normalize(" Ｈｅｌｌｏ\u{3000}\u{200b}World "), "hello world");
         for name in ["Paypal", "Lanjut ke Pembayaran", "Hapus filter", "Remove from cart", "Transferan", "Masuk"] {
             assert_eq!(block_match(name, &all), None, "{name}");
         }
         // `default` next to the user's own words: both kinds.
         let mixed = expand_blocked(Some(vec!["default".into(), "keluar".into()]));
         assert_eq!(block_match("Keluarkan", &mixed), Some(BlockHit { word: "keluar".into(), builtin: false }));
+        assert!(block_match("Kelu\u{200b}arkan", &mixed).is_some(), "the user's words are normalized too");
         assert!(block_match("Pay now", &mixed).is_some_and(|h| h.builtin));
         // Emptied on purpose: nothing is blocked.
         assert!(expand_blocked(Some(vec![])).is_empty());

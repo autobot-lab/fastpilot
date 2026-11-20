@@ -166,7 +166,7 @@ dialog.zoom .screen-box{aspect-ratio:auto;height:min(78vh,820px)}
 .top h1:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 /* Ambil alih (C7b) */
 .btns.tight{margin:0;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.card-text .d.warn,.steer-state.warn{color:var(--warn);font-weight:600}
+.card-text .d.warn,.steer-state.warn,.opt .d.warn{color:var(--warn);font-weight:600}
 .steer{border-top:1px solid var(--line);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
 .steer-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .steer-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}

@@ -32,7 +32,7 @@ async fn screenshots_against_a_baseline() {
     }
     let dir = std::env::temp_dir().join(format!("fastpilot-visual-web-{}", std::process::id()));
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_DIR", &dir);
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("FASTPILOT_DIR", &dir);
     });
     let Ok(client) = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await else {
         return eprintln!("skipping: server did not start");

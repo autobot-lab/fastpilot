@@ -27,7 +27,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | scroll | `scroll: down` or `{ direction: up, within: "Daftar" }` | all |
 | swipe | `swipe: { from: [x1, y1], to: [x2, y2] }` | android, ios |
 | back | `back` | all |
-| pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown) | all |
+| pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown); `{ key: Enter, confirm: true }` when Enter/Space may press a confirm_actions button and the test case means it | all |
 | selectOption | `selectOption: { from: "Negara", option: "Indonesia" }` (native `<select>`) | web |
 | uploadFile | `uploadFile: { into: "Lampiran", files: ["a.pdf"] }` | web |
 | evalScript | `evalScript: "document.title"` (value is returned) | web, android WebView, iOS WKWebView |

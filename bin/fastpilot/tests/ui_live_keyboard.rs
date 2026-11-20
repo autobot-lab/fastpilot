@@ -73,7 +73,7 @@ async fn live_page_works_with_the_keyboard() {
     let mcp = |h: &Path| {
         let (h, live) = (h.to_owned(), live.clone());
         let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
-            c.arg("mcp").current_dir(ROOT).env("HOME", &h).env("FASTPILOT_LIVE_DIR", &live).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
+            c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("HOME", &h).env("FASTPILOT_LIVE_DIR", &live).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
         });
         TokioChildProcess::new(cmd).expect("spawn")
     };
@@ -95,7 +95,8 @@ async fn live_page_works_with_the_keyboard() {
     assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 diblokir"));
     let why = eval(&client, "[...document.querySelectorAll('.steps .blk')].map(l => l.textContent).join('|')").await;
     // Design N2 (P2): the word as the user wrote it in Batasan, not lower-cased.
-    assert!(why.contains("diblokir: teks berisi \\\"Keluar\\\""), "{why}");
+    // v0.3.2 design (s3): the button, the word as written in Batasan, and where to change it.
+    assert!(why.contains("Diblokir Batasan. Teks tombol \\\"Keluar\\\" berisi Keluar. Halaman tidak ditekan."), "{why}");
 
     // Focus survives the refresh (polls every second).
     eval(&client, "document.querySelector('[data-fk^=\"zoom:\"]').focus(), 'ok'").await;
@@ -103,7 +104,7 @@ async fn live_page_works_with_the_keyboard() {
     assert_eq!(eval(&client, "document.activeElement.dataset.fk && document.activeElement.dataset.fk.slice(0, 5)").await, "\"zoom:\"");
     eval(&client, "document.querySelector('[data-fk^=\"limits:\"]').focus(), 'ok'").await;
     tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
-    assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Lihat Batasan\"");
+    assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Ubah di Batasan →\"");
 
     // Perbesar: modal, Tab stays inside, Escape closes, focus returns.
     eval(&client, "document.querySelector('[data-fk^=\"zoom:\"]').focus(), 'ok'").await;

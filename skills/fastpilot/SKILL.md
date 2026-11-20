@@ -91,7 +91,8 @@ The user may limit what tests can do. A refused step comes back as `blocked`:
   does not lift them. Report the step as blocked and tell the user which setting stopped it. Built in
   while the user has not set `block_actions`: payment and account deletion (*bayar, pay, beli, buy,
   checkout, purchase, transfer, buat pesanan, place order, hapus akun, delete account*; whole words),
-  and `evalScript` is off while any word is blocked. Do not retry or work around a block (another
+  and `evalScript` is off while any word is blocked, unless the user set `allow_eval_script = true`
+  (you cannot). Do not retry or work around a block (another
   selector, a coordinate, Enter, a script); the user changes it in `fastpilot ui` › Pengaturan ›
   Batasan & izin.
 - **Settings** (`config` tool): you may read settings and make guard rails **stricter**. You cannot

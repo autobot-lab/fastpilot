@@ -765,7 +765,7 @@ fn will_block(step: &Step) -> Option<String> {
     match inner {
         Step::TapOn(sel) | Step::LongPressOn(sel) | Step::DoubleTapOn(sel) => {
             let (Selector::Text(name) | Selector::Role { name: Some(name), .. }) = sel else { return None };
-            if let Some(hit) = crate::policy::block_match(name, &crate::policy::blocked_words()) {
+            if let Some(hit) = crate::policy::block_match(name, &crate::policy::block_rules()) {
                 let list = if hit.builtin { ", daftar bawaan" } else { "" };
                 return Some(format!("akan diblokir: teks berisi \"{}\" (block_actions{list})", hit.word));
             }
@@ -778,7 +778,9 @@ fn will_block(step: &Step) -> Option<String> {
             Some("akan diblokir: domain di luar allowed_domains".into())
         }
         Step::EvalScript(_) if flag_off("allow_eval_script") => Some("akan diblokir: evalScript dimatikan (allow_eval_script)".into()),
-        Step::EvalScript(_) if !crate::policy::blocked_words().is_empty() => Some("akan diblokir: evalScript tidak boleh selama block_actions aktif".into()),
+        Step::EvalScript(_) if !crate::policy::blocked_words().is_empty() && !crate::policy::eval_unlocked() => {
+            Some("akan diblokir: evalScript mati selama daftar blokir aktif (nyalakan \"Jalankan JavaScript bebas\" di Batasan)".into())
+        }
         Step::ClearState(_) | Step::ClearKeychain if flag_off("allow_app_reset") => Some("akan diblokir: hapus data app dimatikan (allow_app_reset)".into()),
         Step::InstallApp(_) | Step::UninstallApp(_) if flag_off("allow_app_install") => {
             Some("akan diblokir: install/uninstall app dimatikan (allow_app_install)".into())
@@ -794,7 +796,7 @@ async fn guard_risky(d: &dyn Driver, sel: &Selector, confirmed: bool) -> Result<
 }
 
 async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[String]) -> Result<()> {
-    guard_tap(d, sel, confirmed, words, &crate::policy::blocked_words()).await
+    guard_tap(d, sel, confirmed, words, &crate::policy::block_rules()).await
 }
 
 /// The selector, with the element's name when it says more (`e3 ("Bayar")`), not twice
@@ -949,7 +951,7 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
     for name in &candidates {
         if let Some(w) = crate::policy::risky_match(name, words) {
             return Err(Error::Blocked(format!(
-                "pressKey {key} {what} \"{name}\", a risky action (\"{w}\", confirm_actions): if it is intended, write the step with `confirm: true`"
+                "pressKey {key} {what} \"{name}\", a risky action (\"{w}\", confirm_actions): if it is intended, write the step as pressKey: {{ key: {key}, confirm: true }}, or tap the right button by its text"
             )));
         }
     }
@@ -964,13 +966,14 @@ fn block_source(hit: &crate::policy::BlockHit) -> &'static str {
     if hit.builtin { "block_actions, built-in list" } else { "block_actions" }
 }
 
-/// A script can click anything, which block_actions cannot see: no evalScript while it is set.
+/// A script can click anything, which block_actions cannot see: no evalScript while it is set,
+/// unless the user allowed it on purpose (`allow_eval_script = true`, checked by the caller).
 fn guard_script(blocked: &[String]) -> Result<()> {
     if blocked.is_empty() {
         return Ok(());
     }
     Err(Error::Blocked(
-        "evalScript is turned off while block_actions is set, the built-in list included (a script could press a blocked button). The user can change it in fastpilot ui › Pengaturan › Batasan & izin (empty the list).".into(),
+        "evalScript is off while block_actions is on (the built-in list too): a script could press a blocked button. Do not work around it. The user can allow scripts in fastpilot ui › Pengaturan › Batasan & izin (Jalankan JavaScript bebas) or with `fastpilot config set allow_eval_script true`.".into(),
     ))
 }
 
@@ -1043,7 +1046,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 }
             }
             Step::PressKey(k) => {
-                guard_key(d, k, confirmed, &crate::policy::risky_words(), &crate::policy::blocked_words()).await?;
+                guard_key(d, k, confirmed, &crate::policy::risky_words(), &crate::policy::block_rules()).await?;
                 d.press_key(k).await?
             }
             Step::SelectOption { from, option } => retry(action_timeout(), || d.select_option(from, option)).await?,
@@ -1070,7 +1073,9 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             }
             Step::Swipe { from, to } => d.swipe(*from, *to).await?,
             Step::EvalScript(js) => {
-                guard_script(&crate::policy::blocked_words())?;
+                if !crate::policy::eval_unlocked() {
+                    guard_script(&crate::policy::block_rules())?;
+                }
                 let v = d.eval_script(&subst(js)?).await?;
                 return Ok(Some(clip(v.to_string())));
             }
@@ -2186,15 +2191,15 @@ mod tests {
     }
 
     /// The flow runs evalScript, which the built-in block_actions list turns off (F5): this test
-    /// empties the list for itself, under ENV_LOCK.
+    /// allows scripts for itself (`allow_eval_script = true`, option C), under ENV_LOCK.
     #[test]
     fn login_flow_passes_and_returns_state() {
         let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // SAFETY: test-only env mutation, serialized by ENV_LOCK.
-        unsafe { std::env::set_var("FASTPILOT_BLOCK_ACTIONS", "") };
+        unsafe { std::env::set_var("FASTPILOT_ALLOW_EVAL_SCRIPT", "true") };
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().expect("runtime");
         rt.block_on(login_flow_cases());
-        unsafe { std::env::remove_var("FASTPILOT_BLOCK_ACTIONS") };
+        unsafe { std::env::remove_var("FASTPILOT_ALLOW_EVAL_SCRIPT") };
     }
 
     /// F5 (v0.3.2): with nothing set (a new install), "Bayar sekarang" is refused by the built-in
@@ -2222,11 +2227,21 @@ mod tests {
             assert_eq!(e.reason(), "blocked");
             assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("akan diblokir: teks berisi \"bayar\" (block_actions, daftar bawaan)"));
             // A plain delete: confirm only.
-            let e = guard_tap(&page, &Selector::Text("Hapus filter".into()), false, &crate::policy::risky_words(), &crate::policy::blocked_words()).await.expect_err("confirm");
+            let e = guard_tap(&page, &Selector::Text("Hapus filter".into()), false, &crate::policy::risky_words(), &crate::policy::block_rules()).await.expect_err("confirm");
             assert!(matches!(&e, Error::Blocked(m) if m.contains("confirm_actions") && m.contains("confirm: true")), "{e}");
             let hapus = Selector::Text("Hapus filter".into());
-            assert!(judge_tap(&hapus, &["Hapus filter".into()], true, &crate::policy::risky_words(), &crate::policy::blocked_words()).is_ok(), "confirmed");
-            assert!(guard_script(&crate::policy::blocked_words()).is_err(), "evalScript off while the built-in list is on");
+            assert!(judge_tap(&hapus, &["Hapus filter".into()], true, &crate::policy::risky_words(), &crate::policy::block_rules()).is_ok(), "confirmed");
+            let e = guard_script(&crate::policy::block_rules()).expect_err("evalScript off while the built-in list is on");
+            assert!(e.to_string().contains("allow_eval_script true") && e.to_string().contains("Jalankan JavaScript bebas"), "{e}");
+            assert!(!crate::policy::eval_unlocked());
+            // Security Low 3: an empty variable (an MCP entry an agent wrote) does not empty the list.
+            unsafe { std::env::set_var("FASTPILOT_BLOCK_ACTIONS", "") };
+            assert_eq!(crate::policy::blocked_words().len(), crate::policy::DEFAULT_BLOCKED.len());
+            unsafe { std::env::remove_var("FASTPILOT_BLOCK_ACTIONS") };
+            // Option C: the user's `allow_eval_script = true` unlocks scripts.
+            unsafe { std::env::set_var("FASTPILOT_ALLOW_EVAL_SCRIPT", "true") };
+            assert!(crate::policy::eval_unlocked());
+            unsafe { std::env::remove_var("FASTPILOT_ALLOW_EVAL_SCRIPT") };
         });
         // Emptying the file under a running process loosens: ignored until it restarts.
         std::fs::create_dir_all(&dir).expect("dir");
@@ -2365,6 +2380,13 @@ mod tests {
         let yaml = crate::flow_to_yaml(&flow, &std::collections::HashMap::new());
         assert!(yaml.contains("confirm: true") && crate::parse_flow(&yaml).expect("again").steps.len() == 2, "{yaml}");
         assert!(crate::parse_flow("- tapOn: { text: X, confirm: maybe }\n").is_err());
+        // v0.3.2: Enter that may press a confirm_actions button can be confirmed too (the refusal
+        // says so); it round-trips as `{ key: Enter, confirm: true }`.
+        let flow = crate::parse_flow("- pressKey: { key: Enter, confirm: true }\n- pressKey: Tab\n").expect("pressKey confirm");
+        assert!(matches!(&flow.steps[0].step, Step::Confirmed(inner) if matches!(&**inner, Step::PressKey(k) if k == "Enter")));
+        let yaml = crate::flow_to_yaml(&flow, &std::collections::HashMap::new());
+        assert!(yaml.contains("key: Enter") && yaml.contains("confirm: true") && crate::parse_flow(&yaml).is_ok(), "{yaml}");
+        assert!(crate::parse_flow("- pressKey: { confirm: true }\n").is_err());
     }
 
     #[tokio::test(start_paused = true)]
