@@ -110,6 +110,8 @@ pub async fn init(args: &[String]) -> Res<()> {
     limits();
 
     println!("\nReady. Next:\n  1. open claude in this folder\n  2. type: \"Use fastpilot to run {}\"\n  Want to try the demo first? fastpilot demo", example_path().display());
+    // D3: only when the user is asked step by step (not --yes, not a script).
+    crate::offer::dashboard(Path::new("."), mode == Mode::Ask, None);
     Ok(())
 }
 

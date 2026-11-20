@@ -9,6 +9,7 @@ mod doctor;
 mod fix;
 mod history_api;
 mod memory_api;
+mod offer;
 mod init;
 mod github;
 mod keystore;

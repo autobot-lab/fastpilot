@@ -38,6 +38,70 @@ fn demo(cwd: &Path, args: &[&str], adb: bool) -> (Option<i32>, String) {
     (out.status.code(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
+/// `fastpilot demo` in a pseudo-terminal (`script`, macOS), answering the dashboard question with
+/// `answer`; stops once `until` shows up (or after 60 s) and returns what was printed.
+fn demo_in_terminal(cwd: &Path, answer: &str, until: &str) -> String {
+    use std::io::{Read, Write};
+    let mut c = std::process::Command::new("script");
+    c.args(["-q", "/dev/null", env!("CARGO_BIN_EXE_fastpilot"), "demo"])
+        .current_dir(cwd)
+        .env("HOME", cwd)
+        .env_remove("FASTPILOT_CONFIG")
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .env("FASTPILOT_NO_BROWSER", "1")
+        .env("FASTPILOT_LIVE_DIR", cwd.join("live"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut child = c.spawn().expect("script");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send(String::from_utf8_lossy(&buf[..n]).into_owned()).is_err() {
+                break;
+            }
+        }
+    });
+    let (mut out, mut answered) = (String::new(), false);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < end && !out.contains(until) {
+        if let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            out.push_str(&chunk.replace('\r', ""));
+        }
+        if !answered && out.contains("[Y/n]") {
+            let _ = stdin.write_all(answer.as_bytes());
+            answered = true;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    // The dashboard started under `script` may outlive it.
+    let _ = std::process::Command::new("pkill").args(["-f", &format!("{} ui --no-open", env!("CARGO_BIN_EXE_fastpilot"))]).status();
+    out
+}
+
+/// D3 (v9 G7): the demo ends by offering the dashboard for the demo folder. Outside a terminal, a
+/// line says how; in a terminal, "n" leaves it for later and Enter starts it there.
+#[test]
+fn demo_offers_the_dashboard() {
+    let tmp = std::env::temp_dir().join(format!("fp-demo-d3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("tmp");
+    let (code, out) = demo(&tmp, &["first"], false);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("Dashboard: run `cd first && fastpilot ui` and keep this window open.") && !out.contains("[Y/n]"), "{out}");
+    if cfg!(target_os = "macos") {
+        let out = demo_in_terminal(&tmp, "n\n", "Later:");
+        assert!(out.contains("Open the dashboard now to chat, schedule and see results?") && out.contains("Later: run `cd fastpilot-demo && fastpilot ui`"), "{out}");
+        let _ = std::fs::remove_dir_all(tmp.join("fastpilot-demo"));
+        let out = demo_in_terminal(&tmp, "\n", "?code=");
+        assert!(out.contains("Starting the dashboard") && out.contains("http://127.0.0.1:") && out.contains("?code="), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
