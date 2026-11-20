@@ -42,6 +42,13 @@ async function detach(reason) {
 async function attach(tab) {
   const { port, token: fallback } = await settings();
   const token = await relayToken(port, fallback);
+  // No token, no connection: whatever listens on the port could otherwise drive this tab. The
+  // debugger is not attached either.
+  if (!token) {
+    badge("KEY", "#cf222e");
+    console.error(`fastpilot: no relay token for port ${port}: start a fastpilot session with endpoint: extension first (it hands the token over), or set the token from FASTPILOT_RELAY_TOKEN in the options`);
+    return;
+  }
   await chrome.debugger.attach({ tabId: tab.id }, "1.3");
   const ws = new WebSocket(`ws://127.0.0.1:${port}/extension?token=${encodeURIComponent(token)}`);
   // An active WebSocket keeps the service worker alive; the ping keeps traffic flowing.

@@ -20,6 +20,8 @@ native messaging, which web pages cannot use:
   profile folder), allowed only for this extension's ID (`iehmgkdbiojkipljgbaljojdmdfpjeeg`, fixed by
   the `key` in `manifest.json`).
 - On a click, the extension asks the native host for the token of its port and connects with it.
+  Without a token (no fastpilot session waiting, no token in the options) it does not connect and
+  does not attach the debugger: the badge shows a red **KEY**.
 - Without native messaging (another browser, or a copy of the extension with another ID), set
   `FASTPILOT_RELAY_TOKEN` and the same value in the extension's options.
 
