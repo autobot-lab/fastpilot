@@ -27,8 +27,41 @@ function color(id) {
 }
 const avatar = (x, cls) => h("span", { class: `ag-av ag-c${color(x.agent.id)} ${cls || ""}`, "aria-hidden": "true" }, x.initials);
 const deviceName = (d) => ((agData.devices || []).find((x) => x.id === d) || { name: d }).name;
-// D10b fills in the provider and model; until then every agent uses the global AI settings.
-const modelLabel = (a) => (a.provider || a.model ? `${a.provider || "Claude Code"} · ${a.model || "default"}` : "Claude Code · default");
+// D10b: "Provider · Model", from the server; models other than Claude are not tried with fastpilot.
+const modelLabel = (x) => x.model_label || "Claude Code";
+const untested = (x) => (x.tested === false ? h("span", { class: "ag-untested" }, "not tested yet") : null);
+
+// v7 #s4 step 6: the provider first, then its model. `st` is { provider, model } and is changed in place.
+function modelPicker(st) {
+  const box = h("div", { class: "ag-model" });
+  const draw = () => {
+    const prov = st.provider || "claude";
+    const p = (agData.providers || []).find((x) => x.id === prov) || { name: prov, key: "" };
+    const chips = h("div", { class: "chips", role: "radiogroup", "aria-label": "Provider" }, (agData.providers || []).map((x) => {
+      const on = x.id === prov;
+      return h("button", { type: "button", role: "radio", "aria-checked": String(on), class: "chip pick" + (on ? " on" : ""), onclick: () => { if (x.id !== prov) { st.provider = x.id; st.model = x.id === "claude" ? null : ""; draw(); } } }, x.name);
+    }));
+    let models;
+    if (prov === "claude") {
+      const cur = st.model || agData.default_model;
+      models = h("div", { class: "ag-models", role: "radiogroup", "aria-label": "Model" }, (agData.claude_models || []).map((m) => {
+        const on = m.id === cur;
+        return h("button", { type: "button", role: "radio", "aria-checked": String(on), class: "ag-mcard" + (on ? " on" : ""), onclick: () => { st.model = m.id; draw(); } },
+          h("b", {}, (on ? "✓ " : "") + m.name), h("span", { class: "s" }, m.about + (m.id === agData.default_model ? " · default" : "")));
+      }));
+    } else {
+      const input = h("input", { type: "text", maxlength: "100", value: st.model || "", placeholder: prov === "ollama" ? "e.g. the name of a model you pulled" : "the model id at " + p.name, "aria-label": `Model at ${p.name}` });
+      input.addEventListener("input", () => { st.model = input.value.trim(); });
+      models = h("div", { class: "fld" }, input,
+        h("span", { class: "s" }, p.key + (prov === "custom" ? " · its address is set in Settings › AI model" : "")),
+        h("span", { class: "ag-untested" }, "not tested yet"), h("span", { class: "s" }, "fastpilot has not been tried with this model: run a few tests and check the results before you rely on it."));
+    }
+    box.replaceChildren(h("div", { class: "fld" }, h("span", { class: "l" }, "1. Provider"), chips), h("div", { class: "fld" }, h("span", { class: "l" }, "2. Model"), models),
+      h("p", { class: "s muted" }, "Each provider's API key is saved once in Settings › AI model and can be used by any agent. Chat never changes the provider."));
+  };
+  draw();
+  return box;
+}
 
 function summary(x) {
   const a = x.agent;
@@ -40,7 +73,7 @@ function list(current) {
   const items = (agData.agents || []).map((x) => h("li", {},
     h("a", { class: "ag-item" + (x.agent.id === current ? " on" : ""), href: `#/agents/${x.agent.id}/chat`, "aria-current": x.agent.id === current ? "page" : null },
       avatar(x),
-      h("span", { class: "ag-txt" }, h("b", {}, x.agent.name), h("span", { class: "s" }, summary(x)), h("span", { class: "s" }, modelLabel(x.agent))),
+      h("span", { class: "ag-txt" }, h("b", {}, x.agent.name), h("span", { class: "s" }, summary(x)), h("span", { class: "s" }, modelLabel(x), " ", untested(x))),
       h("span", { class: "ag-st " + (x.busy ? "run" : "ready") }, x.busy ? "running" : "ready"))));
   return h("nav", { class: "ag-col", "aria-label": "Agents" },
     h("div", { class: "ag-col-head" }, h("h2", {}, "Agents"), h("a", { class: "btn sm p", href: "#/agents/new" }, icon("plus", "sm"), "New agent")),
@@ -95,16 +128,19 @@ function tabSettings(x) {
   }));
   const blocked = h("input", { type: "text", value: a.blocked.join(", "), placeholder: "e.g. Confirm order" });
   const fld = (l, el, hint) => h("label", { class: "fld" }, h("span", { class: "l" }, l), el, hint ? h("span", { class: "s" }, hint) : null);
+  const ai = { provider: a.provider || "claude", model: a.model || null };
+  const picker = modelPicker(ai);
   return h("section", { class: "grp ag-sec" }, h("h2", { class: "gh" }, "agent settings"),
     h("div", { class: "form ag-pad" },
       fld("Name", name), fld("What it does", job),
       h("div", { class: "fld" }, h("span", { class: "l" }, "Where it tests"), devs),
       fld("App or site", app),
       fld("Extra blocked words", blocked, "Only for this agent, on top of your limits; it can only be stricter. Separate with commas."),
-      h("div", { class: "fld" }, h("span", { class: "l" }, "AI model"), h("span", {}, modelLabel(a)), h("span", { class: "s" }, "Picking a provider and model per agent comes next.")),
+      h("div", { class: "fld" }, h("span", { class: "l" }, "AI model"), picker),
       h("div", { class: "btns" },
         h("button", { class: "btn p", onclick: async () => {
-          const out = await save({ ...a, name: name.value, job: job.value, app: app.value, devices: [...picked], blocked: blocked.value.split(",").map((w) => w.trim()).filter(Boolean) });
+          const out = await save({ ...a, name: name.value, job: job.value, app: app.value, devices: [...picked], blocked: blocked.value.split(",").map((w) => w.trim()).filter(Boolean),
+            provider: ai.provider === "claude" ? null : ai.provider, model: ai.model || null });
           if (out) page(out.id, "settings");
         } }, "Save"),
         a.id === "default" ? null : h("button", { class: "btn danger", onclick: async () => {
@@ -161,7 +197,7 @@ function page(id, tab) {
   const a = x.agent;
   tab = TABS.some(([k]) => k === tab) ? tab : "chat";
   $top().replaceChildren(avatar(x, "lg"), h("div", { class: "ag-head" }, h("h1", { tabindex: "-1" }, a.name),
-    h("span", { class: "s" }, `${a.devices.map(deviceName).join(" + ")} · ${modelLabel(a)}`)),
+    h("span", { class: "s" }, `${a.devices.map(deviceName).join(" + ")} · ${modelLabel(x)}`, " ", untested(x))),
   h("nav", { class: "ag-tabs right", "aria-label": `${a.name}: sections` }, TABS.map(([k, t]) => h("a", { href: `#/agents/${a.id}/${k}`, class: k === tab ? "on" : "", "aria-current": k === tab ? "page" : null }, t))));
   const box = h("div", { class: "ag-main" });
   $body().replaceChildren(h("div", { class: "ag-wrap" }, list(a.id), box));
@@ -186,7 +222,8 @@ function page(id, tab) {
 
 function pageNew() {
   chatHost = null;
-  const d = agDraft || (agDraft = { name: "", job: "", devices: ["web"], app: "", instructions: [], blocked: "" });
+  const d = agDraft || (agDraft = { name: "", job: "", devices: ["web"], app: "", instructions: [], blocked: "", ai: { provider: "claude", model: null } });
+  d.ai = d.ai || { provider: "claude", model: null };
   const errs = h("p", { class: "fld-err", role: "alert", hidden: true });
   const name = h("input", { type: "text", maxlength: "40", value: d.name, placeholder: "e.g. Mobile Payments", "aria-label": "Name" });
   name.addEventListener("input", () => { d.name = name.value; });
@@ -218,7 +255,8 @@ function pageNew() {
   const create = async () => {
     errs.hidden = true;
     try {
-      const r = await api("/api/agents", { action: "create", agent: { id: "", name: d.name, job: d.job, devices: d.devices, app: d.app, instructions: d.instructions, blocked: d.blocked.split(",").map((w) => w.trim()).filter(Boolean) } });
+      const r = await api("/api/agents", { action: "create", agent: { id: "", name: d.name, job: d.job, devices: d.devices, app: d.app, instructions: d.instructions, blocked: d.blocked.split(",").map((w) => w.trim()).filter(Boolean),
+        provider: d.ai.provider === "claude" ? null : d.ai.provider, model: d.ai.model || null } });
       agDraft = null;
       await loadAgents();
       toast(`Created "${r.agent.name}".`, true);
@@ -238,7 +276,7 @@ function pageNew() {
       sec(2, "where", false, devs, app),
       sec(3, "instructions (how this agent should work)", false, rules, h("div", { class: "add-row" }, rule, h("button", { type: "button", class: "btn", onclick: addRule }, icon("plus", "sm"), "Add")), sugs),
       sec(4, "skills", true, h("p", { class: "s muted" }, "Every installed skill for now; picking skills per agent comes next.")),
-      sec(5, "AI model", true, h("p", { class: "s muted" }, "Claude Code with your usual model for now; picking a provider and model per agent comes next.")),
+      sec(5, "this agent's AI model", true, modelPicker(d.ai)),
       sec(6, "this agent's limits", true, h("p", { class: "s" }, "It follows your global limits (pay, checkout and delete account are blocked). An agent can only be stricter."),
         h("label", { class: "fld" }, h("span", { class: "l" }, "Extra blocked words for this agent"), blocked))),
     h("aside", { class: "grp ag-side" }, h("h2", { class: "gh" }, "or create it in chat"),

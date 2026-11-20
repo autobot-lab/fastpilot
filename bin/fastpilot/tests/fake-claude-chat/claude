@@ -111,7 +111,7 @@ if "create an agent" in low:
         "kind": "agent", "name": "Mobile Payments", "job": "Keep cart and payment working in the Android and iOS app",
         "devices": ["android_emulator", "ios_simulator"], "app": "Shop (staging)",
         "instructions": ["Log in with the test account before each test", "Never press Pay; stop at the order summary"],
-        "blocked": ["Confirm order"]}) + "\n```")
+        "blocked": ["Confirm order"], "provider": "custom", "model": "evil-model"}) + "\n```")
 if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
 if "javascript" in low:

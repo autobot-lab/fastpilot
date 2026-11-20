@@ -24,6 +24,30 @@ pub const DEVICES: &[(&str, &str)] = &[
     ("iphone", "iPhone (physical)"),
 ];
 
+/// D10b: who drives an agent (`provider` setting values), as people name them.
+pub const PROVIDERS: &[(&str, &str)] = &[("claude", "Claude Code"), ("openai", "OpenAI"), ("openrouter", "OpenRouter"), ("groq", "Groq"), ("ollama", "Ollama (local)"), ("custom", "Other")];
+
+/// Claude models to pick from (id, name, what it is good for).
+pub const CLAUDE_MODELS: &[(&str, &str, &str)] = &[
+    ("claude-sonnet-5-5", "Sonnet", "balanced"),
+    ("claude-opus-5-5", "Opus", "most careful · uses more quota"),
+    ("claude-haiku-5-5", "Haiku", "fast & cheap · good for regressions"),
+];
+
+/// "Provider · Model" as the page shows it everywhere, and whether that model has been tried
+/// with fastpilot (only Claude models have).
+pub fn model_label(a: &Agent) -> (String, bool) {
+    let provider = a.provider.as_deref().unwrap_or("claude");
+    let pname = PROVIDERS.iter().find(|(k, _)| *k == provider).map(|(_, n)| *n).unwrap_or(provider);
+    if provider == "claude" {
+        let id = a.model.clone().unwrap_or_else(crate::run::model_explore);
+        let name = CLAUDE_MODELS.iter().find(|(m, _, _)| *m == id).map(|(_, n, _)| (*n).to_owned()).unwrap_or(id);
+        (format!("{pname} · {name}"), true)
+    } else {
+        (format!("{pname} · {}", a.model.as_deref().unwrap_or("?")), false)
+    }
+}
+
 /// Instructions to click into an agent (v7 #s4, "Suggestions").
 pub const SUGGESTED_INSTRUCTIONS: &[&str] = &[
     "Stop at the first failure and report",
@@ -179,6 +203,27 @@ pub fn check(mut a: Agent) -> Res<Agent> {
         }
     }
     a.blocked = a.blocked.iter().map(|w| w.trim().to_owned()).collect();
+    // D10b: a known provider, and a model it can take (Claude ids for Claude Code).
+    match (a.provider.as_deref().map(str::trim).filter(|p| !p.is_empty()), a.model.as_deref().map(str::trim).filter(|m| !m.is_empty())) {
+        (None | Some("claude"), m) => {
+            if let Some(e) = m.and_then(|m| fastpilot_core::config::invalid("model", m)) {
+                return Err(format!("Claude Code takes a Claude model ({e})"));
+            }
+            a.provider = None;
+            a.model = m.map(str::to_owned);
+        }
+        (Some(p), m) => {
+            if !PROVIDERS.iter().any(|(k, _)| *k == p) {
+                return Err(format!("Unknown provider \"{p}\""));
+            }
+            let Some(m) = m else { return Err("Pick the model at this provider".into()) };
+            if m.chars().count() > 100 || m.contains(char::is_whitespace) || m.chars().any(hidden) {
+                return Err(format!("\"{m}\" is not a model id"));
+            }
+            a.provider = Some(p.to_owned());
+            a.model = Some(m.to_owned());
+        }
+    }
     if a.skills.len() > 40 || a.skills.iter().any(|s| s.is_empty() || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')) {
         return Err("Unknown skill".into());
     }
@@ -357,5 +402,20 @@ mod tests {
         }
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// D10b: provider then model; Claude Code takes Claude ids only; the label everywhere.
+    #[test]
+    fn provider_and_model_per_agent() {
+        let claude = check(Agent { model: Some("claude-haiku-5-5".into()), ..agent("A") }).expect("claude");
+        assert_eq!(model_label(&claude), ("Claude Code · Haiku".to_owned(), true));
+        assert!(check(Agent { model: Some("gpt-4o".into()), ..agent("A") }).unwrap_err().contains("Claude model"));
+        let other = check(Agent { provider: Some("openrouter".into()), model: Some("vendor/model-x".into()), ..agent("A") }).expect("openrouter");
+        assert_eq!(model_label(&other), ("OpenRouter · vendor/model-x".to_owned(), false));
+        assert!(check(Agent { provider: Some("openrouter".into()), ..agent("A") }).unwrap_err().contains("Pick the model"));
+        assert!(check(Agent { provider: Some("evil".into()), model: Some("m".into()), ..agent("A") }).unwrap_err().contains("Unknown provider"));
+        assert!(check(Agent { provider: Some("groq".into()), model: Some("a b".into()), ..agent("A") }).is_err());
+        // "claude" is the default: stored as no provider.
+        assert_eq!(check(Agent { provider: Some("claude".into()), ..agent("A") }).expect("ok").provider, None);
     }
 }

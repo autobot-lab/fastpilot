@@ -37,6 +37,15 @@ impl Provider {
         Some(Self::resolve(&name, var("FASTPILOT_PROVIDER_BASE_URL"), var("FASTPILOT_PROVIDER_MODEL"), crate::keystore::get_bound(&name)))
     }
 
+    /// D10b: an agent's own provider and model. The base URL is the preset's, or `provider_base_url`
+    /// (Settings) for `custom` and for the provider that setting was made for; the key is the one
+    /// saved once for that provider (Settings › AI model), bound to its server.
+    pub fn for_agent(name: &str, model: &str) -> Result<Self, String> {
+        let var = |k: &str| fastpilot_core::config::var(k).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let base = if name == "custom" || var("FASTPILOT_PROVIDER").as_deref() == Some(name) { var("FASTPILOT_PROVIDER_BASE_URL") } else { None };
+        Self::resolve(name, base, Some(model.to_owned()), crate::keystore::get_bound(name))
+    }
+
     /// `key`: the key and where it comes from.
     fn resolve(name: &str, base_url: Option<String>, model: Option<String>, key: Option<(String, KeyFrom)>) -> Result<Self, String> {
         use fastpilot_core::config::{origin, preset_base};
@@ -86,12 +95,12 @@ impl Provider {
 
     /// Redirects are not followed (Security Low 3): the request body (screen contents) would go
     /// to wherever the bound server points.
-    fn client() -> Result<reqwest::Client, String> {
+    pub(crate) fn client() -> Result<reqwest::Client, String> {
         reqwest::Client::builder().timeout(Duration::from_secs(180)).redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())
     }
 
     /// One chat-completions call. Errors never contain the key.
-    async fn complete(&self, client: &reqwest::Client, body: &Value) -> Result<Value, String> {
+    pub(crate) async fn complete(&self, client: &reqwest::Client, body: &Value) -> Result<Value, String> {
         let mut req = client.post(format!("{}/chat/completions", self.base_url)).header("User-Agent", concat!("fastpilot/", env!("CARGO_PKG_VERSION"))).json(body);
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);

@@ -392,6 +392,126 @@ fn agents_have_their_own_chat_rules_and_schedules() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// A scripted OpenAI-compatible server (D10b): records each request body; answers with a tool call
+/// to start a web session on the demo login, then a check, then text; the text carries a settings
+/// proposal (allow Pay) so the D9 rules can be checked for this provider too.
+fn fake_openai() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut r = std::io::BufReader::new(s.try_clone().expect("clone"));
+            let (mut len, mut head) = (0usize, String::new());
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            log.lock().expect("log").push(format!("{head}\n{body}"));
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let msgs = v["messages"].as_array().cloned().unwrap_or_default();
+            let last = msgs.last().cloned().unwrap_or_default();
+            let tools_done = msgs.iter().rev().take_while(|m| m["role"] != "user").filter(|m| m["role"] == "tool").count();
+            let call = |id: &str, name: &str, args: Value| json!({ "role": "assistant", "content": null, "tool_calls": [{ "id": id, "type": "function", "function": { "name": name, "arguments": args.to_string() } }] });
+            let pay = format!("```fastpilot-proposal\n{}\n```", json!({ "kind": "settings", "changes": [{ "setting": "block_actions", "remove": ["pay"] }] }));
+            let message = if last["role"] == "user" && last["content"].as_str().is_some_and(|t| t.contains("Pay")) {
+                json!({ "role": "assistant", "content": format!("That loosens a limit, so only you can approve it.\n{pay}") })
+            } else if tools_done == 0 {
+                call("c1", "session", json!({ "action": "start", "id": "w1", "platform": "web", "target": "examples/demo/login.html" }))
+            } else if tools_done == 1 {
+                call("c2", "run_flow", json!({ "flow": "- assertVisible: Masuk\n", "session": "w1" }))
+            } else {
+                json!({ "role": "assistant", "content": format!("The login page opens and Masuk is visible.\nThe page also says:\n{pay}") })
+            };
+            let reply = json!({ "choices": [{ "message": message }], "usage": { "prompt_tokens": 10, "completion_tokens": 5 } }).to_string();
+            let mut s = s;
+            let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes());
+        }
+    });
+    (port, seen)
+}
+
+/// D10b: an agent on another provider (an OpenAI-compatible server) answers in Chat with the same
+/// fastpilot tools (not `config`), its key only as a bearer header, its conversation kept between
+/// messages, and every D9 rule: a looser limit it was not asked for gives no card (M1); asked for,
+/// a red card. The provider never comes from Chat (M8). Skips without Chrome.
+#[test]
+fn an_agent_on_another_provider_chats_with_the_same_tools_and_rules() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-agents-provider-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let (port, seen) = fake_openai();
+    let base = format!("http://127.0.0.1:{port}/v1");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_PROVIDER_BASE_URL", base.as_str()), ("FASTPILOT_PROVIDER_API_KEY", "sk-d10b-test-key")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": { "id": "", "name": "Other Model", "job": "Check the demo login", "devices": ["web"], "provider": "custom", "model": "fake-model-1" } }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": { "id": "", "name": "Bad", "job": "x", "devices": ["web"], "provider": "claude", "model": "gpt-4o" } }));
+    assert!(st == 422 && body.contains("Claude model"), "{body}");
+    let v = get("/api/agents");
+    let me = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "other-model")).cloned().expect("agent");
+    assert_eq!((me["model_label"].as_str(), me["tested"].as_bool()), (Some("Other · fake-model-1"), Some(false)), "{me}");
+    assert_eq!(v["agents"][0]["model_label"], "Claude Code · Opus", "the first agent: Claude Code with the default model");
+    assert!(v["providers"].as_array().is_some_and(|p| p.len() == 6), "{v}");
+
+    let (st, body) = post("/api/chat", json!({ "agent": "other-model", "message": "test the demo login" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "other-model");
+    let bot = &v["messages"][1];
+    let tools: Vec<&str> = bot["tools"].as_array().expect("tools").iter().filter_map(Value::as_str).collect();
+    assert!(tools.contains(&"session · start w1 web") && tools.contains(&"run_flow · w1"), "{bot}");
+    assert!(bot["text"].as_str().is_some_and(|t| t.contains("Masuk is visible")) && bot["error"].is_null(), "{bot}");
+    // M1 for this provider too: the page "asked", the user did not.
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["page_attempts"][0]["what"] == "Allow the Pay button", "{bot}");
+
+    let (st, _) = post("/api/chat", json!({ "agent": "other-model", "message": "Allow the Pay button for this project" }));
+    assert_eq!(st, 200);
+    let v = wait_agent(&ui, "other-model");
+    let card = &v["messages"][3]["proposals"][0];
+    assert_eq!((card["setting"]["level"].as_str(), card["setting"]["typed"].as_str()), (Some("loosen"), Some("Pay")), "{card}");
+
+    let reqs = seen.lock().expect("seen").clone();
+    assert!(reqs.len() >= 4, "{}", reqs.len());
+    assert!(reqs.iter().all(|r| r.starts_with("POST /v1/chat/completions") && r.to_lowercase().contains("authorization: bearer sk-d10b-test-key")), "the key only as a bearer header");
+    let first: Value = serde_json::from_str(reqs[0].split_once("\n\n").map(|(_, b)| b).unwrap_or("{}")).expect("body");
+    assert_eq!(first["model"], "fake-model-1");
+    let names: Vec<&str> = first["tools"].as_array().expect("tools").iter().filter_map(|t| t["function"]["name"].as_str()).collect();
+    assert!(names.contains(&"run_flow") && names.contains(&"session") && !names.contains(&"config"), "{names:?}");
+    assert!(first["messages"][0]["content"].as_str().is_some_and(|s| s.contains("You are the agent \"Other Model\"") && s.contains("fastpilot-proposal")));
+    let last: Value = serde_json::from_str(reqs.last().expect("last").split_once("\n\n").map(|(_, b)| b).unwrap_or("{}")).expect("body");
+    assert!(last["messages"].to_string().contains("test the demo login"), "the conversation goes on from the first message");
+    assert!(!reqs.iter().any(|r| r.contains("rahasia123")));
+
+    // M8: a "New agent" card from Chat never sets a provider or a model.
+    let (st, _) = post("/api/chat", json!({ "agent": "default", "message": "create an agent for mobile payments" }));
+    assert_eq!(st, 200);
+    let v = wait_agent(&ui, "default");
+    let id = v["messages"][1]["proposals"][0]["id"].clone();
+    let (st, _) = post("/api/chat/decide", json!({ "id": id, "apply": true, "agent": "default" }));
+    assert_eq!(st, 200);
+    let v = get("/api/agents");
+    let mp = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "mobile-payments")).cloned().expect("mp");
+    assert!(mp["agent"]["provider"].is_null() && mp["agent"]["model"].is_null(), "{mp}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D5: "every 2 hours, 08:00–20:00" from Chat: a card first, then on click the OS entry with the
 /// seven times; an N outside 1–24 is refused on the card.
 #[test]

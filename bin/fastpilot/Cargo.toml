@@ -20,6 +20,8 @@ axum.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde = { workspace = true }
+# D10b: the dashboard Chat drives `fastpilot mcp` itself for agents on another provider.
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 
 [dev-dependencies]
 ring.workspace = true

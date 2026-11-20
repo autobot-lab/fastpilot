@@ -480,11 +480,26 @@ async fn agents_api() -> Response {
                 .filter(|s| s.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id)
                 .map(|s| schedule::describe(&s.when))
                 .collect();
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id), "schedules": scheds })
+            let (label, tested) = agents::model_label(&a);
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id), "schedules": scheds, "model_label": label, "tested": tested })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
-    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS })).into_response()
+    // D10b: each provider with whether its API key is saved (Settings › AI model); never the key.
+    let providers: Vec<Value> = agents::PROVIDERS
+        .iter()
+        .map(|(k, n)| {
+            let key = match *k {
+                "claude" => "Your Claude Code login",
+                "ollama" => "No key needed (runs on this computer)",
+                p if crate::keystore::has(p) => "API key saved",
+                _ => "No API key yet: add it in Settings › AI model",
+            };
+            json!({ "id": k, "name": n, "key": key })
+        })
+        .collect();
+    let claude: Vec<Value> = agents::CLAUDE_MODELS.iter().map(|(id, n, d)| json!({ "id": id, "name": n, "about": d })).collect();
+    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore() })).into_response()
 }
 
 /// `{action: create|update, agent}`, `{action: delete, id}`.
