@@ -181,6 +181,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/history/report", get(crate::history_api::report))
         .route("/api/history/chat", get(crate::history_api::conversation))
         .route("/api/memory", get(crate::memory_api::list).post(crate::memory_api::change))
+        .route("/api/notes", get(crate::memory_api::notes_list).post(crate::memory_api::notes_change))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }

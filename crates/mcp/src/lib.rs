@@ -99,6 +99,8 @@ impl Launcher for PlatformLauncher {
 }
 
 struct State {
+    /// D6: the project notes, read once when this server starts (pinned for its whole life).
+    notes: Option<String>,
     registry: Mutex<SessionRegistry>,
     launcher: PlatformLauncher,
     memory: Memory,
@@ -566,6 +568,7 @@ impl FastPilot {
                 busy: Mutex::new(HashMap::new()),
                 record: std::sync::atomic::AtomicBool::new(false),
                 recording_started: std::sync::Mutex::new(HashMap::new()),
+                notes: fastpilot_memory::notes::Notes::from_env().for_agents(),
             }),
             tool_router: Self::tool_router(),
         }
@@ -970,10 +973,18 @@ impl ServerHandler for FastPilot {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("fastpilot", env!("CARGO_PKG_VERSION")))
-            .with_instructions(
-                "fastpilot drives web, Android and iOS for QA. Start a session (with test_id to get a path-memory hint), \
-                 batch steps in one run_flow (it auto-waits and returns diffs), then call report. Read docs(topic: dsl) once.",
-            )
+            .with_instructions(instructions(self.state.notes.as_deref()))
+    }
+}
+
+/// What the client's model is told at the start: how to use fastpilot, then the project's notes
+/// (D6) when there are any, marked as the project owner's own context.
+pub fn instructions(notes: Option<&str>) -> String {
+    let base = "fastpilot drives web, Android and iOS for QA. Start a session (with test_id to get a path-memory hint), \
+                batch steps in one run_flow (it auto-waits and returns diffs), then call report. Read docs(topic: dsl) once.";
+    match notes {
+        Some(n) => format!("{base}\n\n{n}"),
+        None => base.to_owned(),
     }
 }
 

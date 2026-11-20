@@ -412,6 +412,7 @@ dependencies = [
  "fastpilot-web",
  "futures-util",
  "reqwest",
+ "ring",
  "rmcp",
  "serde",
  "serde_json",
@@ -495,6 +496,7 @@ version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "fastpilot-core",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",

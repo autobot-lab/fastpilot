@@ -6,6 +6,7 @@
 //!   Written only after a run reported as passed; a failed run only updates statistics.
 
 pub mod history;
+pub mod notes;
 mod triage;
 
 use std::collections::BTreeMap;
