@@ -448,7 +448,42 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let mut turns = 0;
     let mut forced_class = None;
     let mut failure = None;
-    match serve(agent.clone(), token.clone()).await {
+    // B2: an OpenAI-compatible provider drives the same tools in-process, with the same limits.
+    let provider = crate::provider::Provider::configured().and_then(Result::ok);
+    if let Some(p) = &provider {
+        models = vec![format!("{}:{}", p.name, p.model)];
+        let a = agent.clone();
+        let task = crate::provider::Task {
+            system: SYSTEM,
+            prompt: &intro,
+            tools: crate::provider::openai_tools(&Agent::tools()),
+            max_turns: opts.max_steps + 5,
+            limit: case_timeout(),
+        };
+        let o = crate::provider::drive(
+            p,
+            task,
+            move |name, args| {
+                let a = a.clone();
+                async move {
+                    let v = a.call(&name, args).await;
+                    let text = v["content"].as_array().map(|c| c.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+                    (text, v["isError"] == true)
+                }
+            },
+            || lock(&agent.verdict).is_some(),
+        )
+        .await;
+        turns = o.turns;
+        usage.input = o.input_tokens;
+        usage.output = o.output_tokens;
+        if lock(&agent.verdict).is_none() {
+            failure = o.failure;
+        }
+    }
+    let serving = if provider.is_some() { Err(std::io::Error::other("not used")) } else { serve(agent.clone(), token.clone()).await };
+    match serving {
+        Err(_) if provider.is_some() => {}
         Err(e) => failure = Some(format!("cannot serve the tools to Claude Code: {e}")),
         Ok((addr, server)) => {
             let mut prompt = intro;
@@ -588,9 +623,17 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     if cases.is_empty() {
         return Err(format!("no test cases (*.md) in {}", target.display()).into());
     }
-    // The user's own Claude Code does the thinking: no API key, their login and plan.
-    let version = tokio::process::Command::new(claude_bin()).arg("--version").output().await;
-    if !version.as_ref().is_ok_and(|o| o.status.success()) {
+    // The user's own Claude Code does the thinking (no API key, their login and plan), unless an
+    // OpenAI-compatible provider is configured (B2).
+    let provider = crate::provider::Provider::configured().transpose()?;
+    if let Some(p) = &provider {
+        println!("driver: {} ({}) at {}", p.name, p.model, p.base_url);
+    }
+    let version = match provider {
+        Some(_) => None,
+        None => Some(tokio::process::Command::new(claude_bin()).arg("--version").output().await),
+    };
+    if version.as_ref().is_some_and(|v| !v.as_ref().is_ok_and(|o| o.status.success())) {
         return Err(format!(
             "fastpilot run needs Claude Code installed and logged in (`{}` not found or not working; \
              install it from https://claude.com/claude-code, run `claude` once to log in, or set FASTPILOT_CLAUDE)",
