@@ -1,4 +1,4 @@
-// fastpilot ui: settings (Model AI, Batasan & izin, Secret) and Device. Plain DOM, no framework.
+// fastpilot ui: settings (AI model, Limits & permissions, Secrets) and Device. Plain DOM, no framework.
 // Values from the server are always set as text, never as HTML.
 "use strict";
 
@@ -51,7 +51,7 @@ async function api(path, body) {
     r = await fetch(path, opts);
   } catch (_) {
     // The browser's own "Failed to fetch": the fastpilot ui process is not running any more.
-    throw new Error("server fastpilot ui tidak menjawab; jalankan lagi `fastpilot ui` di Terminal");
+    throw new Error("the fastpilot ui server is not answering; run `fastpilot ui` again in Terminal");
   }
   if (!r.ok) throw new Error((await r.text()).replace(/^fastpilot ui: /, "").trim() || r.statusText);
   return r.json();
@@ -82,7 +82,7 @@ async function save(key, value, attempt) {
     render();
   } catch (e) {
     if (attempt !== undefined) typed[key] = attempt;
-    toast("Tidak tersimpan: " + e.message);
+    toast("Not saved: " + e.message);
     render();
     const again = document.querySelector(`input[data-key="${key}"]`);
     if (again) again.focus();
@@ -91,7 +91,7 @@ async function save(key, value, attempt) {
 
 // ---- controls ----
 function envNote(s) {
-  return s.source === "env" ? h("div", { class: "env" }, `Diatur lewat env ${s.env} (menang atas file); ubah di konfigurasi MCP.`) : null;
+  return s.source === "env" ? h("div", { class: "env" }, `Set in the environment, ${s.env} (it wins over the file); change it in the MCP configuration.`) : null;
 }
 function opt(label, desc, control, s, extra) {
   return h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, label), desc ? h("div", { class: "d" }, desc) : null, extra || null, s ? envNote(s) : null), control);
@@ -163,8 +163,8 @@ function chips(key, opts) {
   const add = () => {
     const v = input.value.trim();
     if (!v) return;
-    if (v.includes(",")) return toast("Satu item per kali, tanpa koma.");
-    if (items.some((x) => x.toLowerCase() === v.toLowerCase())) return toast(`"${v}" sudah ada di daftar.`);
+    if (v.includes(",")) return toast("One item at a time, without commas.");
+    if (items.some((x) => x.toLowerCase() === v.toLowerCase())) return toast(`"${v}" is already in the list.`);
     save(key, bi ? bi.add(v) : [...items, v], v);
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
@@ -174,13 +174,13 @@ function chips(key, opts) {
   return h("div", { class: "chips" },
     empty,
     list.map((it) =>
-      h("span", { class: "chip" + (opts.red ? " x" : "") + (it.builtin ? " dflt" : ""), title: it.builtin ? "kata bawaan" : null }, opts.show ? opts.show(it.w) : it.w,
-        locked ? null : h("button", { class: "rm", "aria-label": `Hapus ${it.w}`, onclick: () => save(key, bi ? bi.remove(it) : items.filter((x) => x !== it.w)) }, icon("close", "sm")))),
+      h("span", { class: "chip" + (opts.red ? " x" : "") + (it.builtin ? " dflt" : ""), title: it.builtin ? "built-in word" : null }, opts.show ? opts.show(it.w) : it.w,
+        locked ? null : h("button", { class: "rm", "aria-label": `Remove ${it.w}`, onclick: () => save(key, bi ? bi.remove(it) : items.filter((x) => x !== it.w)) }, icon("close", "sm")))),
     preset,
-    locked ? null : h("span", { class: "add" }, input, h("button", { onclick: add, "aria-label": opts.addLabel }, icon("plus", "sm"), "Tambah")),
+    locked ? null : h("span", { class: "add" }, input, h("button", { onclick: add, "aria-label": opts.addLabel }, icon("plus", "sm"), "Add")),
     bi && !locked ? h("span", { class: "acts" },
-      h("button", { class: "btn sm", disabled: !bi.unset && !items.length, onclick: () => save(key, []) }, "Kosongkan"),
-      h("button", { class: "btn sm", disabled: bi.unset, onclick: () => save(key, null) }, "Kembalikan ke bawaan")) : null);
+      h("button", { class: "btn sm", disabled: !bi.unset && !items.length, onclick: () => save(key, []) }, "Empty it"),
+      h("button", { class: "btn sm", disabled: bi.unset, onclick: () => save(key, null) }, "Back to built-in")) : null);
 }
 function select(key, choices, label) {
   const s = get(key);
@@ -193,18 +193,18 @@ function select(key, choices, label) {
 }
 function savedNote() {
   if (!savedAt || savedAt.page !== currentPage()) return h("small", {}, "");
-  const t = savedAt.at.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
-  return h("small", {}, `✓ Tersimpan · ${t}`);
+  const t = savedAt.at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return h("small", {}, `✓ Saved · ${t}`);
 }
 
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Pengaturan" }, item("model", "Model AI"), item("limits", "Batasan & izin"), item("secret", "Secret"));
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secret", "Secret"));
 }
 
 function topSettings() {
-  $top().replaceChildren(icon("settings"), h("h1", { tabindex: "-1" }, "Pengaturan"));
+  $top().replaceChildren(icon("settings"), h("h1", { tabindex: "-1" }, "Settings"));
 }
 
 const MODELS = [
@@ -217,9 +217,9 @@ const MODELS = [
 // Who drives `fastpilot run`: Claude Code, or an OpenAI-compatible API (B2).
 let provData = null, provBusy = false, provResult = null;
 // What the user picked and typed but did not save yet: the page is redrawn (device check done,
-// Simpan busy, a refused save) and must not throw it away. The API key is never kept here.
+// Save busy, a refused save) and must not throw it away. The API key is never kept here.
 let provDraft = null;
-const PROV_LABEL = { claude: "Claude Code (bawaan, tanpa API key)", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama (lokal)", custom: "Lainnya (OpenAI-compatible)" };
+const PROV_LABEL = { claude: "Claude Code (built in, no API key)", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama (local)", custom: "Other (OpenAI-compatible)" };
 
 async function loadProvider() {
   try { provData = await api("/api/provider"); } catch (e) { provData = { error: e.message }; }
@@ -243,29 +243,29 @@ async function provAction(body) {
 }
 
 function providerGroup() {
-  if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "penggerak test"), h("div", { class: "empty small" }, "Membaca…")); }
-  if (provData.error) return h("div", { class: "err", role: "alert" }, "Tidak bisa membaca penyedia: " + provData.error);
+  if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "who runs the tests"), h("div", { class: "empty small" }, "Reading…")); }
+  if (provData.error) return h("div", { class: "err", role: "alert" }, "Cannot read the provider: " + provData.error);
   const preset0 = (n) => provData.presets.find((p) => p.name === n) || {};
   const d = provDraft || { provider: provData.provider, base_url: provData.base_url || preset0(provData.provider).base_url || "", model: provData.model || "" };
-  const pick = h("select", { class: "sel", "aria-label": "Penyedia model untuk fastpilot run", disabled: provData.env.provider },
+  const pick = h("select", { class: "sel", "aria-label": "Model provider for fastpilot run", disabled: provData.env.provider },
     provData.presets.map((p) => h("option", { value: p.name, selected: p.name === d.provider }, PROV_LABEL[p.name] || p.name)));
   const preset = (n) => provData.presets.find((p) => p.name === n) || {};
   const hosted = (n) => ["openai", "openrouter", "groq"].includes(n);
   const url = h("input", { type: "text", class: "mono", value: d.base_url, placeholder: "https://…/v1", "aria-label": "Base URL" });
   const urlHint = h("span", { class: "s" });
-  const model = h("input", { type: "text", class: "mono", value: d.model, placeholder: "mis. gpt-4.1-mini, llama3.1", "aria-label": "Id model" });
+  const model = h("input", { type: "text", class: "mono", value: d.model, placeholder: "for example gpt-4.1-mini, llama3.1", "aria-label": "Model id" });
   const keepDraft = () => { provDraft = { provider: pick.value, base_url: url.value, model: model.value }; };
   url.addEventListener("input", keepDraft);
   model.addEventListener("input", keepDraft);
   const k = provData.key || {};
-  const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `tersimpan di ${k.where} · isi untuk mengganti` : "sk-…", "aria-label": "API key" });
+  const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `saved in ${k.where} · type to replace it` : "sk-…", "aria-label": "API key" });
   const detail = h("div", { class: "prov-fields" },
     h("label", { class: "fld" }, h("span", { class: "l" }, "Base URL"), url, urlHint),
     h("label", { class: "fld" }, h("span", { class: "l" }, "Model"), model),
     h("label", { class: "fld" }, h("span", { class: "l" }, "API key"), key,
-      h("span", { class: "s" }, provData.env.key ? "FASTPILOT_PROVIDER_API_KEY diatur lewat environment dan dipakai lebih dulu."
-        : k.has ? `Tersimpan di ${k.where}${k.origin ? `, hanya untuk ${k.origin}` : ""}. Tidak pernah ditampilkan lagi; kunci hanya dikirim ke server tempat ia disimpan.`
-        : `Disimpan di ${k.where || "penyimpan kunci sistem"}, tidak di file pengaturan, dan hanya dikirim ke server ini. Ollama lokal tidak butuh kunci.`)));
+      h("span", { class: "s" }, provData.env.key ? "FASTPILOT_PROVIDER_API_KEY is set in the environment and is used first."
+        : k.has ? `Saved in ${k.where}${k.origin ? `, only for ${k.origin}` : ""}. Never shown again; the key is only sent to the server it was saved for.`
+        : `Saved in ${k.where || "the system key store"}, not in the settings file, and only sent to this server. A local Ollama needs no key.`)));
   // Changing provider changes the server: the preset's URL replaces the previous one (Design must-fix).
   let shownFor = d.provider;
   const sync = () => {
@@ -277,123 +277,123 @@ function providerGroup() {
     }
     url.readOnly = hosted(pick.value);
     urlHint.textContent = hosted(pick.value)
-      ? `${PROV_LABEL[pick.value]} selalu memakai server ini. Untuk server lain pilih "Lainnya (OpenAI-compatible)".`
-      : pick.value === "custom" ? "Wajib diisi, mis. https://llm.kantor.id/v1. https wajib, kecuali ke komputer ini."
-      : "Bawaan Ollama di komputer ini; ubah bila Ollama ada di port lain.";
+      ? `${PROV_LABEL[pick.value]} always uses this server. For another server choose "Other (OpenAI-compatible)".`
+      : pick.value === "custom" ? "Required, for example https://llm.company.com/v1. https is required, except to this computer."
+      : "Ollama's default on this computer; change it if Ollama uses another port.";
   };
   pick.addEventListener("change", () => { sync(); keepDraft(); });
   sync();
   const btns = h("div", { class: "btns" },
-    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Simpan"),
-    provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Mengetes…" : "Tes koneksi") : null,
-    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: () => { if (confirm("Hapus API key yang tersimpan?")) provAction({ action: "delete-key" }); } }, "Hapus kunci") : null);
+    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Save"),
+    provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Testing…" : "Test the connection") : null,
+    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: () => { if (confirm("Delete the saved API key?")) provAction({ action: "delete-key" }); } }, "Delete the key") : null);
   return h("div", { class: "grp" },
-    h("div", { class: "gh" }, icon("plug"), "penggerak test · fastpilot run"),
-    provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "Penyedia diatur lewat environment (FASTPILOT_PROVIDER…), yang menang atas pengaturan ini.")) : null,
-    opt("Penyedia", "Claude Code memakai login-mu. API OpenAI-compatible bersifat opsional; berlaku di run berikutnya.", pick, null),
+    h("div", { class: "gh" }, icon("plug"), "who runs the tests · fastpilot run"),
+    provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "The provider is set in the environment (FASTPILOT_PROVIDER…), which wins over this setting.")) : null,
+    opt("Provider", "Claude Code uses your login. An OpenAI-compatible API is optional; it applies from the next run.", pick, null),
     h("div", { class: "prov" }, detail, btns,
       provResult ? h("p", { class: "prov-result " + (provResult.ok ? "ok" : "bad"), role: "status" }, provResult.ok ? "✓ " : "✗ ", provResult.text) : null));
 }
 
 function pageModel() {
   const run = doctorCache && doctorCache.checks.find((c) => c.area === "run");
-  const status = !doctorCache ? h("span", { class: "tag" }, "Mengecek…")
-    : run && run.status === "ok" ? h("span", { class: "tag" }, "✓ Terpasang")
-    : h("span", { class: "tag warn" }, "Belum terpasang");
-  const replay = [["", `Bawaan · ${MODELS.find(([v]) => v === S.defaults.model_replay)?.[1] || S.defaults.model_replay}`], ...MODELS];
-  const explore = [["", `Bawaan · ${MODELS.find(([v]) => v === S.defaults.model_explore)?.[1] || S.defaults.model_explore}`], ...MODELS];
+  const status = !doctorCache ? h("span", { class: "tag" }, "Checking…")
+    : run && run.status === "ok" ? h("span", { class: "tag" }, "✓ Installed")
+    : h("span", { class: "tag warn" }, "Not installed");
+  const replay = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_replay)?.[1] || S.defaults.model_replay}`], ...MODELS];
+  const explore = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_explore)?.[1] || S.defaults.model_explore}`], ...MODELS];
   return h("section", { class: "panel" },
-    h("h2", {}, "Model AI", savedNote()),
-    h("p", { class: "sub" }, "Model hanya dipakai saat fastpilot menjalankan test sendiri (", code("fastpilot run"), "). Dari Claude Code atau Cursor, model dipilih di aplikasi itu."),
+    h("h2", {}, "AI model", savedNote()),
+    h("p", { class: "sub" }, "The model is only used when fastpilot runs tests itself (", code("fastpilot run"), "). From Claude Code or Cursor, the model is chosen in that app."),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("model"), "model ai · siapa menjalankan apa"),
-      opt("Replay (cepat & murah)", "Menjalankan ulang langkah yang sudah tercatat", select("model_replay", replay, "Model replay"), get("model_replay")),
-      opt("Eksplorasi / perbaikan", "Dipakai saat replay gagal atau test baru", select("model_explore", explore, "Model eksplorasi"), get("model_explore")),
-      opt("Claude Code", run ? `${run.detail}` : "Memakai login Claude Code milikmu, tanpa API key", status)),
+      h("div", { class: "gh" }, icon("model"), "ai model · who runs what"),
+      opt("Replay (fast & cheap)", "Replays steps that are already recorded", select("model_replay", replay, "Replay model"), get("model_replay")),
+      opt("Exploring / repairing", "Used when a replay fails, or for a new test", select("model_explore", explore, "Exploring model"), get("model_explore")),
+      opt("Claude Code", run ? `${run.detail}` : "Uses your Claude Code login, no API key", status)),
     providerGroup());
 }
 
 const NEW_032 = "fp-new-0.3.2-limits";
 function pageLimits() {
-  const confirmShow = (w) => (w === "default" ? "default (hapus, bayar, beli, …)" : w);
+  const confirmShow = (w) => (w === "default" ? "default (delete, pay, buy, …)" : w);
   const emptied = (key) => { const s = get(key); return s && s.source !== "default" && Array.isArray(s.value) && !s.value.length; };
   let seen = false;
   try { seen = localStorage.getItem(NEW_032) === "1"; } catch (e) { /* private mode: show it */ }
   const news = seen ? null : h("div", { class: "banner info new" }, icon("info"),
-    h("span", {}, h("b", {}, "Baru di 0.3.2: "), "tombol pembayaran dan hapus akun sekarang diblokir secara bawaan. Kalau memang mau mengetes checkout, hapus katanya di bawah atau klik ", h("b", {}, "Kosongkan"), "."),
-    h("button", { class: "rm", "aria-label": "Tutup pemberitahuan", onclick: () => { try { localStorage.setItem(NEW_032, "1"); } catch (e) { /* ignore */ } render(); } }, icon("close", "sm")));
+    h("span", {}, h("b", {}, "New in 0.3.2: "), "payment and account-deletion buttons are now blocked by default. If you do want to test a checkout, remove the word below or click ", h("b", {}, "Empty it"), "."),
+    h("button", { class: "rm", "aria-label": "Close this notice", onclick: () => { try { localStorage.setItem(NEW_032, "1"); } catch (e) { /* ignore */ } render(); } }, icon("close", "sm")));
   return h("section", { class: "panel" },
-    h("h2", {}, "Batasan & izin", savedNote()),
-    h("p", { class: "sub" }, "Aturan ini berlaku untuk semua test: dari Claude Code, Cursor, CLI, maupun ", code("fastpilot run"), "."),
+    h("h2", {}, "Limits & permissions", savedNote()),
+    h("p", { class: "sub" }, "These rules apply to every test: from Claude Code, Cursor, the CLI, or ", code("fastpilot run"), "."),
     news,
-    h("div", { class: "banner" }, icon("info"), h("span", {}, "Perubahan berlaku mulai run berikutnya. Sesi yang sedang berjalan tetap memakai aturan saat ia dimulai. AI lewat chat hanya bisa memperketat aturan, tidak melonggarkan. Disimpan di ", code(S.path), ".")),
+    h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, the AI can only make rules stricter, never looser. Saved in ", code(S.path), ".")),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("globe"), "domain yang boleh dibuka"),
-      opt("Hanya izinkan domain ini", "Kosong = semua domain boleh. Link, redirect, dan popup ke domain lain diblokir.",
-        chips("allowed_domains", { placeholder: "mis. toko.com", addLabel: "Tambah domain", empty: "Semua domain boleh" }), get("allowed_domains"))),
+      h("div", { class: "gh" }, icon("globe"), "domains that may be opened"),
+      opt("Only allow these domains", "Empty = every domain is allowed. Links, redirects and pop-ups to other domains are blocked.",
+        chips("allowed_domains", { placeholder: "for example shop.com", addLabel: "Add a domain", empty: "Every domain is allowed" }), get("allowed_domains"))),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("risk"), "aksi berisiko"),
-      opt("Tombol yang selalu diblokir", "Juga dengan confirm: true. Garis putus-putus = kata bawaan.",
-        chips("block_actions", { placeholder: "mis. Keluar", addLabel: "Tambah kata yang diblokir", red: true, empty: emptied("block_actions") ? "Dikosongkan: tidak ada yang diblokir" : "Belum ada" }), get("block_actions"),
-        h("div", { class: "d" }, "Kata bawaan cocok per kata utuh (\"pay\" kena \"Pay now\", tidak kena \"Paypal\"). Kata tambahanmu cocok kalau teks tombol ", h("b", {}, "berisi"), " kata itu: \"Keluar\" juga memblokir \"Keluarkan\". Selama ada kata di sini, JavaScript bebas (evalScript) ikut mati, kecuali kamu menyalakan \"Jalankan JavaScript bebas\" di bawah.")),
-      opt("Tombol yang butuh konfirmasi", "AI harus menulis confirm: true. Cocok per kata. Bawaan: hapus, delete, remove.",
-        chips("confirm_actions", { placeholder: "mis. Arsipkan", addLabel: "Tambah kata konfirmasi", show: confirmShow, empty: emptied("confirm_actions") ? "Dikosongkan: tanpa konfirmasi" : "Belum ada" }), get("confirm_actions"))),
+      h("div", { class: "gh" }, icon("risk"), "risky actions"),
+      opt("Buttons that are always blocked", "Also with confirm: true. Dashed = built-in word.",
+        chips("block_actions", { placeholder: "for example Log out", addLabel: "Add a blocked word", red: true, empty: emptied("block_actions") ? "Emptied: nothing is blocked" : "None yet" }), get("block_actions"),
+        h("div", { class: "d" }, "Built-in words match whole words (\"pay\" matches \"Pay now\", not \"Paypal\"). Your own words match when the button text ", h("b", {}, "contains"), " the word: \"Log out\" also blocks \"Log out everywhere\". While there is a word here, free JavaScript (evalScript) is off too, unless you turn on \"Run any JavaScript\" below.")),
+      opt("Buttons that need confirmation", "The AI must write confirm: true. Whole-word match. Built in: hapus, delete, remove.",
+        chips("confirm_actions", { placeholder: "for example Archive", addLabel: "Add a confirmation word", show: confirmShow, empty: emptied("confirm_actions") ? "Emptied: no confirmation" : "None yet" }), get("confirm_actions"))),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("device"), "device & aplikasi"),
-      opt("Boleh install / uninstall aplikasi", "Memasang atau menghapus aplikasi di HP, emulator, atau simulator", toggle("allow_app_install", "Boleh install / uninstall aplikasi"), get("allow_app_install")),
-      opt("Boleh hapus data aplikasi (reset)", "Mengosongkan data dan login aplikasi, untuk test yang mulai dari awal", toggle("allow_app_reset", "Boleh hapus data aplikasi"), get("allow_app_reset")),
-      opt("Boleh pakai HP fisik", "Kalau mati, hanya emulator dan simulator", toggle("allow_physical_devices", "Boleh pakai HP fisik"), get("allow_physical_devices")),
-      opt("Boleh ubah setting HP (jaringan, lokasi, izin app, bahasa)", "Contoh: mode offline, GPS palsu, izin kamera, bahasa HP", toggle("allow_device_settings", "Boleh ubah setting HP"), get("allow_device_settings"))),
+      h("div", { class: "gh" }, icon("device"), "devices & apps"),
+      opt("May install / uninstall apps", "Install or remove apps on phones, emulators or simulators", toggle("allow_app_install", "May install / uninstall apps"), get("allow_app_install")),
+      opt("May clear app data (reset)", "Clears the app's data and login, for tests that start from scratch", toggle("allow_app_reset", "May clear app data"), get("allow_app_reset")),
+      opt("May use physical phones", "When off, only emulators and simulators", toggle("allow_physical_devices", "May use physical phones"), get("allow_physical_devices")),
+      opt("May change phone settings (network, location, app permissions, language)", "For example: offline mode, fake GPS, camera permission, phone language", toggle("allow_device_settings", "May change phone settings"), get("allow_device_settings"))),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("lock"), "data & keamanan"),
-      opt("Jalankan JavaScript bebas di halaman", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script"),
+      h("div", { class: "gh" }, icon("lock"), "data & security"),
+      opt("Run any JavaScript on the page", "Turn off to stop the AI from changing the page outside the test steps", toggle("allow_eval_script", "Run any JavaScript"), get("allow_eval_script"),
         get("allow_eval_script").value === null && blockingOn()
-          ? h("div", { class: "d warn" }, "Mati karena daftar blokir aktif (script bisa menekan tombol yang diblokir); nyalakan untuk mengizinkan.")
+          ? h("div", { class: "d warn" }, "Off because the block list is on (a script could press a blocked button); turn on to allow it.")
           : null),
-      opt("Boleh ambil alih sesi (Ambil alih di Live)", "Matikan bila agent-mu punya akses shell: input ambil alih tidak diperiksa Batasan. Berlaku untuk proses fastpilot yang mulai setelah ini.", toggle("allow_takeover", "Boleh ambil alih sesi"), get("allow_takeover")),
-      opt("Folder yang boleh di-upload", "File yang diunggah test harus berasal dari folder ini.",
-        chips("upload_dirs", { placeholder: "mis. ~/fixtures", addLabel: "Tambah folder", empty: "Folder mana saja" }), get("upload_dirs")),
-      opt("Umur login tersimpan", "Login tersimpan yang lebih tua dari ini tidak dipakai lagi",
-        select("state_expire_days", [["", "30 hari (bawaan)"], ["1", "1 hari"], ["7", "7 hari"], ["14", "14 hari"], ["90", "90 hari"]], "Umur login tersimpan"), get("state_expire_days")),
-      opt("Sembunyikan secret di semua output", "Nilai secret tampil sebagai *** di output, laporan, dan rekaman", h("span", { class: "fixed" }, "Selalu aktif"))),
+      opt("May take over sessions (Take over in Live)", "Turn off when your agent has shell access: input during a takeover is not checked by Limits. Applies to fastpilot processes that start after this.", toggle("allow_takeover", "May take over sessions"), get("allow_takeover")),
+      opt("Folders files may be uploaded from", "Files a test uploads must come from these folders.",
+        chips("upload_dirs", { placeholder: "for example ~/fixtures", addLabel: "Add a folder", empty: "Any folder" }), get("upload_dirs")),
+      opt("How long a saved login lasts", "Saved logins older than this are not used again",
+        select("state_expire_days", [["", "30 days (built in)"], ["1", "1 day"], ["7", "7 days"], ["14", "14 days"], ["90", "90 days"]], "How long a saved login lasts"), get("state_expire_days")),
+      opt("Hide secrets in all output", "Secret values show as *** in output, reports and recordings", h("span", { class: "fixed" }, "Always on"))),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("gauge"), "batas pemakaian · fastpilot run"),
-      opt("Maksimal langkah AI per test", "Test dihentikan dan ditandai gagal kalau lewat",
-        select("max_steps", [["", "30 langkah (bawaan)"], ["10", "10 langkah"], ["20", "20 langkah"], ["40", "40 langkah"], ["60", "60 langkah"], ["100", "100 langkah"]], "Maksimal langkah"), get("max_steps")),
-      opt("Maksimal durasi per test", "Test dihentikan dan ditandai gagal kalau lewat",
-        select("test_timeout", [["", "30 menit (bawaan)"], ["5", "5 menit"], ["10", "10 menit"], ["15", "15 menit"], ["60", "60 menit"]], "Maksimal durasi"), get("test_timeout"))));
+      h("div", { class: "gh" }, icon("gauge"), "usage limits · fastpilot run"),
+      opt("Most AI steps per test", "The test stops and fails when it goes over",
+        select("max_steps", [["", "30 steps (built in)"], ["10", "10 steps"], ["20", "20 steps"], ["40", "40 steps"], ["60", "60 steps"], ["100", "100 steps"]], "Most steps"), get("max_steps")),
+      opt("Longest time per test", "The test stops and fails when it goes over",
+        select("test_timeout", [["", "30 minutes (built in)"], ["5", "5 minutes"], ["10", "10 minutes"], ["15", "15 minutes"], ["60", "60 minutes"]], "Longest time"), get("test_timeout"))));
 }
 
 function pageSecret() {
   return h("section", { class: "panel" },
     h("h2", {}, "Secret", savedNote()),
-    h("p", { class: "sub" }, "Variabel yang boleh dibaca flow sebagai ", code("${NAMA}"), ". Nilainya selalu tampil *** di output."),
+    h("p", { class: "sub" }, "Variables a flow may read as ", code("${NAME}"), ". Their values always show as *** in output."),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("key"), "secret"),
-      opt("Nama secret", "Hanya nama yang disimpan di sini; nilainya tidak pernah dibaca atau ditampilkan halaman ini.",
-        chips("vars", { placeholder: "mis. DEMO_PASS", addLabel: "Tambah nama secret", empty: "Belum ada" }), get("vars")),
-      h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, "Di mana nilainya?"),
-        h("div", { class: "d" }, "Isi nilainya di konfigurasi MCP, misalnya ", code("claude mcp add fastpilot -e DEMO_PASS=… -- fastpilot mcp"), ", atau sebagai environment saat menjalankan fastpilot.")))));
+      opt("Secret name", "Only the name is saved here; this page never reads or shows the value.",
+        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars")),
+      h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, "Where is the value?"),
+        h("div", { class: "d" }, "Put the value in the MCP configuration, for example ", code("claude mcp add fastpilot -e DEMO_PASS=… -- fastpilot mcp"), ", or in the environment when you run fastpilot.")))));
 }
 
 // The settings file does not parse: say what and where, and offer nothing to change (the server
 // refuses to save until it is fixed; fastpilot itself stops with the same error).
 function pageBroken() {
   const reload = async () => {
-    try { await loadSettings(); } catch (e) { toast("Gagal memuat ulang: " + e.message); }
+    try { await loadSettings(); } catch (e) { toast("Could not reload: " + e.message); }
     render();
     // Keyboard focus stays on the page (the button it was on is gone): the page title.
     document.querySelector(".top h1")?.focus();
   };
   return h("section", { class: "panel" },
-    h("h2", {}, "Pengaturan"),
+    h("h2", {}, "Settings"),
     h("div", { class: "err big-err", role: "alert" },
-      h("b", {}, "File pengaturan rusak. "),
-      "Test tidak akan jalan, dan tidak ada perubahan yang bisa disimpan, sampai file ini diperbaiki atau dihapus.",
+      h("b", {}, "The settings file is damaged. "),
+      "Tests will not run, and no change can be saved, until this file is fixed or deleted.",
       h("div", { class: "path" }, code(S.path)),
       h("pre", { class: "errtext" }, S.error)),
-    h("div", { class: "btns" }, h("button", { class: "btn p", onclick: reload }, icon("refresh", "sm"), "Muat ulang setelah diperbaiki")),
-    h("p", { class: "muted" }, "Sama dengan pesan ", code("fastpilot config list"), ". Menghapus file mengembalikan semua ke bawaan."));
+    h("div", { class: "btns" }, h("button", { class: "btn p", onclick: reload }, icon("refresh", "sm"), "Reload after fixing it")),
+    h("p", { class: "muted" }, "Same as the message ", code("fastpilot config list"), ". Deleting the file puts everything back to built-in."));
 }
 
 function pageSettings(sub) {
@@ -465,7 +465,7 @@ function pageDevice() {
 }
 
 // ---- live (C7a) ----
-const PLATFORM = { web: "chrome · milik fastpilot", android: "emulator / HP", ios: "simulator / iPhone" };
+const PLATFORM = { web: "chrome · fastpilot's own", android: "emulator / HP", ios: "simulator / iPhone" };
 const KIND = { mcp: "Claude Code / MCP", daemon: "CLI", run: "fastpilot run" };
 let liveTimer = null;
 let liveSel = null; // "pid:id"
@@ -487,22 +487,22 @@ function stepLine(steps) {
   const pick = (st) => steps.findIndex((s) => s.state === st);
   const running = pick("running"), stopped = steps.findIndex((s) => s.state === "blocked" || s.state === "failed");
   const at = running >= 0 ? running : stopped >= 0 ? stopped : steps.map((s) => s.state).lastIndexOf("done");
-  if (at < 0) return steps.length ? `0/${steps.length} langkah` : "Belum ada langkah";
-  return `Langkah ${at + 1}/${steps.length} · ${steps[at].label}`;
+  if (at < 0) return steps.length ? `0/${steps.length} steps` : "No steps yet";
+  return `Step ${at + 1}/${steps.length} · ${steps[at].label}`;
 }
 
 function sessionStatus(s) {
-  if (s.taken_over_here) return { text: "Diambil alih olehmu · langkah AI menunggu", cls: "warn" };
-  if (s.taken_over_ms) return { text: "Diambil alih di halaman lain · langkah AI menunggu", cls: "warn" };
+  if (s.taken_over_here) return { text: "Taken over by you · the AI's step waits", cls: "warn" };
+  if (s.taken_over_ms) return { text: "Taken over on another page · the AI's step waits", cls: "warn" };
   const f = s.flow;
-  if (!f) return { text: "Siap · menunggu langkah", cls: "" };
-  if (f.steps.some((x) => x.state === "blocked")) return { text: "Diblokir Batasan", cls: "bad" };
-  if (f.steps.some((x) => x.state === "failed")) return { text: "Gagal", cls: "bad" };
-  if (!f.finished) return { text: "Sedang berjalan", cls: "run" };
-  return { text: `Selesai · ${f.steps.filter((x) => x.state === "done").length}/${f.steps.length} lolos`, cls: "ok" };
+  if (!f) return { text: "Ready · waiting for a step", cls: "" };
+  if (f.steps.some((x) => x.state === "blocked")) return { text: "Blocked by Limits", cls: "bad" };
+  if (f.steps.some((x) => x.state === "failed")) return { text: "Failed", cls: "bad" };
+  if (!f.finished) return { text: "Running", cls: "run" };
+  return { text: `Done · ${f.steps.filter((x) => x.state === "done").length}/${f.steps.length} passed`, cls: "ok" };
 }
 
-// The engine compares in lower case; show the word as the user wrote it in Batasan.
+// The engine compares in lower case; show the word as the user wrote it in Limits.
 function asWritten(key, w) {
   const list = (get(key) && Array.isArray(get(key).value)) ? get(key).value : [];
   return list.find((x) => x.toLowerCase() === w.toLowerCase()) || w;
@@ -512,14 +512,14 @@ function asWritten(key, w) {
 function blockReason(note) {
   const n = note || "";
   let m = /contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(n);
-  if (m) return `teks berisi "${asWritten("block_actions", m[1])}"${m[2] ? " (daftar bawaan)" : ""}`;
+  if (m) return `the text contains "${asWritten("block_actions", m[1])}"${m[2] ? " (built-in list)" : ""}`;
   m = /risky action \("([^"]+)"/.exec(n);
-  if (m) return `butuh confirm: true ("${asWritten("confirm_actions", m[1])}")`;
-  if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain di luar daftar";
+  if (m) return `needs confirm: true ("${asWritten("confirm_actions", m[1])}")`;
+  if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain not in the list";
   m = /\((allow_[a-z_]+) = false\)/.exec(n);
-  if (m) return `dimatikan di Batasan (${m[1]})`;
-  if (/upload_dirs/.test(n)) return "file di luar folder upload";
-  return "aturan Batasan";
+  if (m) return `turned off in Limits (${m[1]})`;
+  if (/upload_dirs/.test(n)) return "file outside the upload folders";
+  return "a rule in Limits";
 }
 
 // Read the MJPEG stream with fetch and show each JPEG as a blob URL: works in every browser,
@@ -562,7 +562,7 @@ async function watch(img, url, onFirst, onError) {
         shown = next;
       }
     }
-    if (!shown) throw new Error("tidak ada gambar dari sesi ini");
+    if (!shown) throw new Error("no picture from this session");
   } catch (e) {
     if (e.name !== "AbortError") onError(e.message || String(e));
   }
@@ -575,17 +575,17 @@ function stopWatching(root) {
 function screenEl(s, big) {
   if (!s.watchable) {
     return h("div", { class: "screen-box none" }, h("span", {}, s.platform === "web"
-      ? "Chrome milikmu (attach) tidak ditampilkan di sini."
-      : `Layar ${s.platform} tidak bisa ditampilkan: proses fastpilot ini versi lama. Langkahnya tetap terlihat di bawah.`));
+      ? "Your own Chrome (attached) is not shown here."
+      : `The ${s.platform} screen cannot be shown: this fastpilot process is an older version. Its steps still show below.`));
   }
   // Android/iOS frames are screenshots from the device (the server caps them at 3 per second).
   const fps = big ? (s.platform === "web" ? 8 : 3) : (s.platform === "web" ? 2 : 1), w = big ? 1280 : 480;
-  const img = h("img", { class: "screen", alt: `Layar sesi ${s.id}`, draggable: "false" });
-  const status = h("div", { class: "screen-state" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("span", {}, "Menyambung ke layar…"));
+  const img = h("img", { class: "screen", alt: `Screen of session ${s.id}`, draggable: "false" });
+  const status = h("div", { class: "screen-state" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("span", {}, "Connecting to the screen…"));
   const box = h("div", { class: "screen-box" }, img, status);
   const start = () => watch(img, `/api/live/frames?pid=${s.pid}&session=${encodeURIComponent(s.id)}&fps=${fps}&w=${w}`, () => status.remove(), (why) => {
-    status.replaceChildren(h("span", { class: "bad" }, "Layar tidak bisa ditampilkan: " + why),
-      h("button", { class: "btn sm", onclick: () => { status.replaceChildren(h("div", { class: "spin" }), h("span", {}, "Menyambung ke layar…")); start(); } }, "Coba lagi"));
+    status.replaceChildren(h("span", { class: "bad" }, "The screen cannot be shown: " + why),
+      h("button", { class: "btn sm", onclick: () => { status.replaceChildren(h("div", { class: "spin" }), h("span", {}, "Connecting to the screen…")); start(); } }, "Try again"));
     if (!box.contains(status)) box.append(status);
   });
   start();
@@ -604,13 +604,13 @@ function card(s) {
   const line = h("div", { class: "l" });
   const status = h("div", { class: "d" });
   const zoom = s.watchable
-    ? h("button", { class: "btn sm", "data-fk": `zoom:${key}`, "aria-label": `Perbesar layar sesi ${s.id}`, onclick: (e) => openZoom(s, e.currentTarget) }, icon("expand", "sm"), "Perbesar")
+    ? h("button", { class: "btn sm", "data-fk": `zoom:${key}`, "aria-label": `Enlarge the screen of session ${s.id}`, onclick: (e) => openZoom(s, e.currentTarget) }, icon("expand", "sm"), "Enlarge")
     : null;
   const take = s.controllable
     ? h("button", { class: "btn sm", "data-fk": `take:${key}`, onclick: (e) => toggleTakeover(key, e.currentTarget) })
     : null;
   const more = zoom || take ? h("div", { class: "btns tight" }, zoom, take) : null;
-  const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Sesi ${s.id}, ${s.platform}. Enter untuk melihat langkahnya.`,
+  const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Session ${s.id}, ${s.platform}. Enter to see its steps.`,
     onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
     screenEl(s, false),
@@ -638,52 +638,52 @@ function fillCard(c, s, selected) {
 
 function stepsPanel(s) {
   const steps = s.flow ? s.flow.steps : [];
-  const limits = (i, change) => h("a", { class: "lk bad", href: "#/settings/limits", "data-fk": `limits:${i}` }, change ? "Ubah di Batasan →" : "Lihat Batasan");
+  const limits = (i, change) => h("a", { class: "lk bad", href: "#/settings/limits", "data-fk": `limits:${i}` }, change ? "Change it in Limits →" : "See Limits");
   const items = steps.map((x, i) => {
     const n = `${i + 1} · `;
-    if (x.state === "running") return h("li", { class: "now" }, h("span", { class: "i" }, icon("play", "sm")), h("span", {}, n, x.label), h("span", { class: "r" }, "sedang berjalan"));
-    if (x.state === "done") return h("li", {}, h("span", { class: "i ok", "aria-label": "selesai" }, "✓"), h("span", {}, n, x.label));
-    if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "gagal" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "gagal"));
+    if (x.state === "running") return h("li", { class: "now" }, h("span", { class: "i" }, icon("play", "sm")), h("span", {}, n, x.label), h("span", { class: "r" }, "running"));
+    if (x.state === "done") return h("li", {}, h("span", { class: "i ok", "aria-label": "done" }, "✓"), h("span", {}, n, x.label));
+    if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "failed" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "failed"));
     if (x.state === "blocked") {
       // block_actions: the button, the word and where it comes from (v0.3.2 design).
       const b = /"([^"]*)"[^"]* contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(x.note || "");
       const why = b
-        ? h("span", { class: "r" }, h("b", {}, "Diblokir Batasan. "), `Teks tombol "${b[1]}" berisi `, code(b[3] ? b[2] : asWritten("block_actions", b[2])), b[3] ? " (daftar bawaan)" : "", ". Halaman tidak ditekan. ", limits(i, true))
-        : h("span", { class: "r" }, `diblokir: ${blockReason(x.note)} · `, limits(i));
-      return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "diblokir" }, icon("lock", "sm")), h("span", {}, n, x.label), why);
+        ? h("span", { class: "r" }, h("b", {}, "Blocked by Limits. "), `The button text "${b[1]}" contains `, code(b[3] ? b[2] : asWritten("block_actions", b[2])), b[3] ? " (built-in list)" : "", ". The page was not pressed. ", limits(i, true))
+        : h("span", { class: "r" }, `blocked: ${blockReason(x.note)} · `, limits(i));
+      return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "blocked" }, icon("lock", "sm")), h("span", {}, n, x.label), why);
     }
-    if (x.state === "skipped") return h("li", { class: "muted" }, h("span", { class: "i" }, "–"), h("span", {}, n, x.label, " · dilewati"));
+    if (x.state === "skipped") return h("li", { class: "muted" }, h("span", { class: "i" }, "–"), h("span", {}, n, x.label, " · skipped"));
     return h("li", { class: x.will_block ? "warnline" : "" }, h("span", { class: "i" }, x.will_block ? icon("lock", "sm") : "○"), h("span", {}, n, x.label),
       x.will_block ? h("span", { class: "r" }, x.will_block, " · ", limits(i)) : null);
   });
   return h("div", { class: "grp steps-grp" },
-    h("h2", { class: "gh" }, icon("tests"), `riwayat langkah · ${s.id} (${s.platform} · sesi yang dipilih)`),
-    items.length ? h("ul", { class: "steps", "aria-live": "polite" }, items) : h("div", { class: "empty small" }, "Sesi ini belum menjalankan langkah."));
+    h("h2", { class: "gh" }, icon("tests"), `step history · ${s.id} (${s.platform} · the selected session)`),
+    items.length ? h("ul", { class: "steps", "aria-live": "polite" }, items) : h("div", { class: "empty small" }, "This session has not run a step yet."));
 }
 
 function liveEmpty() {
-  return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · kosong"),
-    h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "Belum ada test yang berjalan"),
-      h("span", {}, "Sesi dari Claude Code (MCP), CLI, atau ", code("fastpilot run"), " muncul di sini secara live, tanpa mengganggu Chrome atau HP-mu."),
-      h("span", {}, "Coba: ", code("fastpilot open https://example.com"))));
+  return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · empty"),
+    h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "No test is running yet"),
+      h("span", {}, "Sessions from Claude Code (MCP), the CLI or ", code("fastpilot run"), " show here live, without getting in the way of your Chrome or phone."),
+      h("span", {}, "Try: ", code("fastpilot open https://example.com"))));
 }
 
-// ---- Ambil alih (C7b) ----
-// The user steers a session from here; its automatic steps wait until Kembalikan.
+// ---- Take over (C7b) ----
+// The user steers a session from here; its automatic steps wait until Give back.
 function liveSession(key) {
   return (lastLive.sessions || []).find((x) => `${x.pid}:${x.id}` === key);
 }
 
 function setTakeLabel(btn, s) {
   const mine = !!s.taken_over_here, elsewhere = !!s.taken_over_ms && !mine, off = s.takeover_allowed === false && !mine;
-  const label = mine ? "Kembalikan ke AI" : elsewhere ? "Diambil alih di halaman lain" : off ? "Ambil alih dimatikan" : "Ambil alih";
+  const label = mine ? "Give back to the AI" : elsewhere ? "Taken over on another page" : off ? "Take over is turned off" : "Take over";
   if (btn.dataset.label !== label) {
     btn.dataset.label = label;
     btn.replaceChildren(icon(mine ? "play" : "cursor", "sm"), label);
     btn.classList.toggle("p", mine);
     btn.disabled = elsewhere || off;
-    btn.title = off ? "Dimatikan di Pengaturan › Batasan (allow_takeover)" : "";
-    btn.setAttribute("aria-label", mine ? `Kembalikan sesi ${s.id} ke AI` : elsewhere ? `Sesi ${s.id} sedang diambil alih di halaman lain` : off ? `Ambil alih dimatikan di Batasan` : `Ambil alih sesi ${s.id}: langkah AI dijeda`);
+    btn.title = off ? "Turned off in Settings › Limits (allow_takeover)" : "";
+    btn.setAttribute("aria-label", mine ? `Give session ${s.id} back to the AI` : elsewhere ? `Session ${s.id} is taken over on another page` : off ? `Take over is turned off in Limits` : `Take over session ${s.id}: the AI's steps pause`);
   }
 }
 
@@ -692,7 +692,7 @@ async function control(s, op, extra) {
     await api("/api/live/control", Object.assign({ pid: s.pid, session: s.id, op }, extra || {}));
     return true;
   } catch (e) {
-    toast((op === "takeover" ? "Tidak bisa mengambil alih: " : op === "release" ? "Tidak bisa mengembalikan: " : "Input tidak terkirim: ") + e.message);
+    toast((op === "takeover" ? "Cannot take over: " : op === "release" ? "Cannot give back: " : "Input not sent: ") + e.message);
     return false;
   }
 }
@@ -752,7 +752,7 @@ function steerable(box, key) {
 
 function steerBar(key) {
   const s = liveSession(key);
-  const text = h("input", { type: "text", class: "steer-text", maxlength: "500", placeholder: "Ketik ke kolom yang aktif", "aria-label": "Teks untuk diketik di device" });
+  const text = h("input", { type: "text", class: "steer-text", maxlength: "500", placeholder: "Type into the focused field", "aria-label": "Text to type on the device" });
   const sendText = async () => {
     const s2 = liveSession(key);
     if (s2 && text.value && await control(s2, "type", { text: text.value })) text.value = "";
@@ -760,11 +760,11 @@ function steerBar(key) {
   text.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendText(); } });
   const key_ = (k, label) => h("button", { class: "btn sm", onclick: () => { const s2 = liveSession(key); if (s2) control(s2, "key", { key: k }); } }, label);
   const back = s && s.platform !== "web"
-    ? h("button", { class: "btn sm", "aria-label": "Tombol Back di HP", onclick: () => { const s2 = liveSession(key); if (s2) control(s2, "back"); } }, "◁ Back (HP)")
+    ? h("button", { class: "btn sm", "aria-label": "The phone's Back button", onclick: () => { const s2 = liveSession(key); if (s2) control(s2, "back"); } }, "◁ Back (HP)")
     : null;
   const on = h("div", { class: "steer-on" },
-    h("p", { class: "muted small" }, "Klik layar untuk tap, seret untuk swipe. Langkah AI menunggu sampai kamu menekan Kembalikan ke AI atau menutup layar ini; kalau halaman ini ditutup, sesi kembali sendiri setelah ±45 detik."),
-    h("div", { class: "steer-row" }, text, h("button", { class: "btn sm", onclick: sendText }, "Ketik"), key_("Enter", "Enter ↵"), key_("Backspace", "⌫ Hapus huruf"), back));
+    h("p", { class: "muted small" }, "Click the screen to tap, drag to swipe. The AI's steps wait until you press Give back to the AI or close this screen; if this page closes, the session goes back by itself after about 45 seconds."),
+    h("div", { class: "steer-row" }, text, h("button", { class: "btn sm", onclick: sendText }, "Type"), key_("Enter", "Enter ↵"), key_("Backspace", "⌫ Delete a character"), back));
   const take = h("button", { class: "btn sm", "data-fk": `take-zoom:${key}`, onclick: (e) => toggleTakeover(key, e.currentTarget) });
   const bar = h("div", { class: "steer", "data-key": key }, h("div", { class: "steer-head" }, h("span", { class: "steer-state" }), take), on);
   updateSteer(bar);
@@ -777,10 +777,10 @@ function updateSteer(bar) {
   const taken = !!s.taken_over_here;
   setTakeLabel(bar.querySelector("[data-fk^='take-zoom:']"), s);
   const close = bar.closest("dialog")?.querySelector(".zoom-close");
-  const closeText = taken ? "Kembalikan & tutup" : "Tutup";
+  const closeText = taken ? "Give back & close" : "Close";
   if (close && close.dataset.label !== closeText) { close.dataset.label = closeText; close.replaceChildren(icon("close", "sm"), closeText); }
   const state = bar.querySelector(".steer-state");
-  const t = taken ? "Diambil alih olehmu · langkah AI menunggu" : s.taken_over_ms ? "Diambil alih di halaman lain" : "Otomatis · ambil alih untuk klik dan ketik sendiri";
+  const t = taken ? "Taken over by you · the AI's step waits" : s.taken_over_ms ? "Taken over on another page" : "Automatic · take over to click and type yourself";
   if (state.textContent !== t) state.textContent = t;
   state.className = "steer-state " + (taken ? "warn" : "muted");
   bar.querySelector(".steer-on").hidden = !taken;
@@ -792,9 +792,9 @@ let zoomOpener = null;
 function openZoom(s, opener) {
   closeZoom(false);
   zoomOpener = opener;
-  const dlg = h("dialog", { class: "zoom", "aria-label": `Layar sesi ${s.id}, diperbesar` },
+  const dlg = h("dialog", { class: "zoom", "aria-label": `Screen of session ${s.id}, enlarged` },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "mono" }, s.id),
-      h("button", { class: "btn sm right zoom-close", onclick: () => closeZoom(true, true) }, icon("close", "sm"), "Tutup")),
+      h("button", { class: "btn sm right zoom-close", onclick: () => closeZoom(true, true) }, icon("close", "sm"), "Close")),
     screenEl(s, true),
     s.controllable ? steerBar(`${s.pid}:${s.id}`) : null);
   if (s.controllable) steerable(dlg.querySelector(".screen-box"), `${s.pid}:${s.id}`);
@@ -827,15 +827,15 @@ function closeZoom(restore, release) {
 }
 
 function livePill(sessions) {
-  if (!sessions.length) return h("span", { class: "pill grey" }, "○ Tidak ada sesi berjalan");
+  if (!sessions.length) return h("span", { class: "pill grey" }, "○ No session is running");
   const count = (st) => sessions.filter((s) => s.flow && s.flow.steps.some((x) => x.state === st)).length;
   const running = sessions.filter((s) => s.flow && !s.flow.finished).length;
   const blocked = count("blocked"), failed = count("failed");
-  const parts = [`${sessions.length} sesi`, `${running} berjalan`];
+  const parts = [`${sessions.length} sessions`, `${running} running`];
   const taken = sessions.filter((s) => s.taken_over_ms).length;
-  if (taken) parts.push(`${taken} diambil alih`);
-  if (blocked) parts.push(`${blocked} diblokir`);
-  if (failed) parts.push(`${failed} gagal`);
+  if (taken) parts.push(`${taken} taken over`);
+  if (blocked) parts.push(`${blocked} blocked`);
+  if (failed) parts.push(`${failed} failed`);
   return h("span", { class: "pill" + (blocked || failed ? " bad" : "") }, "● " + parts.join(" · "));
 }
 
@@ -901,15 +901,15 @@ function takeBanner(sessions) {
   el.dataset.sig = sig;
   const names = mine.map((s) => `${s.id} (${s.platform})`).join(", ");
   el.replaceChildren(icon("cursor", "sm"),
-    h("span", {}, h("b", {}, "Kamu sedang mengambil alih "), names, ". Langkah AI di sesi itu menunggu."),
-    h("a", { class: "btn sm", href: "#/live" }, "Lihat di Live"),
+    h("span", {}, h("b", {}, "You are taking over "), names, ". The AI's steps in that session wait."),
+    h("a", { class: "btn sm", href: "#/live" }, "See it in Live"),
     h("button", { class: "btn sm p", onclick: async () => {
       for (const s of mine) await control(s, "release");
       await refreshLive();
       await globalLive();
       // The banner (and this button) is gone: keyboard focus goes to the page title.
       document.querySelector(".top h1")?.focus();
-    } }, icon("play", "sm"), "Kembalikan ke AI"));
+    } }, icon("play", "sm"), "Give back to the AI"));
 }
 
 // Off the Live page: the Live state every few seconds, for the banner (and the takeover's keep-alive).
@@ -925,7 +925,7 @@ async function pollLive() {
   try {
     renderLive(await api("/api/live"));
   } catch (e) {
-    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Tidak bisa membaca sesi: ", rich(e.message)));
+    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Cannot read the sessions: ", rich(e.message)));
   }
   liveTimer = setTimeout(pollLive, 1000);
 }
@@ -1185,15 +1185,15 @@ function proposalCard(p) {
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Simpan jadwal" : "Terapkan batasan"),
-      h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Batal"));
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Save the schedule" : "Apply the limits"),
+      h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Cancel"));
   } else if (p.status === "applied") {
-    foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Tersimpan"));
+    foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved"));
   } else if (p.status === "cancelled") {
-    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dibatalkan");
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Cancelled");
   } else {
-    foot = h("div", { class: "prop-state bad", tabindex: "-1" }, rich(p.note || "Tidak bisa dipakai"),
-      p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Buka Pengaturan › Batasan")] : null);
+    foot = h("div", { class: "prop-state bad", tabindex: "-1" }, rich(p.note || "Cannot be used"),
+      p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Open Settings › Limits")] : null);
   }
   const note = p.status === "pending" && p.note ? h("p", { class: "s" }, rich(p.note)) : null;
   return h("section", { class: "grp prop " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, rows, note, foot));
@@ -1234,12 +1234,12 @@ function chatMsg(m) {
   const working = !m.done;
   return h("li", { class: "msg bot" },
     h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
-    m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "Yang dikerjakan bot" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
+    m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "What the bot did" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
     // M3: next to a card that loosens a limit, the bot's own words are folded away.
     m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
       ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, markdown(m.text)))
       : m.text ? botText(m.text) : null,
-    working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
+    working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Working…" : " Thinking…") : null,
     m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
     (m.proposals || []).map(proposalCard),
     m.page_attempts && m.page_attempts.length ? pageAttempts(m.page_attempts) : null);
@@ -1247,12 +1247,12 @@ function chatMsg(m) {
 
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
-  const head = [h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● bot sedang bekerja" : "● siap"),
+  const head = [h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● the bot is working" : "● ready"),
     h("button", { class: "btn sm right", disabled: busy || !(chatData && chatData.messages.length), onclick: async () => {
       try { chatData = await api("/api/chat", { agent: chatAgent, reset: true }); } catch (e) { toast(e.message); }
       chatSig = "";
       renderChat();
-    } }, icon("refresh", "sm"), "Percakapan baru")];
+    } }, icon("refresh", "sm"), "New conversation")];
   if (chatHost) {
     // Inside an agent's page: its own small bar instead of the page title.
     let bar = chatHost.querySelector(".chat-bar");
@@ -1263,12 +1263,12 @@ function renderChat() {
   }
   let root = document.getElementById("chat-root");
   if (!root) {
-    const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Tulis ke fastpilot bot… contoh: \"tes login di Chrome\"", "aria-label": "Pesan untuk fastpilot bot" });
+    const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Write to the fastpilot bot… for example: \"test the login in Chrome\"", "aria-label": "Message to the fastpilot bot" });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(input.value); } });
     root = h("div", { id: "chat-root", class: "chat" },
-      h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Percakapan" }),
-      h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Kirim")),
-      h("p", { class: "s muted" }, "Bot memakai Claude Code-mu (claude -p) dan tool fastpilot. Jadwal dan batasan hanya berubah setelah kamu klik kartunya; lewat chat batasan hanya bisa diperketat."));
+      h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" }),
+      h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Send")),
+      h("p", { class: "s muted" }, "The bot uses your Claude Code (claude -p) and fastpilot's tools. Schedules and limits only change after you click their card; through chat, limits can only get stricter."));
     if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
   }
   const send = document.getElementById("chat-send");
@@ -1280,10 +1280,10 @@ function renderChat() {
   chatSig = sig;
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   if (chatData && chatData.error) {
-    log.replaceChildren(h("li", { class: "err", role: "alert" }, "Tidak bisa membaca chat: " + chatData.error));
+    log.replaceChildren(h("li", { class: "err", role: "alert" }, "Cannot read the chat: " + chatData.error));
   } else if (!msgs.length) {
-    log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Tanya atau suruh fastpilot bot"),
-      h("span", {}, "Jalankan test, tanya kenapa gagal, buat jadwal, atau perketat batasan."),
+    log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Ask or tell the fastpilot bot"),
+      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter."),
       h("div", { class: "chips" }, SUGGEST.map((t) => h("button", { class: "chip sug", onclick: () => chatSend(t) }, t)))));
   } else {
     log.replaceChildren(...msgs.map(chatMsg));
@@ -1296,7 +1296,7 @@ function pageChat() {
   if (chatHost || chatAgent !== "default") { chatHost = null; chatAgent = "default"; chatData = null; chatSig = ""; }
   if (!chatData) {
     $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"));
-    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca percakapan…")));
+    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading the conversation…")));
   } else {
     renderChat();
   }
@@ -1596,7 +1596,7 @@ function render() {
   if (page === "live") {
     if (!liveTimer) {
       $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"));
-      $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca sesi…")));
+      $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading sessions…")));
       pollLive();
     }
   } else if (page === "chat") {
@@ -1617,7 +1617,7 @@ function render() {
 window.addEventListener("hashchange", async () => {
   // Settings are read again on the way in: the file may have changed (or broken) meanwhile.
   if (location.hash.startsWith("#/settings")) {
-    try { await loadSettings(); } catch (e) { toast("Gagal memuat pengaturan: " + e.message); }
+    try { await loadSettings(); } catch (e) { toast("Could not load the settings: " + e.message); }
   }
   render();
   document.getElementById("main").focus({ preventScroll: true });
@@ -1628,6 +1628,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     render();
   } catch (e) {
     $top().replaceChildren("fastpilot");
-    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Tidak bisa memuat pengaturan: " + e.message));
+    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Cannot load the settings: " + e.message));
   }
 });

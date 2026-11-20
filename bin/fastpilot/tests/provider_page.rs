@@ -76,7 +76,7 @@ async fn provider_change_puts_its_server_in_the_field() {
     eval(&client, "location.hash = '#/settings/model', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Base URL\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    let pick = |p: &str| format!("(() => {{ const s = document.querySelector('select[aria-label^=\"Penyedia\"]'); s.value = '{p}'; s.dispatchEvent(new Event('change')); const u = document.querySelector('input[aria-label=\"Base URL\"]'); return u.value + '|' + u.readOnly; }})()");
+    let pick = |p: &str| format!("(() => {{ const s = document.querySelector('select[aria-label^=\"Model provider\"]'); s.value = '{p}'; s.dispatchEvent(new Event('change')); const u = document.querySelector('input[aria-label=\"Base URL\"]'); return u.value + '|' + u.readOnly; }})()");
     assert_eq!(eval(&client, "document.querySelector('input[aria-label=\"Base URL\"]').value").await, "\"http://127.0.0.1:18767/v1\"");
     assert_eq!(eval(&client, &pick("openrouter")).await, "\"https://openrouter.ai/api/v1|true\"", "the old server is replaced and locked");
     assert_eq!(eval(&client, &pick("groq")).await, "\"https://api.groq.com/openai/v1|true\"");
@@ -84,8 +84,8 @@ async fn provider_change_puts_its_server_in_the_field() {
     assert_eq!(eval(&client, &pick("custom")).await, "\"|false\"", "custom starts empty: no server from another provider");
     // An unsaved choice survives the page being redrawn (the device check finishing, a refused save).
     eval(&client, &pick("openrouter")).await;
-    eval(&client, "(document.querySelector('input[aria-label=\"Id model\"]').value = 'meta/llama', document.querySelector('input[aria-label=\"Id model\"]').dispatchEvent(new Event('input')), render(), 'ok')").await;
-    let kept = eval(&client, "document.querySelector('select[aria-label^=\"Penyedia\"]').value + '|' + document.querySelector('input[aria-label=\"Base URL\"]').value + '|' + document.querySelector('input[aria-label=\"Id model\"]').value").await;
+    eval(&client, "(document.querySelector('input[aria-label=\"Model id\"]').value = 'meta/llama', document.querySelector('input[aria-label=\"Model id\"]').dispatchEvent(new Event('input')), render(), 'ok')").await;
+    let kept = eval(&client, "document.querySelector('select[aria-label^=\"Model provider\"]').value + '|' + document.querySelector('input[aria-label=\"Base URL\"]').value + '|' + document.querySelector('input[aria-label=\"Model id\"]').value").await;
     assert_eq!(kept, "\"openrouter|https://openrouter.ai/api/v1|meta/llama\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);

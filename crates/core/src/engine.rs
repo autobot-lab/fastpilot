@@ -779,24 +779,24 @@ fn will_block(step: &Step) -> Option<String> {
         Step::TapOn(sel) | Step::LongPressOn(sel) | Step::DoubleTapOn(sel) => {
             let (Selector::Text(name) | Selector::Role { name: Some(name), .. }) = sel else { return None };
             if let Some(hit) = crate::policy::block_match(name, &crate::policy::block_rules()) {
-                let list = if hit.builtin { ", daftar bawaan" } else { "" };
-                return Some(format!("akan diblokir: teks berisi \"{}\" (block_actions{list})", hit.word));
+                let list = if hit.builtin { ", built-in list" } else { "" };
+                return Some(format!("will be blocked: the text contains \"{}\" (block_actions{list})", hit.word));
             }
             match crate::policy::risky_match(name, &crate::policy::risky_words()) {
-                Some(w) if !confirmed => Some(format!("akan berhenti: butuh confirm: true (\"{w}\", confirm_actions)")),
+                Some(w) if !confirmed => Some(format!("will stop: needs confirm: true (\"{w}\", confirm_actions)")),
                 _ => None,
             }
         }
         Step::OpenUrl(url) if !url.contains("${") && !crate::policy::url_allowed(url, &crate::policy::allowed_domains()) => {
-            Some("akan diblokir: domain di luar allowed_domains".into())
+            Some("will be blocked: the domain is outside allowed_domains".into())
         }
-        Step::EvalScript(_) if flag_off("allow_eval_script") => Some("akan diblokir: evalScript dimatikan (allow_eval_script)".into()),
+        Step::EvalScript(_) if flag_off("allow_eval_script") => Some("will be blocked: evalScript is turned off (allow_eval_script)".into()),
         Step::EvalScript(_) if !crate::policy::blocked_words().is_empty() && !crate::policy::eval_unlocked() => {
-            Some("akan diblokir: evalScript mati selama daftar blokir aktif (nyalakan \"Jalankan JavaScript bebas\" di Batasan)".into())
+            Some("will be blocked: evalScript is off while the block list is on (turn on \"Run any JavaScript\" in Limits)".into())
         }
-        Step::ClearState(_) | Step::ClearKeychain if flag_off("allow_app_reset") => Some("akan diblokir: hapus data app dimatikan (allow_app_reset)".into()),
+        Step::ClearState(_) | Step::ClearKeychain if flag_off("allow_app_reset") => Some("will be blocked: clearing app data is turned off (allow_app_reset)".into()),
         Step::InstallApp(_) | Step::UninstallApp(_) if flag_off("allow_app_install") => {
-            Some("akan diblokir: install/uninstall app dimatikan (allow_app_install)".into())
+            Some("will be blocked: installing or removing apps is turned off (allow_app_install)".into())
         }
         _ => None,
     }
@@ -973,7 +973,7 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
 
 /// What the agent (and the report) is told after a block_actions refusal.
 const BLOCKED_HOW: &str =
-    "Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Pengaturan › Batasan & izin.";
+    "Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Settings › Limits & permissions.";
 
 fn block_source(hit: &crate::policy::BlockHit) -> &'static str {
     if hit.builtin { "block_actions, built-in list" } else { "block_actions" }
@@ -986,7 +986,7 @@ fn guard_script(blocked: &[String]) -> Result<()> {
         return Ok(());
     }
     Err(Error::Blocked(
-        "evalScript is off while block_actions is on (the built-in list too): a script could press a blocked button. Do not work around it. The user can allow scripts in fastpilot ui › Pengaturan › Batasan & izin (Jalankan JavaScript bebas) or with `fastpilot config set allow_eval_script true`.".into(),
+        "evalScript is off while block_actions is on (the built-in list too): a script could press a blocked button. Do not work around it. The user can allow scripts in fastpilot ui › Settings › Limits & permissions (Run any JavaScript) or with `fastpilot config set allow_eval_script true`.".into(),
     ))
 }
 
@@ -2245,17 +2245,17 @@ mod tests {
             let e = guard_risky(&page, &pay, true).await.expect_err("built-in block");
             assert_eq!(
                 e.to_string(),
-                "\"Bayar sekarang\" contains \"bayar\" (block_actions, built-in list). Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Pengaturan › Batasan & izin."
+                "\"Bayar sekarang\" contains \"bayar\" (block_actions, built-in list). Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Settings › Limits & permissions."
             );
             assert_eq!(e.reason(), "blocked");
-            assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("akan diblokir: teks berisi \"bayar\" (block_actions, daftar bawaan)"));
+            assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("will be blocked: the text contains \"bayar\" (block_actions, built-in list)"));
             // A plain delete: confirm only.
             let e = guard_tap(&page, &Selector::Text("Hapus filter".into()), false, &crate::policy::risky_words(), &crate::policy::block_rules()).await.expect_err("confirm");
             assert!(matches!(&e, Error::Blocked(m) if m.contains("confirm_actions") && m.contains("confirm: true")), "{e}");
             let hapus = Selector::Text("Hapus filter".into());
             assert!(judge_tap(&hapus, &["Hapus filter".into()], true, &crate::policy::risky_words(), &crate::policy::block_rules()).is_ok(), "confirmed");
             let e = guard_script(&crate::policy::block_rules()).expect_err("evalScript off while the built-in list is on");
-            assert!(e.to_string().contains("allow_eval_script true") && e.to_string().contains("Jalankan JavaScript bebas"), "{e}");
+            assert!(e.to_string().contains("allow_eval_script true") && e.to_string().contains("Run any JavaScript"), "{e}");
             assert!(!crate::policy::eval_unlocked());
             // Security Low 3: an empty variable (an MCP entry an agent wrote) does not empty the list.
             // T1-T3 (Security Low 1): nor does a value with no item in it, like "," or " , ".

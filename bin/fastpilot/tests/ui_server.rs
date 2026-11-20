@@ -108,7 +108,7 @@ fn ui_server_only_answers_its_own_page() {
     assert_eq!(http(p, "GET", "/api/settings", &[cookie(), ("Host", "evil.example".into())], "").status, 421);
     // Spent: the same link again opens nothing (security review, Medium 3).
     let again = http(p, "GET", &format!("/?code={}", ui.code), &[], "");
-    assert!(again.status == 401 && again.text().contains("sudah dipakai"), "{} {}", again.status, again.text());
+    assert!(again.status == 401 && again.text().contains("already used"), "{} {}", again.status, again.text());
     // The code is not a cookie either.
     assert_eq!(http(p, "GET", "/api/settings", &[("Cookie", format!("fp_ui_{p}={}", ui.code))], "").status, 401);
     // With the session, an old link just goes to the page.
@@ -155,7 +155,7 @@ fn ui_server_only_answers_its_own_page() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&file).expect("meta").permissions().mode() & 0o777, 0o600);
     }
-    // F5: "Kosongkan" (an empty list) is kept as emptied on purpose; "Kembalikan ke bawaan" (null)
+    // F5: "Empty it" (an empty list) is kept as emptied on purpose; "Back to built-in" (null)
     // removes the key, so the built-in list is back; adding to the built-in list keeps `default`.
     for (b, want) in [
         (r#"{"key":"block_actions","value":[]}"#, "block_actions = []"),
@@ -182,15 +182,15 @@ fn ui_server_only_answers_its_own_page() {
     assert!(!saved.contains("allowed_domains") && saved.contains("allow_eval_script = false"), "{saved}");
     // Not the page's settings, bad values, and what the environment sets: refused.
     for (b, code, why) in [
-        (r#"{"key":"chrome","value":"/bin/sh"}"#, 400, "tidak bisa diubah di sini"),
+        (r#"{"key":"chrome","value":"/bin/sh"}"#, 400, "cannot be changed here"),
         (r#"{"key":"allow_eval_script","value":"maybe"}"#, 400, "true or false"),
-        (r#"{"key":"upload_dirs","value":["/a,/b"]}"#, 400, "koma"),
+        (r#"{"key":"upload_dirs","value":["/a,/b"]}"#, 400, "comma"),
         // QA #6: what the page lets through is checked too.
-        (r#"{"key":"allowed_domains","value":["http://bad domain/x!"]}"#, 400, "bukan nama domain"),
-        (r#"{"key":"allowed_domains","value":["https://example.net/path"]}"#, 400, "tanpa https://"),
-        (r#"{"key":"vars","value":["bad name!"]}"#, 400, "bukan nama variabel"),
-        (r#"{"key":"vars","value":["FASTPILOT_STATE_KEY"]}"#, 400, "pengaturan fastpilot sendiri"),
-        (r#"{"key":"upload_dirs","value":["relative/dir"]}"#, 400, "folder lengkap"),
+        (r#"{"key":"allowed_domains","value":["http://bad domain/x!"]}"#, 400, "is not a domain name"),
+        (r#"{"key":"allowed_domains","value":["https://example.net/path"]}"#, 400, "no https://"),
+        (r#"{"key":"vars","value":["bad name!"]}"#, 400, "is not a variable name"),
+        (r#"{"key":"vars","value":["FASTPILOT_STATE_KEY"]}"#, 400, "fastpilot's own settings"),
+        (r#"{"key":"upload_dirs","value":["relative/dir"]}"#, 400, "full folder"),
         (r#"{"key":"model_replay","value":"claude-opus-5-5"}"#, 409, "FASTPILOT_MODEL_REPLAY"),
     ] {
         let r = http(p, "POST", "/api/settings", &[cookie(), origin(), json()], b);
@@ -242,20 +242,20 @@ fn ui_arguments_and_port_errors_are_explained() {
     let out = Command::new(env!("CARGO_BIN_EXE_fastpilot")).args(["ui", "--bogus"]).env("HOME", std::env::temp_dir()).stdin(Stdio::null()).output().expect("run");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{err}");
-    assert!(err.starts_with("fastpilot ui: opsi `--bogus` tidak dikenal\n") && !err.contains("\\n") && !err.contains("Error: \""), "{err}");
+    assert!(err.starts_with("fastpilot ui: unknown option `--bogus`\n") && !err.contains("\\n") && !err.contains("Error: \""), "{err}");
     // These must return at once (a server would hang the test).
     let (ok, out) = run(&["ui", "--help"]);
-    assert!(ok && out.contains("pemakaian: fastpilot ui") && !out.contains("http://"), "{out}");
+    assert!(ok && out.contains("usage: fastpilot ui") && !out.contains("http://"), "{out}");
     let (ok, out) = run(&["ui", "--bogus"]);
-    assert!(!ok && out.contains("opsi `--bogus` tidak dikenal") && out.contains("pemakaian:"), "{out}");
+    assert!(!ok && out.contains("unknown option `--bogus`") && out.contains("usage:"), "{out}");
     let (ok, out) = run(&["ui", "--port", "99999"]);
-    assert!(!ok && out.contains("1024 sampai 65535"), "{out}");
+    assert!(!ok && out.contains("from 1024 to 65535"), "{out}");
     let (ok, out) = run(&["ui", "--port", "80"]);
-    assert!(!ok && out.contains("1024 sampai 65535"), "{out}");
+    assert!(!ok && out.contains("from 1024 to 65535"), "{out}");
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = taken.local_addr().expect("addr").port().to_string();
     let (ok, out) = run(&["ui", "--no-open", "--port", &port]);
-    assert!(!ok && out.contains(&format!("port {port} sudah dipakai")) && !out.contains("Os {"), "{out}");
+    assert!(!ok && out.contains(&format!("port {port} is already in use")) && !out.contains("Os {"), "{out}");
 }
 
 /// QA #4 / Design #4: a settings file that does not parse is shown as an error, not as
@@ -294,7 +294,7 @@ fn ui_shows_a_broken_settings_file() {
         &[("Cookie", session), ("Origin", format!("http://127.0.0.1:{p}")), ("Content-Type", "application/json".into())],
         r#"{"key":"allow_eval_script","value":false}"#,
     );
-    assert!(r.status == 409 && r.text().contains("rusak"), "{} {}", r.status, r.text());
+    assert!(r.status == 409 && r.text().contains("is damaged"), "{} {}", r.status, r.text());
     let text = std::fs::read_to_string(ui.home.join(".fastpilot/config.toml")).expect("file");
     assert!(text.contains("allowed_domains = [\n") && !text.contains("allow_eval_script"), "the broken file is left as it was");
 }

@@ -1,6 +1,6 @@
 //! C7b on devices: the Live panel shows Android and iOS screens (screenshots from the device, only
-//! while the stream is read), and "Ambil alih" works there as on the web: the AI's step waits, the
-//! user's tap and text reach the app, and the step runs after Kembalikan. Talks to `fastpilot ui`
+//! while the stream is read), and "Take over" works there as on the web: the AI's step waits, the
+//! user's tap and text reach the app, and the step runs after Give back. Talks to `fastpilot ui`
 //! over HTTP like the page does. Android needs the emulator named in FASTPILOT_ANDROID_SERIAL and the
 //! agent-android build, and fails without them (FASTPILOT_SKIP_ANDROID=1 skips on purpose); iOS
 //! skips without a Mac with ios-runner/build.sh done.
@@ -132,7 +132,7 @@ async fn take_over_device(client: &Client, session: &str, platform: &str) {
         http(&ui, "POST", "/api/live/control", &b.to_string())
     };
     let (st, body) = control(json!({ "op": "tap", "x": fx, "y": fy }));
-    assert_eq!(st, 409, "input before Ambil alih is refused: {body}");
+    assert_eq!(st, 409, "input before Take over is refused: {body}");
     let (st, body) = control(json!({ "op": "takeover" }));
     assert_eq!(st, 200, "{body}");
 
@@ -146,7 +146,7 @@ async fn take_over_device(client: &Client, session: &str, platform: &str) {
     assert_eq!(st, 200, "{body}");
     let (st, body) = control(json!({ "op": "release" }));
     assert_eq!(st, 200, "{body}");
-    let (ok, out) = tokio::time::timeout(Duration::from_secs(30), waiting).await.expect("runs after Kembalikan");
+    let (ok, out) = tokio::time::timeout(Duration::from_secs(30), waiting).await.expect("runs after Give back");
     assert!(ok, "{out}");
     assert!(out.contains(&format!("the user took over session `{session}`")) && out.contains("1 tap, 1 text input"), "{out}");
     let (ok, out) = call(client, "snapshot", json!({ "session": session, "filter": "Email" })).await;

@@ -396,16 +396,16 @@ fn takeover_default() -> bool {
 fn take_over(id: &str) -> Result<String, String> {
     // A limit like the others: pinned at start, so turning it on later needs a restart.
     if !crate::config::flag("allow_takeover") {
-        return Err("Ambil alih dimatikan di Batasan (allow_takeover = false)".into());
+        return Err("Take over is turned off in Limits (allow_takeover = false)".into());
     }
     if driver(id).is_none() {
-        return Err(format!("sesi `{id}` tidak ada lagi"));
+        return Err(format!("session `{id}` is gone"));
     }
     expire_takeovers();
     let token = {
         let mut taken = lock_map(&TAKEN);
         if taken.contains_key(id) {
-            return Err("sesi ini sedang diambil alih di halaman lain".into());
+            return Err("this session is taken over on another page".into());
         }
         let token = token();
         taken.insert(id.to_owned(), Takeover { since: Instant::now(), seen: Instant::now(), token: token.clone(), inputs: Inputs::default() });
@@ -477,8 +477,8 @@ const KEYS: &[&str] = &["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowU
 pub async fn command(req: &serde_json::Value) -> serde_json::Value {
     use serde_json::json;
     let op = req["op"].as_str().unwrap_or("");
-    let Some(id) = req["session"].as_str() else { return json!({ "ok": false, "error": "session wajib diisi" }) };
-    let Some(d) = driver(id) else { return json!({ "ok": false, "error": format!("sesi `{id}` tidak ada lagi") }) };
+    let Some(id) = req["session"].as_str() else { return json!({ "ok": false, "error": "session is required" }) };
+    let Some(d) = driver(id) else { return json!({ "ok": false, "error": format!("session `{id}` is gone") }) };
     let frac = |k: &str| req[k].as_f64().filter(|v| (0.0..=1.0).contains(v));
     let result: Result<serde_json::Value, String> = async {
         match op {
@@ -494,10 +494,10 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
         expire_takeovers();
         {
             let mut taken = lock_map(&TAKEN);
-            let Some(t) = taken.get_mut(id) else { return Err("ambil alih sesi ini dulu".into()) };
+            let Some(t) = taken.get_mut(id) else { return Err("take over this session first".into()) };
             let given = req["token"].as_str().unwrap_or("");
             if given.len() != t.token.len() || !given.bytes().zip(t.token.bytes()).fold(true, |ok, (a, b)| ok & (a == b)) {
-                return Err("bukan pengambil alih sesi ini".into());
+                return Err("this page did not take over this session".into());
             }
             t.seen = Instant::now();
         }
@@ -516,14 +516,14 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
         };
         match op {
             "tap" | "swipe" => {
-                let (Some(x), Some(y)) = (frac("x"), frac("y")) else { return Err("x dan y harus 0–1".into()) };
-                let (w, h) = screen_size(&*d).await.ok_or("ukuran layar tidak diketahui")?;
+                let (Some(x), Some(y)) = (frac("x"), frac("y")) else { return Err("x and y must be 0–1".into()) };
+                let (w, h) = screen_size(&*d).await.ok_or("the screen size is unknown")?;
                 let at = crate::Point { x: x * w, y: y * h };
                 if op == "tap" {
                     d.tap(&crate::Selector::Point(at)).await.map_err(|e| e.to_string())?;
                     count(|i| i.taps += 1);
                 } else {
-                    let (Some(x2), Some(y2)) = (frac("x2"), frac("y2")) else { return Err("x2 dan y2 harus 0–1".into()) };
+                    let (Some(x2), Some(y2)) = (frac("x2"), frac("y2")) else { return Err("x2 and y2 must be 0–1".into()) };
                     d.swipe(at, crate::Point { x: x2 * w, y: y2 * h }).await.map_err(|e| e.to_string())?;
                     count(|i| i.swipes += 1);
                 }
@@ -534,7 +534,7 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
                 count(|i| i.texts += 1);
             }
             "key" => {
-                let key = req["key"].as_str().filter(|k| KEYS.contains(k)).ok_or("tombol tidak dikenal")?;
+                let key = req["key"].as_str().filter(|k| KEYS.contains(k)).ok_or("unknown key")?;
                 d.press_key(key).await.map_err(|e| e.to_string())?;
                 count(|i| i.keys += 1);
             }
@@ -542,7 +542,7 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
                 d.back().await.map_err(|e| e.to_string())?;
                 count(|i| i.keys += 1);
             }
-            other => return Err(format!("perintah `{other}` tidak dikenal")),
+            other => return Err(format!("unknown command `{other}`")),
         }
         Ok(json!({}))
     }
@@ -660,7 +660,7 @@ mod control {
         while let Ok(Some(line)) = lines.next_line().await {
             let answer = match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(req) => super::command(&req).await,
-                Err(_) => serde_json::json!({ "ok": false, "error": "bukan JSON" }),
+                Err(_) => serde_json::json!({ "ok": false, "error": "not JSON" }),
             };
             if w.write_all(format!("{answer}\n").as_bytes()).await.is_err() {
                 break;
@@ -759,7 +759,7 @@ mod tests {
         unsafe { std::env::set_var("FASTPILOT_LIVE_DIR", &d) };
         enable("test");
         session_started("w", "web", Some(Screen { ws: "ws://127.0.0.1:1/devtools/browser/x".into(), target: "T1".into() }));
-        let f = flow_started(vec![("tapOn \"A\"".into(), None, None), ("tapOn \"Bayar\"".into(), Some("teks berisi \"bayar\"".into()), None)]);
+        let f = flow_started(vec![("tapOn \"A\"".into(), None, None), ("tapOn \"Bayar\"".into(), Some("the text contains \"bayar\"".into()), None)]);
         step_started(f, 1, Some("w"), None);
         step_finished(f, 1, Some("w"), Ok(()));
         step_started(f, 2, Some("w"), None);
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(me.sessions[0].flow, f);
         let steps = &me.flows.iter().find(|x| Some(x.id) == f).expect("flow").steps;
         assert_eq!((steps[0].state, steps[1].state), (StepState::Done, StepState::Blocked));
-        assert_eq!(steps[1].will_block.as_deref(), Some("teks berisi \"bayar\""));
+        assert_eq!(steps[1].will_block.as_deref(), Some("the text contains \"bayar\""));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

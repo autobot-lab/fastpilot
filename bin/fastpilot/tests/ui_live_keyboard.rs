@@ -88,15 +88,15 @@ async fn live_page_works_with_the_keyboard() {
     assert!(!ok && out.contains("block_actions"), "{out}");
 
     // The user opens the printed link: no `#/live` in it.
-    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Langkah 5/5\", timeout: 10000 }}\n", link.trim());
+    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Step 5/5\", timeout: 10000 }}\n", link.trim());
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "the first page must show the sessions, not hang on 'Membaca sesi…': {out}");
     // Header pill counts the blocked session; the step says why.
-    assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 diblokir"));
+    assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 blocked"));
     let why = eval(&client, "[...document.querySelectorAll('.steps .blk')].map(l => l.textContent).join('|')").await;
     // Design N2 (P2): the word as the user wrote it in Batasan, not lower-cased.
     // v0.3.2 design (s3): the button, the word as written in Batasan, and where to change it.
-    assert!(why.contains("Diblokir Batasan. Teks tombol \\\"Keluar\\\" berisi Keluar. Halaman tidak ditekan."), "{why}");
+    assert!(why.contains("Blocked by Limits. The button text \\\"Keluar\\\" contains Keluar. The page was not pressed."), "{why}");
 
     // Focus survives the refresh (polls every second).
     eval(&client, "document.querySelector('[data-fk^=\"zoom:\"]').focus(), 'ok'").await;
@@ -104,7 +104,7 @@ async fn live_page_works_with_the_keyboard() {
     assert_eq!(eval(&client, "document.activeElement.dataset.fk && document.activeElement.dataset.fk.slice(0, 5)").await, "\"zoom:\"");
     eval(&client, "document.querySelector('[data-fk^=\"limits:\"]').focus(), 'ok'").await;
     tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
-    assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Ubah di Batasan →\"");
+    assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Change it in Limits →\"");
 
     // Perbesar: modal, Tab stays inside, Escape closes, focus returns.
     eval(&client, "document.querySelector('[data-fk^=\"zoom:\"]').focus(), 'ok'").await;
@@ -120,15 +120,15 @@ async fn live_page_works_with_the_keyboard() {
 
     // QA N3 (P2): a message about the last attempt goes away once the user edits the text.
     eval(&client, "location.hash = '#/settings/limits', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Batasan\", timeout: 5000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Limits & permissions\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let enter = "(() => { const i = document.querySelector('input[data-key=\"block_actions\"]'); i.value = VALUE; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return document.querySelector('.toast')?.textContent || ''; })()";
     let msg = eval(&client, &enter.replace("VALUE", "'a, b'")).await;
-    assert!(msg.contains("tanpa koma"), "{msg}");
+    assert!(msg.contains("without commas"), "{msg}");
     let left = eval(&client, "(() => { const i = document.querySelector('input[data-key=\"block_actions\"]'); i.value = 'a'; i.dispatchEvent(new Event('input', { bubbles: true })); return document.querySelectorAll('.toast').length; })()").await;
     assert_eq!(left, "0", "the old message must go when the user types");
     let msg = eval(&client, &enter.replace("VALUE", "'KELUAR'")).await;
-    assert!(msg.contains("\\\"KELUAR\\\" sudah ada"), "a duplicate in other letters is caught: {msg}");
+    assert!(msg.contains("\\\"KELUAR\\\" is already in the list"), "a duplicate in other letters is caught: {msg}");
 
     // Design N3 (P2): nothing wider than a 390 px phone screen.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setViewport: { width: 390, height: 844 }\n", "session": "viewer" })).await;
@@ -147,12 +147,12 @@ async fn live_page_works_with_the_keyboard() {
     let config = home.join(".fastpilot/config.toml");
     std::fs::write(&config, "block_actions = [\"Keluar\"\n").expect("break");
     eval(&client, "location.hash = '#/settings/limits', location.reload(), 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"File pengaturan rusak\", timeout: 8000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"The settings file is damaged\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     std::fs::write(&config, "block_actions = [\"Keluar\"]\n").expect("fix");
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Muat ulang setelah diperbaiki\"\n- assertNotVisible: { text: \"File pengaturan rusak\", timeout: 5000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Reload after fixing it\"\n- assertNotVisible: { text: \"The settings file is damaged\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    assert_eq!(eval(&client, "document.activeElement.tagName + ':' + document.activeElement.textContent").await, "\"H1:Pengaturan\"");
+    assert_eq!(eval(&client, "document.activeElement.tagName + ':' + document.activeElement.textContent").await, "\"H1:Settings\"");
     client.cancel().await.expect("shutdown");
     shop.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);

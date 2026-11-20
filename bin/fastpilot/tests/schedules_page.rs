@@ -129,7 +129,7 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     // Design L4: the page says in its own words that fastpilot ui stopped (not "Failed to fetch").
     drop(_ui);
     eval(&client, "location.hash = '#/live', 'ok'").await;
-    see(&client, "server fastpilot ui tidak menjawab").await;
+    see(&client, "the fastpilot ui server is not answering").await;
     assert_eq!(eval(&client, "String(document.body.textContent.includes('Failed to fetch'))").await, "\"false\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);

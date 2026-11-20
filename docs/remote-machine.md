@@ -1,54 +1,54 @@
-# fastpilot di mesin lain lewat SSH, dan simulator iOS yang lebih ringan
+# fastpilot on another computer over SSH, and a lighter iOS simulator
 
-Ada dua cara memakai mesin lain:
+There are two ways to use another computer:
 
-| Cara | fastpilot jalan di | Device/Chrome di | Kapan dipakai |
+| Way | fastpilot runs on | Device/Chrome on | When to use it |
 |---|---|---|---|
-| A. Hanya device di mesin lain | laptop | mesin lain | Emulator Android atau Chrome di PC Linux; lihat Guide › [Device di mesin lain](guide.md#device-di-mesin-lain) |
-| B. fastpilot di mesin lain | mesin lain | mesin lain | iOS (butuh Mac) dari laptop non-Mac, atau semua device di satu mesin kuat |
+| A. Only the device on another computer | laptop | other computer | An Android emulator or Chrome on a Linux PC; see Guide › [Devices on another computer](guide.md#devices-on-another-computer) |
+| B. fastpilot on another computer | other computer | other computer | iOS (needs a Mac) from a non-Mac laptop, or all devices on one powerful computer |
 
-Halaman ini membahas cara B, lalu [simslim](#simulator-ios-lebih-ringan-simslim) untuk menghemat memori simulator iOS.
+This page covers way B, then [simslim](#a-lighter-ios-simulator-simslim) to save iOS simulator memory.
 
-> **Status pengujian.** Bagian yang ditandai **(belum diuji)** belum pernah dijalankan oleh tim fastpilot
-> lewat SSH sungguhan; perintahnya mengikuti cara kerja fastpilot dan dokumentasi alat terkait. Yang sudah
-> diuji: `fastpilot mcp` lewat stdio, `fastpilot ui` dengan port tetap (penerusan ke port yang sama diterima,
-> ke port lain ditolak "Host salah"), dan adb/Chrome di endpoint `127.0.0.1` lain (test `remote_web.rs`).
-> Laporkan bila ada langkah yang tidak cocok.
+> **Testing status.** The parts marked **(not tested yet)** have not been run by the fastpilot team
+> over a real SSH connection; the commands follow how fastpilot works and the docs of the related tools. What has been
+> tested: `fastpilot mcp` over stdio, `fastpilot ui` with a fixed port (forwarding to the same port is accepted,
+> to a different port it is refused with "wrong host"), and adb/Chrome on another `127.0.0.1` endpoint (test `remote_web.rs`).
+> Report any step that does not match.
 
-## B. fastpilot di mesin lain
+## B. fastpilot on another computer
 
-Server MCP fastpilot bicara lewat stdin/stdout, jadi SSH bisa langsung menjadi "kabelnya": Claude Code di
-laptop menjalankan `ssh`, dan `ssh` menjalankan `fastpilot mcp` di mesin itu. Tidak ada port yang dibuka.
+The fastpilot MCP server talks over stdin/stdout, so SSH can serve directly as the "cable": Claude Code on the
+laptop runs `ssh`, and `ssh` runs `fastpilot mcp` on that computer. No port is opened.
 
-### 1. Siapkan mesin itu
+### 1. Prepare that computer
 
 ```bash
-# di mesin lain (Mac untuk iOS, Mac/Linux untuk web dan Android)
-npm install -g fastpilot            # atau install.sh / build dari source
-fastpilot doctor                     # semua yang mau dipakai harus ✓
-command -v fastpilot                 # catat path lengkapnya
+# on the other computer (a Mac for iOS, a Mac/Linux for web and Android)
+npm install -g fastpilot            # or install.sh / build from source
+fastpilot doctor                     # everything you plan to use must be ✓
+command -v fastpilot                 # note its full path
 ```
 
-- Login SSH memakai **kunci**, bukan password (`ssh-copy-id user@mesin`), supaya Claude Code tidak
-  tertahan di prompt password.
-- SSH non-interaktif sering tidak memuat `PATH` dari `.zshrc`/`.bashrc`, jadi pakai **path lengkap**
-  `fastpilot` dari langkah di atas. **(belum diuji)**
-- Pengaturan (`~/.fastpilot/config.toml`), state login tersimpan, secret, screenshot, dan laporan
-  semuanya ada di mesin itu, bukan di laptop.
+- Log in to SSH with a **key**, not a password (`ssh-copy-id user@mesin`), so Claude Code does not
+  get stuck at a password prompt.
+- Non-interactive SSH often does not load `PATH` from `.zshrc`/`.bashrc`, so use the **full path** to
+  `fastpilot` from the step above. **(not tested yet)**
+- Settings (`~/.fastpilot/config.toml`), saved login state, secrets, screenshots, and reports
+  are all on that computer, not on the laptop.
 
-### 2. Daftarkan ke Claude Code di laptop **(belum diuji)**
+### 2. Register it with Claude Code on the laptop **(not tested yet)**
 
 ```bash
 claude mcp add fastpilot -- ssh -T user@mesin /opt/homebrew/bin/fastpilot mcp
 ```
 
-- `-T`: tanpa terminal, supaya stdin/stdout bersih untuk MCP.
-- Secret (`${DEMO_PASS}` dsb.) dibaca fastpilot dari env **di mesin itu**. Jangan taruh nilainya di
-  perintah `claude mcp add` (tersimpan di konfigurasi laptop dan terlihat di daftar proses). Buat skrip
-  pembungkus yang hanya bisa dibaca pemiliknya di mesin itu, lalu daftarkan skrip itu:
+- `-T`: no terminal, so stdin/stdout stay clean for MCP.
+- fastpilot reads Secrets (`${DEMO_PASS}` and so on) from the env **on that computer**. Do not put their values in the
+  `claude mcp add` command (it is stored in the laptop's configuration and visible in the process list). Write a wrapper
+  script on that computer that only its owner can read, then register that script:
 
   ```bash
-  # di mesin lain: ~/bin/fastpilot-mcp  (chmod 700)
+  # on the other computer: ~/bin/fastpilot-mcp  (chmod 700)
   #!/bin/sh
   export FASTPILOT_VARS=DEMO_PASS
   export DEMO_PASS='...'
@@ -56,75 +56,75 @@ claude mcp add fastpilot -- ssh -T user@mesin /opt/homebrew/bin/fastpilot mcp
   ```
 
   ```bash
-  # di laptop
+  # on the laptop
   claude mcp add fastpilot -- ssh -T user@mesin bin/fastpilot-mcp
   ```
-- `fastpilot mcp` berhenti ketika klien terputus, dan saat itu menutup Chrome, agent, dan runner miliknya.
-  Bila SSH putus, Claude Code menyalakan server lagi pada panggilan berikutnya; sesi yang sudah ada perlu
-  dimulai ulang.
+- `fastpilot mcp` stops when the client disconnects, and at that moment it closes its Chrome, agents, and runners.
+  If SSH drops, Claude Code starts the server again on the next call; sessions that already existed must be
+  started again.
 
-### 3. Halaman `fastpilot ui` dari laptop
+### 3. The `fastpilot ui` page from the laptop
 
-Halaman UI hanya mendengarkan `127.0.0.1` di mesin itu dan hanya menerima `Host` `127.0.0.1:<port>` /
-`localhost:<port>` miliknya sendiri. Karena itu **nomor port di laptop harus sama** dengan port di mesin
-itu; tunnel ke port lokal yang berbeda ditolak dengan "Host salah".
+The UI page only listens on `127.0.0.1` on that computer and only accepts its own `Host` `127.0.0.1:<port>` /
+`localhost:<port>`. So **the port number on the laptop must be the same** as the port on that
+computer; a tunnel to a different local port is refused with "wrong host".
 
 ```bash
-# di mesin lain
-fastpilot ui --no-open --port 7777        # cetak link http://127.0.0.1:7777/?code=...
+# on the other computer
+fastpilot ui --no-open --port 7777        # prints the link http://127.0.0.1:7777/?code=...
 ```
 
 ```bash
-# di laptop
+# on the laptop
 ssh -N -L 7777:127.0.0.1:7777 user@mesin
 ```
 
-Buka link yang dicetak (dengan `?code=`) di browser laptop. Kode itu sekali pakai dan berlaku 10 menit;
-jalankan ulang `fastpilot ui` bila kedaluwarsa. **(SSH belum diuji; penerusan port dan kode sekali pakai sudah)**
+Open the printed link (with `?code=`) in the laptop's browser. The code works once and is valid for 10 minutes;
+run `fastpilot ui` again if it expires. **(SSH not tested yet; port forwarding and the one-time code are tested)**
 
-### 4. iOS di Mac lain **(belum diuji)**
+### 4. iOS on another Mac **(not tested yet)**
 
-- Simulator dan runner XCUITest dinyalakan lewat `xcrun simctl` dan `xcodebuild`. Biasanya ini butuh user
-  Mac itu **sudah login di desktop** (sesi GUI aktif), bukan hanya lewat SSH. Biarkan user tetap login
-  (layar boleh terkunci) dan matikan sleep otomatis.
-- Build runner sekali di Mac itu: `ios-runner/build.sh` dari checkout, atau pakai build rilis.
-- Saat pertama, macOS bisa menampilkan dialog izin (Developer Tools, Keychain) di layar Mac itu. Dialog
-  tersebut tidak terlihat dari SSH; selesaikan sekali langsung di Mac.
-- iPhone fisik: colok ke Mac itu, lalu ikuti [real-devices.md](real-devices.md).
+- The simulator and the XCUITest runner are started with `xcrun simctl` and `xcodebuild`. This usually needs the
+  Mac's user to be **logged in to the desktop** (an active GUI session), not only over SSH. Keep the user logged in
+  (the screen may be locked) and turn off automatic sleep.
+- Build the runner once on that Mac: `ios-runner/build.sh` from a checkout, or use a release build.
+- The first time, macOS may show permission dialogs (Developer Tools, Keychain) on that Mac's screen. These dialogs
+  are not visible over SSH; deal with them once, directly on the Mac.
+- Physical iPhone: plug it into that Mac, then follow [real-devices.md](real-devices.md).
 
-## Simulator iOS lebih ringan: simslim
+## A lighter iOS simulator: simslim
 
-[simslim](https://github.com/MobAI-App/simslim) (MIT, pihak ketiga, bukan bagian dari fastpilot) mematikan
-service latar yang tidak terpakai di dalam satu simulator. Menurut README-nya, satu simulator iPhone turun dari
-±4,0 GB menjadi ±0,9 GB memori (258 → 70 proses, M1 Pro 16 GB), sehingga lebih banyak simulator muat
-sekaligus. **(belum diuji dengan fastpilot)**
+[simslim](https://github.com/MobAI-App/simslim) (MIT, third party, not part of fastpilot) turns off
+unused background services inside one simulator. According to its README, one iPhone simulator drops from
+about 4.0 GB to about 0.9 GB of memory (258 → 70 processes, M1 Pro 16 GB), so more simulators fit
+at the same time. **(not tested with fastpilot yet)**
 
 ```bash
 brew install mobai-app/tap/simslim
-xcrun simctl list devices booted          # atau: simslim list --booted
-simslim on <udid>                         # rampingkan lalu reboot simulator itu
+xcrun simctl list devices booted          # or: simslim list --booted
+simslim on <udid>                         # slim down, then reboot that simulator
 simslim status <udid>
-simslim off <udid>                        # kembali normal
+simslim off <udid>                        # back to normal
 ```
 
-- Yang berubah hanya simulator yang disebut, bukan Mac-nya.
-- Ramping permanen (tahan reboot) butuh runtime **iOS 18.5 atau lebih baru**. Di iOS 17.x–18.3 hanya
-  `simslim on <udid> --no-reboot` yang jalan, dan hilang saat simulator di-reboot.
-- **Erase All Content and Settings**, `simctl erase`, atau simulator baru mengembalikan ke kondisi normal.
-  fastpilot sendiri tidak meng-erase simulator.
-- Fitur yang **mati** di simulator ramping (dari README simslim), dan kategori yang perlu dipertahankan
-  dengan `--except` bila aplikasi yang dites memakainya:
+- Only the named simulator changes, not the Mac.
+- A permanent slim-down (one that survives reboots) needs runtime **iOS 18.5 or newer**. On iOS 17.x–18.3 only
+  `simslim on <udid> --no-reboot` works, and it is lost when the simulator reboots.
+- **Erase All Content and Settings**, `simctl erase`, or a new simulator brings it back to normal.
+  fastpilot itself does not erase simulators.
+- Features that are **off** in a slimmed simulator (from the simslim README), and the categories you need to keep
+  with `--except` if the app you test uses them:
 
-  | Butuh | Pertahankan |
+  | Needs | Keep |
   |---|---|
-  | Push notification | `--except store` atau `--keep com.apple.apsd` |
+  | Push notification | `--except store` or `--keep com.apple.apsd` |
   | StoreKit testing | `--except store` |
   | Universal links | `--except web` |
-  | Pencarian Spotlight, "Recents" di pemilih file | `--except search` |
-  | Pemilih Foto/Kontak/Kalender | `--except photos,pim` |
-  | MDM / profil konfigurasi | `--except mdm` |
+  | Spotlight search, "Recents" in the file picker | `--except search` |
+  | Photos/Contacts/Calendar picker | `--except photos,pim` |
+  | MDM / configuration profiles | `--except mdm` |
 
-  Cek sebelum menjalankan test: `simslim doctor <udid> --requires push,universal-links`.
-- Nyalakan simulator yang sudah dirampingkan sebelum test: fastpilot memakai simulator yang sedang menyala.
-  Untuk memilih satu dari beberapa, beri UDID-nya di `endpoint` saat `session start`; simulator yang
-  di-boot otomatis bila belum ada yang menyala diatur `FASTPILOT_IOS_DEVICE` (bawaan `iPhone 16`).
+  Check before running tests: `simslim doctor <udid> --requires push,universal-links`.
+- Start the slimmed simulator before the tests: fastpilot uses the simulator that is running.
+  To pick one of several, give its UDID in `endpoint` at `session start`; the simulator that is
+  booted automatically when none is running is set by `FASTPILOT_IOS_DEVICE` (built-in default `iPhone 16`).

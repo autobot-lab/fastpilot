@@ -24,7 +24,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action (confirm_actions; built in: hapus, delete, remove) (also longPressOn, doubleTapOn). Payment and account-deletion buttons are blocked by default (block_actions): do not retry or work around a block | all |
 | inputText | `inputText: { into: "Email", text: "a@b.com" }` (replaces content); `inputText: "abc"` types into the focused field | all |
 | assertVisible / assertNotVisible | `assertVisible: "Dashboard"` or `{ text: "Dashboard", timeout: 10000 }` (ms) | all |
-| scroll | `scroll: down` or `{ direction: up, within: "Daftar" }` | all |
+| scroll | `scroll: down` or `{ direction: up, within: "List" }` | all |
 | swipe | `swipe: { from: [x1, y1], to: [x2, y2] }` | android, ios |
 | back | `back` | all |
 | pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown); `{ key: Enter, confirm: true }` when Enter/Space may press a confirm_actions button and the test case means it | all |
@@ -44,7 +44,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | extendedWaitUntil | `{ visible: <selector>, timeout: 10000 }` or `{ notVisible: ... }` | all |
 | waitForAnimationToEnd | `waitForAnimationToEnd` (never fails) | all |
 | takeScreenshot | `takeScreenshot: checkout` → `.fastpilot/screenshots/checkout.jpg` | all |
-| assertScreenshot | `assertScreenshot: home` or `{ name: home, ignore: ["Jam", { id: banner }], threshold: 0.1, maxDiff: 0.002, update: true }`: visual regression. First run (or `update: true`, or `FASTPILOT_UPDATE_BASELINES=1`) stores `.fastpilot/baselines/home.png`; later runs fail when more than `maxDiff` of the pixels moved by more than `threshold`, with `home.diff.png` (changed pixels red) and `home.actual.png`. `ignore` blanks dynamic parts (clock, ads) | all |
+| assertScreenshot | `assertScreenshot: home` or `{ name: home, ignore: ["Clock", { id: banner }], threshold: 0.1, maxDiff: 0.002, update: true }`: visual regression. First run (or `update: true`, or `FASTPILOT_UPDATE_BASELINES=1`) stores `.fastpilot/baselines/home.png`; later runs fail when more than `maxDiff` of the pixels moved by more than `threshold`, with `home.diff.png` (changed pixels red) and `home.actual.png`. `ignore` blanks dynamic parts (clock, ads) | all |
 | saveState / loadState | `saveState: admin` after logging in → `.fastpilot/states/admin.json` (cookies + localStorage); `loadState: admin` restores it, so later tests skip the login (owner-only file, expires after 30 days, encrypted when `FASTPILOT_STATE_KEY` is set; also the `state` tool) | web |
 | setViewport | `setViewport: iPhone 15` (also iPhone SE, iPhone Pro Max, Pixel 8, Galaxy S23, iPad), `{ width: 390, height: 844, deviceScaleFactor: 3, mobile: true, touch: true, userAgent: "..." }`, `desktop` to reset — the site's mobile layout | web |
 | setLocation | `{ latitude: -6.2088, longitude: 106.8456 }` (web: geolocation override; android: emulator console; ios: simctl) | all (android: emulator) |
@@ -107,11 +107,11 @@ Never XPath.
   `{ id: item, index: 0 }`, or by ref. `index` is only for `id` and for `role` without `name`.
   Existence checks (assertVisible, scrollUntilVisible, `when: visible`) pass with any match.
 - Refs follow the element while it exists (session-scoped); a ref never jumps to another element.
-- `snapshot { filter: "batal" }` finds nodes with their ancestors; `coords: true` adds boxes.
+- `snapshot { filter: "cancel" }` finds nodes with their ancestors; `coords: true` adds boxes.
 - `{ point: [x, y] }` uses the page coordinates `coords: true` shows (also after scrolling). The point
   must be on screen (scroll first, or tap by ref); the step reports the element it landed on. With
   block_actions / confirm_actions on, every element covering the point counts (a button inside a
-  "Pembayaran" dialog too), and a point no element covers is refused.
+  "Payment" dialog too), and a point no element covers is refused.
 
 Apps without accessibility labels (`low_label_coverage` in the snapshot):
 - Jetpack Compose: set `Modifier.semantics { testTagsAsResourceId = true }` on the root and
@@ -130,12 +130,12 @@ const PARALLEL: &str = r#"# Multi-session and parallel
 - parallel:
     - session: admin
       steps:
-        - tapOn: "Pesanan"
+        - tapOn: "Orders"
     - session: buyer
       steps:
-        - tapOn: "Keranjang"
+        - tapOn: "Cart"
 - session: admin
-- assertVisible: "Pesanan"
+- assertVisible: "Orders"
 ```
 
 - Each web session is its own BrowserContext (isolated cookies/storage) in one Chrome process.
@@ -152,7 +152,7 @@ Login in one round-trip:
 - session: { start: web1, platform: web, target: "demo/login.html" }
 - inputText: { into: "Email", text: "a@b.com" }
 - inputText: { into: "Password", text: "${DEMO_PASS}" }
-- tapOn: "Masuk"
+- tapOn: "Sign in"
 - assertVisible: "Budi"
 ```
 
@@ -163,13 +163,13 @@ ok 5/5 steps 1.70s
   ✓ 1 [web1] session start web1 (web) 1063ms
   ✓ 2 [web1] inputText "Email" "a@b.com" 78ms
   ✓ 3 [web1] inputText "Password" "${DEMO_PASS}" 84ms
-  ✓ 4 [web1] tapOn "Masuk" 83ms
+  ✓ 4 [web1] tapOn "Sign in" 83ms
   ✓ 5 [web1] assertVisible "Budi" 385ms
 [web1] screen "Dashboard" (file:///.../login.html)
 e7 heading "Dashboard"
 e8 text "Selamat datang,"
 e9 text "Budi"
-e10 button "Keluar"
+e10 button "Sign out"
 ```
 "#;
 

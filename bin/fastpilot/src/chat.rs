@@ -251,8 +251,8 @@ fn with_bot(agent: &str, id: u64, f: impl FnOnce(&mut Msg)) {
 }
 
 const SYSTEM: &str = "You are the fastpilot bot inside `fastpilot ui`, a local QA app. The user chats with you to run \
-and debug UI tests (web, Android, iOS), read results, and set up schedules and limits. Reply in the user's language \
-(usually Indonesian), short and plain.
+and debug UI tests (web, Android, iOS), read results, and set up schedules and limits. Reply in the user's language, \
+short and plain.
 
 Tools: only the fastpilot MCP tools. Start a session (`session`, action start) and batch steps in `run_flow`; sessions \
 you start appear on the Live page, where the user can watch them and take them over. Close sessions you no longer \
@@ -260,7 +260,7 @@ need. `${NAME}` values are masked; keep using ${NAME}.
 
 You cannot change settings or schedules yourself. To propose one, end your reply with one block per proposal:
 ```fastpilot-proposal
-{\"kind\":\"schedule\",\"name\":\"Login harian\",\"tests\":\"/absolute/path/tests/login.md\",\"every\":\"day\",\"time\":\"09:00\",\"notify\":{\"webhook\":true,\"os\":false,\"github\":\"owner/repo\"}}
+{\"kind\":\"schedule\",\"name\":\"Daily login\",\"tests\":\"/absolute/path/tests/login.md\",\"every\":\"day\",\"time\":\"09:00\",\"notify\":{\"webhook\":true,\"os\":false,\"github\":\"owner/repo\"}}
 ```
 (`every`: day, weekday, week or hours; with week add \"day\": 1 = Monday ... 7 = Sunday; time is HH:MM on this \
 computer. For every N hours use {\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\"} with no time; \
@@ -434,12 +434,12 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     };
     if tokio::time::timeout(Duration::from_secs(30 * 60), read).await.is_err() {
         let _ = child.kill().await;
-        return Err("dihentikan: lebih dari 30 menit".into());
+        return Err("stopped: it took more than 30 minutes".into());
     }
     let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
     match result {
         Some(r) if r["is_error"] == true => {
-            let raw = r["result"].as_str().unwrap_or("gagal").to_owned();
+            let raw = r["result"].as_str().unwrap_or("failed").to_owned();
             // The same text often came as the bot's answer too: say it once.
             with_bot(agent, bot, |m| {
                 if raw.contains(m.text.trim()) || m.text.contains("/login") {
@@ -647,30 +647,30 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
             Ok(s) => {
                 let mut notify = Vec::new();
                 if s.notify.webhook {
-                    notify.push("webhook (URL diisi di halaman Jadwal)".to_owned());
+                    notify.push("webhook (the URL is entered on the Schedules page)".to_owned());
                 }
                 if s.notify.os {
-                    notify.push("notifikasi di komputer ini".to_owned());
+                    notify.push("notify on this computer".to_owned());
                 }
                 if let Some(r) = &s.notify.github {
-                    notify.push(format!("issue GitHub di {r}"));
+                    notify.push(format!("GitHub issue in {r}"));
                 }
                 Proposal {
                     id: new_id(),
                     kind: "schedule".into(),
-                    title: "Jadwal baru".into(),
+                    title: "New schedule".into(),
                     rows: vec![
-                        ("Nama".into(), s.name.clone()),
+                        ("Name".into(), s.name.clone()),
                         ("Test".into(), s.tests.clone()),
-                        ("Waktu".into(), schedule::describe(&s.when)),
-                        ("Kalau gagal".into(), if notify.is_empty() { "tidak ada notifikasi".into() } else { notify.join(", ") }),
+                        ("When".into(), schedule::describe(&s.when)),
+                        ("On failure".into(), if notify.is_empty() { "no notification".into() } else { notify.join(", ") }),
                     ],
                     status: "pending".into(),
                     data: v,
                     ..Default::default()
                 }
             }
-            Err(e) => refused("schedule", "Usulan tidak bisa dipakai", e),
+            Err(e) => refused("schedule", "This suggestion cannot be used", e),
         }),
         Some("test") => found.push(match test_card(new_id(), &v) {
             Ok(p) => p,
@@ -1239,14 +1239,14 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         Some("schedule") => {
             let mut s = schedule_of(&data)?;
             s.agent = (agent != crate::agents::DEFAULT).then(|| agent.clone());
-            // The webhook URL is never in chat: it is filled in on the Jadwal page.
+            // The webhook URL is never in chat: it is filled in on the Schedules page.
             let wants_hook = s.notify.webhook;
             s.notify.webhook = false;
             let saved = schedule::save(s, None)?;
             if wants_hook {
-                format!("Jadwal \"{}\" tersimpan. Isi URL webhook di Jadwal › Ubah untuk mengaktifkan notifikasinya.", saved.name)
+                format!("Schedule \"{}\" saved. Enter the webhook URL in Schedules › Edit to turn its notification on.", saved.name)
             } else {
-                format!("Jadwal \"{}\" tersimpan dan didaftarkan ke {}.", saved.name, schedule::backend().name())
+                format!("Schedule \"{}\" saved and registered with {}.", saved.name, schedule::backend().name())
             }
         }
         _ => return Err("fastpilot does not know this kind of card.".into()),
