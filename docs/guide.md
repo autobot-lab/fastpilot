@@ -340,6 +340,10 @@ The conversation continues with `--resume`. Sessions the bot opens appear in Liv
 - Through chat, limits can only be **made stricter**. A proposal that loosens them (e.g. a larger `max_steps`,
   removing a word from `block_actions`) is refused on its card and again when clicked. You can loosen limits only in
   Settings › Limits.
+- "Remember that login uses a code" gives an **Add a project note** card that quotes your message. The note must be
+  your own words from that message; nothing is saved until you click *Add note*, and every agent reads it from the
+  next run (Memory › Project notes). A note the bot got from a tested page is never a card: the chat shows "A page
+  tried to give the agent a rule" instead. Hidden characters, passwords, tokens and codes are refused.
 - Webhook URLs and tokens never go through chat: a schedule from chat that asks for a webhook is saved without
   the webhook, and you then fill in the URL in Schedules › Edit.
 - Model: `model_explore` (see Settings › AI model).

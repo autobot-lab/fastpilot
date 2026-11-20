@@ -1181,8 +1181,10 @@ function settingCard(p) {
 
 // M1: a looser limit the bot proposed that the user did not ask for. Nothing was changed.
 function pageAttempts(list) {
+  const note = list.every((a) => a.kind === "note");
   return h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
-    h("div", {}, h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this.",
+    h("div", {}, note ? [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]
+      : [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."],
       h("details", {}, h("summary", {}, "See what it said"),
         list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said))))));
 }
@@ -1210,23 +1212,27 @@ function proposalCard(p) {
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
-  const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : "shield"), p.title);
+  const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : p.kind === "note" ? "memory" : "shield"), p.title,
+    p.kind === "note" && p.status === "pending" ? h("span", { class: "tag" }, "Needs your OK") : null);
+  // D6 from Chat: the user's own message, quoted by fastpilot (M2), above the note it asks for.
+  const quote = p.kind === "note" && p.quote ? h("p", { class: "quote" }, p.quote) : null;
   const rows = p.rows.length ? h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null;
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Save the schedule" : "Apply the limits"),
-      h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Cancel"));
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Save the schedule" : p.kind === "note" ? "Add note" : "Apply the limits"),
+      h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, p.kind === "note" ? "No thanks" : "Cancel"));
   } else if (p.status === "applied") {
     foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved"));
   } else if (p.status === "cancelled") {
     foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Cancelled");
   } else {
     foot = h("div", { class: "prop-state bad", tabindex: "-1" }, rich(p.note || "Cannot be used"),
-      p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Open Settings › Limits")] : null);
+      p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Open Settings › Limits")] : null,
+      p.kind === "note" ? [" ", h("a", { class: "lk", href: "#/memory" }, "Open Memory")] : null);
   }
   const note = p.status === "pending" && p.note ? h("p", { class: "s" }, rich(p.note)) : null;
-  return h("section", { class: "grp prop " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, rows, note, foot));
+  return h("section", { class: "grp prop " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, quote, rows, note, foot));
 }
 
 // D10c (S2): the bot's text with its "Techniques used" block drawn as a card: one heading per
