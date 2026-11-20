@@ -1,17 +1,27 @@
 ---
 name: exploratory-check
-description: Explore one page or feature for a few minutes like a curious user and report anything wrong or confusing, without a written test. Use when the user says "look around", "explore", "try this new feature", "check this page", or gives only a URL / app and no test case.
+description: Exploratory testing (ISTQB) - explore one page or feature for 10-20 minutes with a short charter like a curious user and report anything wrong or confusing, without a written test. Use when the user says "look around", "explore", "try this new feature", "check this page", or gives only a URL / app and no test case.
 license: Apache-2.0
 ---
 
-# Exploratory check
+# Exploratory check (exploratory testing)
 
 A short, focused tour of **one** area (a page, a form, a flow), not the whole app. Use the
 `fastpilot` skill for sessions and flows.
 
-## Before you start
-State a one-line mission and a time box, e.g. *"Explore the cart on staging for ~10 minutes:
-quantities, removing items, totals."* If the user gave no area, ask which one.
+## Before you start: the charter
+Write a short charter and show it before exploring:
+```
+Charter
+  Mission:  find problems with quantities, removing items and totals
+  Area:     the cart on staging (not checkout)
+  Time box: 15 minutes
+```
+- **Mission**: what you look for, in one line.
+- **Area**: the one page, form or flow, and what is out of scope.
+- **Time box**: 10-20 minutes. Stop when it ends and report; list leftover ideas instead.
+
+If the user gave no area, ask which one.
 
 ## How to look (lenses)
 Go through the area with these questions; note what you see, do not stop at the first issue.
@@ -32,7 +42,8 @@ Go through the area with these questions; note what you see, do not stop at the 
 ## Report
 Example, not real results:
 ```
-Exploratory check — Cart (staging) — 10 min
+Exploratory check — Cart (staging) — 15 of 15 min
+Mission: quantities, removing items, totals
 Problems
   1. Quantity accepts 0; the line stays with price 0 (steps: …) [screenshot]
   2. After going offline and back, the total shows "NaN"

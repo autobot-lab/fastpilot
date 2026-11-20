@@ -1,10 +1,10 @@
 ---
 name: ticket-to-test
-description: Turn a feature description, user story, acceptance criteria or a Jira ticket into saved fastpilot tests written in plain language, each with clear success and failure checks. Use when the user pastes a requirement or ticket, says "create a test for this", "make tests from these acceptance criteria", or when a ticket moves to QA (the result is a draft until a person saves it).
+description: Acceptance tests (ATDD) - turn a feature description, user story, acceptance criteria or a Jira ticket into saved fastpilot tests written in plain language, each with clear success and failure checks. Use when the user pastes a requirement or ticket, says "create a test for this", "make tests from these acceptance criteria", or when a ticket moves to QA (the result is a draft until a person saves it).
 license: Apache-2.0
 ---
 
-# Ticket to test
+# Ticket to test (acceptance tests)
 
 ## Steps
 1. **Read the requirement** and list what must be true (one line each). Ask about anything

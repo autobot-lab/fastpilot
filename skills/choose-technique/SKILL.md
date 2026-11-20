@@ -17,9 +17,11 @@ loop; this skill only decides *how* to design the checks.
 | One input with ranges or kinds (age, quantity, file size, password length) | `equivalence-partitioning` + `boundary-value-analysis` |
 | A business rule with several conditions (discount, shipping fee, who may do what) | `decision-table` |
 | Something with states (order, booking, ticket, account) | `state-transition` |
-| A user story, acceptance criteria or a ticket | `ticket-to-test` |
-| A new feature with no description | `exploratory-check` |
-| Login, a form, checkout, accessibility, mobile behaviour | the matching checklist skill |
+| Many options that combine (payment × shipping × country) | `pairwise` |
+| A whole journey a person does end to end, with its other and error paths | `use-case-scenarios` |
+| A user story, acceptance criteria or a ticket | `ticket-to-test` (acceptance tests) |
+| A new feature with no description | `exploratory-check` (exploratory testing) |
+| Login, a form, checkout, accessibility, mobile behaviour, or the user's own list | `checklist-based` |
 | Always, briefly | a few `edge-cases` (error guessing) |
 
 Several can apply; use at most three, most useful first. Never claim white-box coverage
@@ -41,7 +43,7 @@ Add this section after the normal result, one block per technique (example, not 
 ```
 Techniques used
 Boundary value analysis (3-value) · Age
-  Tried: 17 ✗ refused · 18 ✓ · 19 ✓ · 64 ✓ · 65 ✓ · 66 ✗ refused
+  Tried: 17 refused ✓ · 18 accepted ✓ · 19 accepted ✓ · 64 accepted ✓ · 65 accepted ✓ · 66 refused ✓
   Coverage: 6 of 6 boundary values
   Assumption: valid ages are 18–65 (not stated anywhere)
 Decision table · Discount

@@ -26,7 +26,7 @@ test loop and `choose-technique` for the report format.
 
 ## Report
 Table: value → expected → what happened → ✓ / ✗, then:
-`Boundary value analysis (3-value) · Age — 6 of 6 values: 17 ✗ refused · 18 ✓ … 66 ✗ refused`.
+`Boundary value analysis (3-value) · Age — 6 of 6 values: 17 refused ✓ · 18 accepted ✓ … 66 refused ✓`.
 
 ## Rules
 - A rule taken only from the tested screen is written as "as the screen states (unverified)".

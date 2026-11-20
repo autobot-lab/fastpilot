@@ -1,10 +1,10 @@
 ---
 name: edge-cases
-description: Try the inputs and situations that usually break apps - empty, too long, zero, negative, special characters, boundaries, repeated actions. Use when the user asks for edge cases, negative tests, "try to break it", or when testing any form, search, quantity, date or amount field.
+description: Error guessing (ISTQB) - try the inputs and situations that usually break apps - empty, too long, zero, negative, special characters, boundaries, repeated actions. Use when the user asks for edge cases, negative tests, "try to break it", or when testing any form, search, quantity, date or amount field.
 license: Apache-2.0
 ---
 
-# Edge cases
+# Edge cases (error guessing)
 
 Run small variations around one field or action and record which ones the app handles badly.
 Use the `fastpilot` skill for the flows; `inputRandomText`, `inputRandomNumber`, `inputRandomEmail`
