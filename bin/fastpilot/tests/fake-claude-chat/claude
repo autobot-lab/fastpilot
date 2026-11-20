@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""A stand-in for Claude Code's `claude -p --output-format stream-json` in the `fastpilot ui` chat
+tests. It starts the MCP server named in --mcp-config (`fastpilot mcp`) and, when the message asks
+for a test, opens the demo login page and checks it over real MCP. It then answers with proposal
+blocks depending on the message: "jadwal" -> a schedule, "blokir" -> stricter limits,
+"longgar" -> looser limits (which fastpilot must refuse). Each call is logged as JSON in
+$FAKE_CLAUDE_LOG. Env: FAKE_CHAT_TESTS (tests path for the schedule), FAKE_CHAT_DELAY_MS.
+"""
+import json, os, subprocess, sys, time
+
+argv = sys.argv[1:]
+if argv == ["--version"]:
+    print("9.9.9 (Claude Code, fake chat)")
+    sys.exit(0)
+
+def opt(name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+prompt = sys.stdin.read()
+log_dir = os.environ.get("FAKE_CLAUDE_LOG")
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, f"{time.time_ns()}.json"), "w") as f:
+        json.dump({"argv": argv, "prompt": prompt}, f)
+
+session = opt("--resume") or "fake-chat-1"
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+emit({"type": "system", "subtype": "init", "session_id": session})
+time.sleep(int(os.environ.get("FAKE_CHAT_DELAY_MS", "0")) / 1000)
+low = prompt.lower()
+said = []
+
+if "tes" in low or "login" in low:
+    server = json.loads(opt("--mcp-config"))["mcpServers"]["fastpilot"]
+    proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    n = [0]
+    def rpc(method, params=None, notify=False):
+        msg = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        if not notify:
+            n[0] += 1
+            msg["id"] = n[0]
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+        return None if notify else json.loads(proc.stdout.readline())["result"]
+    def call(name, args):
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": f"mcp__fastpilot__{name}", "input": args}]}})
+        r = rpc("tools/call", {"name": name, "arguments": args})
+        return not r.get("isError")
+    rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake-chat", "version": "0"}})
+    rpc("notifications/initialized", notify=True)
+    ok = call("session", {"action": "start", "id": "chat1", "platform": "web", "target": "examples/demo/login.html"})
+    ok = ok and call("run_flow", {"flow": "- assertVisible: Masuk\n", "session": "chat1"})
+    call("session", {"action": "stop", "id": "chat1"})
+    proc.stdin.close()
+    proc.wait(timeout=10)
+    said.append("Halaman login terbuka dan tombol Masuk terlihat." if ok else "Tes login gagal.")
+    emit({"type": "assistant", "message": {"content": [{"type": "text", "text": said[-1]}]}})
+
+text = []
+if "jadwal" in low:
+    text.append("Ini jadwalnya, cek dulu ya:\n```fastpilot-proposal\n" + json.dumps({
+        "kind": "schedule", "name": "Login harian", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
+        "every": "day", "time": "09:00", "notify": {"webhook": True, "os": True}}) + "\n```")
+if "blokir" in low:
+    text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
+if "longgar" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"max_steps": 500}}) + "\n```")
+if not text and not said:
+    text.append("Halo! Mau tes apa?")
+final = "\n\n".join(text)
+if final:
+    emit({"type": "assistant", "message": {"content": [{"type": "text", "text": final}]}})
+emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "result": final or said[-1]})

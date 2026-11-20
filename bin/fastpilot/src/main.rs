@@ -1,6 +1,7 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod bench;
+mod chat;
 mod cli;
 mod doctor;
 mod github;

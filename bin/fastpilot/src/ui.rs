@@ -162,6 +162,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
         .route("/api/schedules", get(schedules_api).post(schedules_change))
+        .route("/api/chat", get(chat_api).post(chat_send))
+        .route("/api/chat/decide", post(chat_decide))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -280,6 +282,30 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         let (k, v) = kv.trim().split_once('=')?;
         (k == name).then(|| v.to_owned())
     })
+}
+
+// ---- Chat (C4) ----------------------------------------------------------------------------
+
+async fn chat_api() -> Response {
+    axum::Json(crate::chat::state()).into_response()
+}
+
+/// `{message}` starts the bot's answer; `{reset: true}` starts a new conversation.
+async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
+    let r = if body["reset"] == true { crate::chat::reset() } else { crate::chat::send(body["message"].as_str().unwrap_or("")) };
+    match r {
+        Ok(()) => axum::Json(crate::chat::state()).into_response(),
+        Err(e) => refuse(StatusCode::CONFLICT, &e),
+    }
+}
+
+/// `{id, apply}`: the user's click on a proposal card.
+async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
+    let Some(id) = body["id"].as_u64() else { return refuse(StatusCode::BAD_REQUEST, "id wajib diisi") };
+    match crate::chat::decide(id, body["apply"] == true) {
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
 }
 
 // ---- Jadwal (C3) --------------------------------------------------------------------------
@@ -446,6 +472,7 @@ const ICONS: &[(&str, &str)] = &[
     ("plus", include_str!("../ui/icons/plus.svg")),
     ("refresh", include_str!("../ui/icons/refresh.svg")),
     ("risk", include_str!("../ui/icons/risk.svg")),
+    ("send", include_str!("../ui/icons/send.svg")),
     ("settings", include_str!("../ui/icons/settings.svg")),
     ("shield", include_str!("../ui/icons/shield.svg")),
     ("stop", include_str!("../ui/icons/stop.svg")),

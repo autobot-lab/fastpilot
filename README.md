@@ -270,6 +270,21 @@ file `.md`) setiap hari, hari kerja, atau mingguan pada jam tertentu (waktu komp
   `~/.fastpilot/schedules/reports/`, log di `~/.fastpilot/schedules/<id>.log`.
 - Dari terminal: `fastpilot schedule list`, `fastpilot schedule run <id>`, `fastpilot schedule remove <id>`.
 
+**Chat** (`fastpilot ui`, menu Chat): minta fastpilot bot menjalankan test, menjelaskan kegagalan, membuat
+jadwal, atau memperketat batasan dengan bahasa biasa. Tiap pesan dijawab oleh Claude Code-mu sendiri
+(`claude -p`, login-mu, tanpa API key) dengan tool fastpilot saja, sama seperti `fastpilot run`;
+percakapan berlanjut dengan `--resume`. Sesi yang dibuka bot muncul di Live dan bisa diambil alih.
+
+- Bot **tidak bisa** mengubah pengaturan atau jadwal sendiri: tool `config` tidak tersedia untuknya. Ia
+  hanya mengusulkan, dan usulan tampil sebagai kartu (Jadwal baru / Batasan baru). Tidak ada yang berubah
+  sampai kamu klik *Simpan jadwal* atau *Terapkan batasan*.
+- Lewat chat batasan hanya bisa **diperketat**. Usulan yang melonggarkan (mis. `max_steps` lebih besar,
+  menghapus kata dari `block_actions`) ditolak di kartunya dan juga saat diklik; melonggarkan hanya lewat
+  Pengaturan › Batasan.
+- URL webhook dan token tidak pernah lewat chat: jadwal dari chat yang meminta webhook disimpan tanpa
+  webhook, lalu URL-nya diisi di Jadwal › Ubah.
+- Model: `model_explore` (lihat Pengaturan › Model AI).
+
 Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 
 | Kunci | Arti |
