@@ -138,6 +138,9 @@ async fn take_over_a_web_session_and_give_it_back() {
     eval(&client, "viewer", "[...document.querySelectorAll('#take-banner button')].find(b => b.textContent.includes('Kembalikan')).click(), 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertNotVisible: { text: \"Kamu sedang mengambil alih\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
+    // Design L1: focus on the page title, not lost to body.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(eval(&client, "viewer", "document.activeElement.tagName").await, "\"H1\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }

@@ -113,8 +113,8 @@ pub fn secret_path(id: &str) -> PathBuf {
 /// Write `text` owner-only (0600), replacing the file atomically; its folder becomes 0700.
 fn write_private(path: &Path, text: &str) -> Res<()> {
     use std::io::Write;
-    let dir = path.parent().ok_or("no folder")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = path.parent().ok_or("Folder tidak dikenal")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Tidak bisa membuat folder {}: {e}", dir.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -128,7 +128,7 @@ fn write_private(path: &Path, text: &str) -> Res<()> {
     o.open(&tmp)
         .and_then(|mut f| f.write_all(text.as_bytes()))
         .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|e| format!("{}: {e}", path.display()))
+        .map_err(|e| format!("Tidak bisa menulis {}: {e}", path.display()))
 }
 
 pub fn load() -> Store {
@@ -189,7 +189,7 @@ pub fn check_webhook(url: &str) -> Res<()> {
     }
     let host = url.split("://").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("");
     if host.is_empty() || host.contains('@') {
-        return Err("URL webhook tidak valid (tanpa user:password@)".into());
+        return Err("URL webhook tidak valid: tulis tanpa user:password@".into());
     }
     Ok(())
 }
@@ -208,30 +208,30 @@ pub fn has_webhook(id: &str) -> bool {
 /// Whether `s` can be saved (also used for a chat proposal before it is shown).
 pub fn validate(s: &Schedule) -> Res<()> {
     if !valid_id(&s.id) {
-        return Err("id jadwal hanya huruf kecil, angka, dan -".into());
+        return Err("Id jadwal hanya boleh huruf kecil, angka, dan -".into());
     }
     if s.name.trim().is_empty() || s.name.chars().count() > 80 {
-        return Err("nama jadwal 1–80 karakter".into());
+        return Err("Nama jadwal wajib, 1–80 karakter".into());
     }
     let tests = Path::new(&s.tests);
     if !tests.is_absolute() || !tests.exists() {
-        return Err(format!("folder atau file test tidak ditemukan: {} (tulis path lengkap)", s.tests));
+        return Err(format!("Folder atau file test tidak ditemukan: {} (tulis path lengkap)", s.tests));
     }
     if tests.is_file() && tests.extension().is_none_or(|x| x != "md") {
-        return Err("file test harus .md (atau pilih foldernya)".into());
+        return Err("File test harus .md (atau pilih foldernya)".into());
     }
     if hour_minute(&s.when.time).is_none() {
-        return Err("jam harus HH:MM, mis. 08:00".into());
+        return Err("Jam harus HH:MM, mis. 08:00".into());
     }
     match (s.when.every, s.when.day) {
         (Every::Week, Some(1..=7)) | (Every::Day | Every::Weekday, None) => {}
-        (Every::Week, _) => return Err("pilih hari untuk jadwal mingguan".into()),
-        _ => return Err("hari hanya untuk jadwal mingguan".into()),
+        (Every::Week, _) => return Err("Pilih hari untuk jadwal mingguan".into()),
+        _ => return Err("Hari hanya untuk jadwal mingguan".into()),
     }
     if let Some(repo) = &s.notify.github
         && !valid_repo(repo)
     {
-        return Err("repo GitHub ditulis pemilik/nama, mis. autobot-lab/fastpilot".into());
+        return Err("Repo GitHub ditulis pemilik/nama, mis. autobot-lab/fastpilot".into());
     }
     Ok(())
 }
@@ -289,7 +289,7 @@ fn label(id: &str) -> String {
 }
 
 fn exe() -> Res<String> {
-    let p = std::env::current_exe().map_err(|e| format!("cannot find the fastpilot binary: {e}"))?;
+    let p = std::env::current_exe().map_err(|e| format!("File program fastpilot tidak ditemukan: {e}"))?;
     Ok(p.to_string_lossy().into_owned())
 }
 
@@ -393,13 +393,13 @@ fn run_cmd(cmd: &str, args: &[&str], stdin: Option<&str>) -> Res<String> {
     if stdin.is_some() {
         c.stdin(std::process::Stdio::piped());
     }
-    let mut child = c.spawn().map_err(|e| format!("{cmd}: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("Perintah `{cmd}` tidak bisa dijalankan: {e}"))?;
     if let (Some(text), Some(mut i)) = (stdin, child.stdin.take()) {
-        i.write_all(text.as_bytes()).map_err(|e| format!("{cmd}: {e}"))?;
+        i.write_all(text.as_bytes()).map_err(|e| format!("Perintah `{cmd}` gagal: {e}"))?;
     }
-    let out = child.wait_with_output().map_err(|e| format!("{cmd}: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("Perintah `{cmd}` gagal: {e}"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    if out.status.success() { Ok(text) } else { Err(format!("{cmd} {}: {}", args.join(" "), text.trim())) }
+    if out.status.success() { Ok(text) } else { Err(format!("Perintah `{cmd} {}` gagal: {}", args.join(" "), text.trim())) }
 }
 
 fn uid() -> String {
@@ -446,23 +446,23 @@ pub fn install(s: &Schedule) -> Res<()> {
         Backend::Launchd => {
             let file = launch_agents().join(format!("{}.plist", label(&s.id)));
             let log = home().join("schedules").join(format!("{}.log", s.id));
-            std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
             if dry_dir().is_none() {
                 let _ = run_cmd("launchctl", &["bootout", &format!("gui/{}/{}", uid(), label(&s.id))], None);
             }
-            std::fs::create_dir_all(launch_agents()).map_err(|e| e.to_string())?;
-            std::fs::write(&file, plist(s, &exe, &path, &log)).map_err(|e| format!("{}: {e}", file.display()))?;
+            std::fs::create_dir_all(launch_agents()).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+            std::fs::write(&file, plist(s, &exe, &path, &log)).map_err(|e| format!("Tidak bisa menulis {}: {e}", file.display()))?;
             if dry_dir().is_none() {
                 run_cmd("launchctl", &["bootstrap", &format!("gui/{}", uid()), &file.to_string_lossy()], None)?;
             }
         }
         Backend::Systemd => {
             let dir = systemd_dir();
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
             let (service, timer) = systemd_units(s, &exe, &path);
             let unit = format!("fastpilot-schedule-{}", s.id);
-            std::fs::write(dir.join(format!("{unit}.service")), service).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(format!("{unit}.timer")), timer).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(format!("{unit}.service")), service).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+            std::fs::write(dir.join(format!("{unit}.timer")), timer).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
             if dry_dir().is_none() {
                 run_cmd("systemctl", &["--user", "daemon-reload"], None)?;
                 run_cmd("systemctl", &["--user", "enable", "--now", &format!("{unit}.timer")], None)?;
@@ -527,7 +527,7 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
         None => {}
     }
     if s.notify.webhook && !has_webhook(&s.id) {
-        return Err("isi URL webhook dulu, atau matikan notifikasi webhook".into());
+        return Err("Isi URL webhook dulu, atau matikan notifikasi webhook".into());
     }
     if s.enabled {
         install(&s)?;
@@ -566,16 +566,16 @@ pub fn start_now(id: &str) -> Res<()> {
         return Err("jadwal tidak ditemukan".into());
     }
     let log = home().join("schedules").join(format!("{id}.log"));
-    std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| e.to_string())?;
-    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| e.to_string())?;
-    let err = out.try_clone().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+    let err = out.try_clone().map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
     std::process::Command::new(exe()?)
         .args(["schedule", "run", id])
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err)
         .spawn()
-        .map_err(|e| format!("cannot start the run: {e}"))?;
+        .map_err(|e| format!("Run tidak bisa dimulai: {e}"))?;
     Ok(())
 }
 
@@ -585,10 +585,10 @@ pub fn start_now(id: &str) -> Res<()> {
 /// and the notifications when it fails.
 pub async fn run(id: &str) -> Res<bool> {
     let store = load();
-    let s = store.schedules.iter().find(|x| x.id == id).cloned().ok_or_else(|| format!("no schedule `{id}`"))?;
+    let s = store.schedules.iter().find(|x| x.id == id).cloned().ok_or_else(|| format!("Jadwal `{id}` tidak ditemukan"))?;
     let started = now_ms();
     let reports = home().join("schedules").join("reports");
-    std::fs::create_dir_all(&reports).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&reports).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
     let report = reports.join(format!("{id}-{started}.html"));
     set_last(id, LastRun { started_ms: started, ..Default::default() })?;
     // Test cases name pages and files relative to the project (the folder above `tests/`), and
@@ -602,7 +602,7 @@ pub async fn run(id: &str) -> Res<bool> {
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("cannot start fastpilot run: {e}"))?;
+        .map_err(|e| format!("fastpilot run tidak bisa dimulai: {e}"))?;
     let text = fastpilot_core::redact(&format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     print!("{text}");
     let passed = out.status.success();
@@ -655,22 +655,22 @@ pub async fn notify(s: &Schedule, title: &str, msg: &str) -> Vec<String> {
     if s.notify.webhook {
         done.push(match std::fs::read_to_string(secret_path(&s.id)) {
             Ok(url) => match webhook(url.trim(), msg).await {
-                Ok(()) => "webhook: terkirim".to_owned(),
-                Err(e) => format!("webhook: gagal ({e})"),
+                Ok(()) => "Webhook: terkirim".to_owned(),
+                Err(e) => format!("Webhook: gagal ({e})"),
             },
-            Err(_) => "webhook: URL belum diisi".to_owned(),
+            Err(_) => "Webhook: URL belum diisi".to_owned(),
         });
     }
     if s.notify.os {
         done.push(match os_notification(title, msg) {
-            Ok(()) => "notifikasi: terkirim".to_owned(),
-            Err(e) => format!("notifikasi: gagal ({e})"),
+            Ok(()) => "Notifikasi: terkirim".to_owned(),
+            Err(e) => format!("Notifikasi: gagal ({e})"),
         });
     }
     if let Some(repo) = &s.notify.github {
         done.push(match github_issue(repo, title, msg).await {
-            Ok(url) => format!("issue GitHub: {url}"),
-            Err(e) => format!("issue GitHub: gagal ({e})"),
+            Ok(url) => format!("Issue GitHub: {url}"),
+            Err(e) => format!("Issue GitHub: gagal ({e})"),
         });
     }
     done
@@ -736,9 +736,9 @@ fn github_api() -> String {
 
 pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
     if !valid_repo(repo) {
-        return Err("repo tidak valid".into());
+        return Err("Repo GitHub tidak valid".into());
     }
-    let token = github_token().ok_or("token tidak ada (GITHUB_TOKEN, atau Keychain `fastpilot-github`)")?;
+    let token = github_token().ok_or("Token GitHub tidak ada (GITHUB_TOKEN / GH_TOKEN, atau Keychain `fastpilot-github`)")?;
     let r = http()?
         .post(format!("{}/repos/{repo}/issues", github_api()))
         .bearer_auth(token)
@@ -765,10 +765,10 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
         (Some("list") | None, _) => {
             let store = load();
             if store.schedules.is_empty() {
-                println!("no schedules (make one in `fastpilot ui`, Jadwal)");
+                println!("belum ada jadwal (buat di `fastpilot ui`, menu Jadwal)");
             }
             for s in &store.schedules {
-                let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "not run yet".into());
+                let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "belum jalan".into());
                 println!("{} {:<20} {:<18} {} [{}]", if s.enabled { "●" } else { "○" }, s.id, describe(&s.when), s.tests, last);
             }
             Ok(())

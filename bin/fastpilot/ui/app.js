@@ -46,7 +46,13 @@ function toast(msg, ok) {
 
 async function api(path, body) {
   const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-  const r = await fetch(path, opts);
+  let r;
+  try {
+    r = await fetch(path, opts);
+  } catch (_) {
+    // The browser's own "Failed to fetch": the fastpilot ui process is not running any more.
+    throw new Error("server fastpilot ui tidak menjawab; jalankan lagi `fastpilot ui` di Terminal");
+  }
   if (!r.ok) throw new Error((await r.text()).replace(/^fastpilot ui: /, "").trim() || r.statusText);
   return r.json();
 }
@@ -829,7 +835,13 @@ function takeBanner(sessions) {
   el.replaceChildren(icon("cursor", "sm"),
     h("span", {}, h("b", {}, "Kamu sedang mengambil alih "), names, ". Langkah AI di sesi itu menunggu."),
     h("a", { class: "btn sm", href: "#/live" }, "Lihat di Live"),
-    h("button", { class: "btn sm p", onclick: async () => { for (const s of mine) await control(s, "release"); await refreshLive(); globalLive(); } }, icon("play", "sm"), "Kembalikan ke AI"));
+    h("button", { class: "btn sm p", onclick: async () => {
+      for (const s of mine) await control(s, "release");
+      await refreshLive();
+      await globalLive();
+      // The banner (and this button) is gone: keyboard focus goes to the page title.
+      document.querySelector(".top h1")?.focus();
+    } }, icon("play", "sm"), "Kembalikan ke AI"));
 }
 
 // Off the Live page: the Live state every few seconds, for the banner (and the takeover's keep-alive).
@@ -845,7 +857,7 @@ async function pollLive() {
   try {
     renderLive(await api("/api/live"));
   } catch (e) {
-    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Tidak bisa membaca sesi: " + e.message));
+    $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Tidak bisa membaca sesi: ", rich(e.message)));
   }
   liveTimer = setTimeout(pollLive, 1000);
 }
@@ -1056,8 +1068,12 @@ function schedPanel() {
   // Each field has its own error line; a refused save points at the field it is about.
   const errs = {};
   const field = (label, input, hint, key) => {
-    const err = h("span", { class: "fld-err", role: "alert", hidden: true });
-    if (key) errs[key] = { err, input };
+    const err = h("span", { class: "fld-err", role: "alert", hidden: true, id: key ? `err-${key}` : undefined });
+    if (key) {
+      errs[key] = { err, input };
+      // Read again when the user comes back to the field, not only when it appears.
+      input.setAttribute("aria-describedby", `err-${key}`);
+    }
     return h("label", { class: "fld" }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null, err);
   };
   const name = h("input", { type: "text", maxlength: "80", value: f.name || "", placeholder: "mis. Checkout hari kerja" });

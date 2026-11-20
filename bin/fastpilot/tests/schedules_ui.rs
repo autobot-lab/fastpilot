@@ -152,7 +152,7 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
 
     // Tes notifikasi: Slack-style text to the webhook, an issue with the token.
     let (st, body) = post(r#"{"action":"test","id":"login-harian"}"#);
-    assert!(st == 200 && body.contains("webhook: terkirim") && body.contains("issues/7"), "{st} {body}");
+    assert!(st == 200 && body.contains("Webhook: terkirim") && body.contains("issues/7"), "{st} {body}");
     let first = hook.lock().expect("hook")[0].clone();
     assert!(first.starts_with("POST /services/T000/B000/rahasia") && first.contains("\"text\"") && first.contains("tes notifikasi"), "{first}");
     let issue = gh.lock().expect("gh")[0].clone();
