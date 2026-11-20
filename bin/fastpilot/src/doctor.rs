@@ -34,13 +34,22 @@ pub struct Check {
     pub hint: Option<String>,
     /// What `setup` can do itself.
     pub fixes: Vec<Fix>,
+    /// The dashboard's wording when `detail`/`hint` hold a file path or a device serial (the
+    /// Device page shows no paths or device ids; the terminal keeps them). FastTest M3.
+    pub screen: Option<String>,
+    pub screen_hint: Option<String>,
 }
 
 fn check(area: &'static str, name: &str, status: Status, detail: impl Into<String>) -> Check {
-    Check { area, name: name.to_owned(), status, detail: detail.into(), hint: None, fixes: Vec::new() }
+    Check { area, name: name.to_owned(), status, detail: detail.into(), hint: None, fixes: Vec::new(), screen: None, screen_hint: None }
 }
 
 impl Check {
+    fn screen(mut self, text: impl Into<String>, hint: Option<&str>) -> Self {
+        self.screen = Some(text.into());
+        self.screen_hint = hint.map(str::to_owned);
+        self
+    }
     fn hint(mut self, h: impl Into<String>) -> Self {
         self.hint = Some(h.into());
         self
@@ -104,17 +113,20 @@ pub async fn web() -> Vec<Check> {
             out.push(c);
         }
         Some(path) => {
+            let app = if path.to_string_lossy().to_lowercase().contains("chromium") { "Chromium" } else { "Google Chrome" };
             let launched = tokio::time::timeout(
                 Duration::from_secs(25),
                 fastpilot_web::Browser::launch_local(fastpilot_web::LaunchOptions { headless: true, executable: Some(path.clone()) }),
             )
             .await;
             out.push(match launched {
-                Ok(Ok(_browser)) => check("web", "Chrome", Status::Ok, format!("{} (starts headless)", path.display())),
+                Ok(Ok(_browser)) => check("web", "Chrome", Status::Ok, format!("{} (starts headless)", path.display())).screen(format!("{app} starts for tests"), None),
                 Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("{} does not start: {e}", path.display()))
-                    .hint("update Chrome, or point `chrome` to another build: `fastpilot config set chrome /path`"),
+                    .hint("update Chrome, or point `chrome` to another build: `fastpilot config set chrome /path`")
+                    .screen(format!("{app} does not start"), Some("update Chrome, then check again")),
                 Err(_) => check("web", "Chrome", Status::Fail, format!("{} did not start within 25 s", path.display()))
-                    .hint("close other Chrome automation, then retry; or set another `chrome`"),
+                    .hint("close other Chrome automation, then retry; or set another `chrome`")
+                    .screen(format!("{app} did not start within 25 s"), Some("close other Chrome automation, then check again")),
             });
         }
     }
@@ -153,11 +165,13 @@ pub async fn android() -> Vec<Check> {
     let avds: Vec<String> = output(&emulator, &["-list-avds"]).await.map(|s| s.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty() && !l.starts_with("INFO")).collect()).unwrap_or_default();
     if !ready.is_empty() {
         let names: Vec<String> = ready.iter().map(|d| format!("{}: {} ({})", d.kind.label(), d.name, d.id)).collect();
-        out.push(check("android", "device", Status::Ok, names.join(", ")));
+        let shown: Vec<String> = ready.iter().map(|d| format!("{}: {}", d.kind.label(), d.name)).collect();
+        out.push(check("android", "device", Status::Ok, names.join(", ")).screen(shown.join(", "), None));
     } else if let Some(avd) = avds.first() {
         out.push(
             check("android", "device", Status::Warn, format!("no device or emulator running; emulators: {}", avds.join(", ")))
                 .hint(format!("start one: `{emulator} -avd {avd} -no-window &`, or connect a phone with USB debugging on"))
+                .screen(format!("no device or emulator running; emulators: {}", avds.join(", ")), Some("start the emulator with the Fix button, or connect a phone with USB debugging on"))
                 .fix(&format!("start emulator {avd} in the background (no window)"), &emulator, &["-avd", avd, "-no-window", "-no-audio", "-no-snapshot-save"]),
         );
     } else {
@@ -198,10 +212,11 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
     let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| format!("{} ({})", d.id, d.name)).collect();
+    let shown: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| d.name.clone()).collect();
     out.push(if ready.is_empty() {
-        check("android", "device", Status::Warn, format!("no device on the adb server {server}")).hint("start the emulator or connect the phone on that machine")
+        check("android", "device", Status::Warn, format!("no device on the adb server {server}")).hint("start the emulator or connect the phone on that machine").screen("no device on the other computer", None)
     } else {
-        check("android", "device", Status::Ok, ready.join(", "))
+        check("android", "device", Status::Ok, ready.join(", ")).screen(format!("on another computer: {}", shown.join(", ")), None)
     });
     out
 }
@@ -233,7 +248,7 @@ pub async fn ios() -> Vec<Check> {
         Err(e) => out.push(check("ios", "simulator", Status::Fail, format!("simctl failed: {e}")).hint("open Xcode once to finish its setup")),
     }
     out.push(match fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator) {
-        Some(p) => check("ios", "runner", Status::Ok, p.display().to_string()),
+        Some(p) => check("ios", "runner", Status::Ok, p.display().to_string()).screen("iPhone test runner is set up", None),
         None => {
             let mut c = check("ios", "runner", Status::Fail, "iPhone test runner not set up").hint("fastpilot setup ios (builds it once with your Xcode, about 5 minutes)");
             if let Ok(exe) = std::env::current_exe() {

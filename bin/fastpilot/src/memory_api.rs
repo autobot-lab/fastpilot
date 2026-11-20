@@ -104,7 +104,8 @@ pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Opt
     let steps = m.map_or(0, |m| steps_of(&m.flow));
     let remembers = if steps > 0 { format!("Remembers the last path that worked ({}).", plural(steps, "step", "steps")) } else { String::new() };
     let (status, summary) = if let Some(q) = q {
-        let since = day_month(&q.since);
+        // The stamp is UTC; the person reads their own day (FastTest M3: "20 Nov" next to "Today").
+        let since = stamp_ms(&q.since).map_or_else(|| day_month(&q.since), fastpilot_core::claim::local_date);
         let who = if q.auto { "Set aside by fastpilot because it passes and fails without a change" } else { "Set aside" };
         ("set_aside", format!("{who} since {since}. It still runs, but does not turn a run red."))
     } else if m.is_none_or(|m| m.history.is_empty() && m.flow.is_empty()) {

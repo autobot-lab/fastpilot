@@ -96,7 +96,8 @@ function panel(t) {
 
 function memTop(sub) {
   const tab = (key, label, n) => h("button", { class: "hist-tab" + (memTab === key ? " on" : ""), role: "tab", "aria-selected": String(memTab === key),
-    onclick: () => { memTab = key; render(); } }, label, n === undefined ? null : h("span", { class: "cnt" }, String(n)));
+    // FastTest M3: the notes are read again each time their tab opens (Chat or another tab may have added one).
+    onclick: () => { memTab = key; if (key === "notes") { notesData = null; } render(); } }, label, n === undefined ? null : h("span", { class: "cnt" }, String(n)));
   $top().replaceChildren(icon("memory"), h("h1", { tabindex: "-1" }, "Memory"), h("span", { class: "muted hist-sub" }, sub),
     h("div", { class: "hist-tabs", role: "tablist" }, tab("tests", "Tests"), tab("notes", "Project notes", notesData ? notesData.notes.length : undefined)));
 }
@@ -200,7 +201,15 @@ function notesPanel() {
     h("button", { class: "hist-f" + (noteForm.group === g.key ? " on" : ""), role: "radio", "aria-checked": String(noteForm.group === g.key),
       onclick: () => { noteForm.group = g.key; pageNotes(); } }, g.label)));
   const area = h("textarea", { class: "note-text", rows: 3, maxlength: String(L.chars), "aria-label": "Note", placeholder: "What should every agent know?",
-    oninput: (e) => { noteForm.text = e.target.value; noteError = null; const c = document.querySelector(".note-count"); if (c) c.textContent = `${e.target.value.length} of ${L.chars} characters`; } });
+    oninput: (e) => {
+      noteForm.text = e.target.value;
+      noteError = null;
+      const c = document.querySelector(".note-count");
+      if (c) c.textContent = `${e.target.value.length} of ${L.chars} characters`;
+      // FastTest M3: typing into an empty form turns Save note on (it was only set when drawn).
+      const save = document.querySelector(".note-save");
+      if (save) save.disabled = full || !e.target.value.trim();
+    } });
   area.value = noteForm.text;
   const err = noteError
     ? h("div", { class: "note-err", role: "alert", tabindex: "-1" }, noteError.message,
@@ -215,7 +224,7 @@ function notesPanel() {
     h("div", { class: "s muted note-count" }, `${n} of ${L.chars} characters`),
     err,
     h("div", { class: "btns tight mem-btns" },
-      h("button", { class: "btn sm p", disabled: full || !noteForm.text.trim(), onclick: saveNote }, "Save note"),
+      h("button", { class: "btn sm p note-save", disabled: full || !noteForm.text.trim(), onclick: saveNote }, "Save note"),
       noteForm.id || noteForm.text ? h("button", { class: "btn sm", onclick: () => { noteForm = { group: noteForm.group, text: "", id: null }; noteError = null; pageNotes(); } }, "Cancel") : null),
     noteForm.id ? null : [h("div", { class: "mem-k" }, "Or start from a question"),
       h("div", { class: "note-qs" }, QUESTIONS.map(([q, g, start]) => h("button", { class: "chip preset", onclick: () => { noteForm = { group: g, text: start, id: null }; noteError = null; pageNotes(); const t = document.querySelector(".note-text"); t?.focus(); t?.setSelectionRange(start.length, start.length); } }, q)))],
@@ -305,4 +314,12 @@ PAGES.memory = () => {
   notesData = null;
   render();
 };
+
+// Back on this browser tab: the notes may have changed elsewhere (a Chat card, another tab).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && (location.hash || "").startsWith("#/memory") && memTab === "notes" && !noteForm.text) {
+    notesData = null;
+    pageNotes();
+  }
+});
 })();

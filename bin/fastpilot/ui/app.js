@@ -999,6 +999,9 @@ async function chatSend(text) {
   loadChat();
 }
 
+// Why a card's last click was refused, shown in that card until it works (FastTest M3: a refused
+// "Save test only" on a duplicate gave no feedback where the person clicked).
+const chatRefused = {};
 async function chatDecide(id, apply, mode, edit, confirm) {
   try {
     const body = { id, apply, agent: chatAgent };
@@ -1006,12 +1009,14 @@ async function chatDecide(id, apply, mode, edit, confirm) {
     if (edit) body.edit = edit;
     if (confirm !== undefined) body.confirm = confirm;
     const r = await api("/api/chat/decide", body);
+    delete chatRefused[id];
     delete chatEdits[id];
     chatData = r.chat;
     toast(r.message, true);
-  } catch (e) { toast(e.message); await loadChat(); }
+  } catch (e) { chatRefused[id] = e.message; toast(e.message); await loadChat(); }
   chatSig = "";
   renderChat();
+  if (chatRefused[id]) document.querySelector(`.prop[data-pid="${id}"] .prop-refused`)?.focus();
   // The clicked button is gone: keyboard focus goes to the card's new state.
   document.querySelector(`.prop[data-pid="${id}"] .prop-state`)?.focus();
 }
@@ -1092,6 +1097,7 @@ function testCard(p) {
     ];
   }
   let foot = null;
+  const refusedNow = p.status === "pending" && chatRefused[p.id] ? h("div", { class: "prop-state bad prop-refused", role: "alert", tabindex: "-1" }, "Not saved: ", rich(chatRefused[p.id])) : null;
   if (p.status === "pending" && !ed) {
     foot = h("div", { class: "btns" },
       p.schedules ? h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "schedule") }, "Save & schedule") : null,
@@ -1108,7 +1114,7 @@ function testCard(p) {
   const note = p.status === "pending" && p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
   const detail = p.detail ? h("details", { class: "t-detail" }, h("summary", {}, "Details"), h("p", { class: "s" }, p.detail)) : null;
   return h("section", { class: "grp prop test " + p.status, "aria-label": (p.schedules ? "Save test & schedule: " : "Save test: ") + p.title, "data-pid": String(p.id) },
-    head, h("div", { class: "prop-body" }, body, note, detail, foot));
+    head, h("div", { class: "prop-body" }, body, note, detail, refusedNow, foot));
 }
 
 async function chatUndo(id) {

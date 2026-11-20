@@ -348,10 +348,12 @@ fn ui_opens_the_browser_without_the_code_in_argv() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// P2 item 6: the checks on Perangkat are explained in Indonesian (the CLI `doctor` stays English).
+/// The Device page's checks (v0.4, FastTest M3): in English (E1 replaced the old Indonesian-only
+/// rule, so this no longer fails whenever an iPhone simulator is "running"), and with no file paths
+/// or device serials on screen; the terminal's `fastpilot doctor` keeps those.
 #[test]
-fn ui_doctor_speaks_indonesian() {
-    let ui = start("doctor-id", &[]);
+fn ui_doctor_shows_no_paths_or_device_ids() {
+    let ui = start("doctor-screen", &[]);
     let p = ui.port;
     let r = http(p, "GET", &format!("/?code={}", ui.code), &[], "");
     let session = r.header("set-cookie").and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
@@ -360,13 +362,11 @@ fn ui_doctor_speaks_indonesian() {
     let v: serde_json::Value = serde_json::from_str(&r.text()).expect("json");
     let checks = v["checks"].as_array().expect("checks");
     assert!(!checks.is_empty(), "{v}");
-    // English words that only appear in the untranslated detail/hint texts.
-    let english = ["not found", "not installed", "Install ", "install it", " found ", "missing", "running", "Run `", "no device"];
     for c in checks {
         for field in ["detail", "hint"] {
             let Some(t) = c[field].as_str() else { continue };
-            for w in english {
-                assert!(!t.contains(w), "{field} still English ({w:?}): {t}");
+            for bad in ["/Applications/", "/usr/", "/opt/", "/Users/", ".xctestrun", ".app/Contents", "emulator-55"] {
+                assert!(!t.contains(bad), "{field} shows a path or a device id ({bad:?}): {t}");
             }
         }
     }

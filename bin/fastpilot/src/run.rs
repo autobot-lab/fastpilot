@@ -584,7 +584,9 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
             (false, "the agent ended without calling finish".to_owned())
         }
     };
-    let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry).await {
+    // It never ran (no browser, the agent could not start): not a failure of the test (FastTest M3).
+    let could_not_run = forced_class == Some(Class::Infra) && turns == 0;
+    let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry, could_not_run).await {
         Ok(f) => (forced_class.or(f.class), Some(f.report)),
         Err(e) => {
             transcript.push(format!("report failed: {e}"));

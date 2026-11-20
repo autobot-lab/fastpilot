@@ -286,6 +286,9 @@ pub struct Run {
     /// `(reason, category)` of the first failure, for classification.
     first_failure: Option<(String, String)>,
     passed_on_retry: bool,
+    /// The test could not run (no browser, the agent could not start): its result says nothing
+    /// about the test, so the pass/fail history and Set aside ignore it (FastTest M3).
+    could_not_run: bool,
     /// Per-step rows (as in steps.jsonl) and each flow's full response, for report.html.
     rows: Vec<serde_json::Value>,
     /// Times the user took a session over in `fastpilot ui` (Ambil alih), as notes.
@@ -316,6 +319,11 @@ impl Run {
     /// is classified flaky.
     pub fn passed_on_retry(&mut self) {
         self.passed_on_retry = true;
+    }
+
+    /// The test could not run at all (an infrastructure problem): not a failure of the test.
+    pub fn could_not_run(&mut self) {
+        self.could_not_run = true;
     }
 
     fn note_failure(&mut self, reason: &str, category: &str) {
@@ -432,11 +440,13 @@ impl Run {
         // Statistics and quarantine include this run (only when memory is written).
         let mut updated = previous.clone().unwrap_or_else(|| PathMemory { test_id: self.test_id.clone(), ..PathMemory::default() });
         let clean = passed && self.failures == 0;
-        updated.history.push(clean);
+        if !self.could_not_run {
+            updated.history.push(clean);
+        }
         let extra = updated.history.len().saturating_sub(20);
         updated.history.drain(..extra);
         let mut quarantine = memory.quarantined();
-        if memory.mode == Mode::ReadWrite {
+        if memory.mode == Mode::ReadWrite && !self.could_not_run {
             let recent_clean = updated.history.len() >= 10 && updated.history.iter().rev().take(10).all(|p| *p);
             match (quarantine.get(&self.test_id), auto_quarantine(&updated)) {
                 (None, Some(reason)) => {
@@ -518,7 +528,7 @@ impl Run {
                 m.last_pass = stamp;
                 m.consecutive_failures = 0;
                 m.stale = false;
-            } else if !clean {
+            } else if !clean && !self.could_not_run {
                 m.fail_count += 1;
                 m.failed_at.push(stamp);
                 let extra = m.failed_at.len().saturating_sub(10);
@@ -709,6 +719,27 @@ mod tests {
     use super::*;
 
     /// D6: the Memory page lists what is remembered and "Forget" drops one test's memory only.
+    /// FastTest M3: a run that could not start says nothing about the test: the history, the
+    /// failure counts and Set aside ignore it.
+    #[test]
+    fn a_run_that_could_not_run_is_not_a_failure() {
+        let dir = std::env::temp_dir().join(format!("fp-mem-notrun-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mem = Memory::new(&dir, Mode::ReadWrite);
+        for _ in 0..6 {
+            let mut run = mem.begin_run("login-ok").expect("run");
+            run.could_not_run();
+            run.finish(&mem, false, "Chrome not found").expect("finish");
+        }
+        let m = mem.load("login-ok").unwrap_or_default();
+        assert!(m.history.is_empty() && m.fail_count == 0 && m.consecutive_failures == 0 && !m.stale, "{m:?}");
+        assert!(mem.quarantined().is_empty());
+        // A real failure still counts.
+        mem.begin_run("login-ok").expect("run").finish(&mem, false, "").expect("finish");
+        assert_eq!(mem.load("login-ok").expect("memory").history, [false]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn remembered_tests_can_be_forgotten_one_by_one() {
         let dir = std::env::temp_dir().join(format!("fastpilot-mem-forget-{}", std::process::id()));

@@ -245,6 +245,16 @@ pub fn local_day() -> i64 {
     (secs + tm.tm_gmtoff) / 86_400
 }
 
+/// `21 Nov 2026` on this computer's clock for a time in ms since 1970 (not the UTC day).
+pub fn local_date(ms: u64) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let t = (ms / 1000) as libc::time_t;
+    // SAFETY: an all-zero `tm` is valid; localtime_r writes only into it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!("{} {} {}", tm.tm_mday, MONTHS[(tm.tm_mon.clamp(0, 11)) as usize], tm.tm_year + 1900)
+}
+
 /// `HH:MM` on this computer's clock for a time in ms since 1970 (R1: "watching until 14:30").
 pub fn local_hm(ms: u64) -> String {
     let secs = (ms / 1000) as i64;
@@ -258,6 +268,31 @@ pub fn local_hm(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" {
+        fn tzset();
+    }
+
+    /// FastTest M3: dates are this computer's day, not the UTC day.
+    #[test]
+    fn dates_are_local() {
+        let old = std::env::var_os("TZ");
+        // SAFETY: test-only; TZ is read by localtime_r after tzset.
+        unsafe {
+            std::env::set_var("TZ", "Asia/Jakarta");
+            tzset();
+        }
+        // 2026-11-20 20:00 UTC is 21 Nov, 03:00 in Jakarta (UTC+7).
+        let (d, t) = (local_date(1_795_204_800_000), local_hm(1_795_204_800_000));
+        unsafe {
+            match old {
+                Some(v) => std::env::set_var("TZ", v),
+                None => std::env::remove_var("TZ"),
+            }
+            tzset();
+        }
+        assert_eq!((d.as_str(), t.as_str()), ("21 Nov 2026", "03:00"));
+    }
 
     #[test]
     fn device_keys_and_labels() {

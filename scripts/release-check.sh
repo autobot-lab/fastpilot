@@ -25,6 +25,20 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# The newest earlier run in $1 that ran in full (no --skip, not interrupted), except $2: "Since the
+# last run" compares with that one, never with a partial run (FastTest M3).
+previous_full() {
+  local d
+  for d in $(ls -1d "$1"/*/ 2>/dev/null | sort -r); do
+    d="${d%/}"
+    [ "$d" = "${2:-}" ] && continue
+    [ -f "$d/results.tsv" ] && [ -f "$d/meta.tsv" ] || continue
+    awk -F'\t' '$2 == "skipped" && ($3 ~ /^skipped: --skip/ || $3 == "skipped: interrupted") { partial = 1 } END { exit partial ? 0 : 1 }' "$d/results.tsv" && continue
+    echo "$d"
+    return
+  done
+}
 SKIP=","
 STRICT=0
 while [ $# -gt 0 ]; do
@@ -33,6 +47,7 @@ while [ $# -gt 0 ]; do
             SKIP="$SKIP$2,"; shift 2 ;;
     --skip=*) SKIP="$SKIP${1#--skip=},"; shift ;;
     --strict) STRICT=1; shift ;;
+    --previous-full) [ $# -ge 2 ] || exit 2; previous_full "$2"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -248,14 +263,9 @@ SUMMARY="$OUT/summary.txt"
   echo "Result: $RESULT"
 } >"$SUMMARY"
 
-# What changed since the previous run (newest other directory with results).
+# What changed since the previous full run (a run with --skip or an interrupted one compares badly).
 CHANGES=""
-PREV=""
-for d in $(ls -1d "$(dirname "$OUT")"/*/ 2>/dev/null | sort -r); do
-  d="${d%/}"
-  [ "$d" = "$OUT" ] && continue
-  [ -f "$d/results.tsv" ] && [ -f "$d/meta.tsv" ] && { PREV="$d"; break; }
-done
+PREV="$(previous_full "$(dirname "$OUT")" "$OUT")"
 if [ -n "$PREV" ]; then
   prev_meta="$(awk -F'\t' '{ print $1 ", " $3 }' "$PREV/meta.tsv")"
   i=0
@@ -265,8 +275,8 @@ if [ -n "$PREV" ]; then
     [ -n "$old" ] && [ "$old" != "$new" ] && CHANGES="$CHANGES  ${NAMES[$i]}: $old → $new"$'\n'
     i=$((i + 1))
   done
-  if [ -n "$CHANGES" ]; then CHANGES="Since the last run ($prev_meta):"$'\n'"$CHANGES"
-  else CHANGES="No change since the last run ($prev_meta)."$'\n'; fi
+  if [ -n "$CHANGES" ]; then CHANGES="Since the last full run ($prev_meta):"$'\n'"$CHANGES"
+  else CHANGES="No change since the last full run ($prev_meta)."$'\n'; fi
 fi
 
 html() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
