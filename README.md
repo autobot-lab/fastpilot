@@ -28,20 +28,26 @@ fastpilot init
 `init` asks before each change; answer `y`. It connects fastpilot to Claude Code and creates
 an example test, `tests/contoh.md`.
 
-**3. Write your test**
+**3. Talk to fastpilot**
 
-Open `tests/contoh.md` and change `target` to your app's address (see [Write a test](#write-a-test)).
-
-**4. Run it**
+Open Claude in your project folder:
 
 ```bash
 claude
 ```
 
-In Claude, type: *Use fastpilot, run tests/contoh.md and then report*
+Then just say what you want, in plain words. No commands, no code:
 
-Claude runs the test in Chrome and tells you whether it passed. The report is saved in
-`.fastpilot/runs/`.
+| You want to | Type |
+|---|---|
+| Check something quickly | *fastpilot, check that login on https://yourapp.com goes to the Dashboard* |
+| Save a test for later | *fastpilot, create a test for the checkout flow and save it* |
+| Run a regression | *fastpilot, run a regression* |
+| Run part of it | *fastpilot, run the Android tests only* |
+| Understand a failure | *Why did the checkout test fail? Show me the screenshot* |
+
+fastpilot opens the app, does every step, and tells you what passed and what failed.
+A regression runs every test you saved, so save a few tests first.
 
 ## Open the dashboard
 
@@ -77,9 +83,10 @@ Good to know:
 | **Device** | Check whether Chrome, Android, and iOS are ready |
 | **Pengaturan** (Settings) | Pick the AI model, set limits, store secrets |
 
-## Write a test
+## Write a test yourself (optional)
 
-One test = one `.md` file in the `tests/` folder:
+You don't have to: fastpilot can write tests for you. If you want to, one test is one `.md` file
+in the `tests/` folder:
 
 ```markdown
 # Search for a product
@@ -122,15 +129,12 @@ fastpilot doctor
 
 ## Learn more
 
-Everything else is in the **[full guide](docs/guide.md)** (currently in Indonesian):
+More details, including the technical ones, are in the **[full guide](docs/guide.md)** (currently in Indonesian):
 
 - [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios-menyusul-di-v033-sekarang-dari-checkout)
 - [Claude Desktop](docs/guide.md#claude-desktop)
 - [All settings](docs/guide.md#pengaturan)
-- [Run tests without opening Claude (`fastpilot run`)](docs/guide.md#tanpa-membuka-claude-code-fastpilot-run)
-- [One command per step in the terminal (shell CLI)](docs/guide.md#shell-cli-satu-perintah-per-langkah)
 - [Devices on another machine](docs/guide.md#device-di-mesin-lain) and [physical phones](docs/real-devices.md)
-- [Build from source](docs/guide.md#build-dari-source)
 - [Known limits](docs/guide.md#batasan-yang-diketahui)
 
 License: [Apache-2.0](LICENSE)
