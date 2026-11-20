@@ -102,11 +102,14 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
+    // A new, unguessable temp name, created fresh: a link a cloned project put at a fixed
+    // `<name>.tmp` is never followed (Security re-review, finding 4).
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}-{}.tmp", std::process::id(), now_ms()));
     {
         use std::io::Write;
         let mut o = fs::OpenOptions::new();
-        o.write(true).create(true).truncate(true);
+        o.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
         let mut f = o.open(&tmp)?;
@@ -131,6 +134,26 @@ impl History {
 
     fn runs_dir(&self) -> PathBuf {
         self.root.join("runs")
+    }
+
+    /// Where fastpilot writes suite reports: this History's `suites/` and the schedules' report
+    /// folder (`~/.fastpilot/schedules/reports`).
+    fn report_dirs(&self) -> Vec<PathBuf> {
+        let home = fastpilot_core::config::path().parent().map(Path::to_path_buf).unwrap_or_default();
+        [self.dir().join("suites"), home.join("schedules").join("reports")].into_iter().filter_map(|d| fs::canonicalize(d).ok()).collect()
+    }
+
+    /// A suite's report path, only when it is a real `.html` file inside a folder fastpilot writes
+    /// reports to. The path comes from a file in the project, which a cloned project can forge
+    /// (Security re-review, finding 3): anything else is never served or deleted.
+    fn own_report(&self, report: &str) -> Option<PathBuf> {
+        let p = Path::new(report);
+        let meta = fs::symlink_metadata(p).ok()?;
+        if !meta.is_file() || p.extension().is_none_or(|x| x != "html") {
+            return None;
+        }
+        let real = fs::canonicalize(p).ok()?;
+        self.report_dirs().iter().any(|d| real.parent() == Some(d.as_path())).then_some(real)
     }
 
     fn suite_path(&self, id: &str) -> PathBuf {
@@ -196,6 +219,18 @@ impl History {
         }
     }
 
+    /// A run's `report.html`, only when it is a real file (not a link) whose real folder is that
+    /// run's own folder in this project (Security re-check of #102, finding 5).
+    fn run_report(&self, name: &str) -> Option<PathBuf> {
+        let dir = self.runs_dir().join(name);
+        let p = dir.join("report.html");
+        if !fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
+            return None;
+        }
+        let real = fs::canonicalize(&p).ok()?;
+        (real.parent() == fs::canonicalize(&dir).ok().as_deref()).then_some(real)
+    }
+
     /// Run folders: (name, finished or last changed).
     fn run_folders(&self) -> Vec<(String, PathBuf)> {
         let Ok(rd) = fs::read_dir(self.runs_dir()) else { return vec![] };
@@ -221,7 +256,7 @@ impl History {
                 not_run: s.not_run,
                 platforms: s.platforms.clone(),
                 finished_ms: s.finished_ms,
-                has_report: s.report.as_deref().is_some_and(|r| Path::new(r).is_file()),
+                has_report: s.report.as_deref().and_then(|r| self.own_report(r)).is_some(),
             })
             .collect();
         for (name, dir) in self.run_folders() {
@@ -239,7 +274,7 @@ impl History {
                 not_run: u32::from(result.is_none()),
                 platforms: vec![],
                 finished_ms: modified_ms(&dir.join("report.md")).max(modified_ms(&dir)),
-                has_report: dir.join("report.html").is_file(),
+                has_report: self.run_report(&name).is_some(),
             });
         }
         items.sort_by(|a, b| b.finished_ms.cmp(&a.finished_ms).then(b.id.cmp(&a.id)));
@@ -250,13 +285,11 @@ impl History {
     /// History or a report fastpilot wrote for the suite.
     pub fn report(&self, id: &str) -> Option<PathBuf> {
         if let Some(name) = id.strip_prefix("run:").filter(|n| safe_id(n)) {
-            let p = self.runs_dir().join(name).join("report.html");
-            return p.is_file().then_some(p);
+            return self.run_report(name);
         }
         let sid = id.strip_prefix("suite:").filter(|n| safe_id(n))?;
         let s: Suite = serde_json::from_str(&fs::read_to_string(self.suite_path(sid)).ok()?).ok()?;
-        let p = PathBuf::from(s.report?);
-        p.is_file().then_some(p)
+        self.own_report(&s.report?)
     }
 
     /// Keep a Chat conversation (after each answer). `messages` is what the Chat page shows.
@@ -333,12 +366,9 @@ impl History {
         for r in &s.runs {
             self.remove_run_folder(r);
         }
-        if let Some(rep) = s.report.as_deref().filter(|_| s.report_owned) {
-            let p = Path::new(rep);
-            // Only an .html file, never a link.
-            if p.extension().is_some_and(|x| x == "html") && fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
-                let _ = fs::remove_file(p);
-            }
+        // Only a report fastpilot wrote, inside its own report folders; never a link.
+        if let Some(p) = s.report.as_deref().filter(|_| s.report_owned).and_then(|r| self.own_report(r)) {
+            let _ = fs::remove_file(p);
         }
         let _ = fs::remove_file(self.suite_report_path(id));
         fs::remove_file(&path).is_ok()
@@ -450,7 +480,7 @@ mod tests {
         assert_eq!((solo.title.as_str(), solo.failed), ("solo", 1));
         let open = items.iter().find(|i| i.id == "run:20261120-120000-open").expect("no result yet");
         assert_eq!(open.not_run, 1);
-        assert_eq!(h.report(&format!("suite:{id}")), Some(report.clone()));
+        assert_eq!(h.report(&format!("suite:{id}")), Some(fs::canonicalize(&report).expect("real")));
         assert!(h.report("run:20261120-110000-solo").is_some());
         // Paths are never taken from the request.
         for bad in ["run:../x", "suite:../../etc", "run:", "suite:a/b", "other"] {
@@ -475,6 +505,68 @@ mod tests {
         h.record_suite(&s).expect("record");
         assert_eq!(h.delete(&["suite:1".into()], &[]).runs, 1);
         assert!(mine.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Security re-review, finding 3: a cloned project's forged suite file names a report outside
+    /// History. It is never served, and neither deleting nor auto-delete removes it.
+    #[test]
+    fn a_forged_suite_file_cannot_serve_or_delete_other_files() {
+        let root = tmp("forged");
+        let victim = root.join("outside").join("x.html");
+        fs::create_dir_all(victim.parent().expect("dir")).expect("dir");
+        fs::write(&victim, "<p>mine</p>").expect("victim");
+        let h = History::new(root.join("project"));
+        // A link inside History's own report folder that points outside counts as outside too.
+        let link = h.suite_report_path("2");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, &link).expect("link");
+        for (id, report) in [("1", victim.clone()), ("2", link.clone()), ("3", h.dir().join("suites").join("..").join("..").join("..").join("outside").join("x.html"))] {
+            let s = Suite { id: id.into(), title: "forged".into(), finished_ms: 1, report: Some(report.to_string_lossy().into_owned()), report_owned: true, ..Suite::default() };
+            h.record_suite(&s).expect("record");
+            assert_eq!(h.report(&format!("suite:{id}")), None, "{id} is not served");
+        }
+        assert!(h.runs().iter().all(|i| !i.has_report));
+        fs::write(h.dir().join("settings.json"), r#"{"keep_days":1}"#).expect("settings");
+        assert_eq!(h.prune(now_ms()).runs, 3, "the rows go");
+        assert!(victim.exists(), "the file outside History stays");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Security re-check of #102, finding 5: a run's report.html that is a link is never served.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_report_that_is_a_link_is_not_served() {
+        let root = tmp("runlink");
+        let secret = root.join("secret.html");
+        fs::write(&secret, "TOP SECRET").expect("secret");
+        let h = History::new(root.join("project"));
+        let dir = root.join("project/runs/20261120-110000-x");
+        fs::create_dir_all(&dir).expect("run");
+        fs::write(dir.join("report.md"), "# x — pass\n").expect("md");
+        std::os::unix::fs::symlink(&secret, dir.join("report.html")).expect("link");
+        assert_eq!(h.report("run:20261120-110000-x"), None);
+        assert!(h.runs().iter().all(|i| !i.has_report));
+        fs::remove_file(dir.join("report.html")).expect("rm");
+        fs::write(dir.join("report.html"), "<p>r</p>").expect("real");
+        assert!(h.report("run:20261120-110000-x").is_some(), "a real report is served");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Security re-review, finding 4: a link a cloned project put at `history/settings.tmp` is never
+    /// written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temp_link_is_never_written_through() {
+        let root = tmp("tmplink");
+        let victim = root.join("victim.txt");
+        fs::write(&victim, "keep me").expect("victim");
+        let h = History::new(root.join("project"));
+        fs::create_dir_all(h.dir()).expect("dir");
+        std::os::unix::fs::symlink(&victim, h.dir().join("settings.tmp")).expect("link");
+        h.set_keep_days(Some(7)).expect("set");
+        assert_eq!(fs::read_to_string(&victim).expect("victim"), "keep me");
+        assert_eq!(h.keep_days(), Some(7));
         let _ = fs::remove_dir_all(root);
     }
 
