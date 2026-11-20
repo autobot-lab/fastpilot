@@ -881,3 +881,45 @@ fn chat_adds_a_note_only_from_the_users_own_words() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// R1 (v0.4): "watch the release every 10 minutes for 2 hours" is a schedule card that says it is a
+/// release watch; the click saves it with the watch fastpilot made (the bot sets no state) and
+/// starts the "before" run. The page's own save keeps the watch state on the server side too.
+#[test]
+fn chat_and_the_page_start_a_release_watch() {
+    let home = std::env::temp_dir().join(format!("fp-chat-watch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_NOTIFY_DRY", "1")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let (st, _) = post("/api/chat", json!({ "message": "watch the release every 10 minutes for 2 hours" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let card = v["messages"][1]["proposals"][0].clone();
+    assert_eq!(card["status"], "pending", "{card}");
+    let when = card["rows"].as_array().expect("rows").iter().find(|r| r[0] == "When").expect("when")[1].as_str().unwrap_or("").to_owned();
+    assert!(when.starts_with("every 10 minutes, until ") && when.contains("release watch") && when.contains("only about a new problem"), "{when}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 200 && body.contains("Release watch") && body.contains("before"), "{st} {body}");
+    let store: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("store")).expect("json");
+    let w = &store["schedules"][0]["watch"];
+    let left = w["until_ms"].as_u64().unwrap_or(0).saturating_sub(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as u64);
+    assert!((7_000_000..=7_300_000).contains(&left), "about 2 hours: {w}");
+
+    // The page cannot set the watch's state: "before" and "sent" come from runs only.
+    let sched = json!({ "id": "", "name": "Forged", "tests": format!("{ROOT}/tests/login.md"), "enabled": true,
+        "when": { "every": "minutes", "minutes": 15 }, "watch": { "until_ms": 99999999999999u64, "before": ["login"], "sent": ["x"] } });
+    let (st, body) = post("/api/schedules", json!({ "action": "save", "schedule": sched.clone() }));
+    assert!(st != 200 && body.contains("how many hours"), "{st} {body}");
+    let (st, body) = post("/api/schedules", json!({ "action": "save", "schedule": sched, "watch_hours": 3 }));
+    assert_eq!(st, 200, "{body}");
+    let store: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("store")).expect("json");
+    let forged = store["schedules"].as_array().expect("list").iter().find(|s| s["name"] == "Forged").expect("saved").clone();
+    assert!(forged["watch"].get("before").is_none() && forged["watch"].get("sent").is_none(), "{forged}");
+    assert!(forged["watch"]["until_ms"].as_u64().unwrap_or(u64::MAX) < 99999999999999, "{forged}");
+    // A watch every few minutes forever is not a schedule.
+    let (st, body) = post("/api/schedules", json!({ "action": "save", "schedule": { "id": "", "name": "Forever", "tests": format!("{ROOT}/tests/login.md"), "enabled": true, "when": { "every": "minutes", "minutes": 5 } }, "watch_hours": 30 }));
+    assert!(st != 200 && body.contains("1 to 24 hours"), "{st} {body}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

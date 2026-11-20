@@ -1342,7 +1342,7 @@ function pageChat() {
 // ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"]];
+const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"], ["minutes", "Release watch"]];
 
 let schedTimer = null;
 async function loadSchedules() {
@@ -1417,7 +1417,7 @@ function lastRun(x) {
     ? h("a", { class: "lk " + (l.passed ? "ok" : "bad"), href: `/api/schedules/report?id=${encodeURIComponent(x.schedule.id)}`, target: "_blank", rel: "noopener", "aria-label": sr }, ...label)
     : h("span", { class: l.passed ? "ok" : "bad" }, ...label);
   return h("div", {}, res,
-    !l.passed && l.summary ? h("div", { class: "s" }, l.summary) : null,
+    (!l.passed || x.schedule.watch) && l.summary ? h("div", { class: "s" }, l.summary) : null,
     l.notified && l.notified.length ? h("div", { class: "s" }, l.notified.join(" · ")) : null);
 }
 
@@ -1438,8 +1438,8 @@ function schedRow(x) {
   return h("tr", { "data-id": s.id },
     h("td", {}, h("a", { class: "lk", href: `#/agents/${encodeURIComponent(s.agent || "default")}/schedules` }, x.agent_name || "")),
     h("td", {}, h("b", { class: "row-name", tabindex: "-1" }, s.name), h("div", { class: "s" }, x.tests_text)),
-    h("td", {}, x.when_text),
-    h("td", { class: "next" }, s.enabled ? (next ? when(next) : "—") : h("span", { class: "muted" }, "Off")),
+    h("td", {}, x.when_text, x.watch_text ? h("div", { class: "s" }, x.watch_text) : null),
+    h("td", { class: "next" }, s.enabled ? (next ? when(next) : s.watch ? `in ${s.when.minutes} min or less` : "—") : h("span", { class: "muted" }, "Off")),
     h("td", { class: "last" }, lastRun(x)),
     h("td", {}, notifyText(x)),
     h("td", {}, on),
@@ -1490,6 +1490,16 @@ function schedPanel() {
   const from = h("input", { type: "time", value: w.from || "", "aria-label": "Active from" });
   const to = h("input", { type: "time", value: w.to || "", "aria-label": "Active until" });
   const day = h("select", { class: "sel" }, DAYS.map((d, i) => h("option", { value: String(i + 1), selected: w.day === i + 1 }, d)));
+  // R1: a release watch runs every N minutes for M hours, then ends by itself.
+  const mins = h("select", { class: "sel", "aria-label": "Minutes between runs" }, [5, 10, 15, 20, 30, 60].map((m) => h("option", { value: String(m), selected: (w.minutes || 10) === m }, `${m} minutes`)));
+  const left = f.watch && f.watch.until_ms ? Math.max(1, Math.round((f.watch.until_ms - Date.now()) / 3600000)) : 2;
+  const forH = h("input", { type: "number", min: "1", max: "24", step: "1", value: String(Math.min(24, left)), class: "num", "aria-label": "Hours to watch" });
+  const watchWrap = h("div", { class: "fld" }, h("span", { class: "l" }, "Every"),
+    h("div", { class: "inline" }, mins, h("span", {}, "for"), forH, h("span", {}, "hours")),
+    h("span", { class: "s" }, "The first run is the \"before\". After that you hear only about a problem that is new since then, once. It ends by itself."),
+    h("span", { class: "fld-err", role: "alert", hidden: true, id: "err-watch" }));
+  errs.watch = { err: watchWrap.querySelector(".fld-err"), input: forH };
+  forH.setAttribute("aria-describedby", "err-watch");
   const timeWrap = field("At (this computer's time)", time, null, "time");
   const hoursWrap = h("div", { class: "fld" }, h("span", { class: "l" }, "Every"),
     h("div", { class: "inline" }, hours, h("span", {}, "hours")), h("span", { class: "fld-err", role: "alert", hidden: true, id: "err-hours" }));
@@ -1503,10 +1513,13 @@ function schedPanel() {
   const dayWrap = field("Day", day, null, "day");
   const sync = () => {
     seg.querySelectorAll("button").forEach((b) => { const on = b.dataset.v === kind; b.setAttribute("aria-checked", String(on)); b.tabIndex = on ? 0 : -1; });
-    timeWrap.hidden = kind === "hours";
+    timeWrap.hidden = kind === "hours" || kind === "minutes";
     hoursWrap.hidden = windowWrap.hidden = kind !== "hours";
     dayWrap.hidden = kind !== "week";
+    watchWrap.hidden = kind !== "minutes";
+    notifyLegend.textContent = kind === "minutes" ? "Notify me about a new problem (any you like)" : "Notify me when it fails (any you like)";
   };
+  const notifyLegend = h("legend", { class: "l" }, "Notify me when it fails (any you like)");
   KINDS.forEach(([v, t]) => seg.append(h("button", { type: "button", role: "radio", "data-v": v, onclick: () => { kind = v; sync(); },
     onkeydown: (e) => {
       const i = KINDS.findIndex(([k]) => k === kind);
@@ -1533,6 +1546,7 @@ function schedPanel() {
   const where = (msg) => {
     const m = msg.toLowerCase();
     if (m.includes("name") && !m.includes("owner/name")) return "name";
+    if (m.includes("release watch") || m.includes("minutes")) return "watch";
     if (m.includes("every n hours") || m.includes("n must")) return "hours";
     if (m.includes("window")) return "window";
     if (m.includes("tests not found") || m.includes(".md")) return "tests";
@@ -1554,7 +1568,9 @@ function schedPanel() {
   const cancel = () => { schedForm = null; clearToast(); pageSchedules(); document.querySelector(".top .btn.p")?.focus(); };
   const save = async () => {
     const whenOut = { every: kind };
-    if (kind === "hours") {
+    if (kind === "minutes") {
+      whenOut.minutes = Number(mins.value);
+    } else if (kind === "hours") {
       whenOut.hours = Number(hours.value);
       if (from.value || to.value) { whenOut.from = from.value || undefined; whenOut.to = to.value || undefined; }
     } else {
@@ -1566,12 +1582,13 @@ function schedPanel() {
       notify: { webhook: wh.checked, os: os.checked, github: gh.checked ? repo.value.trim() : undefined },
     };
     const body = { action: "save", schedule };
+    if (kind === "minutes") body.watch_hours = Number(forH.value);
     if (whUrl.value.trim()) body.webhook = whUrl.value.trim();
     let r;
     try { r = await api("/api/schedules", body); } catch (e) { showError(e.message); return; }
     schedForm = null;
     await loadSchedules();
-    toast(editing ? "Schedule saved." : "Schedule created. It runs even when this page is closed.", true);
+    toast(r.watch ? "Release watch started: the first run, the \"before\", is running now." : editing ? "Schedule saved." : "Schedule created. It runs even when this page is closed.", true);
     // Focus on the saved schedule in the list (the form and its button are gone).
     document.querySelector(`tr[data-id="${r.id}"] .row-name`)?.focus();
   };
@@ -1583,8 +1600,8 @@ function schedPanel() {
       h("div", { class: "row2" }, field("Tests", pick, null, null), field("Name", name, null, "name")),
       pathWrap,
       h("div", { class: "fld" }, h("span", { class: "l", id: "kind-l" }, "How often"), seg),
-      h("div", { class: "row2" }, timeWrap, hoursWrap, windowWrap, dayWrap),
-      h("fieldset", { class: "fld" }, h("legend", { class: "l" }, "Notify me when it fails (any you like)"),
+      h("div", { class: "row2" }, timeWrap, hoursWrap, windowWrap, dayWrap, watchWrap),
+      h("fieldset", { class: "fld" }, notifyLegend,
         h("label", { class: "ck" }, os, " Mac notification"),
         h("label", { class: "ck" }, wh, " Slack (webhook)"), h("div", { class: "sub-fld" }, whField),
         h("label", { class: "ck" }, gh, " GitHub issue"), h("div", { class: "sub-fld" }, repoField)),

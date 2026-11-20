@@ -111,7 +111,10 @@ if "android" in plan:
     call("finish", {"status": "pass", "notes": plan})
 else:
     call("session", {"action": "start", "id": "w", "target": "examples/demo/login.html"})
-    check = "{ text: Nope, timeout: 500 }" if os.environ.get("FAKE_CLAUDE_FAIL") == "1" else "Budi"
+    # FAKE_CLAUDE_FAIL_FILE: fail only while that file exists (R1: a problem that starts after a release).
+    fail_file = os.environ.get("FAKE_CLAUDE_FAIL_FILE")
+    failing = os.environ.get("FAKE_CLAUDE_FAIL") == "1" or bool(fail_file and os.path.exists(fail_file))
+    check = "{ text: Nope, timeout: 500 }" if failing else "Budi"
     r = call("run_flow", {"flow": "- inputText: { into: Email, text: a@b.com }\n"
                                   "- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n"
                                   f"- tapOn: Masuk\n- assertVisible: {check}\n"})

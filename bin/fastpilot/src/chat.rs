@@ -271,7 +271,9 @@ You cannot change settings or schedules yourself. To propose one, end your reply
 {\"kind\":\"schedule\",\"name\":\"Daily login\",\"tests\":\"/absolute/path/tests/login.md\",\"every\":\"day\",\"time\":\"09:00\",\"notify\":{\"webhook\":true,\"os\":false,\"github\":\"owner/repo\"}}
 ```
 (`every`: day, weekday, week or hours; with week add \"day\": 1 = Monday ... 7 = Sunday; time is HH:MM on this \
-computer. For every N hours use {\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\"} with no time; \
+computer. After a release, to watch the app for a while and hear only about new problems, propose a release \
+watch: {\"every\":\"minutes\",\"minutes\":10,\"for_hours\":2} with no time; minutes is 5, 10, 15, 20, 30 or 60 and \
+for_hours 1 to 24; its first run is the \"before\". For every N hours use {\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\"} with no time; \
 hours is 1-24, and from/to (the active window) are optional but go together. tests is a folder of *.md test cases or \
 one .md file)
 To change a setting, propose it; fastpilot words the card itself and the user decides:
@@ -691,7 +693,10 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
                     rows: vec![
                         ("Name".into(), s.name.clone()),
                         ("Test".into(), s.tests.clone()),
-                        ("When".into(), schedule::describe(&s.when)),
+                        ("When".into(), match &s.watch {
+                            Some(w) => format!("{}, until {} (a release watch: the first run is the \"before\"; it notifies only about a new problem)", schedule::describe(&s.when), fastpilot_core::claim::local_hm(w.until_ms)),
+                            None => schedule::describe(&s.when),
+                        }),
                         ("On failure".into(), if notify.is_empty() { "no notification".into() } else { notify.join(", ") }),
                     ],
                     status: "pending".into(),
@@ -1063,6 +1068,7 @@ fn looks_like_a_secret(text: &str) -> bool {
 
 fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
     let (when, notify) = when_of(v)?;
+    let is_watch = when.every == schedule::Every::Minutes;
     let s = schedule::Schedule {
         id: String::new(),
         name: v["name"].as_str().unwrap_or("").trim().to_owned(),
@@ -1071,7 +1077,17 @@ fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
         notify,
         enabled: true,
         agent: None,
+        // R1: "every 10 minutes for 2 hours" is a release watch; its first run is the "before".
+        watch: is_watch.then(|| schedule::Watch {
+            until_ms: change::now_ms() + v["for_hours"].as_u64().unwrap_or(0).min(25) * 3_600_000,
+            ..Default::default()
+        }),
     };
+    if let Some(w) = &s.watch
+        && !(1..=24).contains(&((w.until_ms - change::now_ms() + 60_000) / 3_600_000))
+    {
+        return Err("A release watch lasts 1 to 24 hours (for_hours)".into());
+    }
     schedule::validate(&schedule::Schedule { id: "x".into(), ..s.clone() })?;
     Ok(s)
 }
@@ -1084,13 +1100,16 @@ fn when_of(v: &Value) -> Res<(schedule::When, schedule::Notify)> {
         Some("weekday") => schedule::Every::Weekday,
         Some("week") => schedule::Every::Week,
         Some("hours") => schedule::Every::Hours,
-        _ => return Err("The schedule's timing is unclear (daily, weekdays, weekly, or every N hours)".into()),
+        Some("minutes") => schedule::Every::Minutes,
+        _ => return Err("The schedule's timing is unclear (daily, weekdays, weekly, every N hours, or a release watch every N minutes)".into()),
     };
     let text = |k: &str| v[k].as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
     let hours = every == schedule::Every::Hours;
+    let minutes = every == schedule::Every::Minutes;
     let when = schedule::When {
         every,
-        time: if hours { String::new() } else { v["time"].as_str().unwrap_or("").to_owned() },
+        minutes: minutes.then(|| v["minutes"].as_u64().and_then(|n| u16::try_from(n).ok()).unwrap_or(0)),
+        time: if hours || minutes { String::new() } else { v["time"].as_str().unwrap_or("").to_owned() },
         day: (every == schedule::Every::Week).then(|| v["day"].as_u64().and_then(|d| u8::try_from(d).ok()).unwrap_or(0)),
         hours: hours.then(|| v["hours"].as_u64().and_then(|n| u8::try_from(n).ok()).unwrap_or(0)),
         from: if hours { text("from") } else { None },
@@ -1103,7 +1122,7 @@ fn when_of(v: &Value) -> Res<(schedule::When, schedule::Notify)> {
     };
     schedule::check_when(&when)?;
     if let Some(repo) = &notify.github {
-        schedule::validate(&schedule::Schedule { id: "x".into(), name: "x".into(), tests: "/".into(), when: when.clone(), notify: schedule::Notify { github: Some(repo.clone()), ..Default::default() }, enabled: true, agent: None })?;
+        schedule::validate(&schedule::Schedule { id: "x".into(), name: "x".into(), tests: "/".into(), when: when.clone(), notify: schedule::Notify { github: Some(repo.clone()), ..Default::default() }, enabled: true, agent: None, watch: (when.every == schedule::Every::Minutes).then(|| schedule::Watch { until_ms: change::now_ms() + 3_600_000, ..Default::default() }) })?;
     }
     Ok((when, notify))
 }
@@ -1436,6 +1455,17 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             let wants_hook = s.notify.webhook;
             s.notify.webhook = false;
             let saved = schedule::save(s, None)?;
+            if saved.watch.is_some() {
+                // R1: the first run is the "before"; it starts now.
+                let first = match schedule::start_now(&saved.id) {
+                    Ok(()) => "The first run, the \"before\", has started.".to_owned(),
+                    Err(e) => format!("The first run could not start: {e}"),
+                };
+                let hook = if wants_hook { " Enter the webhook URL in Schedules › Edit to get Slack messages." } else { "" };
+                let done = format!("Release watch \"{}\" saved. {first} After that you hear only about a problem that is new since then.{hook}", saved.name);
+                set("applied", Some(done.clone()));
+                return Ok(done);
+            }
             if wants_hook {
                 format!("Schedule \"{}\" saved. Enter the webhook URL in Schedules › Edit to turn its notification on.", saved.name)
             } else {
@@ -1484,6 +1514,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
                 notify,
                 enabled: true,
                 agent: (agent != crate::agents::DEFAULT).then(|| agent.to_owned()),
+                watch: None,
             };
             match schedule::save(s, None) {
                 Ok(s) => {

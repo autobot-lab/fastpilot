@@ -328,6 +328,16 @@ sent to the browser.
   from sleep; systemd uses `Persistent=true`). The HTML report for each run is in
   `~/.fastpilot/schedules/reports/`, the log in `~/.fastpilot/schedules/<id>.log`.
 - From the terminal: `fastpilot schedule list`, `fastpilot schedule run <id>`, `fastpilot schedule remove <id>`.
+- **Release watch** (after a release): run the tests every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours.
+  - The first run starts right away and is the "before".
+  - After that you hear only about a problem that is new since then (a test that passed before and fails
+    now, or the tests no longer running at all), once per problem, on the schedule's notifications.
+  - When the hours are up, the watch removes itself from the system scheduler and the list says how it went
+    ("Release watch ended: no new problem since the release").
+  - Start one from Schedules › New schedule › *Release watch*, from Chat ("watch the release every 10 minutes
+    for 2 hours"), or from the terminal:
+    `fastpilot schedule watch tests/ --every 10 --for 2 [--github owner/repo] [--os]`.
+  - Stop one early by turning it off or deleting it.
 
 **Chat** (`fastpilot ui`, Chat menu): ask the fastpilot bot to run tests, explain failures, create
 schedules, or make limits stricter, in plain language. Each message is answered by your own Claude Code

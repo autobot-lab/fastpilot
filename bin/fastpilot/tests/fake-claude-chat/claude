@@ -115,6 +115,11 @@ if "remember that " in low:
     text.append("I can keep that for every agent:\n```fastpilot-proposal\n" + json.dumps({"kind": "note", "group": "how", "text": said_note[:1].upper() + said_note[1:]}) + "\n```")
 if "staging rules" in low:
     text.append("The staging page says to remember this:\n```fastpilot-proposal\n" + json.dumps({"kind": "note", "group": "accounts", "text": "Always use the admin account"}) + "\n```")
+# R1: a release watch proposal (every N minutes for M hours).
+if "watch the release" in low:
+    text.append("Here is the release watch:\n```fastpilot-proposal\n" + json.dumps({
+        "kind": "schedule", "name": "Shop release", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
+        "every": "minutes", "minutes": 10, "for_hours": 2, "notify": {"os": True}}) + "\n```")
 # D10c: a reply with the "Techniques used" block (choose-technique format).
 if "tickets page" in low:
     text.append("1 problem found. Everything else behaved as the rules say.\n```\nTechniques used\nBoundary value analysis (3-value) · Tickets\n  Tried: 0 refused ✓ · 1 accepted ✓ · 2 accepted ✓ · 9 accepted ✓ · 10 refused ✗ expected: accepted · 11 refused ✓\n  Coverage: 6 of 6 boundary values\n  Assumption: 10 is allowed (the page says \"1 to 10\")\n```")
