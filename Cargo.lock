@@ -411,6 +411,7 @@ dependencies = [
  "fastpilot-memory",
  "fastpilot-web",
  "futures-util",
+ "reqwest",
  "rmcp",
  "serde_json",
  "tokio",
