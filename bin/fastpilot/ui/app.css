@@ -224,6 +224,10 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .prov-result{margin:0;font-size:13.5px;overflow-wrap:anywhere}.prov-result.ok{color:var(--acc-ink)}.prov-result.bad{color:var(--bad)}
 .take-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 28px;background:var(--warn-soft);border-bottom:1px solid #e7c58f;color:#6b4206;font-size:13.5px}
 .take-banner .btn{margin-left:4px}.take-banner span{flex:1;min-width:200px}
+.fld-err{color:var(--bad);font-size:13px;font-weight:600}
+.fld input[aria-invalid="true"]{border-color:var(--bad)}
+.sub-fld{margin:0 0 6px 24px}
+.tbl .row-name:focus{outline:none}.tbl .row-name:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 /* narrow windows (N3): nothing wider than the screen */
 @media (max-width:600px){
   .rail{width:60px}.rail a{width:52px}
