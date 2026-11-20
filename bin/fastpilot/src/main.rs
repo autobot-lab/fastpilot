@@ -5,6 +5,7 @@ mod chat;
 mod cli;
 mod demo;
 mod doctor;
+mod init;
 mod github;
 mod keystore;
 mod provider;
@@ -32,6 +33,8 @@ commands:
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
+  init [--yes] [--global]            set up this folder: register fastpilot with Claude Code, install the
+                                     Skill, add tests/contoh.md, show the limits (asks before each change)
   demo [folder] [--android]          demo pages, example tests and .mcp.json in a new folder: a first test
                                      without the repository (--android: install the demo app)
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)
@@ -213,6 +216,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("ui") => ui::ui(&args[1..]).await,
         Some("schedule") => schedule::cli(&args[1..]).await,
         Some("demo") => demo::demo(&args[1..]).await,
+        Some("init") => init::init(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,
         Some("daemon") if args.len() == 1 => live(|| cli::daemon(web), "daemon").await,
         _ if cli::command_of(&args).is_some() => {

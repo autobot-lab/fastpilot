@@ -19,6 +19,41 @@ if argv == ["--version"]:
 def opt(name):
     return argv[argv.index(name) + 1] if name in argv else None
 
+if argv[:1] == ["mcp"]:
+    # `claude mcp add|get` for `fastpilot init`: logged; `add --scope project` writes .mcp.json in the
+    # current folder like Claude Code, user scope goes to $HOME/.claude.json.
+    log_dir = os.environ.get("FAKE_CLAUDE_LOG")
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, f"{time.time_ns()}-mcp.json"), "w") as f:
+            json.dump({"argv": argv, "cwd": os.getcwd()}, f)
+    def store(scope):
+        return os.path.join(os.getcwd(), ".mcp.json") if scope == "project" else os.path.join(os.environ["HOME"], ".claude.json")
+    def load(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {"mcpServers": {}}
+    if argv[1] == "add":
+        cut = argv.index("--")
+        opts, cmd = argv[2:cut], argv[cut + 1:]
+        scope = opts[opts.index("--scope") + 1] if "--scope" in opts else "local"
+        name = [o for i, o in enumerate(opts) if not o.startswith("-") and (i == 0 or opts[i - 1] != "--scope")][0]
+        path = store(scope)
+        data = load(path)
+        data.setdefault("mcpServers", {})[name] = {"type": "stdio", "command": cmd[0], "args": cmd[1:], "env": {}}
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"Added stdio MCP server {name} to {scope} config")
+        sys.exit(0)
+    if argv[1] == "get":
+        name = argv[2]
+        found = any(name in load(store(s)).get("mcpServers", {}) for s in ("project", "user"))
+        print(f"{name}: found" if found else f"No MCP server found with name: {name}")
+        sys.exit(0 if found else 1)
+    sys.exit(2)
+
 prompt = sys.stdin.read()
 log_dir = os.environ.get("FAKE_CLAUDE_LOG")
 entry = {"start": time.time(), "argv": argv, "prompt": prompt, "tools": [], "calls": []}
