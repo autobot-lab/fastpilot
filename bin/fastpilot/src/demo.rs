@@ -68,12 +68,104 @@ pub fn mcp_json() -> String {
     format!("{}\n", serde_json::to_string_pretty(&v).unwrap_or_default())
 }
 
-/// Every file of the demo folder, relative path and contents.
+/// Every file of the demo folder, relative path and contents (`.mcp.json` is written separately).
 pub fn files() -> Vec<(PathBuf, Vec<u8>)> {
     let mut out: Vec<(PathBuf, Vec<u8>)> = PAGES.iter().map(|(n, t)| (Path::new("demo").join(n), t.as_bytes().to_vec())).collect();
     out.extend(TESTS.iter().map(|(n, t, _)| (Path::new("tests").join(n), test_case(t).into_bytes())));
-    out.push((PathBuf::from(".mcp.json"), mcp_json().into_bytes()));
+    // The Skill, so Claude Code in the demo folder knows fastpilot's steps instead of guessing them.
+    out.push((PathBuf::from(".claude/skills/fastpilot/SKILL.md"), crate::init::SKILL.as_bytes().to_vec()));
     out
+}
+
+/// Write `base/rel` without following a symlink: `base` (when `check_base`) and every folder below
+/// it must not be one, nor the file itself; the bytes go to a new temp file that is renamed over the
+/// target (a rename replaces a link, it never writes through it). A folder from an untrusted
+/// checkout cannot so redirect `init` or `demo` into ~/.ssh or similar.
+pub fn write_safe(base: &Path, rel: &Path, bytes: &[u8], check_base: bool) -> Result<(), String> {
+    let link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    let mut at = base.to_path_buf();
+    if check_base && link(&at) {
+        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", at.display()));
+    }
+    let parent = rel.parent().unwrap_or(Path::new(""));
+    for part in parent.components() {
+        at.push(part);
+        if link(&at) {
+            return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", at.display()));
+        }
+        if !at.exists() {
+            std::fs::create_dir(&at).map_err(|e| format!("tidak bisa membuat {}: {e}", at.display()))?;
+        }
+    }
+    let path = base.join(rel);
+    if link(&path) {
+        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", path.display()));
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.fastpilot-{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, bytes))
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("tidak bisa menulis {}: {e}", path.display())
+    })
+}
+
+/// `.mcp.json` of the demo folder. One that is already there is kept: its other servers stay, the
+/// `fastpilot` entry is set, and the old file is saved as `.mcp.json.bak` (or `.bak-2`, ...) first.
+/// Returns the backup's name, if one was made.
+fn write_mcp_json(dir: &Path) -> Result<Option<String>, String> {
+    let path = dir.join(".mcp.json");
+    let ours = mcp_json();
+    let Ok(old) = std::fs::read_to_string(&path) else {
+        write_safe(dir, Path::new(".mcp.json"), ours.as_bytes(), true)?;
+        return Ok(None);
+    };
+    if old == ours {
+        return Ok(None);
+    }
+    let fresh: serde_json::Value = serde_json::from_str(&ours).unwrap_or_default();
+    let merged = match serde_json::from_str::<serde_json::Value>(&old) {
+        Ok(mut v) if v["mcpServers"].is_object() => {
+            v["mcpServers"]["fastpilot"] = fresh["mcpServers"]["fastpilot"].clone();
+            format!("{}\n", serde_json::to_string_pretty(&v).unwrap_or_default())
+        }
+        _ => ours,
+    };
+    if merged == old {
+        return Ok(None);
+    }
+    let backup = (1..)
+        .map(|n| if n == 1 { ".mcp.json.bak".to_owned() } else { format!(".mcp.json.bak-{n}") })
+        .find(|b| std::fs::symlink_metadata(dir.join(b)).is_err())
+        .unwrap_or_else(|| ".mcp.json.bak".into());
+    write_safe(dir, Path::new(&backup), old.as_bytes(), true)?;
+    write_safe(dir, Path::new(".mcp.json"), merged.as_bytes(), true)?;
+    Ok(Some(backup))
+}
+
+/// `folder` already holds a demo made by `fastpilot demo` (pages, tests and its .mcp.json).
+pub fn is_demo_folder(folder: &Path) -> bool {
+    folder.join("demo/login.html").is_file()
+        && folder.join("tests/login.md").is_file()
+        && std::fs::read_to_string(folder.join(".mcp.json")).is_ok_and(|t| t.contains("\"fastpilot\""))
+}
+
+/// What to tell the user when the demo app cannot be installed.
+pub fn install_hint(serial: &str, error: &str) -> Option<String> {
+    let incompatible = ["INSTALL_FAILED_UPDATE_INCOMPATIBLE", "INSTALL_FAILED_VERSION_DOWNGRADE", "signatures do not match"]
+        .iter()
+        .any(|e| error.contains(e));
+    incompatible.then(|| {
+        format!(
+            "app demo lain (tanda tangan atau versi berbeda) sudah terpasang di {serial}. Hapus dulu, lalu ulangi:\n    adb -s {serial} uninstall {APP}\n    fastpilot demo --android --device {serial}"
+        )
+    })
 }
 
 const USAGE: &str = "usage: fastpilot demo [folder] [--force] [--android [--device SERIAL]]
@@ -103,6 +195,11 @@ pub async fn demo(args: &[String]) -> Res<()> {
     }
     let shown = folder.clone().unwrap_or_else(|| "fastpilot-demo".into());
     let dir = PathBuf::from(&shown);
+    // Run from inside a demo folder: the new one would end up nested in it.
+    if is_demo_folder(Path::new(".")) && !(android && dir.exists()) {
+        println!("! Kamu sedang berada di dalam folder demo. Folder baru akan dibuat di dalamnya: {}", std::env::current_dir().map(|c| c.join(&dir).display().to_string()).unwrap_or(shown.clone()));
+        println!("  Bukan itu maksudmu? Keluar dulu dengan `cd ..`, lalu jalankan lagi.\n");
+    }
     // `--android` after the folder was made: only the app.
     let write = !(android && dir.exists() && !force);
     if write {
@@ -127,19 +224,24 @@ pub async fn demo(args: &[String]) -> Res<()> {
 fn write_folder(dir: &Path, shown: &str) -> Res<()> {
     let prefix = if Path::new(shown).is_absolute() || shown.starts_with('.') { shown.to_owned() } else { format!("./{shown}") };
     println!("Membuat folder demo: {prefix}");
-    for (rel, bytes) in files() {
-        let path = dir.join(&rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("tidak bisa membuat {}: {e}", parent.display()))?;
-        }
-        std::fs::write(&path, bytes).map_err(|e| format!("tidak bisa menulis {}: {e}", path.display()))?;
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", dir.display()).into());
     }
+    std::fs::create_dir_all(dir).map_err(|e| format!("tidak bisa membuat {}: {e}", dir.display()))?;
+    for (rel, bytes) in files() {
+        write_safe(dir, &rel, &bytes, true)?;
+    }
+    let backup = write_mcp_json(dir)?;
     let names: Vec<String> = PAGES.iter().take(2).map(|(n, _)| format!("demo/{n}")).collect();
     println!("  ✓ {:<42} {} halaman", format!("{}, …", names.join(", ")), PAGES.len());
     for (n, _, platform) in TESTS {
         println!("  ✓ {:<42} {platform}", format!("tests/{n}"));
     }
     println!("  ✓ {:<42} fastpilot + DEMO_PASS", ".mcp.json");
+    if let Some(b) = backup {
+        println!("    .mcp.json yang sudah ada disimpan di {b}; server lain di dalamnya tetap ada");
+    }
+    println!("  ✓ {:<42} Skill: cara menulis langkah fastpilot", ".claude/skills/fastpilot/SKILL.md");
     Ok(())
 }
 
@@ -194,7 +296,10 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
             Some(true)
         }
         Err(e) => {
-            println!("  ✗ {serial}: app demo tidak bisa dipasang: {e}");
+            match install_hint(&serial, &e) {
+                Some(hint) => println!("  ✗ {serial}: {hint}"),
+                None => println!("  ✗ {serial}: app demo tidak bisa dipasang: {e}"),
+            }
             Some(false)
         }
     }
@@ -220,6 +325,43 @@ mod tests {
         }
         let apk = std::fs::read(format!("{ROOT}/examples/demo-android/out/fastpilot-demo.apk")).unwrap_or_default();
         assert_eq!(APK, apk.as_slice(), "the APK built into the binary is the demo app");
+    }
+
+    #[test]
+    fn incompatible_install_says_how_to_fix_it() {
+        let raw = "adb: pm install failed: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.fastpilot.demo signatures do not match newer version; ignoring!]";
+        let hint = install_hint("emulator-5556", raw).expect("hint");
+        assert!(hint.contains("adb -s emulator-5556 uninstall com.fastpilot.demo") && hint.contains("fastpilot demo --android --device emulator-5556"), "{hint}");
+        assert!(!hint.contains("INSTALL_FAILED"), "no raw adb text: {hint}");
+        assert!(install_hint("emulator-5556", "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_never_follow_a_symlink() {
+        let root = std::env::temp_dir().join(format!("fp-safe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (base, outside) = (root.join("base"), root.join("outside"));
+        std::fs::create_dir_all(&base).expect("base");
+        std::fs::create_dir_all(&outside).expect("outside");
+        // A folder on the way is a link: refused, nothing written outside.
+        std::os::unix::fs::symlink(&outside, base.join("tests")).expect("link");
+        let e = write_safe(&base, Path::new("tests/a.md"), b"x", true).expect_err("dir link");
+        assert!(e.contains("symlink"), "{e}");
+        assert!(!outside.join("a.md").exists());
+        // The file itself is a link: refused, the target untouched.
+        std::fs::write(outside.join("secret"), "keep").expect("secret");
+        std::os::unix::fs::symlink(outside.join("secret"), base.join("f.md")).expect("link");
+        assert!(write_safe(&base, Path::new("f.md"), b"x", true).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("secret")).expect("secret"), "keep");
+        // The base itself is a link (checked when asked).
+        std::os::unix::fs::symlink(&outside, root.join("demo-link")).expect("link");
+        assert!(write_safe(&root.join("demo-link"), Path::new("x"), b"x", true).is_err());
+        // Plain folders: written, no temp file left.
+        write_safe(&base, Path::new("a/b/c.md"), b"ok", true).expect("plain");
+        assert_eq!(std::fs::read(base.join("a/b/c.md")).expect("c"), b"ok");
+        assert_eq!(std::fs::read_dir(base.join("a/b")).expect("dir").count(), 1);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

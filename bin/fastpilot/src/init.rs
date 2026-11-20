@@ -248,11 +248,21 @@ fn example(mode: Mode) {
     }
 }
 
+/// Write without following a symlink: in the project every folder on the way is checked (a
+/// checkout cannot point `tests/` at another place); with `--global` only the file itself, so a
+/// symlinked ~/.claude of the user's dotfiles keeps working.
 fn write(path: &Path, text: &str, done: &str) {
-    let made = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, text));
+    let made = if path.is_absolute() {
+        let parent = path.parent().unwrap_or(Path::new("/"));
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("tidak bisa membuat {}: {e}", parent.display()))
+            .and_then(|()| crate::demo::write_safe(parent, Path::new(path.file_name().unwrap_or_default()), text.as_bytes(), false))
+    } else {
+        crate::demo::write_safe(Path::new("."), path, text.as_bytes(), false)
+    };
     match made {
         Ok(()) => println!("  ✓ {done}"),
-        Err(e) => println!("  ✗ tidak bisa menulis {}: {e}", path.display()),
+        Err(e) => println!("  ✗ {e}"),
     }
 }
 
