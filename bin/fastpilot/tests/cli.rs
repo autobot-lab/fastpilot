@@ -102,3 +102,25 @@ fn native_host_hands_the_relay_token_to_the_fastpilot_extension_only() {
     assert!(ask(ours, "nope").contains("error"));
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// QA (Low): unknown or `=value` options of `run` were ignored silently, and `open --help` opened
+/// https://--help. Now: a clear message with the usage (exit 2), and the help.
+#[test]
+fn run_options_are_checked_and_help_is_help() {
+    let dir = std::env::temp_dir().join(format!("fastpilot-cli-help-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).args(args).env("FASTPILOT_SOCKET", dir.join("d.sock")).output().expect("run");
+        (out.status.code(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (code, out) = run(&["run", "tests/login.md", "--reset=1"]);
+    assert!(code == Some(2) && out.contains("--reset is a switch and takes no value") && out.contains("[--report-github[=dry]]"), "{code:?} {out}");
+    let (code, out) = run(&["run", "tests/login.md", "--bogus"]);
+    assert!(code == Some(2) && out.contains("unknown argument `--bogus`") && out.contains("[--record] [--reset]"), "{code:?} {out}");
+    let (code, out) = run(&["open", "--help"]);
+    assert!(code == Some(0) && out.contains("fastpilot shell commands"), "{code:?} {out}");
+    assert!(!dir.join("d.sock").exists(), "help must not start the daemon");
+    let (_, out) = run(&["--help"]);
+    assert!(out.contains("one-time link") && !out.contains("127.0.0.1 + token"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

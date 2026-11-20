@@ -76,12 +76,26 @@ impl Target {
     }
 }
 
-/// A table cell: one line, `|` escaped.
+/// A table cell: one line, shown as plain text. Notes come from the model and the page under
+/// test: Markdown and HTML in them are escaped, never rendered (no links, images or mentions).
 fn cell(s: &str) -> String {
     let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let clipped: String = one.chars().take(200).collect();
     let clipped = if one.chars().count() > 200 { format!("{clipped}…") } else { clipped };
-    clipped.replace('|', "\\|")
+    let mut out = String::with_capacity(clipped.len());
+    for c in clipped.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '@' => out.push_str("@\u{200b}"),
+            '\\' | '`' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '!' | '~' | '|' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The comment while the suite runs.
@@ -146,22 +160,32 @@ pub async fn publish(target: &Target, token: &str, body: &str) -> Result<String,
             return Err(fail("listing PR comments", format!("HTTP {}", resp.status())));
         }
         let items: Vec<Value> = resp.json().await.map_err(|e| fail("listing PR comments", e.to_string()))?;
-        existing = items.iter().find(|c| c["body"].as_str().is_some_and(|b| b.contains(MARKER))).and_then(|c| c["id"].as_u64());
+        // The marker can be copied by anyone who comments: prefer a bot's comment (the Actions
+        // token comments as github-actions[bot]); one fastpilot cannot edit gets a new comment below.
+        let marked: Vec<&Value> = items.iter().filter(|c| c["body"].as_str().is_some_and(|b| b.contains(MARKER))).collect();
+        existing = marked.iter().find(|c| c["user"]["type"] == "Bot").or(marked.first()).and_then(|c| c["id"].as_u64());
         if existing.is_some() || items.len() < 100 {
             break;
         }
     }
     let payload = json!({ "body": body });
-    let (what, resp) = match existing {
+    let mut updated = existing.is_some();
+    let (mut what, mut resp) = match existing {
         Some(id) => ("updating the PR comment", send(client.patch(format!("{base}/comments/{id}"))).json(&payload).send().await),
         None => ("creating the PR comment", send(client.post(format!("{base}/{}/comments", target.pr))).json(&payload).send().await),
     };
+    // Someone else's comment with the marker (403/404 on edit): post our own instead.
+    if updated && resp.as_ref().is_ok_and(|r| matches!(r.status().as_u16(), 403 | 404)) {
+        updated = false;
+        what = "creating the PR comment";
+        resp = send(client.post(format!("{base}/{}/comments", target.pr))).json(&payload).send().await;
+    }
     let resp = resp.map_err(|e| fail(what, e.to_string()))?;
     if !resp.status().is_success() {
         return Err(fail(what, format!("HTTP {}", resp.status())));
     }
     let url = resp.json::<Value>().await.ok().and_then(|v| v["html_url"].as_str().map(str::to_owned)).unwrap_or_default();
-    Ok(format!("{} {}#{} {url}", if existing.is_some() { "updated" } else { "created" }, target.repo, target.pr).trim_end().to_owned())
+    Ok(format!("{} {}#{} {url}", if updated { "updated" } else { "created" }, target.repo, target.pr).trim_end().to_owned())
 }
 
 /// The suite's reporter for one run: posts (live) or prints (dry); never fails the suite.
@@ -264,10 +288,14 @@ mod tests {
 
     impl FakeGitHub {
         fn start() -> Self {
+            Self::with(vec![json!({ "id": 1, "body": "LGTM" })])
+        }
+
+        fn with(seed: Vec<Value>) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let port = listener.local_addr().expect("addr").port();
             let log = Arc::new(Mutex::new(Vec::new()));
-            let comments = Arc::new(Mutex::new(vec![json!({ "id": 1, "body": "LGTM" })]));
+            let comments = Arc::new(Mutex::new(seed));
             let (log2, comments2) = (log.clone(), comments.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
@@ -347,5 +375,23 @@ mod tests {
         // A wrong token: an error that does not repeat the token.
         let e = publish(&t, "wrong-secret-token", "x").await.expect_err("401");
         assert!(e.contains("401") && !e.contains("wrong-secret-token"), "{e}");
+    }
+
+    /// Security (Low): anyone can copy the marker into a comment of their own. fastpilot prefers a
+    /// bot's comment, and when the marked comment is not its own (edit refused) posts its own.
+    #[tokio::test]
+    async fn a_copied_marker_does_not_capture_the_report() {
+        let gh = FakeGitHub::with(vec![json!({ "id": 5, "body": format!("{MARKER}\nfake results"), "user": { "type": "User", "login": "someone" } })]);
+        let done = publish(&gh.target(), "test-token-123", &format!("{MARKER}\nreal results")).await.expect("publish");
+        assert!(done.starts_with("created o/r#5"), "{done}");
+        assert_eq!(gh.calls(), ["GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/5", "POST /repos/o/r/issues/5/comments"]);
+    }
+
+    /// Security (Low): notes come from the model and the page: shown as text, never rendered.
+    #[test]
+    fn notes_are_plain_text_in_the_comment() {
+        let c = cell("see [here](https://evil.example) ![x](y) <img src=x> **bold** @org/team `code` | pipe");
+        assert!(!c.contains("](https") && !c.contains("<img") && !c.contains("**") && !c.contains("@org/team"), "{c}");
+        assert!(c.contains("\\[here\\]\\(https://evil.example\\)") && c.contains("&lt;img src=x&gt;") && c.contains("\\|"), "{c}");
     }
 }

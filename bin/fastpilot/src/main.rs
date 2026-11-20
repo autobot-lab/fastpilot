@@ -31,7 +31,7 @@ commands:
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
-  ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1 + token)
+  ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)
   schedule [list|run ID|remove ID]   scheduled runs (made in `fastpilot ui`, Jadwal; run by launchd/systemd/cron)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
@@ -254,10 +254,36 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             stability::run(path, runs.max(1), web).await
         }
         Some("run") => {
+            const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
             let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
-                eprintln!("usage: fastpilot run <tests dir|file.md> [--workers N] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]");
+                eprintln!("{RUN_USAGE}");
                 std::process::exit(2);
             };
+            // Only the options `run` knows: `--reset=1` or a typo is an error, not silently ignored.
+            let bad = |msg: String| -> ! {
+                eprintln!("{msg}\n{RUN_USAGE}");
+                std::process::exit(2);
+            };
+            let mut rest = args.iter().skip(2);
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--workers" | "--model" | "--max-steps" | "--junit" | "--html" => {
+                        if rest.next().is_none() {
+                            bad(format!("{a} needs a value"));
+                        }
+                    }
+                    "--record" | "--reset" | "--headful" | "--report-github" | "--report-github=dry" | "--report-github=live" => {}
+                    "dry" | "live" if args.iter().any(|x| x == "--report-github") => {}
+                    other if other.starts_with("--") && other.contains('=') => {
+                        let name = other.split('=').next().unwrap_or(other);
+                        if matches!(name, "--record" | "--reset" | "--headful") {
+                            bad(format!("`{other}`: {name} is a switch and takes no value (write just `{name}`)"));
+                        }
+                        bad(format!("`{other}`: write `{name} <value>`, with a space"));
+                    }
+                    other => bad(format!("unknown argument `{other}` for run")),
+                }
+            }
             let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
             let opts = run::Options {
                 model: value("--model").or_else(|| fastpilot_core::config::var("FASTPILOT_MODEL").ok().filter(|m| !m.is_empty())),

@@ -86,7 +86,14 @@ impl Provider {
             Some(k) => mask_key(&s, k),
             None => s,
         };
-        let resp = req.send().await.map_err(|e| mask(format!("{}: {e}", self.name)))?;
+        let resp = req.send().await.map_err(|e| {
+            // Nobody listening: say where, and for Ollama how to start it.
+            if e.is_connect() {
+                let hint = if self.name == "ollama" { "; is Ollama running (`ollama serve`) with the model pulled (`ollama pull <model>`)?" } else { "; is the server up and the URL right?" };
+                return mask(format!("cannot reach {} at {}{hint}", self.name, self.base_url));
+            }
+            mask(format!("{}: {e}", self.name))
+        })?;
         let status = resp.status();
         let text = resp.text().await.map_err(|e| mask(format!("{}: {e}", self.name)))?;
         if !status.is_success() {
@@ -295,4 +302,14 @@ mod tests {
         assert_eq!(mask_key(&format!("bad {k} here"), k), "bad *** here");
         assert_eq!(mask_key("nothing to hide", "short"), "nothing to hide");
     }
+
+    /// QA (Low): a stopped Ollama gave a bare connection error; now it says where and what to run.
+    #[tokio::test]
+    async fn an_unreachable_provider_says_where_and_how() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
+        let p = Provider::resolve("ollama", Some(format!("http://127.0.0.1:{port}/v1")), Some("llama3".into()), None).expect("ollama");
+        let e = p.complete(&Provider::client().expect("client"), &json!({ "model": "llama3", "messages": [] })).await.expect_err("nobody listens");
+        assert!(e.contains(&format!("cannot reach ollama at http://127.0.0.1:{port}/v1")) && e.contains("ollama serve"), "{e}");
+    }
+
 }
