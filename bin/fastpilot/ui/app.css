@@ -311,3 +311,25 @@ dialog.hist-dlg::backdrop{background:rgba(20,25,32,.55)}
 dialog.hist-dlg h2{font:700 20px var(--display);margin:0 0 10px}
 dialog.hist-dlg p{margin:0 0 18px;line-height:1.5}
 .btn.danger-fill{background:var(--bad);border-color:var(--bad);color:#fff}
+/* Memory (D6) */
+.mem-wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
+@media (max-width:1100px){.mem-wrap{grid-template-columns:1fr}}
+.mem-tbl tr.on td{background:var(--soft)}
+.mem-tbl tr.on td:first-child{box-shadow:inset 3px 0 0 var(--ink)}
+.mem-name{background:none;border:0;padding:0;font:600 14px var(--sans);color:var(--ink);cursor:pointer;text-align:left}
+.mem-name:hover{text-decoration:underline}
+.mem-name:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.mem-st{font:600 12.5px var(--sans);padding:3px 8px;border-radius:6px;white-space:nowrap}
+.mem-st.ok{background:var(--acc-soft);color:var(--acc-ink)}
+.mem-st.warn{background:var(--warn-soft);color:#8a520a}
+.mem-st.bad{background:var(--bad-soft);color:var(--bad)}
+.mem-st.grey{background:var(--soft);color:var(--muted);border:1px solid #8a94a3}
+.mem-st.new{background:var(--card);color:var(--muted);border:1px solid #8a94a3}
+.mem-panel{background:var(--card);border:var(--bw) solid var(--ink);border-radius:var(--r);box-shadow:var(--sh);padding:16px 18px}
+.mem-panel h2{font:700 18px var(--display);margin:4px 0 12px}
+.mem-k{font:500 11.5px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.mem-facts{display:grid;grid-template-columns:120px 1fr;gap:8px 12px;margin:0 0 14px;font-size:13.5px}
+.mem-facts dt{color:var(--muted)}.mem-facts dd{margin:0}
+.mem-note{background:var(--blue-soft);border-left:3px solid var(--blue);border-radius:var(--r-sm);padding:10px 12px;font-size:13.5px;margin:0 0 14px}
+.mem-btns{justify-content:flex-start;margin-bottom:12px}
+.mem-panel .s{font-size:12.5px;margin:6px 0 0}

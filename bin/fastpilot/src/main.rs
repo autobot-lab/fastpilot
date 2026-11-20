@@ -6,6 +6,7 @@ mod cli;
 mod demo;
 mod doctor;
 mod history_api;
+mod memory_api;
 mod init;
 mod github;
 mod keystore;

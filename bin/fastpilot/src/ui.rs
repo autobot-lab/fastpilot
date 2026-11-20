@@ -180,6 +180,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/history/report", get(crate::history_api::report))
         .route("/api/history/chat", get(crate::history_api::conversation))
+        .route("/api/memory", get(crate::memory_api::list).post(crate::memory_api::change))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -721,6 +722,7 @@ const ICONS: &[(&str, &str)] = &[
     ("live", include_str!("../ui/icons/live.svg")),
     ("lock", include_str!("../ui/icons/lock.svg")),
     ("mark", include_str!("../ui/icons/mark.svg")),
+    ("memory", include_str!("../ui/icons/memory.svg")),
     ("model", include_str!("../ui/icons/model.svg")),
     ("play", include_str!("../ui/icons/play.svg")),
     ("plug", include_str!("../ui/icons/plug.svg")),
@@ -762,6 +764,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "app.css" => ("text/css; charset=utf-8", include_bytes!("../ui/app.css")),
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
+        "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
         "fonts/bricolage-grotesque-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-700.woff2")),
