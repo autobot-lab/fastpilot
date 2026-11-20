@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 
 - npm dan skrip mengunduh arsip rilis dari [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   dan mengecek SHA-256-nya sebelum memasang. Skrip memasang ke `~/.local/bin`; lokasi lain:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.3.0`.
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.3.1`.
 - Tanpa instal: `npx -y fastpilot mcp`.
 - Homebrew belum tersedia (repo tap belum dibuat).
 - Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
@@ -247,7 +247,9 @@ untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak dipe
 - Socket itu hanya melayani proses `fastpilot ui` dari **file program yang sama** dengan proses fastpilot
   pemilik sesi: pid dan path program di ujung lain dicek tiap koneksi, jadi skrip, agent, atau program lain
   yang sekadar bernama `fastpilot` ditolak (juga untuk frame). Akibatnya `fastpilot ui` dan server MCP harus
-  dari instalasi yang sama (mis. keduanya dari npm), dan binary yang di-rename tidak bisa memakai Ambil alih. Tiap ambil alih memberi token acak yang
+  dari instalasi yang sama (mis. keduanya dari npm), dan binary yang di-rename tidak bisa memakai Ambil alih.
+  Jalankan `fastpilot ui` dengan cara yang sama seperti server MCP-nya: kalau MCP didaftarkan sebagai
+  `npx -y fastpilot mcp`, buka halamannya dengan `npx -y fastpilot ui`. Tiap ambil alih memberi token acak yang
   hanya ada di memori proses fastpilot dan `fastpilot ui` yang memulainya (tidak di file, tidak dikirim ke
   browser). Tap, ketik, dan Kembalikan wajib membawa token itu, jadi halaman lain tidak bisa ikut
   mengendalikan atau menutup ambil alih orang lain.

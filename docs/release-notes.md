@@ -1,69 +1,42 @@
-## What's new in 0.3.0
+## What's new in 0.3.1
 
-### New
-- **Live for Android and iOS, and "Ambil alih" (take over)** in `fastpilot ui`: Android and iOS screens
-  (screenshots from the device, only while the panel is open), and for web, Android and iOS you can take
-  a session over, tap, swipe and type yourself while the AI's steps wait, then give it back. The AI's
-  next result says the user stepped in, and runs with `test_id` record it. A yellow banner shows a
-  takeover on every page; closing the large view gives the session back.
-- **Jadwal (schedules) + notifications**: run a test folder or file every day, on weekdays or weekly,
-  through the OS scheduler (launchd on macOS, a systemd user timer or cron on Linux), registered only
-  when you save. On failure: a Slack-compatible https webhook (the URL is kept as a secret), a
-  notification on this computer, and/or a GitHub issue. `fastpilot schedule list | run | remove`.
-- **Chat in `fastpilot ui`**: talk to a fastpilot bot driven by your own Claude Code (`claude -p`,
-  no API key) with only the fastpilot tools. It can only *propose* schedules and stricter limits, as
-  cards in plain Indonesian; nothing changes until you click, and loosening is refused.
-- **OpenAI-compatible providers (opt-in)**: `fastpilot run` can be driven by OpenAI, OpenRouter, Groq,
-  Ollama or a custom chat-completions API with tool calling (`provider`, `provider_model`,
-  `config set-key`, `config test-provider`, or Pengaturan › Model AI). Claude Code stays the default.
-  A key is stored in the Keychain / secret service (or an owner-only file) and only sent to the
-  server it was saved for; a provider that cannot be used fails the test with the reason instead of
-  falling back silently.
-- **`--reset`**: every mobile session starts its app fresh (data, permissions, orientation), also when
-  the app is opened with `launchApp` after `session start`.
-- **Video per flow** in the HTML report (`run --record`): markers per step (red where a step failed),
-  a button per flow, and the final screen of passing flows.
-- **`--report-github`**: the results as one comment on the pull request (updated, not repeated).
-- **`action_timeout`** setting: how long an action waits for its element; text input on phones waits
-  longer for the keyboard.
-- **Docs**: running fastpilot on another machine over SSH, and lighter iOS simulators with simslim
-  (`docs/remote-machine.md`; the SSH parts are marked untested).
+A fix release for the known limitations of 0.3.0.
 
-### Security fixes
-- The limits gaps listed for 0.2.0 are closed: a `point` tap uses the same coordinates as the
-  snapshot and checks every element under the point; `pressKey` Enter and `evalScript` obey
-  `block_actions` (evalScript is off while `block_actions` is set); the Chrome extension never
-  connects without a relay token (extension 0.2.1).
-- Takeover socket (`~/.fastpilot/live/<pid>.sock`): served only to a `fastpilot ui` process, a random
-  per-takeover token kept in memory is needed for every input, and a takeover ends by itself when the
-  page goes away (±45 s) or after 30 minutes.
-- Switching provider no longer sends a key to the previous provider's server.
-- `fastpilot ui` keeps running when whoever started it stops reading its output.
-
-### Privacy: third-party providers
-With an OpenAI-compatible provider, what the model sees goes to that provider: screen snapshots,
-step results and errors, which can include local paths such as `file:///Users/<name>/…`. `${NAME}`
-secret values stay masked. Use Claude Code (default) or a local Ollama when data must not leave the
-machine.
+### Fixes
+- **Ambil alih (takeover):** the control socket now serves only a `fastpilot ui` running the **same
+  program file** as the fastpilot process that owns the session (peer pid and executable path are
+  checked); a program merely named `fastpilot` is refused. New limit **`allow_takeover`** (default on,
+  tighten-only, pinned at start; Pengaturan › Batasan): turn it off when your agent has a shell. Run
+  `fastpilot ui` the same way as its MCP server (e.g. `npx -y fastpilot ui` with `npx -y fastpilot mcp`).
+- **PR comments (`--report-github`):** only a marked comment written by the token's own account is
+  edited; a copied marker in someone else's comment is left alone.
+- **Provider keys:** a key saved by 0.2.0 (no server recorded) is not sent to a custom or local server;
+  run `fastpilot config set-key <provider>` once. Provider redirects are no longer followed (the key and
+  the request body never go to the redirect target).
+- **Flows with their own `session` step** run without an `open` first (`unknown session default`, #9).
+- **Limits:** a tap by text, `id`, `ref` or `role` waits for its element like the tap itself and is
+  refused while a rule is on and the element cannot be seen (fail closed), so a "Bayar" button that
+  appears late is still blocked.
+- **Reports:** the video player iframe is sandboxed (`allow-scripts`, no same origin).
+- **UI:** Jadwal messages are all Indonesian; after "Kembalikan ke AI" focus goes to the page title;
+  Jadwal field errors are tied to their fields; Chat names `vars` as "Nama secret"; a stopped
+  `fastpilot ui` is reported in plain words instead of "Failed to fetch".
 
 ### Known limitations
-- Takeover is not a security boundary against code that already runs as you: an agent with shell
-  access can start its own `fastpilot ui` (or a program named `fastpilot` run with `ui`) and take a
-  session over without a human click; takeover input is not checked by the limits. fastpilot's limits
-  protect against an AI that only has fastpilot's tools. A renamed fastpilot binary cannot use
-  takeover ("only fastpilot ui may use this socket").
-- With `--report-github`, if someone posts a comment carrying fastpilot's marker before the bot does,
-  the report can be written into the wrong thread (Low).
-- A provider key stored by 0.2.0 has no server recorded; set it again with `config set-key` so it is
-  bound to its server. Provider requests follow HTTP redirects (Low).
-- A flow with its own `session` step but no session started yet can still fail with
-  `unknown session default` (#9).
-- A non-point selector is not checked against the limits when the snapshot fails; a point covered
-  only by nameless elements passes (Low).
-- The report's video player sits in an `<iframe srcdoc>` without `sandbox` (Low).
-- Android system-dialog tests can be flaky on a heavily loaded machine.
-- Not tested on: Linux (systemd/cron, secret-tool, peer check), physical phones for takeover, real
-  hosted providers and Ollama, SSH, the Chrome extension in daily Chrome, VoiceOver.
+- Takeover is still not a security boundary against an agent that can run the real `fastpilot ui`
+  (it has a shell): turn `allow_takeover` off for such agents. With `allow_takeover = false`, watching
+  an Android/iOS screen in Live still works; only steering is off.
+- After upgrading on Linux, a fastpilot process started before the upgrade refuses takeover until it
+  is restarted.
+- `--report-github` with a GitHub App installation token can post a new comment on every run (use the
+  workflow's `GITHUB_TOKEN` or a personal token).
+- A refused takeover from another installation sometimes shows "proses fastpilot itu tidak menerima
+  kendali" instead of the "same installation" message.
+- With an OpenAI-compatible provider, what the model sees (snapshots, step results, local paths) goes to
+  that provider; `${NAME}` values stay masked. Use Claude Code or a local Ollama when data must stay on
+  the machine.
+- Android system-dialog and WebView tests can be flaky on a heavily loaded machine (as in 0.3.0).
+- Not tested on: Linux, physical phones, real hosted providers and Ollama, real GitHub posting.
 
 Install (macOS arm64/x86_64, Linux x86_64):
 
@@ -74,4 +47,4 @@ npm install -g fastpilot
 
 Every archive has a `.sha256` next to it; the install script and the npm package check it.
 
-Earlier releases: https://github.com/autobot-lab/fastpilot/releases (0.2.0: `fastpilot ui`, new limits, `launchApp` arguments, remote devices, Agent Skill).
+Earlier releases: https://github.com/autobot-lab/fastpilot/releases (0.3.0: Live Android/iOS + Ambil alih, Jadwal, Chat, OpenAI-compatible providers, `--reset`, video per flow, `--report-github`).
