@@ -108,6 +108,10 @@ Never XPath.
   Existence checks (assertVisible, scrollUntilVisible, `when: visible`) pass with any match.
 - Refs follow the element while it exists (session-scoped); a ref never jumps to another element.
 - `snapshot { filter: "batal" }` finds nodes with their ancestors; `coords: true` adds boxes.
+- `{ point: [x, y] }` uses the page coordinates `coords: true` shows (also after scrolling). The point
+  must be on screen (scroll first, or tap by ref); the step reports the element it landed on. With
+  block_actions / confirm_actions on, every element covering the point counts (a button inside a
+  "Pembayaran" dialog too), and a point no element covers is refused.
 
 Apps without accessibility labels (`low_label_coverage` in the snapshot):
 - Jetpack Compose: set `Modifier.semantics { testTagsAsResourceId = true }` on the root and
