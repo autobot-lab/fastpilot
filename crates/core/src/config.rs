@@ -117,8 +117,13 @@ pub fn keep_out_of_git() {
     ignore_in(&project_dir());
 }
 
+/// Everything is private by default (new kinds of files too); visual baselines are made to be
+/// shared, so they stay, without a run's actual and diff images (Security re-check F).
+const IGNORE: &str = "# fastpilot: test runs, chats and saved logins of this computer; not for git.\n*\n!.gitignore\n# Visual baselines are shared with the team (not this computer's actual and diff images).\n!baselines/\n!baselines/*.png\nbaselines/*.actual.png\nbaselines/*.diff.png\n";
+
 fn ignore_in(d: &std::path::Path) {
-    if d.file_name().is_none_or(|n| n != ".fastpilot") || !d.is_dir() {
+    // A real folder, not a link a cloned repo planted (Security re-check F).
+    if d.file_name().is_none_or(|n| n != ".fastpilot") || !d.symlink_metadata().is_ok_and(|m| m.is_dir()) {
         return;
     }
     let p = d.join(".gitignore");
@@ -127,7 +132,7 @@ fn ignore_in(d: &std::path::Path) {
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
         use std::io::Write;
-        let _ = f.write_all(b"# fastpilot: test runs, chats and saved logins of this computer; not for git.\n*\n");
+        let _ = f.write_all(IGNORE.as_bytes());
     }
 }
 
@@ -631,6 +636,13 @@ mod tests {
         std::fs::create_dir_all(&d).expect("dir");
         ignore_in(&d);
         assert!(std::fs::read_to_string(d.join(".gitignore")).expect("written").lines().any(|l| l == "*"));
+        // What git makes of it: private files ignored, baselines kept (when git is here).
+        if std::process::Command::new("git").arg("init").arg("-q").arg(&root).status().is_ok_and(|s| s.success()) {
+            for (f, ignored) in [("history/chats/c.json", true), ("states/login.json", true), ("baselines/home.png", false), ("baselines/home.diff.png", true), (".gitignore", false)] {
+                let st = std::process::Command::new("git").arg("-C").arg(&root).args(["check-ignore", "-q", "--no-index"]).arg(format!(".fastpilot/{f}")).status().expect("git");
+                assert_eq!(st.success(), ignored, "{f}");
+            }
+        }
         // Never over the user's own file, and never in a folder with another name.
         std::fs::write(d.join(".gitignore"), "mine\n").expect("own");
         ignore_in(&d);
@@ -646,6 +658,13 @@ mod tests {
             std::os::unix::fs::symlink(root.join("victim"), linked.join(".gitignore")).expect("link");
             ignore_in(&linked);
             assert!(!root.join("victim").exists(), "a link is not followed");
+            // A `.fastpilot` that is itself a link: nothing is written in its target.
+            std::fs::create_dir_all(root.join("target")).expect("dir");
+            let planted = root.join("p");
+            std::fs::create_dir_all(&planted).expect("dir");
+            std::os::unix::fs::symlink(root.join("target"), planted.join(".fastpilot")).expect("link");
+            ignore_in(&planted.join(".fastpilot"));
+            assert!(!root.join("target/.gitignore").exists(), "a linked .fastpilot is left alone");
         }
         let _ = std::fs::remove_dir_all(root);
     }

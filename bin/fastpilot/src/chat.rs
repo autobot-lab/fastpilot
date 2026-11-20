@@ -1650,8 +1650,12 @@ pub fn undo(id: &str) -> Res<String> {
     if change::raw(&c.key)? != c.after {
         return Err("This setting changed again since, so nothing was undone.".into());
     }
-    config::write(&c.key, c.before.as_deref()).map_err(|e| format!("The settings file could not be written: {e}"))?;
-    change::audit(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "applied");
+    // Undo puts back the earlier, maybe looser value: logged first, like a confirmed loosening.
+    change::audit_or_refuse(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "applied")?;
+    if let Err(e) = config::write(&c.key, c.before.as_deref()) {
+        change::audit(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "failed");
+        return Err(format!("The settings file could not be written: {e}"));
+    }
     let note = "Undone: back to how it was.";
     set_card(id, |p| {
         p.status = "undone".into();
@@ -1993,6 +1997,19 @@ mod tests {
         let e = decide(&id, true, None, None, Some("Pay")).unwrap_err();
         assert!(e.contains("activity log") && e.contains("nothing changed"), "{e}");
         assert!(!cfg.text().contains("!pay"), "{}", cfg.text());
+        let _ = std::fs::remove_dir_all(cfg.0.join("audit.jsonl"));
+        // Re-check B: Undo puts a looser value back, so it is logged first too.
+        let block = settings(json!([{ "setting": "block_actions", "add": ["refund"] }]));
+        let (_, cards, _) = proposals_in(&block, &mut turn("block refund"));
+        assert_eq!(cards[0].status, "applied", "{cards:?}");
+        let id = cards[0].id.clone();
+        open_cards(cards);
+        assert!(cfg.text().contains("refund"));
+        let _ = std::fs::remove_file(cfg.0.join("audit.jsonl"));
+        std::fs::create_dir_all(cfg.0.join("audit.jsonl")).expect("block the log");
+        let e = undo(&id).unwrap_err();
+        assert!(e.contains("activity log"), "{e}");
+        assert!(cfg.text().contains("refund"), "not undone: {}", cfg.text());
         let _ = std::fs::remove_dir_all(cfg.0.join("audit.jsonl"));
         *chat_of("default") = Chat::default();
     }

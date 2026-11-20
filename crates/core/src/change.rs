@@ -183,8 +183,10 @@ pub fn label(key: &str) -> &'static str {
 }
 
 /// Control characters (ESC, newline, ...) and characters that show nothing or turn text around.
+/// The same list the button matching uses (`policy::invisible`), plus blank-looking characters
+/// (Braille blank, object replacement, line and paragraph separators) (Security re-check D).
 fn unprintable(ch: char) -> bool {
-    ch.is_control() || matches!(ch as u32, 0x00ad | 0x034f | 0x061c | 0x180e | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f | 0xfe00..=0xfe0f | 0xfeff | 0xe0000..=0xe0fff)
+    ch.is_control() || policy::invisible(ch) || matches!(ch as u32, 0x180e | 0x2800 | 0xfffc | 0x2028 | 0x2029)
 }
 
 /// `text` safe to print in a terminal: unprintable characters become `?`.
@@ -534,7 +536,8 @@ pub fn provenance(c: &Change, message: &str) -> bool {
     }
     const VETO: &[&str] = &[
         " not ", " no ", " never ", " dont ", " don t ", " doesn t ", " didn t ", " shouldn t ", " won t ", " can t ", " cannot ", " why ", " jangan ", " tidak ", " gak ",
-        " nggak ", " enggak ", " bukan ", " kenapa ", " mengapa ",
+        " nggak ", " enggak ", " bukan ", " kenapa ", " mengapa ", " nope ", " refuse ", " deny ", " isn t ", " isnt ",
+        " aren t ", " arent ", " wasn t ", " wasnt ", " doesnt ", " didnt ", " shouldnt ", " wont ", " cant ",
     ];
     if VETO.iter().any(|w| rest.contains(w)) {
         return false;
@@ -860,9 +863,13 @@ mod tests {
             assert!(e.contains("control or invisible"), "{key}: {e}");
         }
         assert_eq!(printable("Allow\u{1b}[2J\nPay"), "Allow?[2J?Pay");
+        // Re-check D: blank-looking characters too.
+        for blank in ['\u{3164}', '\u{115f}', '\u{ffa0}', '\u{2800}', '\u{fffc}', '\u{2028}'] {
+            assert!(check(&ch("upload_dirs", None, Some(&format!("/tmp/files{blank}")))).is_err(), "U+{:04X}", blank as u32);
+        }
         // Low 6: a "no" in the message is never the user's own ask.
         let c = ch("block_actions", None, Some("default,!pay"));
-        for m in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "I can't allow Pay", "No, allow Pay later"] {
+        for m in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "I can't allow Pay", "No, allow Pay later", "nope allow Pay", "refuse to allow Pay", "isn't it blocked? allow Pay"] {
             assert!(!provenance(&c, m), "{m}");
         }
         for m in ["Allow Pay", "allow the Pay button please", "don't block Pay", "stop blocking pay", "izinkan tombol Pay"] {

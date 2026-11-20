@@ -62,7 +62,7 @@ pub fn normalize(text: &str) -> String {
 /// Characters that show nothing (or only change how the next one looks): format and bidi
 /// controls, joiners, variation selectors, tag characters, Hangul fillers, combining marks
 /// ("Pa\u{202e}y", "Pa\u{e0041}y", "Pa\u{301}y" are "pay"). T1-T3: they slipped through phrase matching.
-fn invisible(c: char) -> bool {
+pub fn invisible(c: char) -> bool {
     matches!(c as u32,
         0x00ad | 0x034f | 0x061c | 0x115f | 0x1160 | 0x17b4 | 0x17b5 | 0x180b..=0x180f | 0x200b..=0x200f
         | 0x202a..=0x202e | 0x2060..=0x206f | 0x3164 | 0xfe00..=0xfe0f | 0xfeff | 0xffa0 | 0x1bca0..=0x1bca3

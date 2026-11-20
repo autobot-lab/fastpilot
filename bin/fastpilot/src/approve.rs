@@ -77,7 +77,7 @@ pub fn run() -> Res<()> {
                 Some(b) => format!("fastpilot config set {} \"{b}\"", c.key),
                 None => format!("fastpilot config unset {}", c.key),
             };
-            println!("Allowed. It starts from the next run. Saved in the activity log.\nTo undo it: {undo}\n");
+            println!("Allowed. It starts from the next run. Saved in the activity log.\nTo undo it: {}\n", change::printable(&undo));
         } else {
             change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "terminal", "declined");
             println!("Kept as it is. Nothing changed.\n");
