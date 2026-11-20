@@ -778,7 +778,7 @@ pub fn counts(output: &str) -> Option<(u64, u64)> {
 /// blocked words (stricter only), and its id for Live.
 pub fn agent_env(agent: Option<&str>) -> Vec<(String, String)> {
     let Some(a) = agent.and_then(crate::agents::get) else { return vec![] };
-    let mut env = vec![("FASTPILOT_AGENT".to_owned(), a.id.clone())];
+    let mut env = vec![("FASTPILOT_AGENT".to_owned(), a.id.clone()), ("FASTPILOT_AGENT_NAME".to_owned(), a.name.clone())];
     match (a.provider.as_deref(), a.model.as_deref()) {
         (Some(p), Some(m)) if p != "claude" => {
             env.push(("FASTPILOT_PROVIDER".into(), p.into()));

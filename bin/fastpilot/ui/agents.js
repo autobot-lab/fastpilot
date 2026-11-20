@@ -74,7 +74,7 @@ function list(current) {
     h("a", { class: "ag-item" + (x.agent.id === current ? " on" : ""), href: `#/agents/${x.agent.id}/chat`, "aria-current": x.agent.id === current ? "page" : null },
       avatar(x),
       h("span", { class: "ag-txt" }, h("b", {}, x.agent.name), h("span", { class: "s" }, summary(x)), h("span", { class: "s" }, modelLabel(x), " ", untested(x))),
-      h("span", { class: "ag-st " + (x.busy ? "run" : "ready") }, x.busy ? "running" : "ready"))));
+      h("span", { class: "ag-st " + (x.queued ? "queued" : x.busy ? "run" : "ready") }, x.queued ? "queued" : x.busy ? "running" : "ready"))));
   return h("nav", { class: "ag-col", "aria-label": "Agents" },
     h("div", { class: "ag-col-head" }, h("h2", {}, "Agents"), h("a", { class: "btn sm p", href: "#/agents/new" }, icon("plus", "sm"), "New agent")),
     h("ul", { class: "ag-list" }, items));

@@ -351,6 +351,47 @@ pub fn block_actions(a: &Agent) -> Option<String> {
     Some(items.join(","))
 }
 
+// ---- D10d: what each agent used today ----
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub turns: u64,
+    pub input: u64,
+    pub output: u64,
+}
+
+fn usage_path() -> PathBuf {
+    path().with_file_name("usage.json")
+}
+
+fn today() -> i64 {
+    fastpilot_core::claim::local_day()
+}
+
+/// Add one turn (a Chat answer or a scheduled run) of `agent` to today's usage.
+pub fn record_usage(agent: &str, input: u64, output: u64) {
+    let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut v: serde_json::Value = std::fs::read_to_string(usage_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    if v["day"].as_i64() != Some(today()) {
+        v = serde_json::json!({ "day": today(), "agents": {} });
+    }
+    let mut u: Usage = serde_json::from_value(v["agents"][agent].clone()).unwrap_or_default();
+    u.turns += 1;
+    u.input += input;
+    u.output += output;
+    v["agents"][agent] = serde_json::to_value(u).unwrap_or_default();
+    let _ = std::fs::write(usage_path(), v.to_string());
+}
+
+/// Today's usage per agent.
+pub fn usage_today() -> std::collections::BTreeMap<String, Usage> {
+    let v: serde_json::Value = std::fs::read_to_string(usage_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    if v["day"].as_i64() != Some(today()) {
+        return Default::default();
+    }
+    serde_json::from_value(v["agents"].clone()).unwrap_or_default()
+}
+
 /// Initials for the avatar ("Mobile Payments" -> "MP").
 pub fn initials(name: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();

@@ -330,7 +330,22 @@ impl FastPilot {
             }
         };
         let _busy = self.lock_sessions([id.clone()]).await;
-        let driver: Box<dyn Driver> = match (platform, args.mode.as_deref().unwrap_or("launch")) {
+        // D10d: one test per device, at most `max_parallel` at once; otherwise wait in the queue.
+        let device = args.device.clone().or_else(|| args.endpoint.clone()).filter(|_| platform != Platform::Web);
+        fastpilot_core::claim::acquire(&id, platform, device.as_deref()).await?;
+        let started = self.start_driver(platform, args).await;
+        let driver = match started {
+            Ok(d) => d,
+            Err(e) => {
+                fastpilot_core::claim::release(&id);
+                return Err(e);
+            }
+        };
+        self.after_start(id, platform, args, driver).await
+    }
+
+    async fn start_driver(&self, platform: Platform, args: &SessionArgs) -> fastpilot_core::Result<Box<dyn Driver>> {
+        Ok(match (platform, args.mode.as_deref().unwrap_or("launch")) {
             // `extension` / `extension:9231`: the user's tab through the fastpilot extension.
             (Platform::Web, "attach") if args.endpoint.as_deref().is_some_and(|e| e.starts_with("extension")) => {
                 let port = args.endpoint.as_deref().and_then(|e| e.strip_prefix("extension:")).and_then(|p| p.parse().ok());
@@ -346,7 +361,10 @@ impl FastPilot {
             }
             (_, "launch") => self.state.launcher.launch(platform, None).await?,
             (_, mode) => return Err(Error::Unsupported(format!("mode `{mode}` (launch, attach)"))),
-        };
+        })
+    }
+
+    async fn after_start(&self, id: String, platform: Platform, args: &SessionArgs, driver: Box<dyn Driver>) -> fastpilot_core::Result<String> {
         let mut text = format!("session {id} started ({platform})");
         if let Some(target) = &args.target {
             if platform != Platform::Web

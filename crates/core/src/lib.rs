@@ -2,6 +2,7 @@
 //! the flow DSL and the flow engine. Drivers (web, android, ios) live in their own crates.
 
 pub mod change;
+pub mod claim;
 pub mod config;
 pub mod live;
 mod device;

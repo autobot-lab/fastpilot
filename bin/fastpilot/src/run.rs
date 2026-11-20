@@ -745,6 +745,10 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
     let quarantined = results.iter().filter(|r| !r.passed && r.quarantined).count();
     let tokens: (u64, u64, u64) =
         results.iter().fold((0, 0, 0), |a, r| (a.0 + r.usage.input, a.1 + r.usage.output, a.2 + r.usage.cache_read));
+    // D10d: an agent's scheduled run counts in that agent's usage today.
+    if let Some(agent) = std::env::var("FASTPILOT_AGENT").ok().filter(|a| crate::agents::get(a).is_some()) {
+        crate::agents::record_usage(&agent, tokens.0, tokens.1);
+    }
     println!(
         "\n{} tests: {} passed, {failed} failed, {quarantined} quarantined failures, in {:.1}s; tokens in {} (cache read {}) out {}",
         results.len(),

@@ -353,7 +353,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
     let me = crate::agents::get_or_default(agent);
     // D10a: the agent's sessions are tagged in Live, and its own blocked words add to the global list.
-    let mut env = json!({ "FASTPILOT_AGENT": me.id });
+    let mut env = json!({ "FASTPILOT_AGENT": me.id, "FASTPILOT_AGENT_NAME": me.name });
     if let Some(b) = crate::agents::block_actions(&me) {
         env["FASTPILOT_BLOCK_ACTIONS"] = json!(b);
     }
@@ -449,6 +449,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
             Err(claude_failure(&raw))
         }
         Some(r) => {
+            crate::agents::record_usage(agent, r["usage"]["input_tokens"].as_u64().unwrap_or(0), r["usage"]["output_tokens"].as_u64().unwrap_or(0));
             // Some versions put the final text only in the result.
             let final_text = fastpilot_core::redact(r["result"].as_str().unwrap_or(""));
             with_bot(agent, bot, |m| {
@@ -502,9 +503,12 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client:
     let mut messages = vec![json!({ "role": "system", "content": system })];
     messages.extend(chat_of(agent).history.clone());
     messages.push(json!({ "role": "user", "content": text }));
+    let (mut input, mut output) = (0, 0);
     for _ in 0..40 {
         let body = json!({ "model": p.model, "messages": messages, "tools": tools, "tool_choice": "auto" });
         let reply = tokio::time::timeout(Duration::from_secs(300), p.complete(&http, &body)).await.map_err(|_| format!("{} did not answer within 5 minutes", p.name))??;
+        input += reply["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+        output += reply["usage"]["completion_tokens"].as_u64().unwrap_or(0);
         let msg = reply["choices"][0]["message"].clone();
         if let Some(t) = msg["content"].as_str().filter(|t| !t.trim().is_empty()) {
             let t = fastpilot_core::redact(t);
@@ -545,6 +549,7 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client:
         keep.drain(..cut);
     }
     chat_of(agent).history = keep;
+    crate::agents::record_usage(agent, input, output);
     Ok(())
 }
 
