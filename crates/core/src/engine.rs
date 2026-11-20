@@ -151,9 +151,9 @@ impl SessionRegistry {
 pub trait Launcher: Send + Sync {
     /// `device`: a `DeviceSpec` (tagged id, plain id or name); `None` = the platform default.
     async fn launch(&self, platform: Platform, device: Option<&str>) -> Result<Box<dyn Driver>>;
-    /// `run --reset` / `mcp --reset`: mobile sessions reset their app before opening it.
-    fn fresh_apps(&self) -> bool {
-        false
+    /// `run --reset` / `mcp --reset`: the apps reset so far in this run; `None` without --reset.
+    fn fresh(&self) -> Option<std::sync::Arc<crate::FreshApps>> {
+        None
     }
 }
 
@@ -536,7 +536,10 @@ async fn start_session(
     let mut done = None;
     if let Some(t) = target {
         let t = substitute(t).map_err(Error::Flow)?;
-        if launcher.fresh_apps() {
+        if platform != Platform::Web
+            && let Some(f) = launcher.fresh()
+            && f.claim(&t)
+        {
             done = reset_app(&*driver, platform, &t).await?;
         }
         driver.open(&t).await?;
@@ -2014,7 +2017,7 @@ mod tests {
     }
 
     struct ResetLauncher {
-        fresh: bool,
+        fresh: Option<Arc<crate::FreshApps>>,
         calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -2023,8 +2026,8 @@ mod tests {
         async fn launch(&self, platform: Platform, _device: Option<&str>) -> Result<Box<dyn Driver>> {
             Ok(Box::new(Recorder { platform, calls: self.calls.clone() }))
         }
-        fn fresh_apps(&self) -> bool {
-            self.fresh
+        fn fresh(&self) -> Option<Arc<crate::FreshApps>> {
+            self.fresh.clone()
         }
     }
 
@@ -2039,7 +2042,7 @@ mod tests {
             let flow = |yaml: &str| parse_flow(yaml).expect("flow");
             let go = |fresh: bool, yaml: &'static str| async move {
                 let calls = Arc::new(Mutex::new(Vec::new()));
-                let launcher = ResetLauncher { fresh, calls: calls.clone() };
+                let launcher = ResetLauncher { fresh: fresh.then(|| Arc::new(crate::FreshApps::default())), calls: calls.clone() };
                 let report = run_flow(&mut SessionRegistry::default(), &launcher, &flow(yaml), &RunOptions::default()).await;
                 let calls = calls.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 (report, calls)
@@ -2061,6 +2064,33 @@ mod tests {
             assert!(!report.passed() && report.to_string().contains("allow_app_reset"), "{report}");
             assert!(calls.is_empty(), "{calls:?}");
             unsafe { std::env::remove_var("FASTPILOT_ALLOW_APP_RESET") };
+        });
+    }
+
+    /// FastTest F1: `--reset` resets each app once per run, whichever comes first: a session with
+    /// the app as target or its first launchApp (the drivers claim from the same set). A second
+    /// session on the same app in the same run is not reset again; another app is.
+    #[test]
+    fn reset_claims_each_app_once_per_run() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let f = crate::FreshApps::default();
+        assert!(f.claim("com.x/.Main") && !f.claim("com.x") && !f.claim("com.x/.Other"), "one reset per app");
+        assert!(f.claim("com.y"), "another app");
+        assert!(!f.claim("https://example.com") && !f.claim(""), "not apps");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+        rt.block_on(async {
+            // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+            unsafe { std::env::remove_var("FASTPILOT_ALLOW_APP_RESET") };
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let launcher = ResetLauncher { fresh: Some(Arc::new(crate::FreshApps::default())), calls: calls.clone() };
+            let mut reg = SessionRegistry::default();
+            for yaml in ["- session: { start: a, platform: android, target: com.x }\n", "- session: { start: b, platform: android, target: com.x/.Main }\n"] {
+                let report = run_flow(&mut reg, &launcher, &parse_flow(yaml).expect("flow"), &RunOptions::default()).await;
+                assert!(report.passed(), "{report}");
+            }
+            // The launchApp path claims from the same set (here: com.x is already reset).
+            assert!(!launcher.fresh.as_ref().expect("fresh").claim("com.x"));
+            assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), ["reset com.x", "open com.x", "open com.x/.Main"]);
         });
     }
 

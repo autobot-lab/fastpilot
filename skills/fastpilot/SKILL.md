@@ -34,6 +34,9 @@ validates a flow without running it.
 1. **Start a session**, with `test_id` when running a test case (`tests/login.md` → `id: login-ok`):
    `session { action: start, id: web1, platform: web, target: "https://...", test_id: "login-ok" }`.
    Android: `platform: android` (then `launchApp: com.example/.MainActivity`); iOS: `platform: ios`.
+   When fastpilot runs with `--reset`, each app is reset once per run, before it first opens: as the
+   session's `target` or on its first `launchApp`. Do not add `clearState` for that; if the reset is
+   refused (`allow_app_reset`), report it as blocked.
 2. **If the answer carries a hint** (the last passing flow for that test), send it as one `run_flow`
    with the same `test_id`. Most runs then finish in one call.
 3. **Otherwise explore**: write the steps you can already see in the snapshot as one `run_flow`

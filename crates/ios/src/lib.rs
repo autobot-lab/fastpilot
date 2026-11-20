@@ -197,6 +197,8 @@ pub struct IosDriver {
     refs: Mutex<RefRegistry>,
     policy: Policy,
     notes: Mutex<Vec<String>>,
+    /// `--reset`: apps to reset on their first launchApp in this run.
+    first_launch: Mutex<Option<std::sync::Arc<fastpilot_core::FreshApps>>>,
     /// `simctl io recordVideo` while recording, and its output file.
     recording: tokio::sync::Mutex<Option<(Child, PathBuf)>>,
     /// `setLocale`: applied as launch arguments / environment on every launchApp.
@@ -690,6 +692,7 @@ impl IosDriver {
             refs: Mutex::default(),
             policy: Policy::from_env(),
             notes: Mutex::default(),
+            first_launch: Mutex::default(),
             last_act: Mutex::default(),
             targeted: Mutex::default(),
             seen: Mutex::new((String::new(), std::time::Instant::now())),
@@ -1312,6 +1315,10 @@ impl Driver for IosDriver {
         Ok(())
     }
 
+    fn reset_on_first_launch(&self, apps: std::sync::Arc<fastpilot_core::FreshApps>) {
+        *lock(&self.first_launch) = Some(apps);
+    }
+
     /// `--reset` on a simulator: the data container wiped and every privacy permission reset.
     /// simctl has no orientation command, so the orientation stays as it is.
     async fn reset_app(&self, app: &str) -> Result<String> {
@@ -1470,6 +1477,15 @@ impl Driver for IosDriver {
     /// `arguments` → launch arguments `-key value` (the app reads them with `UserDefaults`);
     /// `env` → `launchEnvironment` (`ProcessInfo.processInfo.environment`).
     async fn launch_app_with(&self, app: &str, launch: &Launch) -> Result<()> {
+        // `--reset` with `session start` + `launchApp`: the first launch of each app resets it.
+        let first = lock(&self.first_launch).clone();
+        if first.is_some_and(|f| f.claim(app)) {
+            if !fastpilot_core::config::flag("allow_app_reset") {
+                return Err(CoreError::Blocked("--reset wipes the app's data, which is turned off (allow_app_reset = false); only the user can change it in fastpilot settings".into()));
+            }
+            let done = self.reset_app(app).await?;
+            self.note(format!("--reset {app}: {done}"));
+        }
         let (locale, tz) = lock(&self.locale).clone();
         let mut args = Vec::new();
         if let Some(l) = &locale {

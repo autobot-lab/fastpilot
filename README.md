@@ -570,7 +570,9 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   Di laporan tiap run, rekaman punya penanda tiap langkah (merah di langkah yang gagal; klik untuk lompat)
   dan satu tombol per flow yang memutar bagian flow itu saja. Flow yang lolos menyertakan screenshot
   layar akhirnya.
-- `--reset` membuat tiap test mulai dari keadaan bersih: sesi Android/iOS me-reset app-nya sebelum dibuka
+- `--reset` membuat tiap test mulai dari keadaan bersih: sesi Android/iOS me-reset app-nya sebelum dibuka,
+  sekali per app per run (per test untuk `run`, per proses untuk `mcp`): lewat `target` sesi, atau pada
+  `launchApp` pertama untuk app itu
   (Android: `pm clear` untuk data dan izin runtime, layar tegak; simulator iOS: data dan semua izin privasi,
   orientasi tidak bisa diatur lewat simctl; iPhone fisik tidak didukung). Sesi web memang selalu mulai dengan
   context browser baru (tanpa cookie dan storage). Butuh `allow_app_reset` (bawaan: boleh); bila dimatikan,
