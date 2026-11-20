@@ -173,6 +173,19 @@ fn skill_library_is_valid_and_in_step_with_the_server() {
     }
     assert!(!skill("use-case-scenarios").contains("log in with Google"), "no sign-in through another site as a path");
 
+    // QA B4: what the AI reads points at the demo folder's paths (`demo/login.html`), never the
+    // repository's `examples/demo/` (Chat opened https://examples/… for an npm user).
+    let docs_src = std::fs::read_to_string(format!("{ROOT}/crates/mcp/src/docs.rs")).expect("docs.rs");
+    let fastpilot = skill("fastpilot");
+    for (what, text) in [("docs.rs", docs_src.as_str()), ("skills/fastpilot", fastpilot.as_str())] {
+        assert!(!text.contains("examples/demo/"), "{what} points at the repository's examples/demo/");
+    }
+    assert!(fastpilot.contains("target: \"demo/login.html\""));
+    // QA B8: Claude guessed `fill:`, `type:`, `tap:` first: the skill names fastpilot's steps.
+    for step in ["inputText: { into: \"Email\", text: \"a@b.com\" }", "tapOn: \"Login\"", "openUrl:", "assertVisible: \"Dashboard\"", "never `fill`, `type`, `tap`"] {
+        assert!(fastpilot.contains(step), "fastpilot skill: {step}");
+    }
+
     // Licence: the MIT notice of the skills adapted from petrkindlmann/qa-skills ships with fastpilot.
     let notices = std::fs::read_to_string(format!("{ROOT}/THIRD_PARTY_NOTICES")).expect("THIRD_PARTY_NOTICES");
     assert!(notices.contains("Copyright (c) 2026 Petr Kindlmann") && notices.contains("MIT License"));

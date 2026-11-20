@@ -20,7 +20,7 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 | Step | Form | Platforms |
 |---|---|---|
 | launchApp | `launchApp: com.example.app` or `pkg/.Activity` (stop + start); `{ appId, arguments: { server: "https://staging", retries: 3, debug: true, tags: [a, b] }, env: { API_TOKEN: "${TOKEN}" } }`. `arguments`: android intent extras (text, whole number, true/false, text list without commas), ios launch arguments `-key value` (read with UserDefaults). `env`: ios only (the app's environment); values always show as `***`, recorded runs keep only `${NAME}` references, and `DYLD_*`, `LD_*`, `FASTPILOT_*`, `MALLOC*`, `OBJC_*`, `XPC_*` names are refused | android, ios |
-| openUrl | `openUrl: https://...` or a local path (`examples/demo/login.html`) | web (android/ios: deep link) |
+| openUrl | `openUrl: https://...` or a local path (`demo/login.html` in a folder made by `fastpilot demo`) | web (android/ios: deep link) |
 | tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action (confirm_actions; built in: hapus, delete, remove) (also longPressOn, doubleTapOn). Payment and account-deletion buttons are blocked by default (block_actions): do not retry or work around a block | all |
 | inputText | `inputText: { into: "Email", text: "a@b.com" }` (replaces content); `inputText: "abc"` types into the focused field | all |
 | assertVisible / assertNotVisible | `assertVisible: "Dashboard"` or `{ text: "Dashboard", timeout: 10000 }` (ms) | all |
@@ -149,7 +149,7 @@ const EXAMPLES: &str = r#"# Examples
 Login in one round-trip:
 
 ```yaml
-- session: { start: web1, platform: web, target: "examples/demo/login.html" }
+- session: { start: web1, platform: web, target: "demo/login.html" }
 - inputText: { into: "Email", text: "a@b.com" }
 - inputText: { into: "Password", text: "${DEMO_PASS}" }
 - tapOn: "Masuk"

@@ -131,3 +131,25 @@ fn run_options_are_checked_and_help_is_help() {
     assert!(out.contains("one-time link") && !out.contains("127.0.0.1 + token"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// QA B1 (real Claude, v0.4): Claude Code 2.1.144 started, so `init`/`doctor` said ✓, and then every
+/// Chat message failed with "version 2.1.280 or newer is required". Now it is a ✗ with the fix.
+#[test]
+fn an_old_claude_code_is_a_failure_with_the_fix() {
+    let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude");
+    let doctor = |version: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(["doctor", "run"])
+            .current_dir(ROOT)
+            .env("FASTPILOT_CLAUDE", fake)
+            .env("FAKE_CLAUDE_VERSION", version)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("doctor");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = doctor("2.1.144");
+    assert!(!ok && out.contains("✗") && out.contains("2.1.144 (Claude Code, fake): too old") && out.contains("run `claude update` in Terminal"), "{out}");
+    let (ok, out) = doctor("2.1.280");
+    assert!(ok && out.contains("✓") && !out.contains("too old"), "{out}");
+}

@@ -126,8 +126,23 @@ on, do not undo what they entered, and mention the takeover when you report the 
 
 ## Small reference
 
+Step names are fastpilot's, not Playwright's or Cypress's. Use these, never `fill`, `type`, `tap`,
+`click`, `goto` or `expect`:
+
+| To | Write |
+|---|---|
+| open a page | `openUrl: https://shop.example` (or `target:` of `session`) |
+| type into a field | `inputText: { into: "Email", text: "a@b.com" }` |
+| tap or click | `tapOn: "Login"` (or `{ role: button, name: "Login" }`) |
+| check something shows | `assertVisible: "Dashboard"` (wait longer: `{ text: "Dashboard", timeout: 10000 }`) |
+| check something is gone | `assertNotVisible: "Error"` |
+| press a key | `pressKey: Enter` |
+| choose from a list | `selectOption: { from: "Country", option: "Indonesia" }` |
+
+In a folder made by `fastpilot demo`, the demo pages are `demo/login.html` and so on.
+
 ```yaml
-- session: { start: web1, platform: web, target: "examples/demo/login.html" }
+- session: { start: web1, platform: web, target: "demo/login.html" }
 - inputText: { into: "Email", text: "a@b.com" }
 - inputText: { into: "Password", text: "${DEMO_PASS}" }
 - tapOn: "Masuk"

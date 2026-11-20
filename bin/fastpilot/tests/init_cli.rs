@@ -218,3 +218,21 @@ fn help_names_init_and_demo() {
         assert!(text.contains("demo"), "{args:?}: {text}");
     }
 }
+
+/// QA B1 (real Claude, v0.4): init said "✓ claude Claude Code 2.1.144" and Chat then failed on
+/// every message. Now step 1 names the problem and the fix.
+#[test]
+fn init_says_when_claude_code_is_too_old() {
+    let b = Box_::new("oldclaude");
+    let old = b.root.join("claude-old");
+    std::fs::write(&old, format!("#!/bin/sh\nFAKE_CLAUDE_VERSION=2.1.144 exec {FAKE} \"$@\"\n")).expect("wrapper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let (_, out) = b.init(&["--yes"], &old.to_string_lossy());
+    assert!(out.contains("Claude Code is too old: run `claude update`"), "{out}");
+    assert!(!out.contains("✓ Claude Code 2.1.144"), "{out}");
+    let _ = std::fs::remove_dir_all(&b.root);
+}

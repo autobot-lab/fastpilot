@@ -1318,7 +1318,20 @@ pub fn flow_to_yaml(flow: &Flow, durable: &HashMap<usize, Selector>) -> String {
     serde_yaml::to_string(&seq).unwrap_or_default()
 }
 
+/// QA B8: the names an AI guesses first (Playwright/Cypress/Selenium habits), and fastpilot's step.
+const GUESSES: &[(&[&str], &str)] = &[
+    (&["fill", "type", "typeText", "enterText", "setText", "input", "write"], "inputText: { into: \"Email\", text: \"a@b.com\" }"),
+    (&["tap", "click", "press", "clickOn", "tapText", "select"], "tapOn: \"Login\""),
+    (&["goto", "navigate", "open", "visit", "go", "url", "openURL", "navigateTo"], "openUrl: https://example.com"),
+    (&["expect", "see", "assert", "assertText", "check", "verify", "waitFor", "wait", "waitForText"], "assertVisible: \"Dashboard\" (or { text: \"Dashboard\", timeout: 10000 })"),
+    (&["key", "keyPress", "pressEnter"], "pressKey: Enter"),
+    (&["screenshot"], "takeScreenshot: name"),
+];
+
 fn unknown(cmd: &str) -> String {
+    if let Some((_, step)) = GUESSES.iter().find(|(names, _)| names.iter().any(|n| n.eq_ignore_ascii_case(cmd))) {
+        return format!("unknown step `{cmd}`: in fastpilot write `{step}`");
+    }
     if MAESTRO_LATER.contains(&cmd) {
         format!("Maestro command `{cmd}` is not supported yet")
     } else {
@@ -1834,6 +1847,11 @@ mod tests {
         assert_eq!(errs.len(), 2);
         assert!(errs[0].to_string().starts_with("line 2: assertTrue: Maestro command"), "{}", errs[0]);
         assert!(errs[1].to_string().starts_with("line 3: frobnicate: unknown step"));
+        // QA B8: the names an AI guesses first point at fastpilot's step.
+        for (guess, step) in [("fill", "inputText: { into:"), ("type", "inputText:"), ("tap", "tapOn:"), ("click", "tapOn:"), ("goto", "openUrl:"), ("expect", "assertVisible:")] {
+            let errs = check_flow(&format!("- {guess}: \"x\"\n"), &[]).expect_err(guess);
+            assert!(errs[0].to_string().contains(&format!("unknown step `{guess}`: in fastpilot write `{step}")), "{guess}: {}", errs[0]);
+        }
 
         let errs = check_flow("- tapOn: Login\n", &[]).expect_err("no session");
         assert!(errs[0].message.starts_with("no active session"));

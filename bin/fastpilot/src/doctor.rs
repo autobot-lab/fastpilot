@@ -249,7 +249,14 @@ pub async fn ios() -> Vec<Check> {
 pub async fn agent() -> Vec<Check> {
     let claude = fastpilot_core::config::var("FASTPILOT_CLAUDE").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "claude".into());
     vec![match output(&claude, &["--version"]).await {
-        Some(v) => check("run", "Claude Code", Status::Ok, v.lines().next().unwrap_or("").to_owned()),
+        Some(v) => {
+            let line = v.lines().next().unwrap_or("").to_owned();
+            // QA B1: an old Claude Code started, so init said ✓, then every Chat message failed.
+            match crate::run::claude_too_old(&line) {
+                Some(why) => check("run", "Claude Code", Status::Fail, format!("{line}: too old")).hint(why),
+                None => check("run", "Claude Code", Status::Ok, line),
+            }
+        }
         None => check("run", "Claude Code", Status::Warn, format!("`{claude}` not found (only `fastpilot run` needs it)"))
             .hint("install Claude Code (https://claude.com/claude-code) and log in once with `claude`"),
     }]
