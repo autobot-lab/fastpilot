@@ -31,6 +31,11 @@ function icon(name, cls) {
 const code = (t) => h("code", {}, t);
 
 let toastTimer;
+function clearToast() {
+  clearTimeout(toastTimer);
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+}
+
 function toast(msg) {
   document.querySelectorAll(".toast").forEach((t) => t.remove());
   const t = h("div", { class: "toast", role: "alert" }, msg);
@@ -59,14 +64,22 @@ function currentPage() {
   return (location.hash || "#/live").split("/").slice(1, 3).join("/");
 }
 
-async function save(key, value) {
+// Text typed into a list field whose save failed, put back so it can be corrected.
+const typed = {};
+
+async function save(key, value, attempt) {
   try {
     S = await api("/api/settings", { key, value });
     savedAt = { page: currentPage(), at: new Date() };
+    delete typed[key];
+    clearToast();
     render();
   } catch (e) {
+    if (attempt !== undefined) typed[key] = attempt;
     toast("Tidak tersimpan: " + e.message);
     render();
+    const again = document.querySelector(`input[data-key="${key}"]`);
+    if (again) again.focus();
   }
 }
 
@@ -94,14 +107,18 @@ function chips(key, opts) {
   const preset = opts.preset && !items.includes(opts.preset[0]) && !locked
     ? h("button", { class: "chip preset", onclick: () => save(key, [...items, opts.preset[0]]) }, icon("plus", "sm"), opts.preset[1])
     : null;
+  input.dataset.key = key;
+  if (typed[key]) input.value = typed[key];
   const add = () => {
     const v = input.value.trim();
     if (!v) return;
     if (v.includes(",")) return toast("Satu item per kali, tanpa koma.");
-    if (items.includes(v)) return toast(`"${v}" sudah ada.`);
-    save(key, [...items, v]);
+    if (items.some((x) => x.toLowerCase() === v.toLowerCase())) return toast(`"${v}" sudah ada di daftar.`);
+    save(key, [...items, v], v);
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+  // A message about the last attempt goes away as soon as the user changes the text.
+  input.addEventListener("input", () => { delete typed[key]; clearToast(); });
   return h("div", { class: "chips" },
     empty,
     items.map((it) =>
@@ -132,7 +149,7 @@ function settingsNav(cur) {
 }
 
 function topSettings() {
-  $top().replaceChildren(icon("settings"), h("h1", {}, "Pengaturan"));
+  $top().replaceChildren(icon("settings"), h("h1", { tabindex: "-1" }, "Pengaturan"));
 }
 
 const MODELS = [
@@ -216,6 +233,8 @@ function pageBroken() {
   const reload = async () => {
     try { await loadSettings(); } catch (e) { toast("Gagal memuat ulang: " + e.message); }
     render();
+    // Keyboard focus stays on the page (the button it was on is gone): the page title.
+    document.querySelector(".top h1")?.focus();
   };
   return h("section", { class: "panel" },
     h("h2", {}, "Pengaturan"),
@@ -258,7 +277,7 @@ async function loadDoctor(rerender = true) {
 }
 
 function pageDevice() {
-  const top = [icon("device"), h("h1", {}, "Device")];
+  const top = [icon("device"), h("h1", { tabindex: "-1" }, "Device")];
   if (doctorCache && !doctorCache.error) {
     const ok = doctorCache.checks.filter((c) => c.status === "ok").length;
     const bad = doctorCache.checks.length - ok;
@@ -334,10 +353,15 @@ function sessionStatus(s) {
 // Why a guard rail stopped a step, in a few words, from the engine's message.
 function blockReason(note) {
   const n = note || "";
+  // The engine compares in lower case; show the word as the user wrote it in Batasan.
+  const asWritten = (key, w) => {
+    const list = (get(key) && Array.isArray(get(key).value)) ? get(key).value : [];
+    return list.find((x) => x.toLowerCase() === w.toLowerCase()) || w;
+  };
   let m = /contains "([^"]+)" \(block_actions\)/.exec(n);
-  if (m) return `teks berisi "${m[1]}"`;
+  if (m) return `teks berisi "${asWritten("block_actions", m[1])}"`;
   m = /risky action \("([^"]+)"/.exec(n);
-  if (m) return `butuh confirm: true ("${m[1]}")`;
+  if (m) return `butuh confirm: true ("${asWritten("confirm_actions", m[1])}")`;
   if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain di luar daftar";
   m = /\((allow_[a-z_]+) = false\)/.exec(n);
   if (m) return `dimatikan di Batasan (${m[1]})`;
@@ -523,7 +547,7 @@ function livePill(sessions) {
 function renderLive(data) {
   lastLive = data;
   const sessions = data.sessions || [];
-  $top().replaceChildren(icon("live"), h("h1", {}, "Live"), livePill(sessions));
+  $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions));
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();
@@ -590,7 +614,7 @@ function render() {
   });
   if (page === "live") {
     if (!liveTimer) {
-      $top().replaceChildren(icon("live"), h("h1", {}, "Live"));
+      $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"));
       $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca sesi…")));
       pollLive();
     }

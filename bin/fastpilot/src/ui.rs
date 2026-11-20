@@ -95,6 +95,18 @@ const KEYS: &[&str] = &[
     "vars",
 ];
 
+/// Print a usage problem as plain text (not a Rust error value) and exit 2.
+fn fail_args(why: &str) -> ! {
+    eprintln!("fastpilot ui: {why}\n\n{USAGE}");
+    std::process::exit(2);
+}
+
+/// Print why the page cannot start and exit 1.
+fn fail(why: &str) -> ! {
+    eprintln!("fastpilot ui: {why}");
+    std::process::exit(1);
+}
+
 pub async fn ui(args: &[String]) -> Res<()> {
     let mut port: u16 = 0;
     let mut open = true;
@@ -107,21 +119,21 @@ pub async fn ui(args: &[String]) -> Res<()> {
             }
             "--no-open" => open = false,
             "--port" => {
-                let v = it.next().ok_or("--port needs a number (1024-65535)")?;
-                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).ok_or_else(|| format!("--port {v}: use a number from 1024 to 65535"))?;
+                let Some(v) = it.next() else { fail_args("--port needs a number (1024-65535)") };
+                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: use a number from 1024 to 65535")));
             }
-            other => return Err(format!("unknown option `{other}`\n\n{USAGE}").into()),
+            other => fail_args(&format!("unknown option `{other}`")),
         }
     }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            return Err(format!("port {port} is already in use (another fastpilot ui?): pick another with --port, or leave --port out for a free one").into());
+            fail(&format!("port {port} is already in use (another fastpilot ui?): pick another with --port, or leave --port out for a free one"))
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(format!("port {port} may not be used by this user: pick one from 1024 to 65535, or leave --port out").into());
+            fail(&format!("port {port} may not be used by this user: pick one from 1024 to 65535, or leave --port out"))
         }
-        Err(e) => return Err(format!("cannot listen on 127.0.0.1:{port}: {e}").into()),
+        Err(e) => fail(&format!("cannot listen on 127.0.0.1:{port}: {e}")),
     };
     let port = listener.local_addr()?.port();
     let state = Arc::new(Ui::new(port)?);
@@ -456,6 +468,56 @@ async fn change(axum::Json(body): axum::Json<Value>) -> Response {
 
 // ---- device (doctor) ----------------------------------------------------------------------
 
+/// `doctor`'s English (shared with the CLI and agents) in the page's language. Paths, versions,
+/// commands and names in the text are kept; unknown text passes through unchanged.
+fn in_indonesian(text: &str) -> String {
+    const WHOLE: &[(&str, &str)] = &[
+        ("no Chrome or Chromium found", "Chrome atau Chromium tidak ditemukan"),
+        ("Android SDK platform-tools (adb) not found", "Android SDK platform-tools (adb) tidak ditemukan"),
+        ("UiAutomation agent built in", "agent UiAutomation sudah tertanam"),
+        ("this fastpilot build has no Android agent", "build fastpilot ini tidak membawa agent Android"),
+        ("no device, emulator or emulator image (AVD)", "tidak ada device, emulator, atau image emulator (AVD)"),
+        ("iOS needs a Mac with Xcode", "iOS butuh Mac dengan Xcode"),
+        ("Xcode not found", "Xcode tidak ditemukan"),
+        ("no iPhone simulator installed", "belum ada simulator iPhone"),
+        ("XCUITest runner not built", "runner XCUITest belum di-build"),
+        ("is the SSH tunnel open?", "apakah tunnel SSH sudah dibuka?"),
+        ("open Xcode once to finish its setup", "buka Xcode sekali untuk menyelesaikan setup-nya"),
+        ("start the emulator or connect the phone on that machine", "nyalakan emulator atau sambungkan HP di mesin itu"),
+        ("run fastpilot on a Mac for iOS (web and Android work here)", "jalankan fastpilot di Mac untuk iOS (web dan Android jalan di sini)"),
+        ("Xcode > Settings > Components: install an iOS simulator runtime", "Xcode › Settings › Components: pasang runtime simulator iOS"),
+        ("install Claude Code (https://claude.com/claude-code) and log in once with `claude`", "pasang Claude Code (https://claude.com/claude-code) lalu login sekali dengan `claude`"),
+        ("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild", "pakai build rilis (npm / install.sh), atau dari checkout jalankan agent-android/build.sh lalu build ulang"),
+        ("connect a phone with USB debugging on, or create an emulator (`fastpilot setup android`)", "sambungkan HP dengan USB debugging aktif, atau buat emulator (`fastpilot setup android`)"),
+        ("update Chrome, or point `chrome` to another build: `fastpilot config set chrome /path`", "perbarui Chrome, atau arahkan `chrome` ke build lain: `fastpilot config set chrome /path`"),
+        ("close other Chrome automation, then retry; or set another `chrome`", "tutup otomasi Chrome lain lalu coba lagi, atau atur `chrome` lain"),
+        ("install Xcode from the App Store, open it once, then: sudo xcode-select -s /Applications/Xcode.app", "pasang Xcode dari App Store, buka sekali, lalu: sudo xcode-select -s /Applications/Xcode.app"),
+        ("from a fastpilot checkout: ios-runner/build.sh (or set `fastpilot config set ios_runner <build dir>`)", "dari checkout fastpilot: ios-runner/build.sh (atau atur `fastpilot config set ios_runner <folder build>`)"),
+        ("reach it through an SSH tunnel and use 127.0.0.1 (README: device di mesin lain)", "jangkau lewat tunnel SSH dan pakai 127.0.0.1 (README: device di mesin lain)"),
+        ("open the SSH tunnel to the device machine (README: device di mesin lain)", "buka tunnel SSH ke mesin device (README: device di mesin lain)"),
+        ("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)", "jalankan Chrome di sana dengan --remote-debugging-port lalu buka tunnel SSH (README: device di mesin lain)"),
+    ];
+    if let Some((_, id)) = WHOLE.iter().find(|(en, _)| *en == text) {
+        return (*id).to_owned();
+    }
+    const PARTS: &[(&str, &str)] = &[
+        ("(starts headless)", "(bisa jalan headless)"),
+        (" does not start: ", " tidak bisa dijalankan: "),
+        (" did not start within 25 s", " tidak menyala dalam 25 detik"),
+        ("remote Chrome at ", "Chrome jarak jauh di "),
+        (" did not answer within 10 s", " tidak menjawab dalam 10 detik"),
+        ("no device or emulator running; emulators: ", "belum ada device atau emulator yang menyala; emulator: "),
+        ("start one: ", "nyalakan salah satu: "),
+        (", or connect a phone with USB debugging on", ", atau sambungkan HP dengan USB debugging aktif"),
+        ("no device on the adb server ", "tidak ada device di adb server "),
+        (" available (booted on first use)", " tersedia (dinyalakan saat pertama dipakai)"),
+        ("booted: ", "menyala: "),
+        ("simctl failed: ", "simctl gagal: "),
+        (" not found (only `fastpilot run` needs it)", " tidak ditemukan (hanya dibutuhkan `fastpilot run`)"),
+    ];
+    PARTS.iter().fold(text.to_owned(), |t, (en, id)| t.replace(en, id))
+}
+
 async fn doctor_api(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
     let areas: Vec<&str> = match q.get("area").map(String::as_str) {
         Some("web") => vec!["web"],
@@ -472,8 +534,8 @@ async fn doctor_api(Query(q): Query<std::collections::HashMap<String, String>>) 
                 "area": c.area,
                 "name": c.name,
                 "status": match c.status { doctor::Status::Ok => "ok", doctor::Status::Warn => "warn", doctor::Status::Fail => "fail" },
-                "detail": c.detail,
-                "hint": c.hint,
+                "detail": in_indonesian(&c.detail),
+                "hint": c.hint.as_deref().map(in_indonesian),
                 "setup": (!c.fixes.is_empty()).then(|| format!("fastpilot setup {}", c.area)),
             })
         })
