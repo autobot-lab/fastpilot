@@ -74,7 +74,7 @@ async fn allowed_domains_and_confirmed_actions() {
 
     // openUrl to another host: refused before Chrome goes there.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"http://127.0.0.1:{port}/other\"\n") })).await;
-    assert!(!ok && out.contains("blocked: http://127.0.0.1") && out.contains("FASTPILOT_ALLOWED_DOMAINS"), "{out}");
+    assert!(!ok && out.contains("blocked: http://127.0.0.1") && out.contains("allowed_domains") && !out.contains("FASTPILOT_"), "{out}");
 
     // A link to another host: the navigation is stopped in the browser.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Ke situs luar\"\n- assertVisible: { text: \"Halaman lain\", timeout: 1500 }\n" })).await;

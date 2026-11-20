@@ -112,10 +112,16 @@ pub fn check() -> Result<(), String> {
         let Some(s) = setting(k) else { continue };
         let why = if LISTS.contains(&s.key) {
             match v {
-                toml::Value::Array(items) if items.iter().all(toml::Value::is_str) => None,
-                toml::Value::String(_) => None,
+                toml::Value::Array(items) if items.iter().all(toml::Value::is_str) => {
+                    let joined: Vec<&str> = items.iter().filter_map(toml::Value::as_str).collect();
+                    invalid(s.key, &joined.join(","))
+                }
+                toml::Value::String(text) => invalid(s.key, text),
                 _ => Some(format!("`{k}` takes a list of text, e.g. {k} = [\"a\", \"b\"]")),
             }
+        } else if FLAGS.contains(&s.key) {
+            // A quoted "yes" / "true" would be read as text, not as on: only a TOML boolean.
+            (!v.is_bool()).then(|| format!("`{k}` takes true or false, without quotes (`{k} = true`)"))
         } else {
             match render(v) {
                 Some(text) if matches!(v, toml::Value::Array(_)) => Some(format!("`{k}` takes one value, not a list (`{text}`)")),
@@ -292,6 +298,35 @@ fn invalid(key: &str, value: &str) -> Option<String> {
     }
     if FLAGS.contains(&key) && !BOOLS.contains(&v.to_lowercase().as_str()) {
         return Some(format!("`{key}` takes true or false, not `{value}`"));
+    }
+    if key == "headful" && !matches!(v.to_lowercase().as_str(), "true" | "false") {
+        return Some(format!("`headful` takes true or false, not `{value}`"));
+    }
+    if key == "vars" {
+        for name in v.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            let valid = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !valid {
+                return Some(format!("`vars`: `{name}` is not an environment variable name (letters, digits and _, not starting with a digit)"));
+            }
+            if name.to_ascii_uppercase().starts_with("FASTPILOT_") {
+                return Some(format!("`vars`: `{name}` is fastpilot's own setting or secret; flows may not read FASTPILOT_* variables"));
+            }
+        }
+    }
+    if key == "allowed_domains" {
+        for host in v.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+            let bare = host.strip_prefix("*.").unwrap_or(host);
+            let valid = !bare.is_empty()
+                && !bare.starts_with('.')
+                && !bare.ends_with('.')
+                && !bare.contains("..")
+                && bare.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+            if !valid {
+                return Some(format!(
+                    "`allowed_domains`: `{host}` is not a host; write only the host (example.com, *.example.com), without https://, a path or a port"
+                ));
+            }
+        }
     }
     if key == "memory" && !MEMORY_MODES.contains(&v) {
         return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
@@ -635,9 +670,13 @@ mod tests {
         }
         assert!(write("headful", Some("maybe")).expect_err("not a bool").contains("true or false"));
         assert!(write("memory", Some("banana")).expect_err("not a mode").contains("rw, readonly or off"));
-        for (v, want) in [("yes", "1"), ("off", "0"), ("TRUE", "1"), ("0", "0")] {
+        for (v, want) in [("true", "1"), ("FALSE", "0"), ("True", "1")] {
             write("headful", Some(v)).expect("bool");
             assert_eq!(var("FASTPILOT_HEADFUL").as_deref(), Ok(want), "headful {v}");
+        }
+        // QA: headful takes true or false only (`yes`, `1`, `on` were taken as text or guessed).
+        for v in ["yes", "1", "on", "maybe"] {
+            assert!(write("headful", Some(v)).expect_err(v).contains("true or false"), "headful {v}");
         }
         for mode in MEMORY_MODES {
             write("memory", Some(mode)).expect("mode");
@@ -702,10 +741,42 @@ mod tests {
             let e = check().expect_err(text);
             assert!(e.contains(want) && e.contains("fix or delete it"), "{text}: {e}");
         }
-        std::fs::write(&file, "headful = \"yes\"\nallowed_domains = \"a.com\"\nflow_timeout = 60\nunknown_key = 1\n").expect("write");
+        // QA: a quoted flag is read as text ("yes" was silently headless), list items are checked.
+        for (text, want) in [
+            ("headful = \"yes\"\n", "without quotes"),
+            ("allow_eval_script = \"false\"\n", "without quotes"),
+            ("allowed_domains = [\"https://example.net/path\"]\n", "not a host"),
+            ("vars = [\"FASTPILOT_STATE_KEY\"]\n", "FASTPILOT_*"),
+        ] {
+            std::fs::write(&file, text).expect("write");
+            let e = check().expect_err(text);
+            assert!(e.contains(want), "{text}: {e}");
+        }
+        std::fs::write(&file, "headful = true\nallowed_domains = \"a.com\"\nflow_timeout = 60\nunknown_key = 1\n").expect("write");
         assert!(check().is_ok());
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// QA #6: names fastpilot would never match, or must not hand to a flow, are refused when set.
+    #[test]
+    fn vars_and_domains_are_checked() {
+        for (k, v, want) in [
+            ("vars", "FASTPILOT_STATE_KEY", "FASTPILOT_*"),
+            ("vars", "DEMO_PASS,fastpilot_token", "FASTPILOT_*"),
+            ("vars", "bad-name!", "not an environment variable name"),
+            ("vars", "9LIVES", "not an environment variable name"),
+            ("allowed_domains", "https://example.net/path", "not a host"),
+            ("allowed_domains", "example.net/path", "not a host"),
+            ("allowed_domains", "example.net:8080", "not a host"),
+            ("allowed_domains", "bad domain", "not a host"),
+            ("allowed_domains", "*.", "not a host"),
+        ] {
+            assert!(invalid(k, v).is_some_and(|e| e.contains(want)), "{k} = {v}: {:?}", invalid(k, v));
+        }
+        for (k, v) in [("vars", "DEMO_PASS, _X1"), ("allowed_domains", "example.net, *.staging.example.net, localhost, 127.0.0.1")] {
+            assert_eq!(invalid(k, v), None, "{k} = {v}");
+        }
     }
 
     /// C2: the new guard rails only get stricter through the agent's `config` tool.

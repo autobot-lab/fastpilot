@@ -645,7 +645,7 @@ async fn event_loop(
                     cdp.send(ev.session.as_deref(), "Fetch.continueRequest", json!({ "requestId": id }));
                 } else {
                     cdp.send(ev.session.as_deref(), "Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" }));
-                    let msg = format!("blocked: {url} is not in FASTPILOT_ALLOWED_DOMAINS");
+                    let msg = format!("blocked: {url} is not in allowed_domains");
                     note(msg.clone());
                     diag(msg);
                 }
@@ -663,7 +663,7 @@ async fn event_loop(
                     let allowed = fastpilot_core::policy::allowed_domains();
                     if !fastpilot_core::policy::url_allowed(url, &allowed) {
                         cdp.send(None, "Target.closeTarget", json!({ "targetId": target }));
-                        let msg = format!("blocked: popup to {url} is not in FASTPILOT_ALLOWED_DOMAINS (closed)");
+                        let msg = format!("blocked: popup to {url} is not in allowed_domains (closed)");
                         note(msg.clone());
                         diag(msg);
                         continue;
@@ -688,7 +688,7 @@ async fn event_loop(
                         ) =>
                 {
                     let url = p["targetInfo"]["url"].as_str().unwrap_or("");
-                    let msg = format!("blocked: popup to {url} is not in FASTPILOT_ALLOWED_DOMAINS (closed)");
+                    let msg = format!("blocked: popup to {url} is not in allowed_domains (closed)");
                     note(msg.clone());
                     diag(msg);
                     cdp.send(None, "Target.closeTarget", json!({ "targetId": tab.target }));
@@ -1145,7 +1145,7 @@ impl Driver for WebPage {
         let url = to_url(target);
         let allowed = fastpilot_core::policy::allowed_domains();
         if !fastpilot_core::policy::url_allowed(&url, &allowed) {
-            return Err(CoreError::Blocked(format!("{url} is not in FASTPILOT_ALLOWED_DOMAINS ({})", allowed.join(", "))));
+            return Err(CoreError::Blocked(format!("{url} is not in allowed_domains ({})", allowed.join(", "))));
         }
         let (before, previous) = {
             let n = self.nav.borrow();
