@@ -75,6 +75,8 @@ struct Chat {
     /// Claude Code's session id, for `--resume`.
     session: Option<String>,
     next: u64,
+    /// D7: this conversation's id in History (set with its first message).
+    conv: Option<String>,
 }
 
 static CHAT: LazyLock<Mutex<Chat>> = LazyLock::new(Default::default);
@@ -111,6 +113,9 @@ pub fn send(text: &str) -> Res<()> {
             return Err("bot masih mengerjakan pesan sebelumnya".into());
         }
         c.busy = true;
+        if c.conv.is_none() {
+            c.conv = Some(fastpilot_memory::history::History::from_env().new_chat_id());
+        }
         c.next += 2;
         let (u, b) = (c.next - 1, c.next);
         c.msgs.push(Msg { id: u, role: "user", text: text.to_owned(), tools: vec![], proposals: vec![], error: None, done: true });
@@ -131,7 +136,29 @@ pub fn send(text: &str) -> Res<()> {
         }
         c.next = next;
         c.busy = false;
+        // D7: kept in History after every answer, so it outlives this page and this process.
+        let saved = c.conv.clone().map(|id| (id, serde_json::to_value(&c.msgs).unwrap_or_default()));
+        drop(c);
+        if let Some((id, msgs)) = saved
+            && let Err(e) = fastpilot_memory::history::History::from_env().save_chat(&id, &msgs)
+        {
+            tracing::warn!(error = %e, "the conversation is not saved in History");
+        }
     });
+    Ok(())
+}
+
+/// D7: History deletes conversation `id`. When it is the one open in Chat, Chat starts over; while
+/// the bot is still answering it cannot be deleted yet.
+pub fn release(id: &str) -> Res<()> {
+    let mut c = chat();
+    if c.conv.as_deref() != Some(id) {
+        return Ok(());
+    }
+    if c.busy {
+        return Err("The conversation open in Chat is still being answered; delete it when the bot is done.".into());
+    }
+    *c = Chat::default();
     Ok(())
 }
 

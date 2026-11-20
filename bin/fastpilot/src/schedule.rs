@@ -722,6 +722,8 @@ pub async fn run(id: &str) -> Res<bool> {
     let project = folder.and_then(Path::parent).unwrap_or(Path::new("/"));
     let out = tokio::process::Command::new(exe()?)
         .args(["run", &s.tests, "--html", &report.to_string_lossy()])
+        // The schedule's name is the run's title in History (D7).
+        .env("FASTPILOT_RUN_TITLE", &s.name)
         .current_dir(project)
         .stdin(std::process::Stdio::null())
         .output()

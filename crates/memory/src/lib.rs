@@ -5,6 +5,7 @@
 //! - `memory/<test_id>.json`: the last passing flow as a *hint* (durable selectors, never refs).
 //!   Written only after a run reported as passed; a failed run only updates statistics.
 
+pub mod history;
 mod triage;
 
 use std::collections::BTreeMap;

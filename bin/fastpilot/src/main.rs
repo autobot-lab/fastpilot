@@ -5,6 +5,7 @@ mod chat;
 mod cli;
 mod demo;
 mod doctor;
+mod history_api;
 mod init;
 mod github;
 mod keystore;
