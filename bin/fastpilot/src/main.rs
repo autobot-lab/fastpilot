@@ -1,5 +1,6 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
+mod approve;
 mod bench;
 mod chat;
 mod cli;
@@ -34,6 +35,7 @@ commands:
   doctor [web|android|ios|run|all]   is this machine ready? each gap with its fix
   setup [web|android|ios] [--yes]    apply the fixes doctor found, asking before each
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
+  config approve                    approve the limits the AI asked to loosen (a person, in a terminal)
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
   init [--yes] [--global]            set up this folder: register fastpilot with Claude Code, install the
@@ -148,7 +150,9 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             let p = config::write(&k, None)?;
             println!("{k} removed  ({})", p.display());
         }
-        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path, set-key, unset-key, test-provider)").into()),
+        // D9, M13: requests the AI filed to loosen a limit, approved by a person at the keyboard.
+        "approve" => approve::run()?,
+        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path, set-key, unset-key, test-provider, approve)").into()),
     }
     Ok(())
 }

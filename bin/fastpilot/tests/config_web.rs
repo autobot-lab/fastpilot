@@ -76,18 +76,19 @@ async fn settings_through_the_config_tool() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"{home}\"\n- tapOn: Luar\n- assertVisible: {{ text: Halo, timeout: 1500 }}\n") })).await;
     assert!(!ok && out.contains("blocked: http://127.0.0.1"), "a link in the open session: {out}");
 
-    // Loosening is refused for an agent; tightening further is fine.
+    // Loosening is refused for an agent (D9: filed as a request only the user approves); tightening
+    // further is fine.
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "allowed_domains", "value": "localhost, evil.com" })).await;
-    assert!(!ok && out.contains("guard rail"), "{out}");
+    assert!(!ok && out.contains("I can't loosen a limit myself") && out.contains("After: localhost, evil.com") && out.contains("Nothing has changed"), "{out}");
     let (ok, out) = call(&client, "config", json!({ "action": "unset", "key": "allowed_domains" })).await;
-    assert!(!ok && out.contains("guard rail"), "{out}");
+    assert!(!ok && out.contains("Allow any site") && out.contains("fastpilot config approve"), "{out}");
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "confirm_actions", "value": "default" })).await;
     assert!(ok, "{out}");
     // Security Medium (v0.3.2 round 3): the built-in block words written out as plain words would
     // drop the phrase rules ("Delete my account"): refused. Adding to the list keeps `default`.
     let written_out = "bayar,pay,beli,buy,checkout,purchase,transfer,buat pesanan,place order,hapus akun,delete account";
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": written_out })).await;
-    assert!(!ok && out.contains("guard rail") && out.contains("default,"), "{out}");
+    assert!(!ok && out.contains("loosen") && out.contains("default,"), "{out}");
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": "default,Keluar" })).await;
     assert!(ok, "{out}");
     // Program paths: people only. Environment wins and is not overwritten.

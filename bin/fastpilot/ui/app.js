@@ -127,19 +127,24 @@ function withBuiltin(key, s) {
   const value = Array.isArray(s.value) ? s.value : [];
   if (!builtin) return null;
   const unset = s.source === "default" || s.value === null;
-  const own = unset ? [] : value.filter((w) => w.toLowerCase() !== "default");
+  // D9 (M9): `!pay` allows one built-in word again and keeps every other built-in rule.
+  const bangs = unset ? [] : value.filter((w) => w.startsWith("!"));
+  const allowed = bangs.map((w) => w.slice(1).toLowerCase());
+  const own = unset ? [] : value.filter((w) => w.toLowerCase() !== "default" && !w.startsWith("!"));
   const hasDefault = unset || value.some((w) => w.toLowerCase() === "default");
-  const shownBuiltin = hasDefault ? (key === "block_actions" || unset ? builtin : []) : [];
+  const shownBuiltin = (hasDefault ? (key === "block_actions" || unset ? builtin : []) : []).filter((w) => !allowed.includes(w.toLowerCase()));
   const words = [...shownBuiltin.map((w) => ({ w, builtin: true })), ...own.map((w) => ({ w, builtin: false }))];
-  const base = key === "block_actions" ? (hasDefault ? ["default", ...own] : own) : (unset ? [...builtin] : value);
+  const base = key === "block_actions" ? (hasDefault ? ["default", ...bangs, ...own] : own) : (unset ? [...builtin] : value);
   return {
     unset,
     words,
-    add: (v) => [...base, v],
-    // Removing a built-in word writes the others out (they then match inside text, like the user's own).
+    // A built-in word allowed earlier is blocked again by dropping its `!`.
+    add: (v) => (allowed.includes(v.toLowerCase()) ? base.filter((w) => w.toLowerCase() !== "!" + v.toLowerCase()) : [...base, v]),
+    // block_actions: removing a built-in word allows only that word (`!word`); confirm_actions writes
+    // its words out.
     remove: (it) => it.builtin
-      ? [...shownBuiltin.filter((w) => w !== it.w), ...own]
-      : (key === "block_actions" && hasDefault ? ["default", ...own.filter((w) => w !== it.w)] : value.filter((w) => w !== it.w)),
+      ? (key === "block_actions" ? ["default", ...bangs, "!" + it.w, ...own] : [...shownBuiltin.filter((w) => w !== it.w), ...own])
+      : (key === "block_actions" && hasDefault ? ["default", ...bangs, ...own.filter((w) => w !== it.w)] : value.filter((w) => w !== it.w)),
   };
 }
 
@@ -949,11 +954,12 @@ async function chatSend(text) {
   loadChat();
 }
 
-async function chatDecide(id, apply, mode, edit) {
+async function chatDecide(id, apply, mode, edit, confirm) {
   try {
     const body = { id, apply };
     if (mode) body.mode = mode;
     if (edit) body.edit = edit;
+    if (confirm !== undefined) body.confirm = confirm;
     const r = await api("/api/chat/decide", body);
     delete chatEdits[id];
     chatData = r.chat;
@@ -1029,7 +1035,89 @@ function testCard(p) {
     head, h("div", { class: "prop-body" }, body, note, detail, foot));
 }
 
+async function chatUndo(id) {
+  try {
+    const r = await api("/api/chat/undo", { id });
+    chatData = r.chat;
+    toast(r.message, true);
+  } catch (e) { toast(e.message); }
+  chatSig = "";
+  renderChat();
+  document.querySelector(`.prop[data-pid="${id}"] .prop-state`)?.focus();
+}
+
+// D9 step 2 (v9 G2): allowing a looser limit that needs a typed word. Focus starts on Cancel (the
+// safe choice), Escape cancels, and Allow is enabled only after the word is typed and ~3 seconds.
+function confirmLoosen(p, back) {
+  const c = p.setting;
+  const input = h("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": `Type ${c.typed} to confirm` });
+  const allow = h("button", { class: "btn danger-fill", disabled: true }, `${c.title.replace(/^Allow /, "Allow ")} from the next run`);
+  let waited = false;
+  const sync = () => { allow.disabled = !(waited && input.value.trim().toLowerCase() === c.typed.toLowerCase()); };
+  setTimeout(() => { waited = true; sync(); }, 3000);
+  input.addEventListener("input", sync);
+  const cancel = h("button", { class: "btn" }, "Cancel");
+  const dlg = h("dialog", { class: "loosen-dlg", "aria-labelledby": "loosen-t" },
+    h("p", { class: "step" }, "Step 2 · confirm"),
+    h("h2", { id: "loosen-t" }, c.title + "?"),
+    h("p", {}, c.consequence, " You can change it back at any time in Settings."),
+    h("label", { class: "fld" }, h("span", { class: "l" }, "Type ", h("b", {}, c.typed), " to confirm."), input),
+    h("div", { class: "btns" }, cancel, allow),
+    h("p", { class: "s muted" }, "Focus starts on Cancel, the safe choice. Esc also cancels."));
+  const close = () => { dlg.close(); dlg.remove(); back?.focus(); };
+  cancel.addEventListener("click", close);
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !allow.disabled) allow.click(); });
+  allow.addEventListener("click", async () => { const word = input.value; close(); await chatDecide(p.id, true, null, null, word); });
+  document.body.append(dlg);
+  dlg.showModal();
+  cancel.focus();
+}
+
+const LEVEL = { applied: ["Applied now", "lvl-ok"], ok: ["Needs your OK", "lvl-blue"], loosen: ["Loosens a limit", "lvl-red"] };
+const STATE = { declined: "Kept as it was", expired: "Expired", undone: "Undone", failed: "Not saved", refused: "Not changed" };
+
+// D9 (v9 G1–G3): a settings card. Every word on it comes from fastpilot, not from the bot (M3).
+function settingCard(p) {
+  const c = p.setting;
+  const [badge, cls] = p.status === "applied" && c.level === "loosen" ? ["Allowed · next run", "lvl-ok"] : p.status !== "pending" && p.status !== "applied" ? [STATE[p.status] || p.status, "lvl-grey"] : LEVEL[c.level];
+  const red = c.level === "loosen";
+  const head = h("h3", { class: "gh" }, icon(red ? "alert" : c.level === "ok" ? "settings" : "shield"), h("span", { class: "s-title" }, c.title), h("span", { class: "lvl " + cls }, badge));
+  const values = h("div", { class: "ba" },
+    h("div", { class: "box" }, h("small", {}, "Now"), h("span", { class: "v" }, c.now)),
+    h("span", { class: "arrow", "aria-hidden": "true" }, "→"),
+    h("div", { class: "box after " + (red ? "red" : c.level === "ok" ? "blue" : "green") }, h("small", {}, "After"), h("span", { class: "v" }, c.after)));
+  const parts = [values, h("p", { class: red ? "conseq red" : "conseq" }, c.consequence)];
+  (c.notes || []).forEach((n) => parts.push(h("p", { class: "s" }, n)));
+  if (red && p.quote) parts.push(h("p", { class: "quote" }, p.quote));
+  if (p.note) parts.push(h("p", { class: "s" + (p.status === "pending" && red ? " warnline" : "") }, rich(p.note)));
+  let foot = null;
+  if (p.status === "pending" && red) {
+    const review = h("button", { class: "btn danger" }, c.typed ? "Review and allow…" : "Allow");
+    if (!c.typed) { review.disabled = true; setTimeout(() => { review.disabled = false; }, 3000); }
+    review.addEventListener("click", () => (c.typed ? confirmLoosen(p, review) : chatDecide(p.id, true)));
+    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, false) }, "Keep as it is"), review);
+  } else if (p.status === "pending") {
+    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Apply"), h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Keep as it is"));
+  } else if (p.status === "applied" && p.undo) {
+    foot = h("div", { class: "btns" }, h("div", { class: "prop-state ok", tabindex: "-1" }, red ? "Allowed" : "Done"),
+      h("button", { class: "btn sm", onclick: () => chatUndo(p.id) }, red ? "Block again" : "Undo"));
+  } else {
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, STATE[p.status] || "");
+  }
+  return h("section", { class: "grp prop setting " + (red ? "loosen " : "") + p.status, "aria-label": c.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, parts, foot));
+}
+
+// M1: a looser limit the bot proposed that the user did not ask for. Nothing was changed.
+function pageAttempts(list) {
+  return h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
+    h("div", {}, h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this.",
+      h("details", {}, h("summary", {}, "See what it said"),
+        list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said))))));
+}
+
 function proposalCard(p) {
+  if (p.kind === "setting" && p.setting) return settingCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
   const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : "shield"), p.title);
   const rows = p.rows.length ? h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null;
@@ -1056,10 +1144,14 @@ function chatMsg(m) {
   return h("li", { class: "msg bot" },
     h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
     m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "Yang dikerjakan bot" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
-    m.text ? h("div", { class: "bubble" }, rich(m.text)) : null,
+    // M3: next to a card that loosens a limit, the bot's own words are folded away.
+    m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
+      ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, rich(m.text)))
+      : m.text ? h("div", { class: "bubble" }, rich(m.text)) : null,
     working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
     m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
-    (m.proposals || []).map(proposalCard));
+    (m.proposals || []).map(proposalCard),
+    m.page_attempts && m.page_attempts.length ? pageAttempts(m.page_attempts) : null);
 }
 
 function renderChat() {
