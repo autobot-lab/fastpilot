@@ -245,7 +245,9 @@ pub fn var(name: &str) -> Result<String, std::env::VarError> {
 /// `FASTPILOT_BLOCK_ACTIONS` in an MCP server entry an agent wrote must not switch them off).
 pub fn var_unless_empty_env(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => Ok(v),
+        // No item in it (empty, spaces, or only commas like ","): not set, so it cannot empty a
+        // built-in list either (Security Low 1).
+        Ok(v) if v.split(',').any(|item| !item.trim().is_empty()) => Ok(v),
         Ok(_) | Err(std::env::VarError::NotPresent) => key_of(name).and_then(|k| from_file(&k)).ok_or(std::env::VarError::NotPresent),
         Err(e) => Err(e),
     }
@@ -538,11 +540,24 @@ pub fn write(key: &str, value: Option<&str>) -> Result<PathBuf, String> {
     Ok(p)
 }
 
+/// A value as people read it: a switch as true / false (the file stores TOML booleans, read back
+/// as 1 / 0; `allow_eval_script = true` showed as "1"), an empty list as "".
+pub fn shown(key: &str, v: &str) -> String {
+    if FLAGS.contains(&key) {
+        return match v.trim().to_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => "true".to_owned(),
+            "0" | "false" | "no" | "off" => "false".to_owned(),
+            _ => v.to_owned(),
+        };
+    }
+    if v.is_empty() { "\"\"".to_owned() } else { v.to_owned() }
+}
+
 /// Every documented setting with its effective value and source, one per line.
 pub fn describe() -> String {
     let mut lines = vec![format!("settings ({}; environment variables win)", path().display())];
     for s in SETTINGS {
-        let shown = |v: &str| if v.is_empty() { "\"\"".to_owned() } else { v.to_owned() };
+        let shown = |v: &str| shown(s.key, v);
         let value = match effective(s.key) {
             Source::Env(v) => format!("{} (env FASTPILOT_{})", shown(&v), s.key.to_uppercase()),
             Source::File(v) => format!("{} (file)", shown(&v)),
@@ -962,6 +977,17 @@ mod tests {
                 }
             }
         }
+    }
+
+
+    /// T1-T3: a switch in the file read back as "1" / "0" and was shown that way.
+    #[test]
+    fn switches_show_as_true_or_false() {
+        assert_eq!(shown("allow_eval_script", "1"), "true");
+        assert_eq!(shown("allow_eval_script", "0"), "false");
+        assert_eq!(shown("headful", "1"), "true");
+        assert_eq!(shown("max_steps", "1"), "1", "numbers stay numbers");
+        assert_eq!(shown("block_actions", ""), "\"\"");
     }
 
 }

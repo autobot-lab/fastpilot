@@ -44,15 +44,76 @@ fn configured(var: &str) -> Option<Vec<String>> {
 pub fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
+        if invisible(c) {
+            continue;
+        }
         let c = match c {
-            '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{00ad}' | '\u{180e}' => continue,
             '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
             c if c.is_whitespace() => ' ',
             c => c,
         };
-        out.extend(c.to_lowercase());
+        for l in c.to_lowercase() {
+            out.push(look_alike(l));
+        }
     }
     out.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// Characters that show nothing (or only change how the next one looks): format and bidi
+/// controls, joiners, variation selectors, tag characters, Hangul fillers, combining marks
+/// ("Pa\u{202e}y", "Pa\u{e0041}y", "Pa\u{301}y" are "pay"). T1-T3: they slipped through phrase matching.
+fn invisible(c: char) -> bool {
+    matches!(c as u32,
+        0x00ad | 0x034f | 0x061c | 0x115f | 0x1160 | 0x17b4 | 0x17b5 | 0x180b..=0x180f | 0x200b..=0x200f
+        | 0x202a..=0x202e | 0x2060..=0x206f | 0x3164 | 0xfe00..=0xfe0f | 0xfeff | 0xffa0 | 0x1bca0..=0x1bca3
+        | 0xe0000..=0xe0fff
+        // combining marks: accents typed as separate characters
+        | 0x0300..=0x036f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f)
+}
+
+/// A lower-case letter that looks like a Latin one, as that Latin letter: Cyrillic and Greek
+/// look-alikes, accented Latin letters, mathematical and circled letters ("Раy", "Ρay", "pày",
+/// "𝐩𝐚𝐲", "ⓟⓐⓨ" are "pay"). T1-T3: homoglyphs slipped through phrase matching.
+fn look_alike(c: char) -> char {
+    const TABLE: &[(&str, char)] = &[
+        ("аàáâãäåāăąɑα", 'a'),
+        ("ьвβ", 'b'),
+        ("сçćĉċčϲ", 'c'),
+        ("ԁďđ", 'd'),
+        ("еèéêëēĕėęěε", 'e'),
+        ("ĝğġģɡ", 'g'),
+        ("һĥħ", 'h'),
+        ("іїìíîïĩīĭįıι", 'i'),
+        ("јĵ", 'j'),
+        ("κķ", 'k'),
+        ("ĺļľŀł", 'l'),
+        ("ñńņňŉη", 'n'),
+        ("оòóôõöøōŏőοσ", 'o'),
+        ("рρ", 'p'),
+        ("ŕŗř", 'r'),
+        ("ѕśŝşšș", 's'),
+        ("ţťŧțτ", 't'),
+        ("ùúûüũūŭůűųυ", 'u'),
+        ("νѵ", 'v'),
+        ("ŵω", 'w'),
+        ("хχ", 'x'),
+        ("уýÿŷ", 'y'),
+        ("źżž", 'z'),
+    ];
+    let n = c as u32;
+    // Mathematical alphanumeric letters (bold, italic, script, ...): A-Z a-z repeating.
+    if (0x1d400..=0x1d6a3).contains(&n) {
+        let i = (n - 0x1d400) % 52;
+        return char::from_u32(if i < 26 { 'a' as u32 + i } else { 'a' as u32 + i - 26 }).unwrap_or(c);
+    }
+    if (0x1d7ce..=0x1d7ff).contains(&n) {
+        return char::from_u32('0' as u32 + (n - 0x1d7ce) % 10).unwrap_or(c);
+    }
+    // Circled letters ⓐ-ⓩ (Ⓐ-Ⓩ lower-case to these first).
+    if (0x24d0..=0x24e9).contains(&n) {
+        return char::from_u32('a' as u32 + n - 0x24d0).unwrap_or(c);
+    }
+    TABLE.iter().find(|(set, _)| set.contains(c)).map_or(c, |(_, l)| *l)
 }
 
 /// The words of `text` (letters and digits), normalized.
@@ -326,6 +387,25 @@ mod tests {
             assert_eq!(block_match(name, &all).map(|h| h.word).as_deref(), Some(word), "{name:?}");
         }
         assert_eq!(block_match("Delete this old account", &all), None, "two words between: not the phrase");
+        // T1-T3: invisible characters and look-alike letters do not hide a phrase either.
+        for name in [
+            "Pa\u{202e}y now",            // bidi override
+            "Pa\u{e0041}y now",           // tag character
+            "Pay\u{fe0f} now",            // variation selector
+            "Pa\u{301}y now",             // combining accent
+            "P\u{3164}ay now",            // Hangul filler
+            "Pаy now",                    // Cyrillic а
+            "РАY NOW",                    // Cyrillic Р and А
+            "Ρay now",                    // Greek capital rho
+            "Pày now",                    // accented a
+            "𝐏𝐚𝐲 now",                    // mathematical bold
+            "ⓅⓐⓎ now",                    // circled
+            "Dеlete my аccount",          // Cyrillic е and а in a phrase
+        ] {
+            assert!(block_match(name, &all).is_some(), "{name:?} must be blocked");
+        }
+        assert_eq!(normalize("Ⓒhеckout"), "checkout");
+        assert_eq!(block_match("Masuk", &all), None, "plain words stay plain");
         assert_eq!(normalize(" Ｈｅｌｌｏ\u{3000}\u{200b}World "), "hello world");
         for name in ["Paypal", "Lanjut ke Pembayaran", "Hapus filter", "Remove from cart", "Transferan", "Masuk"] {
             assert_eq!(block_match(name, &all), None, "{name}");

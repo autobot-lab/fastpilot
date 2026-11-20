@@ -92,7 +92,7 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             match config::effective(&k) {
                 config::Source::Env(v) => println!("{v}  (env FASTPILOT_{})", k.to_uppercase()),
                 config::Source::File(v) if v.is_empty() && config::LISTS.contains(&k.as_str()) => println!("[] (emptied)"),
-                config::Source::File(v) => println!("{v}"),
+                config::Source::File(v) => println!("{}", config::shown(&k, &v)),
                 // A provider's preset base URL is a real value, not "nothing set".
                 config::Source::Default if k == "provider_base_url" => {
                     let p = config::var("FASTPILOT_PROVIDER").unwrap_or_default();
