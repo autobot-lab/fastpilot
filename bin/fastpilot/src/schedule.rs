@@ -180,9 +180,12 @@ fn write_private(path: &Path, text: &str) -> Res<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
-    let tmp = path.with_extension("tmp");
+    // A temp name of its own: two writers never rename each other's file away.
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = path.with_file_name(format!(".{name}.{}-{nanos}.tmp", std::process::id()));
     let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
+    o.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
     o.open(&tmp)
@@ -199,10 +202,28 @@ fn save_store(store: &Store) -> Res<()> {
     write_private(&store_path(), &serde_json::to_string_pretty(store).map_err(|e| e.to_string())?)
 }
 
-fn set_last(id: &str, last: LastRun) -> Res<()> {
+/// One change to the schedules at a time, across every process that writes them (the page, Chat,
+/// a scheduled run recording its result): read, change and write under an exclusive lock on
+/// `schedules.lock`. Without it a run wrote back an older copy and a schedule saved meanwhile
+/// was lost ("Schedule not found"). Never call it from inside `f`.
+fn update<T>(f: impl FnOnce(&mut Store) -> Res<T>) -> Res<T> {
+    let path = home().join("schedules.lock");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Cannot prepare {}: {e}", dir.display()))?;
+    }
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    lock.lock().map_err(|e| format!("Cannot lock {}: {e}", path.display()))?;
     let mut store = load();
-    store.last.insert(id.to_owned(), last);
-    save_store(&store)
+    let out = f(&mut store)?;
+    save_store(&store)?;
+    Ok(out)
+}
+
+fn set_last(id: &str, last: LastRun) -> Res<()> {
+    update(|store| {
+        store.last.insert(id.to_owned(), last);
+        Ok(())
+    })
 }
 
 // ---- validation ---------------------------------------------------------------------------
@@ -667,8 +688,11 @@ pub fn uninstall(id: &str) -> Res<()> {
 
 /// Save `s` (new or changed): the JSON file, the webhook secret when given (`Some("")` removes
 /// it), and the OS entry. Returns the saved schedule (with its id).
-pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
-    let mut store = load();
+pub fn save(s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
+    update(|store| save_in(store, s, webhook))
+}
+
+fn save_in(store: &mut Store, mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
     if s.id.is_empty() {
         let taken: Vec<String> = store.schedules.iter().map(|x| x.id.clone()).collect();
         s.id = new_id(&s.name, &taken);
@@ -696,7 +720,6 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
     }
     store.schedules.retain(|x| x.id != s.id);
     store.schedules.push(s.clone());
-    save_store(&store)?;
     Ok(s)
 }
 
@@ -724,33 +747,33 @@ pub fn with_watch(mut s: Schedule, hours: Option<u64>) -> Res<Schedule> {
 
 /// D10a: an agent's schedules go to another (when it is deleted). No OS entry changes.
 pub fn move_agent(from: &str, to: &str) -> Res<()> {
-    let mut store = load();
-    let mut moved = false;
-    for s in store.schedules.iter_mut().filter(|s| s.agent.as_deref() == Some(from)) {
-        s.agent = (to != crate::agents::DEFAULT).then(|| to.to_owned());
-        moved = true;
-    }
-    if moved { save_store(&store) } else { Ok(()) }
+    update(|store| {
+        for s in store.schedules.iter_mut().filter(|s| s.agent.as_deref() == Some(from)) {
+            s.agent = (to != crate::agents::DEFAULT).then(|| to.to_owned());
+        }
+        Ok(())
+    })
 }
 
 pub fn set_enabled(id: &str, on: bool) -> Res<()> {
-    let mut store = load();
-    let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;
-    s.enabled = on;
-    if on { install(s)? } else { uninstall(id)? }
-    save_store(&store)
+    update(|store| {
+        let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;
+        s.enabled = on;
+        if on { install(s) } else { uninstall(id) }
+    })
 }
 
 pub fn delete(id: &str) -> Res<()> {
-    let mut store = load();
-    if !store.schedules.iter().any(|x| x.id == id) {
-        return Err("Schedule not found".into());
-    }
-    uninstall(id)?;
-    let _ = std::fs::remove_file(secret_path(id));
-    store.schedules.retain(|x| x.id != id);
-    store.last.remove(id);
-    save_store(&store)
+    update(|store| {
+        if !store.schedules.iter().any(|x| x.id == id) {
+            return Err("Schedule not found".into());
+        }
+        uninstall(id)?;
+        let _ = std::fs::remove_file(secret_path(id));
+        store.schedules.retain(|x| x.id != id);
+        store.last.remove(id);
+        Ok(())
+    })
 }
 
 /// Whether a run of this schedule is going on now: started, not finished, and its process alive
@@ -772,21 +795,22 @@ fn alive(pid: u32) -> bool {
 
 /// Start `fastpilot schedule run <id>` in the background (Run now). Refused while it runs.
 pub fn start_now(id: &str) -> Res<()> {
-    let store = load();
-    let s = store.schedules.iter().find(|x| x.id == id).ok_or("Schedule not found")?;
-    if is_running(store.last.get(id)) {
-        return Err(format!("\"{}\" is already running. Wait until it finishes, then try again.", s.name));
-    }
-    // Marked as started now, so a second click right away is refused too.
-    let before = store.last.get(id).cloned();
-    set_last(id, LastRun { started_ms: now_ms(), ..Default::default() })?;
+    // Checked and marked as started in one step, so a second click right away is refused too.
+    let before = update(|store| {
+        let s = store.schedules.iter().find(|x| x.id == id).ok_or("Schedule not found")?;
+        if is_running(store.last.get(id)) {
+            return Err(format!("\"{}\" is already running. Wait until it finishes, then try again.", s.name));
+        }
+        Ok(store.last.insert(id.to_owned(), LastRun { started_ms: now_ms(), ..Default::default() }))
+    })?;
     let undo = |e: String| {
-        let mut store = load();
-        match &before {
-            Some(l) => store.last.insert(id.to_owned(), l.clone()),
-            None => store.last.remove(id),
-        };
-        let _ = save_store(&store);
+        let _ = update(|store| {
+            match &before {
+                Some(l) => store.last.insert(id.to_owned(), l.clone()),
+                None => store.last.remove(id),
+            };
+            Ok(())
+        });
         e
     };
     let log = home().join("schedules").join(format!("{id}.log"));
@@ -939,37 +963,38 @@ fn local_time(ms: u64) -> String {
 }
 
 fn set_watch(id: &str, w: Watch) -> Res<()> {
-    let mut store = load();
-    if let Some(s) = store.schedules.iter_mut().find(|x| x.id == id) {
-        s.watch = Some(w);
-    }
-    save_store(&store)
+    update(|store| {
+        if let Some(s) = store.schedules.iter_mut().find(|x| x.id == id) {
+            s.watch = Some(w);
+        }
+        Ok(())
+    })
 }
 
 /// The end of a release watch: off the scheduler, kept in the list with how it went.
 fn end_watch(s: &Schedule) -> Res<()> {
     uninstall(&s.id)?;
-    let mut store = load();
-    let mut sent = 0;
-    if let Some(x) = store.schedules.iter_mut().find(|x| x.id == s.id) {
-        x.enabled = false;
-        if let Some(w) = x.watch.as_mut() {
-            w.ended = true;
-            sent = w.sent.len();
+    update(|store| {
+        let mut sent = 0;
+        if let Some(x) = store.schedules.iter_mut().find(|x| x.id == s.id) {
+            x.enabled = false;
+            if let Some(w) = x.watch.as_mut() {
+                w.ended = true;
+                sent = w.sent.len();
+            }
         }
-    }
-    save_store(&store)?;
-    let mut last = load().last.get(&s.id).cloned().unwrap_or_default();
-    if !last.summary.starts_with("Release watch ended") {
-        last.summary = match sent {
-            0 => "Release watch ended: no new problem since the release".to_owned(),
-            1 => "Release watch ended: 1 new problem since the release (notified)".to_owned(),
-            n => format!("Release watch ended: {n} new problems since the release (notified)"),
-        };
-        last.pid = None;
-        set_last(&s.id, last)?;
-    }
-    Ok(())
+        let mut last = store.last.get(&s.id).cloned().unwrap_or_default();
+        if !last.summary.starts_with("Release watch ended") {
+            last.summary = match sent {
+                0 => "Release watch ended: no new problem since the release".to_owned(),
+                1 => "Release watch ended: 1 new problem since the release (notified)".to_owned(),
+                n => format!("Release watch ended: {n} new problems since the release (notified)"),
+            };
+            last.pid = None;
+            store.last.insert(s.id.clone(), last);
+        }
+        Ok(())
+    })
 }
 
 /// `(passed, total)` from the suite's summary line `3 tests: 2 passed, ...`.
@@ -1399,6 +1424,54 @@ mod tests {
         assert_eq!(summarize(qa, false), "0 of 1 test passed, 1 failed — demo-login-shows-budi: variable `EMAIL` is not allowed; list it in FASTPILOT_VARS");
         let many: String = (1..=5).map(|i| format!("✗ t{i} 1.0s, 1 turns, m: broke {i}\n")).collect::<String>() + "5 tests: 0 passed, 5 failed, 0 quarantined failures, in 1s\n";
         assert!(summarize(&many, false).ends_with("t3: broke 3; and 2 more"));
+    }
+
+    /// Release gate (FastDev saw `chat_and_the_page_start_a_release_watch` fail once with "Schedule
+    /// not found"): a run that records its result while the page saves another schedule must not
+    /// write back an older copy of the store and drop that schedule.
+    #[test]
+    fn saving_and_recording_runs_at_the_same_time_lose_nothing() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-sched-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("agents")).expect("dir");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", dir.join("config.toml"));
+            std::env::set_var("FASTPILOT_SCHEDULER", "launchd");
+            std::env::set_var("FASTPILOT_SCHEDULER_DIR", dir.join("agents"));
+        }
+        let mk = |name: String| Schedule {
+            id: String::new(),
+            name,
+            tests: dir.to_string_lossy().into_owned(),
+            when: When { every: Every::Day, time: "08:00".into(), ..Default::default() },
+            notify: Notify::default(),
+            enabled: true,
+            agent: None,
+            watch: None,
+        };
+        let base = save(mk("base".into()), None).expect("base").id;
+        std::thread::scope(|s| {
+            for i in 0..12 {
+                let mk = &mk;
+                s.spawn(move || save(mk(format!("page {i}")), None).expect("save"));
+                let base = base.clone();
+                s.spawn(move || {
+                    for n in 0..20 {
+                        set_last(&base, LastRun { started_ms: n, ..Default::default() }).expect("last");
+                    }
+                });
+            }
+        });
+        let names: Vec<String> = load().schedules.iter().map(|s| s.name.clone()).collect();
+        unsafe {
+            std::env::remove_var("FASTPILOT_CONFIG");
+            std::env::remove_var("FASTPILOT_SCHEDULER");
+            std::env::remove_var("FASTPILOT_SCHEDULER_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(names.len(), 13, "every schedule saved during the runs is kept: {names:?}");
     }
 
     /// D10b: an agent's scheduled run uses its provider and model, its extra words, its id.
