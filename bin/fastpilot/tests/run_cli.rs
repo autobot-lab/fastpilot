@@ -132,7 +132,7 @@ fn run_without_claude_code_says_how_to_get_it() {
         .output()
         .expect("run");
     let text = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success() && text.contains("needs Claude Code installed and logged in"), "{text}");
+    assert!(!out.status.success() && text.contains("fastpilot run needs Claude Code. Claude Code is not installed or does not start"), "{text}");
     assert!(!text.contains("API_KEY"), "{text}");
 }
 

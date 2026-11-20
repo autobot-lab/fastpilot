@@ -13,7 +13,8 @@ import json, os, subprocess, sys, time
 
 argv = sys.argv[1:]
 if argv == ["--version"]:
-    print("9.9.9 (Claude Code, fake)")
+    # FAKE_CLAUDE_VERSION: pretend to be another version (QA B1: an old Claude Code).
+    print(os.environ.get("FAKE_CLAUDE_VERSION", "9.9.9") + " (Claude Code, fake)")
     sys.exit(0)
 
 def opt(name):

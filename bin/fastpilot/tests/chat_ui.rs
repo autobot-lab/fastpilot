@@ -658,7 +658,8 @@ fn chat_says_where_a_test_goes_outside_a_project() {
     let home = std::env::temp_dir().join(format!("fp-chat-d1-home-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
-    let ui = start_ui_in(&home, &home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    // The demo secret is set up, so the only note is about the folder.
+    let ui = start_ui_in(&home, &home, &[("FAKE_CHAT_DELAY_MS", "0"), ("DEMO_PASS", "rahasia123"), ("FASTPILOT_VARS", "DEMO_PASS")]);
     let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "write a test for the demo login and save it" }).to_string(), true);
     assert_eq!(st, 200, "{body}");
     let v = wait_idle(&ui);
@@ -684,7 +685,74 @@ fn chat_says_once_that_claude_code_needs_a_login() {
     let bot = &v["messages"][1];
     assert_eq!(bot["text"], "", "not repeated as the answer: {bot}");
     let err = bot["error"].as_str().unwrap_or("");
-    assert!(err.starts_with("Claude Code belum login") && err.contains("`claude`") && !err.contains("Please run"), "{err}");
+    assert!(err.starts_with("Claude Code is not logged in") && err.contains("`claude`") && !err.contains("Please run"), "{err}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
+}
+
+/// QA B2 + B3 (real Claude, v0.4): Chat gets the project's secrets the way `fastpilot demo` writes
+/// them (.mcp.json), and only those; the bot is told which names exist; a test that uses names
+/// nobody saved is not saved, and the card says which ones.
+#[test]
+fn chat_knows_the_projects_secrets_and_never_saves_a_test_sure_to_fail() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-b3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::create_dir_all(&project).expect("project");
+    // As `fastpilot demo` writes it, plus two settings a checkout could try to sneak in.
+    let mcp = json!({ "mcpServers": { "fastpilot": { "command": "fastpilot", "args": ["mcp"], "env": {
+        "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123", "FASTPILOT_ALLOW_EVAL_SCRIPT": "true", "FASTPILOT_BLOCK_ACTIONS": "" } } } });
+    std::fs::write(project.join(".mcp.json"), mcp.to_string()).expect("mcp");
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+
+    let (st, _) = post("/api/chat", json!({ "message": "invent a test for the demo login and save it" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let card = v["messages"][1]["proposals"][0].clone();
+    let note = card["note"].as_str().unwrap_or("");
+    assert!(note.contains("This test uses ${EMAIL} and ${PASSWORD}, which are not a saved secret, so it would fail") && note.contains("use a saved secret (DEMO_PASS)"), "{card}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "test" }));
+    assert!(st != 200 && body.contains("${EMAIL} and ${PASSWORD}"), "{st} {body}");
+    assert!(!project.join("tests").exists(), "nothing saved");
+
+    // What Claude Code got: the project's secret, not the other settings; and the names it may use.
+    let calls: Vec<Value> = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect();
+    let argv: Vec<String> = calls[0]["argv"].as_array().expect("argv").iter().filter_map(|a| a.as_str().map(str::to_owned)).collect();
+    let at = |k: &str| argv.iter().position(|a| a == k).map(|i| argv[i + 1].clone()).unwrap_or_default();
+    let server: Value = serde_json::from_str(&at("--mcp-config")).expect("mcp config");
+    let env = &server["mcpServers"]["fastpilot"]["env"];
+    assert_eq!((env["FASTPILOT_VARS"].as_str(), env["DEMO_PASS"].as_str()), (Some("DEMO_PASS"), Some("rahasia123")), "{env}");
+    assert!(env.get("FASTPILOT_ALLOW_EVAL_SCRIPT").is_none() && env["FASTPILOT_BLOCK_ACTIONS"] != "", "nothing else from .mcp.json: {env}");
+    assert!(at("--append-system-prompt").contains("Secrets you can use in tests (write them as ${NAME}, never the value): ${DEMO_PASS}"));
+
+    // The demo's own secret is fine: no warning.
+    let (_, _) = post("/api/chat", json!({ "message": "write a test for the demo login and save it" }));
+    let v = wait_idle(&ui);
+    let card = v["messages"][3]["proposals"][0].clone();
+    assert!(!card["note"].as_str().unwrap_or("").contains("saved secret"), "{card}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// QA B1 (real Claude, v0.4): Claude Code 2.1.144 answered every Chat message with "API Error:
+/// 400 … version 2.1.280 or newer is required". Chat says what to do before calling it.
+#[test]
+fn an_old_claude_code_gets_a_clear_message_in_chat() {
+    let home = std::env::temp_dir().join(format!("fp-chat-b1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CLAUDE_VERSION", "2.1.144")]);
+    let (st, _) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "halo" }).to_string(), true);
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let err = v["messages"][1]["error"].as_str().unwrap_or("");
+    assert_eq!(err, "Claude Code 2.1.144 is too old for fastpilot: it needs 2.1.280 or newer. Update it: run `claude update` in Terminal, then try again.", "{v}");
+    assert!(!home.join("claude-log").exists() || std::fs::read_dir(home.join("claude-log")).expect("log").next().is_none(), "Claude Code was not asked");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
 }

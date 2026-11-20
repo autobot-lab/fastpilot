@@ -12,7 +12,8 @@ import json, os, subprocess, sys, time
 
 argv = sys.argv[1:]
 if argv == ["--version"]:
-    print("9.9.9 (Claude Code, fake chat)")
+    # FAKE_CLAUDE_VERSION: pretend to be another version (QA B1: an old Claude Code).
+    print(os.environ.get("FAKE_CLAUDE_VERSION", "9.9.9") + " (Claude Code, fake chat)")
     sys.exit(0)
 
 def opt(name):
@@ -90,6 +91,9 @@ if "save it" in low:
     # D1: a test as structured data, with or without its schedule; FAKE_CHAT_TEST_ID sets its id.
     test = {"kind": "test", "title": "Login with the demo account", "platform": "web", "target": "examples/demo/login.html",
             "steps": ["Open the login page and sign in as a@b.com with ${DEMO_PASS}", "Check that the Dashboard shows Budi"]}
+    if "invent" in low:
+        # QA B3: what real Claude did: secret names nobody saved.
+        test["steps"] = ["Sign in with ${EMAIL} and ${PASSWORD}", "Check that the Dashboard shows Budi"]
     if os.environ.get("FAKE_CHAT_TEST_ID"):
         test["id"] = os.environ["FAKE_CHAT_TEST_ID"]
     if "every 2 hours" in low:

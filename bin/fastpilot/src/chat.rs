@@ -337,10 +337,12 @@ fn context() -> String {
     let scheds: Vec<String> = store.schedules.iter().map(|s| format!("- {} ({}): {} · {}", s.name, if s.enabled { "on" } else { "off" }, schedule::describe(&s.when), s.tests)).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     let tests: Vec<String> = crate::ui::test_files(&cwd.join("tests")).into_iter().map(|(p, title)| format!("{p} (\"{title}\")")).collect();
+    let secrets: Vec<String> = project_secrets().into_iter().filter(|(_, has)| *has).map(|(n, _)| format!("${{{n}}}")).collect();
     format!(
-        "\n\nNow: project folder {}; test cases: {}.\nLimits (settings):\n{}\nSchedules:\n{}",
+        "\n\nNow: project folder {}; test cases: {}.\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.\nLimits (settings):\n{}\nSchedules:\n{}",
         cwd.display(),
         if tests.is_empty() { "none in ./tests".to_owned() } else { tests.join(", ") },
+        if secrets.is_empty() { "none saved yet (the user adds them in Settings › Secrets)".to_owned() } else { secrets.join(", ") },
         limits.join("\n"),
         if scheds.is_empty() { "none".to_owned() } else { scheds.join("\n") }
     )
@@ -355,11 +357,23 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     if let Some(b) = crate::agents::block_actions(&me) {
         env["FASTPILOT_BLOCK_ACTIONS"] = json!(b);
     }
+    // QA B2: the project's secrets (as `fastpilot demo` writes DEMO_PASS into .mcp.json) reach
+    // Chat's fastpilot too; only FASTPILOT_VARS and the values it names.
+    let mcp_env = mcp_secrets();
+    if !mcp_env.is_empty() {
+        let names: Vec<String> = project_secrets().into_iter().map(|(n, _)| n).collect();
+        env["FASTPILOT_VARS"] = json!(names.join(","));
+        for (n, val) in mcp_env {
+            env[n] = json!(val);
+        }
+    }
     // D10b: an agent on another provider: the same tools, prompt and cards, another model loop.
     if me.provider.as_deref().is_some_and(|p| p != "claude") {
         let system = format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index(), context(), crate::agents::prompt(&me));
         return turn_provider(agent, &me, text, bot, &system, &env).await;
     }
+    // QA B1: an old Claude Code answers every message with an API error; say what to do first.
+    crate::run::claude_ready().await?;
     let mcp = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp"], "env": env } } });
     let mut cmd = tokio::process::Command::new(crate::run::claude_bin());
     let model = me.model.clone().unwrap_or_else(crate::run::model_explore);
@@ -378,7 +392,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("Claude Code tidak bisa dijalankan (`{}`): {e}. Pasang dari https://claude.com/claude-code lalu login sekali dengan `claude`.", crate::run::claude_bin()))?;
+        .map_err(|e| format!("Claude Code does not start (`{}`): {e}. Install it from https://claude.com/claude-code, then run `claude` once in Terminal to log in.", crate::run::claude_bin()))?;
     // The prompt on stdin: variadic options would swallow it.
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes()).await;
@@ -449,7 +463,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
             if is_login_problem(&err) {
                 return Err(claude_failure(&err));
             }
-            Err(format!("Claude Code berhenti tanpa jawaban ({}): {}", out.status, clip(err.trim(), 400)))
+            Err(claude_failure(&format!("stopped without an answer ({}): {}", out.status, err.trim())))
         }
     }
 }
@@ -539,12 +553,15 @@ fn is_login_problem(text: &str) -> bool {
     t.contains("/login") || t.contains("not logged in") || t.contains("invalid api key") || t.contains("please log in")
 }
 
-/// What Claude Code's failure means for the user, in the page's language.
+/// What Claude Code's failure means for the user, in plain words.
 fn claude_failure(raw: &str) -> String {
     if is_login_problem(raw) {
-        "Claude Code belum login di komputer ini. Buka Terminal, jalankan `claude`, login sekali, lalu kirim pesanmu lagi.".into()
+        "Claude Code is not logged in on this computer. Open Terminal, run `claude`, log in once, then send your message again.".into()
+    } else if raw.contains("or newer is required") || raw.contains("does not support this model") {
+        // QA B1: Claude Code's own words for "too old for this model".
+        "Your Claude Code is too old for fastpilot. Update it: run `claude update` in Terminal, then send your message again.".into()
     } else {
-        format!("Claude Code gagal: {}", clip(raw.trim(), 400))
+        format!("Claude Code failed: {}", clip(raw.trim(), 400))
     }
 }
 
@@ -1017,6 +1034,87 @@ pub fn test_of(v: &Value) -> Res<TestDraft> {
     Ok(t)
 }
 
+/// QA B2: the secrets the project's `.mcp.json` gives fastpilot (the names in its fastpilot
+/// entry's FASTPILOT_VARS, with their values), as `fastpilot demo` writes `DEMO_PASS`. Only
+/// these go to Chat's fastpilot server: nothing else from that file (it could loosen limits).
+fn mcp_secrets() -> Vec<(String, String)> {
+    let Some(v) = std::fs::read_to_string(std::env::current_dir().unwrap_or_default().join(".mcp.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        return vec![];
+    };
+    let env = &v["mcpServers"]["fastpilot"]["env"];
+    env["FASTPILOT_VARS"]
+        .as_str()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .filter_map(|n| env[n].as_str().map(|val| (n.to_owned(), val.to_owned())))
+        .collect()
+}
+
+/// QA B2/B3: every secret name this project can use, and whether it has a value here (fastpilot's
+/// settings and environment, or the project's `.mcp.json`).
+pub fn project_secrets() -> Vec<(String, bool)> {
+    let mcp = mcp_secrets();
+    let mut out: Vec<(String, bool)> = config::var("FASTPILOT_VARS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| (n.to_owned(), std::env::var(n).is_ok_and(|v| !v.is_empty()) || mcp.iter().any(|(m, _)| m == n)))
+        .collect();
+    for (n, _) in &mcp {
+        if !out.iter().any(|(o, _)| o == n) {
+            out.push((n.clone(), true));
+        }
+    }
+    out
+}
+
+/// The `${NAME}`s of a test.
+fn secret_names(t: &TestDraft) -> Vec<String> {
+    let mut names = Vec::new();
+    for text in std::iter::once(&t.title).chain(std::iter::once(&t.target)).chain(t.steps.iter()) {
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("${") {
+            let after = &rest[at + 2..];
+            let Some(end) = after.find('}') else { break };
+            if !names.iter().any(|n| n == &after[..end]) {
+                names.push(after[..end].to_owned());
+            }
+            rest = &after[end + 1..];
+        }
+    }
+    names
+}
+
+/// QA B3: a test whose `${NAME}`s are not saved secrets (or have no value here) is sure to fail:
+/// say which ones before it is saved.
+pub fn missing_secrets(t: &TestDraft) -> Option<String> {
+    let known = project_secrets();
+    let used = secret_names(t);
+    let unknown: Vec<String> = used.iter().filter(|n| !known.iter().any(|(k, _)| k == *n)).map(|n| format!("${{{n}}}")).collect();
+    let empty: Vec<String> = used.iter().filter(|n| known.iter().any(|(k, has)| k == *n && !has)).map(|n| format!("${{{n}}}")).collect();
+    let saved: Vec<&str> = known.iter().filter(|(_, has)| *has).map(|(k, _)| k.as_str()).collect();
+    let list = |v: &[String]| match v {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    if !unknown.is_empty() {
+        let choice = if saved.is_empty() { "add the secret in Settings › Secrets first".to_owned() } else { format!("use a saved secret ({})", saved.join(", ")) };
+        return Some(format!(
+            "This test uses {}, which {} not a saved secret, so it would fail. Edit it: {choice}, or write a value that is not secret (like an email) as plain text.",
+            list(&unknown),
+            if unknown.len() == 1 { "is" } else { "are" }
+        ));
+    }
+    if !empty.is_empty() {
+        return Some(format!("{} {} no value on this computer, so the test would fail. Set the value first (Settings › Secrets).", list(&empty), if empty.len() == 1 { "has" } else { "have" }));
+    }
+    None
+}
+
 /// Where Chat saves tests: `tests/` in the folder `fastpilot ui` was started in.
 pub fn tests_dir() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default().join("tests")
@@ -1073,7 +1171,9 @@ fn test_card(id: String, v: &Value) -> Res<Proposal> {
         rows.push(("Run".to_owned(), schedule::describe(when)));
         rows.push(("On failure".to_owned(), notify_text(notify)));
     }
-    let note = if dir.join(format!("{}.md", t.id)).exists() {
+    let note = if let Some(why) = missing_secrets(&t) {
+        Some(why)
+    } else if dir.join(format!("{}.md", t.id)).exists() {
         Some(format!("A test named \"{}\" is already saved. Give this one another name with Edit.", t.id))
     } else if outside_a_project(&dir) {
         Some(format!("fastpilot ui was started in {}, which is not a project folder. The test will be saved in {}.", dir.parent().unwrap_or(&dir).display(), dir.display()))
@@ -1167,6 +1267,9 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
         }
     }
     let t = test_of(&v)?;
+    if let Some(why) = missing_secrets(&t) {
+        return Err(why);
+    }
     let with_schedule = match mode {
         Some("schedule") => true,
         Some("test") | None => false,
@@ -1342,7 +1445,9 @@ mod tests {
         assert!(cards.iter().all(|c| c.status == "refused"));
         // M5: card ids are random, 128 bits, never sequential.
         assert!(cards.iter().all(|c| c.id.len() == 32) && cards[0].id != cards[1].id);
-        assert!(claude_failure("Not logged in · Please run /login").starts_with("Claude Code belum login"));
+        assert!(claude_failure("Not logged in · Please run /login").starts_with("Claude Code is not logged in"));
+        let old = "API Error: 400 Claude Code 2.1.144 does not support this model; version 2.1.280 or newer is required. Run 'claude update'";
+        assert!(claude_failure(old).starts_with("Your Claude Code is too old for fastpilot"), "QA B1");
         assert_eq!(tool_line("mcp__fastpilot__session", &json!({ "action": "start", "id": "web1", "platform": "web" })), "session · start web1 web");
         // S3
         assert!(looks_like_a_secret("my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyz"));

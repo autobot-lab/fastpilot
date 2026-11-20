@@ -210,6 +210,45 @@ pub fn claude_bin() -> String {
     fastpilot_core::config::var("FASTPILOT_CLAUDE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into())
 }
 
+/// The oldest Claude Code that runs fastpilot's default models: older ones answer every message
+/// with "API Error: 400 … does not support this model; version 2.1.280 or newer is required"
+/// (QA B1, seen with 2.1.144).
+pub const MIN_CLAUDE: (u32, u32, u32) = (2, 1, 280);
+
+/// `2.1.144 (Claude Code)` → (2, 1, 144).
+pub fn claude_version(text: &str) -> Option<(u32, u32, u32)> {
+    let first = text.split_whitespace().next()?;
+    let mut p = first.split('.').map(|x| x.parse::<u32>().ok());
+    Some((p.next()??, p.next()??, p.next().flatten().unwrap_or(0)))
+}
+
+/// What to tell the user when `found` (Claude Code's `--version` line) is too old, or `None`.
+pub fn claude_too_old(found: &str) -> Option<String> {
+    let v = claude_version(found)?;
+    (v < MIN_CLAUDE).then(|| {
+        format!(
+            "Claude Code {}.{}.{} is too old for fastpilot: it needs {}.{}.{} or newer. Update it: run `claude update` in Terminal, then try again.",
+            v.0, v.1, v.2, MIN_CLAUDE.0, MIN_CLAUDE.1, MIN_CLAUDE.2
+        )
+    })
+}
+
+/// `claude --version` of the configured Claude Code: `Ok(line)`, or why it cannot be used.
+pub async fn claude_ready() -> Result<String, String> {
+    let bin = claude_bin();
+    let out = tokio::time::timeout(Duration::from_secs(20), tokio::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output()).await;
+    match out {
+        Ok(Ok(o)) if o.status.success() => {
+            let line = String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_owned();
+            match claude_too_old(&line) {
+                Some(why) => Err(why),
+                None => Ok(line),
+            }
+        }
+        _ => Err(format!("Claude Code is not installed or does not start (`{bin}`). Install it from https://claude.com/claude-code, then run `claude` once in Terminal to log in.")),
+    }
+}
+
 /// What the tools of one test case share with Claude Code's calls.
 struct Agent {
     fp: FastPilot,
@@ -646,17 +685,10 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     if let Some(p) = &provider {
         println!("driver: {} ({}) at {}", p.name, p.model, p.base_url);
     }
-    let version = match provider {
-        Some(_) => None,
-        None => Some(tokio::process::Command::new(claude_bin()).arg("--version").output().await),
-    };
-    if version.as_ref().is_some_and(|v| !v.as_ref().is_ok_and(|o| o.status.success())) {
-        return Err(format!(
-            "fastpilot run needs Claude Code installed and logged in (`{}` not found or not working; \
-             install it from https://claude.com/claude-code, run `claude` once to log in, or set FASTPILOT_CLAUDE)",
-            claude_bin()
-        )
-        .into());
+    if provider.is_none()
+        && let Err(why) = claude_ready().await
+    {
+        return Err(format!("fastpilot run needs Claude Code. {why} (Or set FASTPILOT_CLAUDE.)").into());
     }
     let pool = Arc::new(Pool::discover().await);
     let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
@@ -800,6 +832,20 @@ fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA B1: Claude Code older than 2.1.280 cannot run fastpilot's default models.
+    #[test]
+    fn claude_code_versions() {
+        assert_eq!(claude_version("2.1.144 (Claude Code)"), Some((2, 1, 144)));
+        assert_eq!(claude_version("2.1 (Claude Code)"), Some((2, 1, 0)));
+        assert_eq!(claude_version("Claude Code"), None);
+        assert!(claude_too_old("2.1.144 (Claude Code)").is_some_and(|m| m.contains("needs 2.1.280 or newer") && m.contains("claude update")));
+        assert!(claude_too_old("2.1.279 (Claude Code)").is_some());
+        assert_eq!(claude_too_old("2.1.280 (Claude Code)"), None);
+        assert_eq!(claude_too_old("2.2.0 (Claude Code)"), None);
+        assert_eq!(claude_too_old("10.0.0 (Claude Code)"), None);
+        assert_eq!(claude_too_old("something else"), None, "an unknown format is not called old");
+    }
 
     #[test]
     fn platforms_and_longest_first_order() {

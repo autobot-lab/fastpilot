@@ -155,6 +155,7 @@ fn gap(c: &Check) -> String {
         "Xcode" => "Xcode is missing".into(),
         "simulator" => "no iPhone simulator".into(),
         "runner" => "test runner not built yet".into(),
+        "Claude Code" if c.detail.ends_with("too old") => "Claude Code is too old: run `claude update`".into(),
         "Claude Code" => "Claude Code is not installed".into(),
         _ => clip(&c.detail, 45),
     }
