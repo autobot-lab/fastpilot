@@ -319,9 +319,13 @@ impl FastPilot {
             Platform::parse(name).ok_or_else(|| Error::Flow(format!("unknown platform `{name}` (web, android, ios)")))?;
         let id = {
             let reg = self.state.registry.lock().await;
-            match &args.id {
+            // No id (or an empty one): web1, android1, …; one given is checked before anything starts.
+            match args.id.as_deref().filter(|i| !i.is_empty()) {
                 Some(id) if reg.contains(id) => return Err(Error::Session(format!("session `{id}` already exists"))),
-                Some(id) => id.clone(),
+                Some(id) => {
+                    fastpilot_core::check_session_id(id)?;
+                    id.to_owned()
+                }
                 None => (1..).map(|n| format!("{platform}{n}")).find(|id| !reg.contains(id)).unwrap_or_default(),
             }
         };
@@ -688,7 +692,9 @@ impl FastPilot {
         }
         let dir = fastpilot_core::config::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| ".fastpilot".into()).join("snapshots");
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        let path = dir.join(format!("{id}-{ms}.txt"));
+        // The id is a checked plain name already; the file name is made safe anyway.
+        let safe: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        let path = dir.join(format!("{safe}-{ms}.txt"));
         match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &text)) {
             Ok(()) => ok(format!("[{id}] {} — {} lines written to {}", snap.header(), text.lines().count(), path.display())),
             Err(e) => fail(format!("cannot write {}: {e}", path.display())),

@@ -49,7 +49,7 @@ pub use dsl::{
     parse_flow_file, redact, to_vars,
 };
 pub use recording::{Mark, Span, timeline};
-pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, reset_app, run_flow, sessions_used};
+pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, check_session_id, reset_app, run_flow, sessions_used};
 pub use device::{DeviceInfo, DeviceKind, DeviceSpec, SelectError, select};
 pub use error::{Error, Result};
 pub use recording::{escape_html, filmstrip};

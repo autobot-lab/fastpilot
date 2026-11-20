@@ -43,8 +43,20 @@ pub struct SessionRegistry {
     active: Option<SessionId>,
 }
 
+/// A session id is a plain name: 1–64 letters, digits, `-` or `_`. Files are named after it
+/// (`snapshot file: true`), so `../x` must never be one (Security, v0.4).
+pub fn check_session_id(id: &str) -> Result<()> {
+    let ok = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Session(format!("invalid session id `{}`: use 1 to 64 letters, digits, - or _", id.escape_debug())))
+    }
+}
+
 impl SessionRegistry {
     pub fn insert(&mut self, id: SessionId, driver: Box<dyn Driver>) -> Result<()> {
+        check_session_id(&id)?;
         if self.sessions.contains_key(&id) {
             return Err(Error::Session(format!("session `{id}` already exists")));
         }
@@ -529,6 +541,7 @@ async fn start_session(
     target: Option<&str>,
     device: Option<&str>,
 ) -> Result<Option<String>> {
+    check_session_id(id)?;
     if reg.contains(id) {
         return Err(Error::Session(format!("session `{id}` already exists")));
     }
@@ -1636,6 +1649,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_ids_are_plain_names() {
+        for ok in ["web1", "and1", "shop-1_a", "A", &"x".repeat(64)] {
+            assert!(check_session_id(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", "..", ".", "a b", "x\ny", "é", &"x".repeat(65)] {
+            assert!(check_session_id(bad).is_err_and(|e| e.to_string().contains("invalid session id")), "{bad:?}");
+        }
+    }
     use crate::{Direction, Node, Point, RefRegistry, Value, parse_flow};
 
     /// Login page that switches to a dashboard once "Masuk" is tapped with a filled email.
