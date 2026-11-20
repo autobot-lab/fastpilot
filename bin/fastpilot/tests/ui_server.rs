@@ -213,6 +213,11 @@ fn ui_arguments_and_port_errors_are_explained() {
             .expect("run");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
+    // QA N2 (P2): plain lines with a real line break, not `Error: "...\n..."`; exit code 2.
+    let out = Command::new(env!("CARGO_BIN_EXE_fastpilot")).args(["ui", "--bogus"]).env("HOME", std::env::temp_dir()).stdin(Stdio::null()).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.starts_with("fastpilot ui: unknown option `--bogus`\n") && !err.contains("\\n") && !err.contains("Error: \""), "{err}");
     // These must return at once (a server would hang the test).
     let (ok, out) = run(&["ui", "--help"]);
     assert!(ok && out.contains("usage: fastpilot ui") && !out.contains("http://"), "{out}");
@@ -316,4 +321,28 @@ fn ui_opens_the_browser_without_the_code_in_argv() {
     assert!(recorded.contains("-rw-------"), "owner-only redirect file: {recorded}");
     assert!(recorded.contains(&format!("code={code}")), "the file carries the link: {recorded}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// P2 item 6: the checks on Perangkat are explained in Indonesian (the CLI `doctor` stays English).
+#[test]
+fn ui_doctor_speaks_indonesian() {
+    let ui = start("doctor-id", &[]);
+    let p = ui.port;
+    let r = http(p, "GET", &format!("/?code={}", ui.code), &[], "");
+    let session = r.header("set-cookie").and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let r = http(p, "GET", "/api/doctor", &[("Cookie", session)], "");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v: serde_json::Value = serde_json::from_str(&r.text()).expect("json");
+    let checks = v["checks"].as_array().expect("checks");
+    assert!(!checks.is_empty(), "{v}");
+    // English words that only appear in the untranslated detail/hint texts.
+    let english = ["not found", "not installed", "Install ", "install it", " found ", "missing", "running", "Run `", "no device"];
+    for c in checks {
+        for field in ["detail", "hint"] {
+            let Some(t) = c[field].as_str() else { continue };
+            for w in english {
+                assert!(!t.contains(w), "{field} still English ({w:?}): {t}");
+            }
+        }
+    }
 }

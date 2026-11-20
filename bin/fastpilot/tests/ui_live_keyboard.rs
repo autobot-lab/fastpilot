@@ -34,7 +34,7 @@ async fn eval(client: &Client, js: &str) -> String {
     let flow = format!("- evalScript: {}\n", serde_json::to_string(js).expect("js"));
     let (ok, out) = call(client, "run_flow", json!({ "flow": flow, "session": "viewer" })).await;
     assert!(ok, "{out}");
-    out.lines().find_map(|l| l.split_once(" = ").map(|(_, v)| v.trim().to_owned())).unwrap_or_default()
+    out.lines().find_map(|l| l.rsplit_once(" = ").map(|(_, v)| v.trim().to_owned())).unwrap_or_default()
 }
 
 struct Ui(std::process::Child);
@@ -84,7 +84,8 @@ async fn live_page_works_with_the_keyboard() {
     // Header pill counts the blocked session; the step says why.
     assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 diblokir"));
     let why = eval(&client, "[...document.querySelectorAll('.steps .blk')].map(l => l.textContent).join('|')").await;
-    assert!(why.contains("diblokir: teks berisi \\\"keluar\\\""), "{why}");
+    // Design N2 (P2): the word as the user wrote it in Batasan, not lower-cased.
+    assert!(why.contains("diblokir: teks berisi \\\"Keluar\\\""), "{why}");
 
     // Focus survives the refresh (polls every second).
     eval(&client, "document.querySelector('[data-fk^=\"zoom:\"]').focus(), 'ok'").await;
@@ -105,6 +106,42 @@ async fn live_page_works_with_the_keyboard() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- pressKey: Escape\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     assert_eq!(eval(&client, "!document.querySelector('dialog.zoom') && document.activeElement.dataset.fk.startsWith('zoom:')").await, "true");
+
+    // QA N3 (P2): a message about the last attempt goes away once the user edits the text.
+    eval(&client, "location.hash = '#/settings/limits', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Batasan\", timeout: 5000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let enter = "(() => { const i = document.querySelector('input[data-key=\"block_actions\"]'); i.value = VALUE; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return document.querySelector('.toast')?.textContent || ''; })()";
+    let msg = eval(&client, &enter.replace("VALUE", "'a, b'")).await;
+    assert!(msg.contains("tanpa koma"), "{msg}");
+    let left = eval(&client, "(() => { const i = document.querySelector('input[data-key=\"block_actions\"]'); i.value = 'a'; i.dispatchEvent(new Event('input', { bubbles: true })); return document.querySelectorAll('.toast').length; })()").await;
+    assert_eq!(left, "0", "the old message must go when the user types");
+    let msg = eval(&client, &enter.replace("VALUE", "'KELUAR'")).await;
+    assert!(msg.contains("\\\"KELUAR\\\" sudah ada"), "a duplicate in other letters is caught: {msg}");
+
+    // Design N3 (P2): nothing wider than a 390 px phone screen.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setViewport: { width: 390, height: 844 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    for page in ["#/live", "#/settings/limits", "#/settings/model", "#/settings/secret", "#/device"] {
+        eval(&client, &format!("location.hash = '{page}', 'ok'")).await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let w = eval(&client, "document.documentElement.scrollWidth + '/' + innerWidth + ' ' + [...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > innerWidth + 0.5).slice(-4).map(e => e.tagName + '.' + e.className + ':' + Math.round(e.getBoundingClientRect().right)).join(' ')").await;
+        let (scroll, inner) = w.trim_matches('"').split(' ').next().unwrap_or_default().split_once('/').expect("widths");
+        assert!(scroll.parse::<u32>().expect("n") <= inner.parse::<u32>().expect("n"), "{page} overflows at 390 px: {w}");
+    }
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setViewport: desktop\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+
+    // Design N1 (P2): after "Muat ulang" on a broken file, keyboard focus lands on the page title.
+    let config = home.join(".fastpilot/config.toml");
+    std::fs::write(&config, "block_actions = [\"Keluar\"\n").expect("break");
+    eval(&client, "location.hash = '#/settings/limits', location.reload(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"File pengaturan rusak\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    std::fs::write(&config, "block_actions = [\"Keluar\"]\n").expect("fix");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Muat ulang setelah diperbaiki\"\n- assertNotVisible: { text: \"File pengaturan rusak\", timeout: 5000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    assert_eq!(eval(&client, "document.activeElement.tagName + ':' + document.activeElement.textContent").await, "\"H1:Pengaturan\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }
