@@ -253,6 +253,9 @@ function providerGroup() {
   const hosted = (n) => ["openai", "openrouter", "groq"].includes(n);
   const url = h("input", { type: "text", class: "mono", value: d.base_url, placeholder: "https://…/v1", "aria-label": "Base URL" });
   const urlHint = h("span", { class: "s" });
+  // Only Claude Code was tried with fastpilot's demo; every other provider says so (v0.4).
+  const untested = h("p", { class: "s prov-untested" }, h("span", { class: "ag-untested" }, "not tested yet"),
+    " fastpilot has not been tried with this provider yet: run a few tests and check the results before you rely on them.");
   const model = h("input", { type: "text", class: "mono", value: d.model, placeholder: "for example gpt-4.1-mini, llama3.1", "aria-label": "Model id" });
   const keepDraft = () => { provDraft = { provider: pick.value, base_url: url.value, model: model.value }; };
   url.addEventListener("input", keepDraft);
@@ -270,6 +273,7 @@ function providerGroup() {
   let shownFor = d.provider;
   const sync = () => {
     detail.hidden = pick.value === "claude";
+    untested.hidden = pick.value === "claude";
     const p = preset(pick.value);
     if (pick.value !== shownFor) {
       url.value = p.base_url || "";
@@ -291,7 +295,7 @@ function providerGroup() {
     h("div", { class: "gh" }, icon("plug"), "who runs the tests · fastpilot run"),
     provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "The provider is set in the environment (FASTPILOT_PROVIDER…), which wins over this setting.")) : null,
     opt("Provider", "Claude Code uses your login. An OpenAI-compatible API is optional; it applies from the next run.", pick, null),
-    h("div", { class: "prov" }, detail, btns,
+    h("div", { class: "prov" }, untested, detail, btns,
       provResult ? h("p", { class: "prov-result " + (provResult.ok ? "ok" : "bad"), role: "status" }, provResult.ok ? "✓ " : "✗ ", provResult.text) : null));
 }
 
@@ -613,7 +617,8 @@ function card(s) {
   const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Session ${s.id}, ${s.platform}. Enter to see its steps.`,
     onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
-    s.agent_name ? h("div", { class: "l-agent" }, h("b", {}, s.agent_name), h("span", { class: "s" }, ` · ${s.model_label || ""}`)) : null,
+    s.agent_name ? h("div", { class: "l-agent" }, h("b", {}, s.agent_name), h("span", { class: "s" }, ` · ${s.model_label || ""}`),
+      s.model_tested === false ? h("span", { class: "ag-untested" }, "not tested yet") : null) : null,
     screenEl(s, false),
     h("div", { class: "card-text" }, h("div", {}, line, status), more));
   el.addEventListener("keydown", (e) => {
