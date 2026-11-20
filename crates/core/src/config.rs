@@ -57,6 +57,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "model_replay", help: "`fastpilot run`: model that replays path memory (default claude-haiku-5-5)", rule: Rule::Free },
     Setting { key: "model_explore", help: "`fastpilot run`: model that explores (default claude-opus-5-5)", rule: Rule::Free },
     Setting { key: "flow_timeout", help: "seconds one run_flow may take (default 300)", rule: Rule::Free },
+    Setting { key: "action_timeout", help: "seconds one action (tap, type, select, scroll) may take (default 5); typing on a phone gets three times that for the keyboard", rule: Rule::Free },
     Setting { key: "retry_budget", help: "`fastpilot run`: reruns of failed tests per suite (default 3)", rule: Rule::Free },
     Setting { key: "breaker", help: "`fastpilot run`: consecutive infra failures before the rest is skipped (default 3)", rule: Rule::Free },
     Setting { key: "android_serial", help: "default Android device or emulator serial", rule: Rule::Free },
@@ -257,7 +258,7 @@ fn items_of(key: &str, v: &str) -> Vec<String> {
 pub const LISTS: &[&str] = &["allowed_domains", "confirm_actions", "vars", "block_actions", "upload_dirs"];
 
 /// Settings whose value is a whole number.
-const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "retry_budget", "breaker", "daemon_idle", "max_steps", "test_timeout"];
+const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "action_timeout", "retry_budget", "breaker", "daemon_idle", "max_steps", "test_timeout"];
 
 /// Settings whose value is true / false.
 pub const FLAGS: &[&str] =
@@ -297,6 +298,9 @@ fn invalid(key: &str, value: &str) -> Option<String> {
     }
     if key == "max_steps" && v == "0" {
         return Some("`max_steps` takes at least 1 step".into());
+    }
+    if key == "action_timeout" && v == "0" {
+        return Some("`action_timeout` takes at least 1 second".into());
     }
     if key == "adb_server" {
         let ok = v.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && !h.contains('/') && p.parse::<u16>().is_ok_and(|p| p > 0));

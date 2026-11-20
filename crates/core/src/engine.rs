@@ -13,7 +13,21 @@ use crate::dsl::{Condition, HttpRequest, OtpSource, Random, ReadOtp, add_secret,
 use crate::snapshot::{DEFAULT_MAX_LINES, shows_nothing_new};
 use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Rect, Result, Selector, SessionId, Snapshot, Step, diff};
 
-const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one action (tap, type, select, scroll ...) may take: `action_timeout` seconds
+/// (default 5).
+fn action_timeout() -> Duration {
+    let secs = crate::config::var("FASTPILOT_action_timeout()").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(5);
+    Duration::from_secs(secs)
+}
+
+/// Typing on a phone waits for the keyboard too, which slow devices and emulators take seconds to
+/// show: three times the action limit there.
+fn input_timeout(d: &dyn Driver) -> Duration {
+    match d.platform() {
+        Platform::Android | Platform::Ios => action_timeout() * 3,
+        _ => action_timeout(),
+    }
+}
 const ASSERT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(3);
 const SCROLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -621,14 +635,14 @@ async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx
 fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Instant, res: Result<Option<String>>) -> bool {
     let ok = res.is_ok();
     let (timeout, target) = match step.unconfirmed() {
-        Step::TapOn(s) => (Some(ACTION_TIMEOUT), Some((s.clone(), Intent::Tap))),
+        Step::TapOn(s) => (Some(action_timeout()), Some((s.clone(), Intent::Tap))),
         Step::InputText { into, .. } | Step::UploadFile { into, .. } => {
-            (Some(ACTION_TIMEOUT), Some((into.clone(), Intent::Type)))
+            (Some(action_timeout()), Some((into.clone(), Intent::Type)))
         }
         Step::SelectOption { from, .. } | Step::LongPressOn(from) | Step::DoubleTapOn(from) => {
-            (Some(ACTION_TIMEOUT), Some((from.clone(), Intent::Tap)))
+            (Some(action_timeout()), Some((from.clone(), Intent::Tap)))
         }
-        Step::CopyTextFrom(s) => (Some(ACTION_TIMEOUT), Some((s.clone(), Intent::Find))),
+        Step::CopyTextFrom(s) => (Some(action_timeout()), Some((s.clone(), Intent::Find))),
         Step::ScrollUntilVisible { selector, timeout, .. } => {
             (Some(timeout.unwrap_or(SCROLL_TIMEOUT)), Some((selector.clone(), Intent::Find)))
         }
@@ -913,14 +927,14 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::TapOn(sel) => {
                 guard_risky(d, sel, confirmed).await?;
                 let (sel, hit) = point_on_screen(d, sel).await?;
-                retry(ACTION_TIMEOUT, || d.tap(&sel)).await?;
+                retry(action_timeout(), || d.tap(&sel)).await?;
                 if hit.is_some() {
                     return Ok(hit);
                 }
             }
             Step::InputText { into, text } => {
                 let text = subst(text)?;
-                retry(ACTION_TIMEOUT, || d.type_text(into, &text)).await?
+                retry(input_timeout(d), || d.type_text(into, &text)).await?
             }
             Step::AssertVisible { selector, timeout } => {
                 retry(timeout.unwrap_or(ASSERT_TIMEOUT), || async {
@@ -929,10 +943,10 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 .await?;
                 return Ok(None);
             }
-            Step::Scroll { direction, within } => retry(ACTION_TIMEOUT, || d.scroll(*direction, within.as_ref())).await?,
+            Step::Scroll { direction, within } => retry(action_timeout(), || d.scroll(*direction, within.as_ref())).await?,
             Step::Back => d.back().await?,
             Step::AssertNotVisible { selector, timeout } => {
-                let timeout = timeout.unwrap_or(ACTION_TIMEOUT);
+                let timeout = timeout.unwrap_or(action_timeout());
                 let deadline = Instant::now() + timeout;
                 loop {
                     match d.snapshot().await?.resolve(selector, Intent::Find) {
@@ -948,8 +962,8 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 guard_key(d, k, confirmed, &crate::policy::risky_words(), &crate::policy::blocked_words()).await?;
                 d.press_key(k).await?
             }
-            Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
-            Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
+            Step::SelectOption { from, option } => retry(action_timeout(), || d.select_option(from, option)).await?,
+            Step::UploadFile { into, files } => retry(action_timeout(), || d.upload(into, files)).await?,
             Step::LaunchApp { app, launch } => {
                 let mut l = crate::Launch::default();
                 for (k, v) in &launch.arguments {
@@ -982,7 +996,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::LongPressOn(sel) => {
                 guard_risky(d, sel, confirmed).await?;
                 let (sel, hit) = point_on_screen(d, sel).await?;
-                retry(ACTION_TIMEOUT, || d.long_press(&sel)).await?;
+                retry(action_timeout(), || d.long_press(&sel)).await?;
                 if hit.is_some() {
                     return Ok(hit);
                 }
@@ -990,7 +1004,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::DoubleTapOn(sel) => {
                 guard_risky(d, sel, confirmed).await?;
                 let (sel, hit) = point_on_screen(d, sel).await?;
-                retry(ACTION_TIMEOUT, || d.double_tap(&sel)).await?;
+                retry(action_timeout(), || d.double_tap(&sel)).await?;
                 if hit.is_some() {
                     return Ok(hit);
                 }
@@ -1025,7 +1039,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             Step::InstallApp(path) => d.install_app(&subst(path)?).await?,
             Step::UninstallApp(app) => d.uninstall_app(&subst(app)?).await?,
             Step::CopyTextFrom(sel) => {
-                retry(ACTION_TIMEOUT, || async {
+                retry(action_timeout(), || async {
                     let snap = d.snapshot().await?;
                     let n = &snap.resolve(sel, Intent::Find)?.node;
                     if n.secure {
@@ -1042,7 +1056,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 let text = guard(&ctx.clipboard)
                     .clone()
                     .ok_or_else(|| Error::Flow("nothing copied yet; use copyTextFrom first".into()))?;
-                retry(ACTION_TIMEOUT, || d.type_text(&Selector::Focused, &text)).await?
+                retry(input_timeout(d), || d.type_text(&Selector::Focused, &text)).await?
             }
             Step::WaitForAnimationToEnd(t) => {
                 if let Err(e) = d.wait_idle(t.unwrap_or(IDLE_TIMEOUT)).await {
@@ -1089,7 +1103,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             }
             Step::InputRandom { kind, length } => {
                 let value = random(*kind, *length);
-                retry(ACTION_TIMEOUT, || d.type_text(&Selector::Focused, &value)).await?;
+                retry(input_timeout(d), || d.type_text(&Selector::Focused, &value)).await?;
                 settle(d).await;
                 return Ok(Some(value));
             }
@@ -1802,6 +1816,89 @@ mod tests {
         assert!(matches!(&e, Error::Blocked(m) if m.contains("evalScript") && m.contains("block_actions")), "{e}");
         assert!(guard_script(&[]).is_ok());
         assert!(page.done.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "guards never press or run anything");
+    }
+
+    /// Typing takes `typing`: a phone whose keyboard is slow to come up. Platform `platform`.
+    struct SlowKeyboard {
+        platform: Platform,
+        typing: Duration,
+    }
+
+    #[async_trait]
+    impl Driver for SlowKeyboard {
+        fn platform(&self) -> Platform {
+            self.platform
+        }
+        async fn open(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn snapshot(&self) -> Result<Snapshot> {
+            Ok(Snapshot::build("Login", "fake://", vec![node("textfield", "Email")], &mut RefRegistry::default()))
+        }
+        async fn tap(&self, _: &Selector) -> Result<()> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &Selector, _: &str) -> Result<()> {
+            tokio::time::sleep(self.typing).await;
+            Ok(())
+        }
+        async fn scroll(&self, _: Direction, _: Option<&Selector>) -> Result<()> {
+            Ok(())
+        }
+        async fn swipe(&self, _: Point, _: Point) -> Result<()> {
+            Ok(())
+        }
+        async fn back(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn wait_idle(&self, _: Duration) -> Result<()> {
+            Ok(())
+        }
+        async fn eval_script(&self, _: &str) -> Result<Value> {
+            Ok(Value::Null)
+        }
+    }
+
+    /// FastTest (v0.2.0, Android API 35): the keyboard took 1.7–7.8 s to come up and every action
+    /// had a fixed 5 s limit, so inputText timed out. The limit is now `action_timeout` (seconds),
+    /// and inputText on a phone gets three times that for the keyboard.
+    #[tokio::test]
+    async fn input_text_waits_for_a_slow_keyboard() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("FASTPILOT_action_timeout()", "1") };
+        let typing = Duration::from_millis(1500);
+        let step = Step::InputText { into: Selector::Text("Email".into()), text: "a@b.c".into() };
+        let android = SlowKeyboard { platform: Platform::Android, typing };
+        let web = SlowKeyboard { platform: Platform::Web, typing };
+        // A phone: 1.5 s of keyboard fits in 3 × 1 s.
+        assert!(type_with_timeout(&android, &step).await.is_ok(), "android keyboard");
+        // A web page has no keyboard to wait for: the action limit applies as it is.
+        let e = type_with_timeout(&web, &step).await.expect_err("web 1 s limit");
+        assert!(matches!(e, Error::Timeout(_)), "{e}");
+        // Raised by the user: fits.
+        unsafe { std::env::set_var("FASTPILOT_action_timeout()", "2") };
+        assert!(type_with_timeout(&web, &step).await.is_ok(), "action_timeout 2");
+        unsafe { std::env::remove_var("FASTPILOT_action_timeout()") };
+        assert_eq!(action_timeout(), Duration::from_secs(5), "default");
+    }
+
+    /// One step through the real executor.
+    async fn type_with_timeout(d: &dyn Driver, step: &Step) -> Result<()> {
+        let ctx = Ctx {
+            records: Mutex::new(Vec::new()),
+            stop_on_fail: true,
+            deadline: Instant::now() + Duration::from_secs(60),
+            vars: Mutex::new(HashMap::new()),
+            clipboard: Mutex::new(None),
+            recording: Mutex::new(None),
+            last_action: Mutex::new(HashMap::new()),
+            live: None,
+        };
+        exec_with(d, step, &ctx, false).await.map(|_| ())
     }
 
     struct FakeLauncher;
