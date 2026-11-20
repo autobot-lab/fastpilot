@@ -118,10 +118,10 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     };
     let base = serde_json::json!({ "id": "", "name": "Login harian", "tests": tests, "when": { "every": "weekday", "time": "08:30" }, "notify": { "webhook": true, "os": true, "github": "acme/shop" }, "enabled": true });
     bad(base.clone(), Some("http://hooks.example.com/x"), "https://");
-    bad(serde_json::json!({ "id": "", "name": "x", "tests": "tests/login.md", "when": { "every": "day", "time": "08:30" }, "notify": {}, "enabled": true }), None, "path lengkap");
+    bad(serde_json::json!({ "id": "", "name": "x", "tests": "tests/login.md", "when": { "every": "day", "time": "08:30" }, "notify": {}, "enabled": true }), None, "full path");
     bad(serde_json::json!({ "id": "", "name": "x", "tests": tests, "when": { "every": "day", "time": "25:00" }, "notify": {}, "enabled": true }), None, "HH:MM");
-    bad(serde_json::json!({ "id": "", "name": "x", "tests": tests, "when": { "every": "day", "time": "08:00" }, "notify": { "github": "acme/../x" }, "enabled": true }), None, "pemilik/nama");
-    bad(base.clone(), None, "URL webhook");
+    bad(serde_json::json!({ "id": "", "name": "x", "tests": tests, "when": { "every": "day", "time": "08:00" }, "notify": { "github": "acme/../x" }, "enabled": true }), None, "owner/name");
+    bad(base.clone(), None, "webhook URL first");
     // Changes need the page's own Origin.
     let (st, _) = request(ui.port, "POST", "/api/schedules", &ui.cookie, &serde_json::json!({ "action": "save", "schedule": base }).to_string(), false);
     assert!(st == 403 || st == 400, "no Origin: {st}");
@@ -148,7 +148,7 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     }
     let (st, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
     assert_eq!(st, 200);
-    assert!(list.contains(&format!("http://127.0.0.1:{hook_port}/•••")) && !list.contains("rahasia") && list.contains("Hari kerja 08:30"), "{list}");
+    assert!(list.contains(&format!("http://127.0.0.1:{hook_port}/•••")) && !list.contains("rahasia") && list.contains("weekdays 08:30"), "{list}");
 
     // Tes notifikasi: Slack-style text to the webhook, an issue with the token.
     let (st, body) = post(r#"{"action":"test","id":"login-harian"}"#);
@@ -174,6 +174,68 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     assert_eq!(last["passed"], false, "{v}");
     assert!(last["summary"].as_str().is_some_and(|s| s.contains("0 dari 1 test lolos, 1 gagal") && s.contains("login-ok")), "{last}");
     assert!(last["notified"].as_array().is_some_and(|n| n.len() == 3), "{last}");
+
+    // D5: every 2 hours inside 08:00–20:00. Bad N or an inverted window is refused for people.
+    let hourly = |n: u64, from: &str, to: &str| serde_json::json!({ "id": "", "name": "Checkout every 2 hours", "tests": tests, "when": { "every": "hours", "hours": n, "from": from, "to": to }, "notify": { "os": true }, "enabled": true });
+    bad(hourly(0, "08:00", "20:00"), None, "1 to 24");
+    bad(hourly(25, "08:00", "20:00"), None, "1 to 24");
+    bad(hourly(2, "20:00", "08:00"), None, "ends before it starts");
+    let (st, body) = post(&serde_json::json!({ "action": "save", "schedule": hourly(2, "08:00", "20:00") }).to_string());
+    assert_eq!(st, 200, "{body}");
+    let file = entries.join("dev.fastpilot.schedule.checkout-every-2-hours.plist");
+    let plist = std::fs::read_to_string(&file).expect("LaunchAgent for every 2 hours");
+    let hours: Vec<String> = plist.split("<key>Hour</key><integer>").skip(1).map(|x| x.split('<').next().unwrap_or("").to_owned()).collect();
+    assert_eq!(hours, ["8", "10", "12", "14", "16", "18", "20"], "{plist}");
+    assert!(!plist.contains("<key>Weekday</key>"), "every day: {plist}");
+    if cfg!(target_os = "macos") {
+        let lint = std::process::Command::new("plutil").arg("-lint").arg(&file).output().expect("plutil");
+        assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
+    }
+    let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
+    let v: serde_json::Value = serde_json::from_str(&list).expect("json");
+    let row = v["schedules"].as_array().and_then(|a| a.iter().find(|x| x["schedule"]["id"] == "checkout-every-2-hours")).cloned().expect("row");
+    assert_eq!(row["when_text"], "every 2 hours, 08:00–20:00");
+    assert_eq!(row["slots"], serde_json::json!(["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"]));
+    assert_eq!(row["days"], serde_json::Value::Null);
+    let title = std::fs::read_to_string(&tests).expect("login.md").lines().find_map(|l| l.strip_prefix("# ").map(str::to_owned)).expect("title");
+    assert_eq!(row["tests_text"], title.as_str(), "the test's title, not its path: {row}");
+    assert!(row["last"].is_null() && row["running"] == false, "{row}");
+
+    // Run now: runs the test in the background, a second click while it runs is refused, then
+    // Last has the count and the report, and the failure notification went out.
+    let (st, body) = post(r#"{"action":"run","id":"checkout-every-2-hours"}"#);
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post(r#"{"action":"run","id":"checkout-every-2-hours"}"#);
+    assert!(st == 422 && body.contains("already running"), "second Run now: {st} {body}");
+    let mut last = serde_json::Value::Null;
+    for _ in 0..240 {
+        let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
+        let v: serde_json::Value = serde_json::from_str(&list).expect("json");
+        let row = v["schedules"].as_array().and_then(|a| a.iter().find(|x| x["schedule"]["id"] == "checkout-every-2-hours")).cloned().expect("row");
+        if row["last"]["passed"].is_boolean() && row["running"] == false {
+            last = row["last"].clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert_eq!(last["passed"], false, "Run now finished: {last}");
+    assert_eq!((last["ok"].as_u64(), last["total"].as_u64()), (Some(0), Some(1)), "{last}");
+    assert!(last["notified"].as_array().is_some_and(|n| n.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Notifikasi")))), "OS notification on failure: {last}");
+    let (st, report) = request(ui.port, "GET", "/api/schedules/report?id=checkout-every-2-hours", &ui.cookie, "", false);
+    assert_eq!(st, 200, "the Last link opens the run's report");
+    assert!(report.contains("<html") || report.contains("<!doctype") || report.contains("<!DOCTYPE"), "{}", &report[..report.len().min(200)]);
+    let mut s = TcpStream::connect(("127.0.0.1", ui.port)).expect("connect");
+    s.write_all(format!("GET /api/schedules/report?id=checkout-every-2-hours HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nCookie: {}\r\n\r\n", ui.port, ui.cookie).as_bytes()).expect("write");
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).expect("read");
+    assert!(raw.to_lowercase().contains("content-security-policy: sandbox"), "the report is sandboxed: {}", &raw[..raw.len().min(400)]);
+    let (st, _) = request(ui.port, "GET", "/api/schedules/report?id=../../etc", &ui.cookie, "", false);
+    assert_eq!(st, 404);
+    let (st, _) = request(ui.port, "GET", "/api/schedules/report?id=checkout-every-2-hours", "nope=1", "", false);
+    assert_ne!(st, 200, "the report needs the page's session");
+    let (st, _) = post(r#"{"action":"delete","id":"checkout-every-2-hours"}"#);
+    assert_eq!(st, 200);
+    assert!(!file.exists(), "delete removes every OS entry of the schedule");
 
     // Off: the entry goes; delete: the schedule and its secret go.
     let (st, _) = post(r#"{"action":"disable","id":"login-harian"}"#);

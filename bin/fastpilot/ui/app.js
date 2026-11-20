@@ -1043,9 +1043,10 @@ function pageChat() {
   loadChat();
 }
 
-// ---- Jadwal (C3) ----
+// ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
-const DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"]];
 
 let schedTimer = null;
 async function loadSchedules() {
@@ -1057,12 +1058,8 @@ async function loadSchedules() {
   if (here && !schedForm) pageSchedules();
   // A run in progress: look again until it has finished.
   clearTimeout(schedTimer);
-  const running = (schedData.schedules || []).some((x) => x.last && (x.last.passed === undefined || x.last.passed === null) && !stale(x.last));
-  if (here && running) schedTimer = setTimeout(loadSchedules, 3000);
+  if (here && (schedData.schedules || []).some((x) => x.running)) schedTimer = setTimeout(loadSchedules, 3000);
 }
-
-// A run that started hours ago and never finished: its process is gone.
-function stale(l) { return Date.now() - l.started_ms > 3 * 3600 * 1000; }
 
 async function schedAction(body, done) {
   try {
@@ -1077,95 +1074,173 @@ async function schedAction(body, done) {
   }
 }
 
-function ago(ms) {
-  const s = Math.round((Date.now() - ms) / 1000);
-  if (s < 90) return "baru saja";
-  if (s < 3600) return `${Math.round(s / 60)} menit lalu`;
-  if (s < 86400) return `${Math.round(s / 3600)} jam lalu`;
-  return `${Math.round(s / 86400)} hari lalu`;
+const pad = (n) => String(n).padStart(2, "0");
+const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+// "14:00" today, "tomorrow 02:00", "Mon 09:00" this week, else "24 Nov 09:00".
+function when(d) {
+  const now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(d) - day(now)) / 86400000);
+  if (diff === 0) return hm(d);
+  if (diff === 1) return `tomorrow ${hm(d)}`;
+  if (diff === -1) return `yesterday ${hm(d)}`;
+  if (diff > 1 && diff < 7) return `${d.toLocaleDateString("en-GB", { weekday: "short" })} ${hm(d)}`;
+  return `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${hm(d)}`;
 }
 
-function lastRun(l) {
-  if (!l) return h("span", { class: "muted" }, "Belum jalan");
-  if ((l.passed === undefined || l.passed === null) && stale(l)) return h("span", { class: "bad" }, "Tidak selesai · ", ago(l.started_ms), h("div", { class: "s" }, "Proses run berhenti sebelum selesai (komputer tidur atau dimatikan?)."));
-  if (l.passed === undefined || l.passed === null) return h("span", { class: "run" }, h("div", { class: "spin sm", "aria-hidden": "true" }), " Berjalan · ", ago(l.started_ms));
-  return h("div", {},
-    h("span", { class: l.passed ? "ok" : "bad" }, l.passed ? "Lolos" : "Gagal", " · ", ago(l.finished_ms || l.started_ms)),
-    h("div", { class: "s" }, l.summary || ""),
-    l.report ? h("div", { class: "s" }, "Laporan: ", code(l.report)) : null,
+// The next run on this computer's clock, from the schedule's times of day and days.
+function nextRun(x) {
+  if (!x.schedule.enabled) return null;
+  const now = new Date();
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    const dow = d.getDay() === 0 ? 7 : d.getDay();
+    if (x.days && !x.days.includes(dow)) continue;
+    for (const t of x.slots || []) {
+      const [hh, mm] = t.split(":").map(Number);
+      const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm);
+      if (at > now) return at;
+    }
+  }
+  return null;
+}
+
+function lastRun(x) {
+  const l = x.last;
+  if (x.running) return h("span", { class: "run" }, h("div", { class: "spin sm", "aria-hidden": "true" }), " Running…");
+  if (!l || (l.passed === undefined || l.passed === null)) {
+    return l && !x.running && l.started_ms ? h("span", { class: "bad" }, "Did not finish · ", when(new Date(l.started_ms)), h("div", { class: "s" }, "The run stopped before it finished (was the computer asleep or off?)."))
+      : h("span", { class: "muted" }, "Not run yet");
+  }
+  const at = when(new Date(l.finished_ms || l.started_ms));
+  const count = l.total !== undefined && l.total !== null ? `${l.ok}/${l.total}` : (l.passed ? "passed" : "failed");
+  const label = [l.passed ? "✓ " : "✗ ", count, " ", at];
+  const sr = `${l.passed ? "Passed" : "Failed"} ${count} at ${at}, open the report`;
+  const res = l.report
+    ? h("a", { class: "lk " + (l.passed ? "ok" : "bad"), href: `/api/schedules/report?id=${encodeURIComponent(x.schedule.id)}`, target: "_blank", rel: "noopener", "aria-label": sr }, ...label)
+    : h("span", { class: l.passed ? "ok" : "bad" }, ...label);
+  return h("div", {}, res,
+    !l.passed && l.summary ? h("div", { class: "s" }, l.summary) : null,
     l.notified && l.notified.length ? h("div", { class: "s" }, l.notified.join(" · ")) : null);
 }
 
-function notifyChips(x) {
+function notifyText(x) {
   const n = x.schedule.notify || {};
   const out = [];
-  if (n.webhook) out.push(h("span", { class: "chip" }, "Webhook ", x.webhook ? h("span", { class: "muted" }, x.webhook) : null));
-  if (n.os) out.push(h("span", { class: "chip" }, "Notifikasi di komputer ini"));
-  if (n.github) out.push(h("span", { class: "chip" }, "Issue ", n.github));
-  return out.length ? h("div", { class: "chips" }, out) : h("span", { class: "muted" }, "Tidak ada");
+  if (n.webhook) out.push(x.webhook ? `Slack (${x.webhook.replace(/^https?:\/\//, "").replace(/\/•••$/, "")})` : "Slack (URL missing)");
+  if (n.os) out.push("Mac notification");
+  if (n.github) out.push(`GitHub issue in ${n.github}`);
+  return out.length ? out.join(", ") : h("span", { class: "muted" }, "None");
 }
 
 function schedRow(x) {
   const s = x.schedule;
-  const on = h("button", { class: "tg", role: "switch", "aria-checked": String(!!s.enabled), "aria-label": `Jadwal ${s.name} aktif`,
+  const on = h("button", { class: "tg", role: "switch", "aria-checked": String(!!s.enabled), "aria-label": `Schedule ${s.name} on`,
     onclick: () => schedAction({ action: s.enabled ? "disable" : "enable", id: s.id }) });
-  const name = s.tests.split("/").filter(Boolean).pop() || s.tests;
+  const next = nextRun(x);
   return h("tr", { "data-id": s.id },
-    h("td", {}, h("b", { class: "row-name", tabindex: "-1" }, s.name), h("div", { class: "s mono" }, s.id)),
-    h("td", {}, code(name), h("div", { class: "s", title: s.tests }, s.tests)),
+    h("td", {}, h("b", { class: "row-name", tabindex: "-1" }, s.name), h("div", { class: "s" }, x.tests_text)),
     h("td", {}, x.when_text),
-    h("td", {}, lastRun(x.last)),
-    h("td", {}, notifyChips(x)),
+    h("td", { class: "next" }, s.enabled ? (next ? when(next) : "—") : h("span", { class: "muted" }, "Off")),
+    h("td", { class: "last" }, lastRun(x)),
+    h("td", {}, notifyText(x)),
     h("td", {}, on),
     h("td", {}, h("div", { class: "acts" },
-      h("button", { class: "btn sm", onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" dijalankan sekarang. Hasilnya muncul di Run terakhir.`, true)).then(() => setTimeout(loadSchedules, 1500)) }, icon("play", "sm"), "Jalankan"),
-      h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Tes notifikasi: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("gagal")))) }, "Tes notifikasi"),
-      h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); } }, "Ubah"),
-      h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Hapus jadwal "${s.name}"? Entri di penjadwal sistem ikut dihapus.`)) schedAction({ action: "delete", id: s.id }); } }, "Hapus"))));
+      h("button", { class: "btn sm", disabled: x.running, onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" is running now. The result shows under Last.`, true)).then(() => setTimeout(loadSchedules, 1500)) }, icon("play", "sm"), "Run now"),
+      h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); document.querySelector(".sched-form input, .sched-form select")?.focus(); } }, "Edit"),
+      s.notify && (s.notify.webhook || s.notify.os || s.notify.github) ? h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Test notification: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("gagal")))) }, "Test notification") : null,
+      h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Delete the schedule "${s.name}"? Its entry in the system scheduler is removed too.`)) schedAction({ action: "delete", id: s.id }); } }, "Delete"))));
 }
 
 function schedPanel() {
   const f = schedForm;
   const editing = !!f.id;
+  const w = f.when || {};
   // Each field has its own error line; a refused save points at the field it is about.
   const errs = {};
-  const field = (label, input, hint, key) => {
+  const field = (label, input, hint, key, cls) => {
     const err = h("span", { class: "fld-err", role: "alert", hidden: true, id: key ? `err-${key}` : undefined });
     if (key) {
       errs[key] = { err, input };
-      // Read again when the user comes back to the field, not only when it appears.
       input.setAttribute("aria-describedby", `err-${key}`);
     }
-    return h("label", { class: "fld" }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null, err);
+    return h("label", { class: "fld" + (cls ? " " + cls : "") }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null, err);
   };
-  const name = h("input", { type: "text", maxlength: "80", value: f.name || "", placeholder: "mis. Checkout hari kerja" });
-  const tests = h("input", { type: "text", value: f.tests || (schedData && schedData.tests_hint) || "", placeholder: "/path/lengkap/ke/tests atau file .md", class: "mono" });
-  const every = h("select", { class: "sel" },
-    [["day", "Setiap hari"], ["weekday", "Hari kerja (Senin–Jumat)"], ["week", "Mingguan"]].map(([v, t]) => h("option", { value: v, selected: (f.when && f.when.every) === v }, t)));
-  const day = h("select", { class: "sel" }, DAYS.map((d, i) => h("option", { value: String(i + 1), selected: f.when && f.when.day === i + 1 }, d)));
-  const dayWrap = field("Hari", day, null, "day");
-  const syncDay = () => { dayWrap.hidden = every.value !== "week"; };
-  every.addEventListener("change", syncDay);
-  syncDay();
-  const time = h("input", { type: "time", value: (f.when && f.when.time) || "08:00", required: true });
+  // Tests: the saved tests of this project, all of them, or another path.
+  const found = (schedData && schedData.tests) || [];
+  const all = schedData && schedData.tests_hint;
+  const options = [];
+  if (all) options.push([all, found.length === 1 ? "The 1 test in this project" : `All ${found.length} tests in this project`]);
+  found.forEach((t) => options.push([t.path, t.title]));
+  options.push(["", "Another folder or file…"]);
+  const known = options.some(([v]) => v && v === f.tests);
+  const pick = h("select", { class: "sel" }, options.map(([v, t]) => h("option", { value: v, selected: f.tests ? (known ? v === f.tests : v === "") : false }, t)));
+  const path = h("input", { type: "text", value: known ? "" : (f.tests || ""), placeholder: "/full/path/to/tests or a .md file", class: "mono" });
+  const pathWrap = field("Folder or file", path, "The full path of a folder with test cases (*.md), or one .md file.", "tests");
+  const syncPath = () => { pathWrap.hidden = pick.value !== ""; };
+  pick.addEventListener("change", () => {
+    syncPath();
+    if (!name.dataset.touched) name.value = pick.value ? pick.selectedOptions[0].textContent.replace(/ in this project$/, "") : "";
+  });
+  const name = h("input", { type: "text", maxlength: "80", value: f.name || (options.length > 1 && !f.tests ? options[0][1].replace(/ in this project$/, "") : ""), placeholder: "e.g. Checkout tests" });
+  name.addEventListener("input", () => { name.dataset.touched = "1"; });
+  // Kind: a radio group shown as a segmented control.
+  let kind = w.every || "day";
+  const seg = h("div", { class: "seg", role: "radiogroup", "aria-label": "How often" });
+  const time = h("input", { type: "time", value: w.time || "08:00" });
+  const hours = h("input", { type: "number", min: "1", max: "24", step: "1", value: String(w.hours || 2), class: "num", "aria-label": "Hours between runs" });
+  const from = h("input", { type: "time", value: w.from || "", "aria-label": "Active from" });
+  const to = h("input", { type: "time", value: w.to || "", "aria-label": "Active until" });
+  const day = h("select", { class: "sel" }, DAYS.map((d, i) => h("option", { value: String(i + 1), selected: w.day === i + 1 }, d)));
+  const timeWrap = field("At (this computer's time)", time, null, "time");
+  const hoursWrap = h("div", { class: "fld" }, h("span", { class: "l" }, "Every"),
+    h("div", { class: "inline" }, hours, h("span", {}, "hours")), h("span", { class: "fld-err", role: "alert", hidden: true, id: "err-hours" }));
+  errs.hours = { err: hoursWrap.querySelector(".fld-err"), input: hours };
+  hours.setAttribute("aria-describedby", "err-hours");
+  const windowWrap = h("div", { class: "fld" }, h("span", { class: "l" }, "Active (optional)"),
+    h("div", { class: "inline" }, from, h("span", {}, "–"), to), h("span", { class: "s" }, "Empty: all day, from 00:00."),
+    h("span", { class: "fld-err", role: "alert", hidden: true, id: "err-window" }));
+  errs.window = { err: windowWrap.querySelector(".fld-err"), input: from };
+  from.setAttribute("aria-describedby", "err-window");
+  const dayWrap = field("Day", day, null, "day");
+  const sync = () => {
+    seg.querySelectorAll("button").forEach((b) => { const on = b.dataset.v === kind; b.setAttribute("aria-checked", String(on)); b.tabIndex = on ? 0 : -1; });
+    timeWrap.hidden = kind === "hours";
+    hoursWrap.hidden = windowWrap.hidden = kind !== "hours";
+    dayWrap.hidden = kind !== "week";
+  };
+  KINDS.forEach(([v, t]) => seg.append(h("button", { type: "button", role: "radio", "data-v": v, onclick: () => { kind = v; sync(); },
+    onkeydown: (e) => {
+      const i = KINDS.findIndex(([k]) => k === kind);
+      const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      kind = KINDS[(i + step + KINDS.length) % KINDS.length][0];
+      sync();
+      seg.querySelector(`[data-v="${kind}"]`).focus();
+    } }, t)));
+  sync();
   const n = f.notify || {};
   const wh = h("input", { type: "checkbox", checked: !!n.webhook });
-  const whUrl = h("input", { type: "password", autocomplete: "off", placeholder: f.webhook_set ? "tersimpan · isi untuk mengganti" : "https://hooks.slack.com/services/…", class: "mono" });
+  const whUrl = h("input", { type: "password", autocomplete: "off", placeholder: f.webhook_set ? "saved · type to replace it" : "https://hooks.slack.com/services/…", class: "mono" });
   const os = h("input", { type: "checkbox", checked: !!n.os });
   const gh = h("input", { type: "checkbox", checked: !!n.github });
-  const repo = h("input", { type: "text", value: n.github || "", placeholder: "pemilik/repo", class: "mono" });
-  const whField = field("URL webhook", whUrl, "Disimpan sebagai rahasia (~/.fastpilot/secrets, hanya pemilik) dan tidak ditampilkan lagi.", "webhook");
-  const repoField = field("Repo GitHub", repo, h("span", {}, "Ditulis pemilik/repo. Token dari GITHUB_TOKEN / GH_TOKEN, atau Keychain item ", code("fastpilot-github"), "."), "repo");
+  const repo = h("input", { type: "text", value: n.github || "", placeholder: "owner/repo", class: "mono" });
+  const whField = field("Webhook URL", whUrl, "Kept as a secret on this computer and not shown again.", "webhook");
+  const repoField = field("GitHub repo", repo, h("span", {}, "Written owner/repo. Token from GITHUB_TOKEN / GH_TOKEN, or the Keychain item ", code("fastpilot-github"), "."), "repo");
   const syncNotify = () => { whField.hidden = !wh.checked; repoField.hidden = !gh.checked; };
   wh.addEventListener("change", syncNotify);
   gh.addEventListener("change", syncNotify);
   syncNotify();
   const where = (msg) => {
     const m = msg.toLowerCase();
-    if (m.includes("nama jadwal") || m.includes("id jadwal")) return "name";
-    if (m.includes("test")) return "tests";
-    if (m.includes("jam")) return "time";
-    if (m.includes("hari")) return "day";
+    if (m.includes("name") && !m.includes("owner/name")) return "name";
+    if (m.includes("every n hours") || m.includes("n must")) return "hours";
+    if (m.includes("window")) return "window";
+    if (m.includes("tests not found") || m.includes(".md")) return "tests";
+    if (m.includes("time")) return "time";
+    if (m.includes("day")) return "day";
     if (m.includes("repo")) return "repo";
     if (m.includes("webhook")) return "webhook";
     return null;
@@ -1173,7 +1248,7 @@ function schedPanel() {
   const showError = (msg) => {
     Object.values(errs).forEach(({ err, input }) => { err.hidden = true; input.removeAttribute("aria-invalid"); });
     const at = errs[where(msg)];
-    if (!at || at.err.parentElement.closest("[hidden]")) { toast(msg); return; }
+    if (!at || at.err.parentElement.closest("[hidden]") || at.input.closest("[hidden]")) { toast(msg); return; }
     at.err.textContent = msg;
     at.err.hidden = false;
     at.input.setAttribute("aria-invalid", "true");
@@ -1181,9 +1256,16 @@ function schedPanel() {
   };
   const cancel = () => { schedForm = null; clearToast(); pageSchedules(); document.querySelector(".top .btn.p")?.focus(); };
   const save = async () => {
+    const whenOut = { every: kind };
+    if (kind === "hours") {
+      whenOut.hours = Number(hours.value);
+      if (from.value || to.value) { whenOut.from = from.value || undefined; whenOut.to = to.value || undefined; }
+    } else {
+      whenOut.time = time.value;
+      if (kind === "week") whenOut.day = Number(day.value);
+    }
     const schedule = {
-      id: f.id || "", name: name.value, tests: tests.value, enabled: f.enabled !== false,
-      when: { every: every.value, time: time.value, day: every.value === "week" ? Number(day.value) : undefined },
+      id: f.id || "", name: name.value, tests: pick.value || path.value, enabled: f.enabled !== false, when: whenOut,
       notify: { webhook: wh.checked, os: os.checked, github: gh.checked ? repo.value.trim() : undefined },
     };
     const body = { action: "save", schedule };
@@ -1192,48 +1274,50 @@ function schedPanel() {
     try { r = await api("/api/schedules", body); } catch (e) { showError(e.message); return; }
     schedForm = null;
     await loadSchedules();
-    toast(editing ? "Jadwal disimpan." : `Jadwal disimpan dan didaftarkan ke ${schedData.backend}.`, true);
+    toast(editing ? "Schedule saved." : "Schedule created. It runs even when this page is closed.", true);
     // Focus on the saved schedule in the list (the form and its button are gone).
     document.querySelector(`tr[data-id="${r.id}"] .row-name`)?.focus();
   };
-  const panel = h("section", { class: "grp sched-form", "aria-label": editing ? "Ubah jadwal" : "Jadwal baru",
+  syncPath();
+  return h("section", { class: "grp sched-form", "aria-label": editing ? "Edit schedule" : "New schedule",
     onkeydown: (e) => { if (e.key === "Escape") { e.preventDefault(); cancel(); } } },
-    h("h2", { class: "gh" }, icon("clock"), editing ? `ubah jadwal · ${f.id}` : "jadwal baru"),
+    h("h2", { class: "gh" }, icon("clock"), editing ? `edit schedule · ${f.name}` : "new schedule"),
     h("div", { class: "form" },
-      field("Nama", name, null, "name"),
-      field("Test", tests, "Folder berisi test (*.md) atau satu file .md, path lengkap. Dijalankan dengan fastpilot run.", "tests"),
-      h("div", { class: "row2" }, field("Kapan", every), dayWrap, field("Jam (waktu komputer ini)", time, null, "time")),
-      h("fieldset", { class: "fld" }, h("legend", { class: "l" }, "Kalau gagal (bisa lebih dari satu)"),
-        h("label", { class: "ck" }, wh, " Webhook (kompatibel Slack)"), h("div", { class: "sub-fld" }, whField),
-        h("label", { class: "ck" }, os, " Notifikasi di komputer ini"),
-        h("label", { class: "ck" }, gh, " Issue GitHub"), h("div", { class: "sub-fld" }, repoField)),
+      h("div", { class: "row2" }, field("Tests", pick, null, null), field("Name", name, null, "name")),
+      pathWrap,
+      h("div", { class: "fld" }, h("span", { class: "l", id: "kind-l" }, "How often"), seg),
+      h("div", { class: "row2" }, timeWrap, hoursWrap, windowWrap, dayWrap),
+      h("fieldset", { class: "fld" }, h("legend", { class: "l" }, "Notify me when it fails (any you like)"),
+        h("label", { class: "ck" }, os, " Mac notification"),
+        h("label", { class: "ck" }, wh, " Slack (webhook)"), h("div", { class: "sub-fld" }, whField),
+        h("label", { class: "ck" }, gh, " GitHub issue"), h("div", { class: "sub-fld" }, repoField)),
       h("div", { class: "btns" },
-        h("button", { class: "btn", onclick: cancel }, "Batal"),
-        h("button", { class: "btn p", onclick: save }, "Simpan jadwal")),
-      h("p", { class: "s muted" }, "Escape menutup panel ini tanpa menyimpan.")));
-  return panel;
+        h("button", { class: "btn", onclick: cancel }, "Cancel"),
+        h("button", { class: "btn p", onclick: save }, editing ? "Save schedule" : "Create schedule")),
+      h("p", { class: "s muted" }, "Or type it in Chat: \"run the checkout tests every 2 hours\". Escape closes this without saving.")));
 }
 
 function pageSchedules() {
-  $top().replaceChildren(icon("clock"), h("h1", { tabindex: "-1" }, "Jadwal"),
-    h("button", { class: "btn sm p right", onclick: () => { schedForm = {}; pageSchedules(); document.querySelector(".sched-form input")?.focus(); } }, icon("plus", "sm"), "Jadwal baru"));
+  const openForm = () => { schedForm = {}; pageSchedules(); document.querySelector(".sched-form select, .sched-form input")?.focus(); };
+  $top().replaceChildren(icon("clock"), h("h1", { tabindex: "-1" }, "Schedules"),
+    h("button", { class: "btn sm p right", onclick: openForm }, icon("plus", "sm"), "New schedule"));
   if (!schedData) {
-    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca jadwal…")));
+    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading schedules…")));
     if (!schedBusy) loadSchedules();
     return;
   }
   const list = schedData.schedules || [];
-  const where = { launchd: "launchd (LaunchAgent) di Mac ini", systemd: "systemd user timer", cron: "crontab" }[schedData.backend] || schedData.backend;
   const table = list.length
-    ? h("div", { class: "grp" }, h("div", { class: "gh" }, icon("clock"), `jadwal · ${list.length} · dijalankan oleh ${where}`),
+    ? h("div", { class: "grp" }, h("div", { class: "gh" }, icon("clock"), `schedules · ${list.length} · they run even when this page is closed`),
       h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
-        h("thead", {}, h("tr", {}, ["Nama", "Test", "Kapan", "Run terakhir", "Kalau gagal", "Aktif", ""].map((t) => h("th", {}, t)))),
+        h("thead", {}, h("tr", {}, ["Name", "When", "Next", "Last", "Notify", "On", ""].map((t) => h("th", {}, t)))),
         h("tbody", {}, list.map(schedRow)))))
-    : h("div", { class: "grp" }, h("div", { class: "gh" }, "jadwal · kosong"),
-      h("div", { class: "empty" }, icon("clock", "big"), h("b", {}, "Belum ada jadwal"),
-        h("span", {}, "Jalankan test otomatis tiap hari, hari kerja, atau mingguan. Jadwal didaftarkan ke ", where, " hanya saat kamu menyimpannya."),
-        h("button", { class: "btn p", onclick: () => { schedForm = {}; pageSchedules(); } }, icon("plus", "sm"), "Jadwal baru")));
-  $body().replaceChildren(...(schedData.error ? [h("div", { class: "err", role: "alert" }, "Tidak bisa membaca jadwal: " + schedData.error)] : []), ...(schedForm ? [schedPanel()] : []), table);
+    : h("div", { class: "grp" }, h("div", { class: "gh" }, "schedules · empty"),
+      h("div", { class: "empty" }, icon("clock", "big"), h("b", {}, "Nothing is scheduled"),
+        h("span", {}, "Saved tests can run by themselves, at a fixed time or every few hours. You get a message only when something fails."),
+        h("div", { class: "btns" }, h("button", { class: "btn p", onclick: openForm }, icon("plus", "sm"), "New schedule"),
+          h("span", { class: "s muted" }, "or type in Chat: \"run the checkout tests every 2 hours\""))));
+  $body().replaceChildren(...(schedData.error ? [h("div", { class: "err", role: "alert" }, "Could not read the schedules: " + schedData.error)] : []), ...(schedForm ? [schedPanel()] : []), table);
 }
 
 // ---- router ----

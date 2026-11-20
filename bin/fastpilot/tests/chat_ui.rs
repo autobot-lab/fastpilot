@@ -125,7 +125,7 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!(cards.len(), 2, "{bot}");
     let (sched, limits) = (&cards[0], &cards[1]);
     assert_eq!((sched["kind"].as_str(), sched["status"].as_str()), (Some("schedule"), Some("pending")), "{sched}");
-    assert!(sched["rows"].to_string().contains("Setiap hari 09:00"), "{sched}");
+    assert!(sched["rows"].to_string().contains("daily 09:00"), "{sched}");
     assert_eq!((limits["kind"].as_str(), limits["status"].as_str()), (Some("limits"), Some("pending")), "{limits}");
     let rows = limits["rows"].to_string();
     assert!(rows.contains("Tombol yang selalu diblokir") && rows.contains("+ Bayar") && rows.contains("Maksimal langkah per test") && rows.contains("30 (bawaan) → 20"), "plain labels, real values: {rows}");
@@ -187,6 +187,34 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
 
     let (st, body) = post("/api/chat", json!({ "reset": true }));
     assert!(st == 200 && body.contains("\"messages\":[]"), "{body}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// D5: "every 2 hours, 08:00–20:00" from Chat: a card first, then on click the OS entry with the
+/// seven times; an N outside 1–24 is refused on the card.
+#[test]
+fn chat_schedules_every_n_hours_after_a_click() {
+    let home = std::env::temp_dir().join(format!("fp-chat-hours-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let (st, body) = post("/api/chat", json!({ "message": "run the checkout tests every 2 hours, 8 to 8, and also every 30 hours" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let cards = v["messages"][1]["proposals"].as_array().cloned().expect("cards");
+    assert_eq!(cards.len(), 2, "{v}");
+    assert_eq!((cards[0]["kind"].as_str(), cards[0]["status"].as_str()), (Some("schedule"), Some("pending")), "{}", cards[0]);
+    assert!(cards[0]["rows"].to_string().contains("every 2 hours, 08:00–20:00"), "{}", cards[0]);
+    assert!(cards[1]["status"] == "refused" && cards[1]["note"].as_str().is_some_and(|n| n.contains("1 to 24")), "{}", cards[1]);
+    let plist = home.join("LaunchAgents/dev.fastpilot.schedule.checkout-every-2-hours.plist");
+    assert!(!plist.exists(), "nothing before the click");
+    let (st, body) = post("/api/chat/decide", json!({ "id": cards[0]["id"], "apply": true }));
+    assert_eq!(st, 200, "{body}");
+    let text = std::fs::read_to_string(&plist).expect("OS entry");
+    assert_eq!(text.matches("<key>Hour</key>").count(), 7, "{text}");
+    assert!(text.contains("<key>Hour</key><integer>8</integer>") && text.contains("<key>Hour</key><integer>20</integer>"), "{text}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

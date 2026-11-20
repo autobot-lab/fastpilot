@@ -2,7 +2,8 @@
 """A stand-in for Claude Code's `claude -p --output-format stream-json` in the `fastpilot ui` chat
 tests. It starts the MCP server named in --mcp-config (`fastpilot mcp`) and, when the message asks
 for a test, opens the demo login page and checks it over real MCP. It then answers with proposal
-blocks depending on the message: "jadwal" -> a schedule, "blokir" -> stricter limits,
+blocks depending on the message: "jadwal" -> a schedule, "every 2 hours" -> every 2 hours
+08:00-20:00 ("every 30 hours" -> refused), "blokir" -> stricter limits,
 "longgar" -> looser limits (which fastpilot must refuse). Each call is logged as JSON in
 $FAKE_CLAUDE_LOG. Env: FAKE_CHAT_TESTS (tests path for the schedule), FAKE_CHAT_DELAY_MS.
 """
@@ -70,6 +71,14 @@ if "jadwal" in low:
     text.append("Ini jadwalnya, cek dulu ya:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Login harian", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "day", "time": "09:00", "notify": {"webhook": True, "os": True}}) + "\n```")
+if "every 2 hours" in low:
+    text.append("Here it is:\n```fastpilot-proposal\n" + json.dumps({
+        "kind": "schedule", "name": "Checkout every 2 hours", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
+        "every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}) + "\n```")
+if "every 30 hours" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({
+        "kind": "schedule", "name": "Too slow", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
+        "every": "hours", "hours": 30}) + "\n```")
 if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
 if "javascript" in low:
