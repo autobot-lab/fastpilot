@@ -207,3 +207,18 @@ fn fastpilot_skills() -> Vec<(&'static str, &'static str)> {
         .map(|n| (Box::leak(n.to_owned().into_boxed_str()) as &'static str, ""))
         .collect()
 }
+
+/// v0.4 release gate: the skill sends people to menus the dashboard really has, in English (E1
+/// renamed "Pengaturan › Batasan & izin" and "Ambil alih"; the skill still named the old ones).
+#[test]
+fn the_skill_names_the_dashboards_own_menus() {
+    let skill = include_str!("../../../skills/fastpilot/SKILL.md");
+    let app = include_str!("../ui/app.js");
+    for old in ["Pengaturan", "Batasan", "Ambil alih", "Kembalikan", "Atur"] {
+        assert!(!skill.contains(old), "SKILL.md still names `{old}`");
+    }
+    for (said, shown) in [("Settings ›\n  Limits & permissions", "Limits & permissions"), ("(Take over)", "Take over")] {
+        assert!(skill.contains(said), "SKILL.md names {said:?}");
+        assert!(app.contains(shown), "the dashboard shows {shown:?}");
+    }
+}
