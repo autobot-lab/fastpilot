@@ -82,6 +82,11 @@ async fn provider_change_puts_its_server_in_the_field() {
     assert_eq!(eval(&client, &pick("groq")).await, "\"https://api.groq.com/openai/v1|true\"");
     assert_eq!(eval(&client, &pick("ollama")).await, "\"http://127.0.0.1:11434/v1|false\"");
     assert_eq!(eval(&client, &pick("custom")).await, "\"|false\"", "custom starts empty: no server from another provider");
+    // An unsaved choice survives the page being redrawn (the device check finishing, a refused save).
+    eval(&client, &pick("openrouter")).await;
+    eval(&client, "(document.querySelector('input[aria-label=\"Id model\"]').value = 'meta/llama', document.querySelector('input[aria-label=\"Id model\"]').dispatchEvent(new Event('input')), render(), 'ok')").await;
+    let kept = eval(&client, "document.querySelector('select[aria-label^=\"Penyedia\"]').value + '|' + document.querySelector('input[aria-label=\"Base URL\"]').value + '|' + document.querySelector('input[aria-label=\"Id model\"]').value").await;
+    assert_eq!(kept, "\"openrouter|https://openrouter.ai/api/v1|meta/llama\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }
