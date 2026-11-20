@@ -190,8 +190,10 @@ pub async fn change(Json(body): Json<Value>) -> Response {
 
 fn notes_state(notes: &fastpilot_memory::notes::Notes) -> Value {
     use fastpilot_memory::notes::{GROUPS, MAX_CHARS, MAX_NOTES, MAX_TOTAL};
+    let l = notes.read();
     json!({
-        "notes": notes.list(),
+        "notes": l.notes,
+        "damaged": l.damaged,
         "groups": GROUPS.iter().map(|(k, l)| json!({ "key": k, "label": l })).collect::<Vec<_>>(),
         "limits": { "notes": MAX_NOTES, "chars": MAX_CHARS, "total": MAX_TOTAL },
         "used": notes.total(),

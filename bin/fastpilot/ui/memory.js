@@ -220,7 +220,8 @@ function notesPanel() {
     noteForm.id ? null : [h("div", { class: "mem-k" }, "Or start from a question"),
       h("div", { class: "note-qs" }, QUESTIONS.map(([q, g, start]) => h("button", { class: "chip preset", onclick: () => { noteForm = { group: g, text: start, id: null }; noteError = null; pageNotes(); const t = document.querySelector(".note-text"); t?.focus(); t?.setSelectionRange(start.length, start.length); } }, q)))],
     h("p", { class: "note-warn" }, h("b", {}, "Notes are not hidden. "), "Never write a password, a token or a code here. Save those as ", h("a", { class: "lk", href: "#/settings/secret" }, "Secrets"), " and only mention the name."),
-    h("p", { class: "s muted" }, "Every agent in this project reads these notes when a run starts. Runs already started keep the notes they began with."));
+    h("p", { class: "s muted" }, "Every agent in this project reads these notes when a run starts. Runs already started keep the notes they began with."),
+    h("p", { class: "s muted" }, "Kept on this computer for this project folder, not in the project's files: a project you download cannot bring notes of its own."));
 }
 
 // The page's CSP has no inline styles: the width is set through the DOM, not a style attribute.
@@ -249,8 +250,9 @@ function pageNotes() {
       h("div", { class: "gh" }, g.label),
       list.filter((x) => x.group === g.key).map((x) => {
         const [title, rest] = noteTitle(x.text);
-        return h("div", { class: "note-row" + (noteForm.id === x.id ? " on" : "") },
-          h("div", {}, h("div", { class: "row-name" }, title), rest ? h("div", { class: "s muted" }, rest) : null),
+        return h("div", { class: "note-row" + (noteForm.id === x.id ? " on" : "") + (x.problem ? " off" : "") },
+          h("div", {}, h("div", { class: "row-name" }, title), rest ? h("div", { class: "s muted" }, rest) : null,
+            x.problem ? h("div", { class: "note-off" }, x.problem) : null),
           h("div", { class: "btns tight" },
             h("button", { class: "btn sm", "aria-label": `Edit note: ${title}`, onclick: () => { noteForm = { group: x.group, text: x.text, id: x.id }; noteError = null; pageNotes(); document.querySelector(".note-text")?.focus(); } }, "Edit"),
             h("button", { class: "btn sm", "aria-label": `Remove note: ${title}`, onclick: () => removeNote(x) }, "Remove")));
@@ -259,6 +261,7 @@ function pageNotes() {
       h("span", {}, "Add the things you keep repeating: where the staging site is, which test account to use, how login works."),
       h("button", { class: "btn p", onclick: () => document.querySelector(".note-text")?.focus() }, "Add your first note")));
   $body().replaceChildren(...(notesData.error ? [h("div", { class: "err", role: "alert" }, "Could not read the notes: " + notesData.error)] : []),
+    ...(notesData.damaged ? [h("div", { class: "err", role: "alert" }, "The notes file for this project cannot be read, so agents get no notes (and no \"Never do\" rules) until it is fixed. Nothing here can change it; ask for help.")] : []),
     h("div", { class: "mem-wrap" }, h("div", {}, head, groups), notesPanel()));
 }
 
