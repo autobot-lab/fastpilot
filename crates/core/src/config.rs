@@ -418,9 +418,11 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
     // Not set = the built-in lists (v0.3.2), so going from them to an empty list loosens.
     if key == "block_actions" {
         let words = |v: Option<&str>| crate::policy::expand_blocked(v.map(|v| items_of(key, v)));
+        // Only `default` (the built-in rules: whole words, a phrase with a word in between) covers a
+        // built-in word; the same word written out is a plain word and drops the phrase rules
+        // ("Delete my account", "Place your order"), which loosens (Security Medium, v0.3.2).
         let n = words(new);
-        // A built-in word (whole words) is covered by the same word of the user's (inside text).
-        return words(old).iter().all(|w| n.contains(w) || n.iter().any(|x| x == w.trim()));
+        return words(old).iter().all(|w| n.contains(w));
     }
     if key == "confirm_actions" {
         let words = |v: Option<&str>| crate::policy::expand_risky(v.map(|v| items_of(key, v)));
@@ -897,7 +899,11 @@ mod tests {
         assert!(!tightens("block_actions", None, Some("")), "built-in → empty loosens");
         assert!(!tightens("block_actions", None, Some("Bayar")), "built-in → fewer words loosens");
         assert!(tightens("block_actions", None, Some("default,Keluar")));
-        assert!(tightens("block_actions", None, Some(&crate::policy::DEFAULT_BLOCKED.join(","))), "the same words, written out");
+        // Security Medium (v0.3.2 round 3): the same words written out are plain words, without the
+        // built-in phrase rules ("Delete my account", "Place your order"): that loosens.
+        assert!(!tightens("block_actions", None, Some(&crate::policy::DEFAULT_BLOCKED.join(","))), "the same words, written out, loosen");
+        assert!(!tightens("block_actions", Some("default"), Some(&format!("{},keluar", crate::policy::DEFAULT_BLOCKED.join(",")))));
+        assert!(tightens("block_actions", None, Some(&format!("default,{}", crate::policy::DEFAULT_BLOCKED.join(",")))), "default kept: fine");
         assert!(tightens("block_actions", Some(""), None), "back to the built-in list");
         assert!(!tightens("block_actions", Some("default,keluar"), None), "drops the user's word");
         assert!(!tightens("confirm_actions", None, Some("")));
@@ -929,4 +935,33 @@ mod tests {
         assert_eq!(to_toml("allowed_domains", "Toko.COM"), toml::Value::Array(vec!["toko.com".into()]));
         assert_eq!(to_toml("allow_eval_script", "off"), toml::Value::Boolean(false));
     }
+
+    /// Security Medium (v0.3.2 round 3): whatever `tightens` lets the agent write for block_actions
+    /// still blocks every text the old list blocked (built-in phrases with a gap, odd spacing,
+    /// fullwidth, zero-width).
+    #[test]
+    fn block_actions_changes_the_agent_may_make_block_at_least_as_much() {
+        use crate::policy::{block_match, expand_blocked, DEFAULT_BLOCKED};
+        let probes = [
+            "Bayar sekarang", "Pay now", "Ｐａｙ now", "Pa\u{200b}y now", "Delete my account", "Delete account", "Place your order",
+            "Place order", "Hapus akun saya", "Hapus  akun", "Buat pesanan", "Checkout", "Transfer dana", "Keluar", "Paypal", "Masuk",
+        ];
+        let all = DEFAULT_BLOCKED.join(",");
+        let candidates = [
+            None, Some(""), Some("default"), Some("default,keluar"), Some(all.as_str()), Some("bayar,pay,checkout"),
+            Some("delete account,place order"), Some("keluar"),
+        ];
+        let blocked = |v: Option<&str>, t: &str| block_match(t, &expand_blocked(v.map(|v| items_of("block_actions", v)))).is_some();
+        for old in candidates {
+            for new in candidates {
+                if !tightens("block_actions", old, new) {
+                    continue;
+                }
+                for t in probes {
+                    assert!(!blocked(old, t) || blocked(new, t), "{old:?} -> {new:?} was accepted, but {t:?} is no longer blocked");
+                }
+            }
+        }
+    }
+
 }

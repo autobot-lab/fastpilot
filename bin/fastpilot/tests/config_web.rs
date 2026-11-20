@@ -83,6 +83,13 @@ async fn settings_through_the_config_tool() {
     assert!(!ok && out.contains("guard rail"), "{out}");
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "confirm_actions", "value": "default" })).await;
     assert!(ok, "{out}");
+    // Security Medium (v0.3.2 round 3): the built-in block words written out as plain words would
+    // drop the phrase rules ("Delete my account"): refused. Adding to the list keeps `default`.
+    let written_out = "bayar,pay,beli,buy,checkout,purchase,transfer,buat pesanan,place order,hapus akun,delete account";
+    let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": written_out })).await;
+    assert!(!ok && out.contains("guard rail") && out.contains("default,"), "{out}");
+    let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": "default,Keluar" })).await;
+    assert!(ok, "{out}");
     // Program paths: people only. Environment wins and is not overwritten.
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "chrome", "value": "/bin/sh" })).await;
     assert!(!ok && out.contains("only the user"), "{out}");

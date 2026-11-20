@@ -852,8 +852,10 @@ impl FastPilot {
                 ));
             }
             Rule::TightenOnly if !config::tightens(&key, current.as_deref(), value) => {
+                // block_actions: words are added on top of the built-in list, which stays `default`.
+                let add = if key == "block_actions" { "; to add words keep the built-in list: value \"default,<word>\"" } else { "" };
                 return fail(format!(
-                    "`{key}` is a guard rail: this change would loosen it (now {}), so it needs the user: `fastpilot config set {key} ...` or {}",
+                    "`{key}` is a guard rail: this change would loosen it (now {}), so it needs the user: `fastpilot config set {key} ...` or {}{add}",
                     current.as_deref().unwrap_or("default"),
                     config::path().display()
                 ));
