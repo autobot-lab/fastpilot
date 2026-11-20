@@ -820,12 +820,33 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
             ))
         })?
     } else {
-        match d.snapshot().await.ok().and_then(|s| s.resolve(sel, Intent::Tap).ok().map(|e| e.node.name.clone())) {
-            Some(n) => vec![n],
-            None => match sel {
-                Selector::Text(t) | Selector::Role { name: Some(t), .. } => vec![t.clone()],
-                _ => return Ok(()),
-            },
+        // The element the tap will hit, waited for like the tap waits: checked once before it was
+        // on screen, `{ id: pay }` passed and the tap's retry then hit "Bayar" when it appeared.
+        let name = std::sync::Mutex::new(None::<String>);
+        let no_snapshot = std::sync::Mutex::new(false);
+        let found = retry(action_timeout(), || async {
+            let snap = d.snapshot().await;
+            *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) = snap.is_err();
+            let snap = snap?;
+            let e = snap.resolve(sel, Intent::Tap)?;
+            *name.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.node.name.clone());
+            Ok(())
+        })
+        .await;
+        match (found, sel) {
+            (Ok(()), _) => vec![name.into_inner().unwrap_or_else(|p| p.into_inner()).unwrap_or_default()],
+            // No snapshot: a text selector is judged by its text; a ref, id or role cannot be told
+            // apart, so the rules win (fail closed), like a point.
+            (Err(_), Selector::Text(t) | Selector::Role { name: Some(t), .. }) if *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) => {
+                vec![t.clone()]
+            }
+            (Err(_), _) if *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) => {
+                return Err(Error::Blocked(format!(
+                    "{sel}: cannot tell which element this is (no snapshot) while block_actions / confirm_actions are on; tap it by text"
+                )));
+            }
+            // Not on screen (or ambiguous) within the step's time: the tap would fail the same way.
+            (Err(e), _) => return Err(e),
         }
     };
     for name in &names {
@@ -1673,6 +1694,8 @@ mod tests {
     struct PointPage {
         fail: bool,
         refs: Mutex<RefRegistry>,
+        /// Snapshots left before the pay button (`id: pay`) is on screen.
+        late: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait]
@@ -1686,7 +1709,9 @@ mod tests {
             }
             let at = |n: Node, x: f64, y: f64, w: f64, h: f64| Node { bounds: Some(Rect { x, y, w, h }), ..n };
             let icon = at(node("image", ""), 12.0, 128.0, 16.0, 16.0);
-            let pay = Node { children: vec![icon], ..at(node("button", "Bayar sekarang"), 8.0, 123.0, 120.0, 30.0) };
+            let pay = Node { children: vec![icon], id: Some("pay".into()), ..at(node("button", "Bayar sekarang"), 8.0, 123.0, 120.0, 30.0) };
+            let late = self.late.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
+            let pay = if late { at(node("group", ""), 8.0, 123.0, 120.0, 30.0) } else { pay };
             let close = at(node("button", "Tutup"), 20.0, 300.0, 80.0, 30.0);
             let dialog = Node { children: vec![close], ..at(node("dialog", "Konfirmasi Pembayaran"), 0.0, 250.0, 300.0, 120.0) };
             let page = Node { children: vec![pay, at(node("button", "Batal"), 200.0, 123.0, 80.0, 30.0), dialog], ..at(node("group", ""), 0.0, 0.0, 400.0, 1200.0) };
@@ -1726,7 +1751,7 @@ mod tests {
     /// for every element covering the point, and fails closed when nothing is known there.
     #[tokio::test]
     async fn point_taps_obey_block_and_confirm_rules() {
-        let page = PointPage { fail: false, refs: Mutex::default() };
+        let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
         // Points are page coordinates, as `snapshot coords` shows them: (60, 133) is "Bayar sekarang".
         let pt = |x: f64, y: f64| Selector::Point(Point { x, y });
         let bayar = ["bayar".to_owned()];
@@ -1747,10 +1772,38 @@ mod tests {
         // Nothing known at the point, or no snapshot, while a rule is on: refused (fail closed).
         let e = guard_tap(&page, &pt(390.0, 1190.0), false, &[], &bayar).await.expect_err("outside every element");
         assert!(matches!(&e, Error::Blocked(m) if m.contains("cannot tell")), "{e}");
-        let broken = PointPage { fail: true, refs: Mutex::default() };
+        let broken = PointPage { fail: true, refs: Mutex::default(), late: Default::default() };
         assert!(guard_tap(&broken, &pt(60.0, 133.0), false, &[], &bayar).await.is_err(), "no snapshot");
         // No rule: nothing to check.
         assert!(guard_tap(&broken, &pt(60.0, 133.0), false, &[], &[]).await.is_ok());
+    }
+
+    /// v0.3.1 (Design/Bug Fixer Low): a tap by ref, id or nameless role was let through when the
+    /// snapshot failed, and was checked only once: `{ id: pay }` before the button was on screen
+    /// passed, then the tap's retry hit "Bayar sekarang". Now the guard waits for the element like
+    /// the tap does, and refuses when it cannot see it at all.
+    #[tokio::test(start_paused = true)]
+    async fn taps_by_id_or_ref_obey_rules_when_late_or_unseen() {
+        let bayar = ["bayar".to_owned()];
+        let pay = Selector::Id("pay".into());
+        let page = PointPage { fail: false, refs: Mutex::default(), late: 3.into() };
+        let e = guard_tap(&page, &pay, true, &[], &bayar).await.expect_err("late pay button");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+        let page = PointPage { fail: false, refs: Mutex::default(), late: 3.into() };
+        assert!(guard_tap(&page, &pay, false, &bayar, &[]).await.is_err(), "confirm_actions, late button");
+        assert!(guard_tap(&page, &Selector::Id("nope".into()), false, &[], &bayar).await.is_err(), "never on screen");
+        let broken = PointPage { fail: true, refs: Mutex::default(), late: Default::default() };
+        for sel in [Selector::Ref("e2".into()), pay.clone(), Selector::Role { role: "button".into(), name: None }] {
+            let e = guard_tap(&broken, &sel, false, &[], &bayar).await.expect_err("no snapshot");
+            assert!(matches!(&e, Error::Blocked(m) if m.contains("cannot tell")), "{sel}: {e}");
+        }
+        // A text selector without a snapshot is judged by its text, as before.
+        assert!(guard_tap(&broken, &Selector::Text("Batal".into()), false, &[], &bayar).await.is_ok());
+        assert!(guard_tap(&broken, &Selector::Text("Bayar".into()), false, &[], &bayar).await.is_err());
+        // Another button, or no rules: allowed.
+        let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
+        assert!(guard_tap(&page, &Selector::Role { role: "button".into(), name: Some("Batal".into()) }, false, &bayar, &bayar).await.is_ok());
+        assert!(guard_tap(&broken, &pay, false, &[], &[]).await.is_ok(), "no rules");
     }
 
     /// FastTest F1: after a scroll, `snapshot coords` gave page positions but `tapOn: { point }` was
@@ -1759,7 +1812,7 @@ mod tests {
     /// not on screen.
     #[tokio::test]
     async fn point_taps_use_the_coordinates_snapshot_shows() {
-        let page = PointPage { fail: false, refs: Mutex::default() };
+        let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
         let pt = |x: f64, y: f64| Selector::Point(Point { x, y });
         // "Bayar sekarang" at page (60, 133) is on screen at (60, 33) (scrolled 100 px).
         let (on_screen, hit) = point_on_screen(&page, &pt(60.0, 133.0)).await.expect("on screen");

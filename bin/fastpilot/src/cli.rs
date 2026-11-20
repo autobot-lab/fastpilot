@@ -677,13 +677,19 @@ pub fn main(argv: &[String]) -> Res<()> {
         "flow" => {
             let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
             // A flow that does not start its own session runs in the shell's: say so up front.
-            if !src.contains("session:") && !ctx.has_session()? {
+            let open = ctx.has_session()?;
+            if !src.contains("session:") && !open {
                 return Err(format!(
                     "no session `{sid}` is open: run `fastpilot open <url>` first, or start one at the top of the flow with `- session: {{ start: web1, platform: web, target: <url> }}`"
                 )
                 .into());
             }
-            finish(&ctx, &ctx.flow(&src, flag("--keep-going"))?)?;
+            // #9: the shell's session is only named when it is open. A flow that starts its own
+            // (`- session: { start: … }`) was refused with "unknown session `default`" before its
+            // first step ran.
+            let session = if open { json!(ctx.session) } else { Value::Null };
+            let v = ctx.tool("run_flow", json!({ "flow": src, "session": session, "stop_on_fail": !flag("--keep-going") }))?;
+            finish(&ctx, &v)?;
         }
         "check-flow" => {
             let src = flow_source(arg(1, "a flow file, - or YAML")?)?;

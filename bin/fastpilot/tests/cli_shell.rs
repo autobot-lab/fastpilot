@@ -175,6 +175,12 @@ fn get_title_without_eval_and_flow_without_a_session() {
     };
     let (ok, out) = run(&["flow", "- tapOn: Masuk\n"]);
     assert!(!ok && out.contains("no session `default` is open") && out.contains("fastpilot open"), "{out}");
+    // A flow that starts its own session runs without `open` first (was "unknown session `default`").
+    let own = "- session: { start: own1, platform: web, target: \"examples/demo/login.html\" }\n- assertVisible: \"Masuk ke Akun\"\n";
+    let (ok, out) = run(&["flow", own]);
+    assert!(ok && !out.contains("unknown session"), "{out}");
+    let (ok, out) = run(&["close", "--session", "own1"]);
+    assert!(ok, "{out}");
     let (ok, out) = run(&["open", "examples/demo/login.html"]);
     assert!(ok, "{out}");
     let (ok, out) = run(&["get", "title"]);
