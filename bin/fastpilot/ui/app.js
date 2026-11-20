@@ -36,9 +36,9 @@ function clearToast() {
   document.querySelectorAll(".toast").forEach((t) => t.remove());
 }
 
-function toast(msg) {
+function toast(msg, ok) {
   document.querySelectorAll(".toast").forEach((t) => t.remove());
-  const t = h("div", { class: "toast", role: "alert" }, msg);
+  const t = h("div", ok ? { class: "toast ok", role: "status" } : { class: "toast", role: "alert" }, msg);
   document.body.append(t);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 7000);
@@ -725,6 +725,118 @@ async function pollLive() {
   liveTimer = setTimeout(pollLive, 1000);
 }
 
+// ---- Chat (C4) ----
+let chatData = null, chatTimer = null, chatSig = "";
+const SUGGEST = ["Tes login di Chrome", "Jadwalkan tests/login.md setiap hari jam 09:00", "Blokir tombol Bayar di semua test"];
+
+async function loadChat() {
+  try { chatData = await api("/api/chat"); } catch (e) { chatData = { error: e.message, messages: [], busy: false }; }
+  if ((location.hash || "").startsWith("#/chat")) renderChat();
+  clearTimeout(chatTimer);
+  if (chatData.busy && (location.hash || "").startsWith("#/chat")) chatTimer = setTimeout(loadChat, 800);
+}
+
+async function chatSend(text) {
+  const t = (text || "").trim();
+  if (!t) return;
+  try {
+    chatData = await api("/api/chat", { message: t });
+    const box = document.getElementById("chat-input");
+    if (box) box.value = "";
+    clearToast();
+  } catch (e) { toast(e.message); }
+  loadChat();
+}
+
+async function chatDecide(id, apply) {
+  try {
+    const r = await api("/api/chat/decide", { id, apply });
+    chatData = r.chat;
+    toast(r.message, true);
+  } catch (e) { toast(e.message); await loadChat(); return; }
+  renderChat();
+}
+
+function proposalCard(p) {
+  const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : "shield"), p.title);
+  const rows = p.rows.length ? h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null;
+  let foot;
+  if (p.status === "pending") {
+    foot = h("div", { class: "btns" },
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Simpan jadwal" : "Terapkan batasan"),
+      h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Batal"));
+  } else if (p.status === "applied") {
+    foot = h("div", { class: "prop-state ok" }, "✓ ", p.note || "Tersimpan");
+  } else if (p.status === "cancelled") {
+    foot = h("div", { class: "prop-state muted" }, "Dibatalkan");
+  } else {
+    foot = h("div", { class: "prop-state bad" }, p.note || "Tidak bisa dipakai",
+      p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Buka Pengaturan › Batasan")] : null);
+  }
+  const note = p.status === "pending" && p.note ? h("p", { class: "s" }, p.note) : null;
+  return h("section", { class: "grp prop " + p.status, "aria-label": p.title }, head, h("div", { class: "prop-body" }, rows, note, foot));
+}
+
+function chatMsg(m) {
+  if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "bubble" }, m.text));
+  const working = !m.done;
+  return h("li", { class: "msg bot" },
+    h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
+    m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "Yang dikerjakan bot" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
+    m.text ? h("div", { class: "bubble" }, m.text) : null,
+    working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
+    m.error ? h("div", { class: "err", role: "alert" }, m.error) : null,
+    (m.proposals || []).map(proposalCard));
+}
+
+function renderChat() {
+  const busy = !!(chatData && chatData.busy);
+  $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"),
+    h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● bot sedang bekerja" : "● siap"),
+    h("button", { class: "btn sm right", disabled: busy || !(chatData && chatData.messages.length), onclick: async () => {
+      try { chatData = await api("/api/chat", { reset: true }); } catch (e) { toast(e.message); }
+      renderChat();
+    } }, icon("refresh", "sm"), "Percakapan baru"));
+  let root = document.getElementById("chat-root");
+  if (!root) {
+    const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Tulis ke fastpilot bot… contoh: \"tes login di Chrome\"", "aria-label": "Pesan untuk fastpilot bot" });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(input.value); } });
+    root = h("div", { id: "chat-root", class: "chat" },
+      h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Percakapan" }),
+      h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Kirim")),
+      h("p", { class: "s muted" }, "Bot memakai Claude Code-mu (claude -p) dan tool fastpilot. Jadwal dan batasan hanya berubah setelah kamu klik kartunya; lewat chat batasan hanya bisa diperketat."));
+    $body().replaceChildren(root);
+  }
+  const send = document.getElementById("chat-send");
+  if (send) send.disabled = busy;
+  const log = document.getElementById("chat-log");
+  const msgs = (chatData && chatData.messages) || [];
+  const sig = JSON.stringify(msgs) + (chatData && chatData.error);
+  if (sig === chatSig) return;
+  chatSig = sig;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  if (chatData && chatData.error) {
+    log.replaceChildren(h("li", { class: "err", role: "alert" }, "Tidak bisa membaca chat: " + chatData.error));
+  } else if (!msgs.length) {
+    log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Tanya atau suruh fastpilot bot"),
+      h("span", {}, "Jalankan test, tanya kenapa gagal, buat jadwal, atau perketat batasan."),
+      h("div", { class: "chips" }, SUGGEST.map((t) => h("button", { class: "chip sug", onclick: () => chatSend(t) }, t)))));
+  } else {
+    log.replaceChildren(...msgs.map(chatMsg));
+  }
+  if (atBottom || msgs.length) log.scrollTop = log.scrollHeight;
+}
+
+function pageChat() {
+  if (!chatData) {
+    $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"));
+    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca percakapan…")));
+  } else {
+    renderChat();
+  }
+  loadChat();
+}
+
 // ---- Jadwal (C3) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
 const DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
@@ -789,8 +901,8 @@ function schedRow(x) {
     h("td", {}, notifyChips(x)),
     h("td", {}, on),
     h("td", {}, h("div", { class: "acts" },
-      h("button", { class: "btn sm", onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" dijalankan sekarang. Hasilnya muncul di Run terakhir.`)) }, icon("play", "sm"), "Jalankan"),
-      h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Tes notifikasi: " + r.sent.join(" · "))) }, "Tes notifikasi"),
+      h("button", { class: "btn sm", onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" dijalankan sekarang. Hasilnya muncul di Run terakhir.`, true)) }, icon("play", "sm"), "Jalankan"),
+      h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Tes notifikasi: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("gagal")))) }, "Tes notifikasi"),
       h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); } }, "Ubah"),
       h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Hapus jadwal "${s.name}"? Entri di penjadwal sistem ikut dihapus.`)) schedAction({ action: "delete", id: s.id }); } }, "Hapus"))));
 }
@@ -824,7 +936,7 @@ function schedPanel() {
     const body = { action: "save", schedule };
     if (whUrl.value.trim()) body.webhook = whUrl.value.trim();
     const r = await schedAction(body);
-    if (r) { schedForm = null; toast(editing ? "Jadwal disimpan." : `Jadwal disimpan dan didaftarkan ke ${schedData.backend}.`); pageSchedules(); }
+    if (r) { schedForm = null; toast(editing ? "Jadwal disimpan." : `Jadwal disimpan dan didaftarkan ke ${schedData.backend}.`, true); pageSchedules(); }
   };
   return h("section", { class: "grp sched-form", "aria-label": editing ? "Ubah jadwal" : "Jadwal baru" },
     h("h2", { class: "gh" }, icon("clock"), editing ? `ubah jadwal · ${f.id}` : "jadwal baru"),
@@ -882,6 +994,9 @@ function render() {
       $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca sesi…")));
       pollLive();
     }
+  } else if (page === "chat") {
+    chatSig = "";
+    pageChat();
   } else if (page === "schedules") {
     if (!schedData) loadSchedules(); else pageSchedules();
   } else if (page === "device") {

@@ -205,7 +205,8 @@ pub fn has_webhook(id: &str) -> bool {
     secret_path(id).exists()
 }
 
-fn check(s: &Schedule) -> Res<()> {
+/// Whether `s` can be saved (also used for a chat proposal before it is shown).
+pub fn validate(s: &Schedule) -> Res<()> {
     if !valid_id(&s.id) {
         return Err("id jadwal hanya huruf kecil, angka, dan -".into());
     }
@@ -514,7 +515,7 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
     }
     s.name = s.name.trim().to_owned();
     s.tests = s.tests.trim().to_owned();
-    check(&s)?;
+    validate(&s)?;
     match webhook.map(str::trim) {
         Some("") => {
             let _ = std::fs::remove_file(secret_path(&s.id));
