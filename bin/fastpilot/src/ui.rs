@@ -811,7 +811,7 @@ async fn change(axum::Json(body): axum::Json<Value>) -> Response {
 
 /// `doctor`'s English (shared with the CLI and agents) in the page's language. Paths, versions,
 /// commands and names in the text are kept; unknown text passes through unchanged.
-fn in_indonesian(text: &str) -> String {
+pub(crate) fn in_indonesian(text: &str) -> String {
     const WHOLE: &[(&str, &str)] = &[
         ("no Chrome or Chromium found", "Chrome atau Chromium tidak ditemukan"),
         ("Android SDK platform-tools (adb) not found", "Android SDK platform-tools (adb) tidak ditemukan"),
