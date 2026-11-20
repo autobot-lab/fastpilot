@@ -159,6 +159,64 @@ const MODELS = [
   ["claude-fable-5-2", "Claude Code · Fable 5.2"],
 ];
 
+// Who drives `fastpilot run`: Claude Code, or an OpenAI-compatible API (B2).
+let provData = null, provBusy = false, provResult = null;
+const PROV_LABEL = { claude: "Claude Code (bawaan, tanpa API key)", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama (lokal)", custom: "Lainnya (OpenAI-compatible)" };
+
+async function loadProvider() {
+  try { provData = await api("/api/provider"); } catch (e) { provData = { error: e.message }; }
+  if ((location.hash || "").startsWith("#/settings/model")) render();
+}
+
+async function provAction(body) {
+  provBusy = true;
+  render();
+  try {
+    const r = await api("/api/provider", body);
+    provResult = { ok: true, text: r.message };
+    if (body.action !== "test") toast(r.message, true);
+  } catch (e) {
+    provResult = { ok: false, text: e.message };
+    if (body.action !== "test") toast(e.message);
+  }
+  provBusy = false;
+  await loadProvider();
+}
+
+function providerGroup() {
+  if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "penggerak test"), h("div", { class: "empty small" }, "Membaca…")); }
+  if (provData.error) return h("div", { class: "err", role: "alert" }, "Tidak bisa membaca penyedia: " + provData.error);
+  const pick = h("select", { class: "sel", "aria-label": "Penyedia model untuk fastpilot run", disabled: provData.env.provider },
+    provData.presets.map((p) => h("option", { value: p.name, selected: p.name === provData.provider }, PROV_LABEL[p.name] || p.name)));
+  const preset = (n) => provData.presets.find((p) => p.name === n) || {};
+  const url = h("input", { type: "text", class: "mono", value: provData.base_url || "", placeholder: preset(provData.provider).base_url || "https://…/v1", "aria-label": "Base URL" });
+  const model = h("input", { type: "text", class: "mono", value: provData.model || "", placeholder: "mis. gpt-4.1-mini, llama3.1", "aria-label": "Id model" });
+  const k = provData.key || {};
+  const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `tersimpan di ${k.where} · isi untuk mengganti` : "sk-…", "aria-label": "API key" });
+  const detail = h("div", { class: "prov-fields" },
+    h("label", { class: "fld" }, h("span", { class: "l" }, "Base URL"), url, h("span", { class: "s" }, "Kosong = bawaan penyedia. https wajib, kecuali ke komputer ini (mis. Ollama).")),
+    h("label", { class: "fld" }, h("span", { class: "l" }, "Model"), model),
+    h("label", { class: "fld" }, h("span", { class: "l" }, "API key"), key,
+      h("span", { class: "s" }, provData.env.key ? "FASTPILOT_PROVIDER_API_KEY diatur lewat environment dan dipakai lebih dulu."
+        : k.has ? `Tersimpan di ${k.where}. Tidak pernah ditampilkan lagi.` : `Disimpan di ${k.where || "penyimpan kunci sistem"}, tidak di file pengaturan. Ollama lokal tidak butuh kunci.`)));
+  const sync = () => {
+    detail.hidden = pick.value === "claude";
+    url.placeholder = preset(pick.value).base_url || "https://…/v1";
+  };
+  pick.addEventListener("change", sync);
+  sync();
+  const btns = h("div", { class: "btns" },
+    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Simpan"),
+    provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Mengetes…" : "Tes koneksi") : null,
+    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: () => { if (confirm("Hapus API key yang tersimpan?")) provAction({ action: "delete-key" }); } }, "Hapus kunci") : null);
+  return h("div", { class: "grp" },
+    h("div", { class: "gh" }, icon("plug"), "penggerak test · fastpilot run"),
+    provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "Penyedia diatur lewat environment (FASTPILOT_PROVIDER…), yang menang atas pengaturan ini.")) : null,
+    opt("Penyedia", "Claude Code memakai login-mu. API OpenAI-compatible bersifat opsional; berlaku di run berikutnya.", pick, null),
+    h("div", { class: "prov" }, detail, btns,
+      provResult ? h("p", { class: "prov-result " + (provResult.ok ? "ok" : "bad"), role: "status" }, provResult.ok ? "✓ " : "✗ ", provResult.text) : null));
+}
+
 function pageModel() {
   const run = doctorCache && doctorCache.checks.find((c) => c.area === "run");
   const status = !doctorCache ? h("span", { class: "tag" }, "Mengecek…")
@@ -173,7 +231,8 @@ function pageModel() {
       h("div", { class: "gh" }, icon("model"), "model ai · siapa menjalankan apa"),
       opt("Replay (cepat & murah)", "Menjalankan ulang langkah yang sudah tercatat", select("model_replay", replay, "Model replay"), get("model_replay")),
       opt("Eksplorasi / perbaikan", "Dipakai saat replay gagal atau test baru", select("model_explore", explore, "Model eksplorasi"), get("model_explore")),
-      opt("Claude Code", run ? `${run.detail}` : "Memakai login Claude Code milikmu, tanpa API key", status)));
+      opt("Claude Code", run ? `${run.detail}` : "Memakai login Claude Code milikmu, tanpa API key", status)),
+    providerGroup());
 }
 
 function pageLimits() {

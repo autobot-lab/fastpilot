@@ -216,6 +216,10 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .prop .s{color:var(--muted);font-size:12.5px;margin:0}
 .prop-state{font-weight:600;font-size:14px}.prop-state.ok{color:var(--acc-ink)}.prop-state.bad{color:var(--bad)}
 .prop.refused{border-color:var(--bad)}
+/* Model AI: provider (B2) */
+.prov{padding:4px 16px 16px;display:flex;flex-direction:column;gap:12px}
+.prov-fields{display:flex;flex-direction:column;gap:12px;max-width:620px}
+.prov-result{margin:0;font-size:13.5px;overflow-wrap:anywhere}.prov-result.ok{color:var(--acc-ink)}.prov-result.bad{color:var(--bad)}
 /* narrow windows (N3): nothing wider than the screen */
 @media (max-width:600px){
   .rail{width:60px}.rail a{width:52px}
