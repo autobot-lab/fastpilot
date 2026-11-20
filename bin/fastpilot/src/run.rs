@@ -783,9 +783,19 @@ fn project_notes() -> Option<&'static str> {
 
 /// D7: this run in the project's History, with its test runs and an HTML report (the one asked
 /// for with `--html`, else one of its own).
+/// Runs `f` when dropped (after the function's writes, on every return path).
+struct Defer(fn());
+impl Drop for Defer {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
 fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> std::io::Result<()> {
     use fastpilot_memory::history::{History, Suite, now_ms};
     let history = History::from_env();
+    // The suite is written below; the folder exists by then on any later run.
+    let _ignore = Defer(fastpilot_core::config::keep_out_of_git);
     let id = history.new_suite_id();
     let not_run = |r: &&CaseResult| !r.passed && r.turns == 0 && r.class == Some(Class::Infra);
     let title = fastpilot_core::config::var("FASTPILOT_RUN_TITLE").ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| match results {

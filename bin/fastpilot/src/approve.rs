@@ -45,16 +45,18 @@ pub fn run() -> Res<()> {
         let card = change::card(&c);
         let minutes = change::now_ms().saturating_sub(p.created_ms) / 60_000;
         let ago = if minutes == 0 { "just now".to_owned() } else { format!("{minutes} min ago") };
-        println!("  {:<44} LOOSENS A LIMIT", card.title);
-        println!("  Now:     {}", card.now);
-        println!("  After:   {}. {}", card.after, card.consequence);
+        // Security (Low 5): what the AI asked for is printed without control characters.
+        let p = change::printable;
+        println!("  {:<44} LOOSENS A LIMIT", p(&card.title));
+        println!("  Now:     {}", p(&card.now));
+        println!("  After:   {}. {}", p(&card.after), p(&card.consequence));
         for n in &card.notes {
-            println!("           {n}");
+            println!("           {}", p(n));
         }
         println!("  Asked:   {ago}, by the AI (Claude Code). Did you ask for this?");
         println!("  Starts:  at the next run\n");
         let prompt = match &card.typed {
-            Some(w) => format!("Type {w} to allow it, or press Enter to keep it as it is: "),
+            Some(w) => format!("Type {} to allow it, or press Enter to keep it as it is: ", change::printable(w)),
             None => "Type yes to allow it, or press Enter to keep it as it is: ".to_owned(),
         };
         print!("{prompt}");
@@ -63,8 +65,14 @@ pub fn run() -> Res<()> {
         tty.read_line(&mut line)?;
         let want = card.typed.as_deref().unwrap_or("yes");
         if line.trim().eq_ignore_ascii_case(want) {
-            config::write(&c.key, c.after.as_deref())?;
-            change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "terminal", "applied");
+            if let Err(e) = change::audit_or_refuse(&c.key, c.before.as_deref(), c.after.as_deref(), "terminal", "applied") {
+                println!("{e}\n");
+                continue;
+            }
+            if let Err(e) = config::write(&c.key, c.after.as_deref()) {
+                change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "terminal", "failed");
+                return Err(e.into());
+            }
             let undo = match &c.before {
                 Some(b) => format!("fastpilot config set {} \"{b}\"", c.key),
                 None => format!("fastpilot config unset {}", c.key),

@@ -182,6 +182,16 @@ pub fn label(key: &str) -> &'static str {
     }
 }
 
+/// Control characters (ESC, newline, ...) and characters that show nothing or turn text around.
+fn unprintable(ch: char) -> bool {
+    ch.is_control() || matches!(ch as u32, 0x00ad | 0x034f | 0x061c | 0x180e | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f | 0xfe00..=0xfe0f | 0xfeff | 0xe0000..=0xe0fff)
+}
+
+/// `text` safe to print in a terminal: unprintable characters become `?`.
+pub fn printable(text: &str) -> String {
+    text.chars().map(|ch| if unprintable(ch) { '?' } else { ch }).collect()
+}
+
 /// Security (D9 finding 2): every built-in block at once is never dropped from chat or a request.
 /// The words that stand for a built-in list in `confirm_actions` (`policy::expand_risky`).
 fn list_keyword(w: &str) -> bool {
@@ -199,6 +209,11 @@ pub fn check(c: &Change) -> Result<(), String> {
     let s = config::setting(&c.key).ok_or_else(|| format!("fastpilot has no setting called \"{}\"", c.key))?;
     if NEVER.contains(&c.key.as_str()) || s.rule == Rule::HumanOnly {
         return Err("This setting can only be changed by you, in Settings or with `fastpilot config set`: it decides where tests send what they see, or which program runs.".into());
+    }
+    // Security (Low 5): no control or invisible characters in any value (an ESC could redraw the
+    // terminal around `fastpilot config approve`; a newline could fake a line of the card).
+    if c.after.as_deref().is_some_and(|v| v.chars().any(unprintable)) {
+        return Err("A setting cannot contain control or invisible characters.".into());
     }
     if s.rule == Rule::Free && !MODELS.contains(&c.key.as_str()) {
         return Err("Change this one in Settings.".into());
@@ -492,7 +507,7 @@ pub fn card(c: &Change) -> Card {
 // ---- M1: provenance ---------------------------------------------------------------------------
 
 const VERBS: &[&str] = &[
-    "allow", "unblock", "enable", "permit", "let", "turn on", "switch on", "stop blocking", "don't block", "do not block", "remove", "raise",
+    "allow", "unblock", "enable", "permit", "let", "turn on", "switch on", "stop blocking", "don't block", "don t block", "do not block", "remove", "raise",
     "increase", "add", "use", "stop asking", "izinkan", "bolehkan", "aktifkan", "buka", "hapus", "naikkan", "tambah", "pakai",
 ];
 
@@ -509,6 +524,19 @@ pub fn provenance(c: &Change, message: &str) -> bool {
     };
     let asks = VERBS.iter().any(|v| has(v));
     if !asks {
+        return false;
+    }
+    // Security (Low 6): "don't allow Pay", "never allow Pay" and "why allow Pay?" ask for the
+    // opposite. "don't block Pay" does ask for it. A message with any other "no" makes no card.
+    let mut rest = m.clone();
+    for allow in [" don t block ", " dont block ", " do not block ", " don t blokir ", " jangan blokir ", " jangan block "] {
+        rest = rest.replace(allow, " ok ");
+    }
+    const VETO: &[&str] = &[
+        " not ", " no ", " never ", " dont ", " don t ", " doesn t ", " didn t ", " shouldn t ", " won t ", " can t ", " cannot ", " why ", " jangan ", " tidak ", " gak ",
+        " nggak ", " enggak ", " bukan ", " kenapa ", " mengapa ",
+    ];
+    if VETO.iter().any(|w| rest.contains(w)) {
         return false;
     }
     let before = items(&c.key, c.before.as_deref());
@@ -660,10 +688,16 @@ pub fn audit_path() -> std::path::PathBuf {
 /// One line in the activity log (M14): what changed and what happened, never a secret's value or
 /// the AI's words. Values are setting values (secret *names* for `vars`).
 pub fn audit(key: &str, before: Option<&str>, after: Option<&str>, channel: &str, result: &str) {
-    let line = serde_json::json!({ "time_ms": now_ms(), "setting": key, "before": before, "after": after, "channel": channel, "result": result });
-    if let Err(e) = write_private(&audit_path(), &format!("{line}\n"), true) {
+    if let Err(e) = audit_or_refuse(key, before, after, channel, result) {
         tracing::warn!(error = %e, "the activity log could not be written");
     }
+}
+
+/// Security (Low 8): a change the user confirms is logged before it is made; when the log cannot
+/// be written, the change is not made and the person is told why.
+pub fn audit_or_refuse(key: &str, before: Option<&str>, after: Option<&str>, channel: &str, result: &str) -> Result<(), String> {
+    let line = serde_json::json!({ "time_ms": now_ms(), "setting": key, "before": before, "after": after, "channel": channel, "result": result });
+    write_private(&audit_path(), &format!("{line}\n"), true).map_err(|e| format!("The activity log ({}) could not be written, so nothing changed: {e}", audit_path().display()))
 }
 
 #[cfg(test)]
@@ -816,5 +850,23 @@ mod tests {
         assert!(k.consequence.contains("finish real purchases"), "{}", k.consequence);
         // A user who already switched the list off in Settings can still block a word from chat.
         assert!(check(&ch("block_actions", Some("refund"), Some("refund,wipe"))).is_ok());
+    }
+
+    #[test]
+    fn values_are_printable_and_a_no_is_not_a_yes() {
+        // Low 5: ESC, newline or a bidi mark in any value is refused, also for an auto-applied word.
+        for (key, after) in [("block_actions", "default,\u{1b}[2Jx"), ("block_actions", "default,abc\ndef"), ("upload_dirs", "/tmp/files\u{1b}[1A"), ("upload_dirs", "/tmp/a\u{202e}b")] {
+            let e = check(&ch(key, None, Some(after))).unwrap_err();
+            assert!(e.contains("control or invisible"), "{key}: {e}");
+        }
+        assert_eq!(printable("Allow\u{1b}[2J\nPay"), "Allow?[2J?Pay");
+        // Low 6: a "no" in the message is never the user's own ask.
+        let c = ch("block_actions", None, Some("default,!pay"));
+        for m in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "I can't allow Pay", "No, allow Pay later"] {
+            assert!(!provenance(&c, m), "{m}");
+        }
+        for m in ["Allow Pay", "allow the Pay button please", "don't block Pay", "stop blocking pay", "izinkan tombol Pay"] {
+            assert!(provenance(&c, m), "{m}");
+        }
     }
 }

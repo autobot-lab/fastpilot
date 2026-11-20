@@ -251,6 +251,7 @@ impl Memory {
         let stamp = utc_stamp(now_secs(), true);
         let runs = self.root.join("runs");
         fs::create_dir_all(&runs).map_err(io(&runs))?;
+        fastpilot_core::config::keep_out_of_git();
         // Unique even for runs started in the same second (create_dir fails if it exists).
         let (id, dir) = (1..)
             .map(|n| if n == 1 { format!("{stamp}-{test_id}") } else { format!("{stamp}-{test_id}-{n}") })
