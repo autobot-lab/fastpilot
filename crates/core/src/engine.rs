@@ -81,6 +81,7 @@ impl SessionRegistry {
             if !after.sessions.contains_key(id) && still_same {
                 self.sessions.remove(id);
                 crate::live::session_ended(id);
+                crate::claim::release(id);
             }
         }
         for (id, d) in after.sessions {
@@ -99,6 +100,7 @@ impl SessionRegistry {
         self.active = None;
         for (id, d) in std::mem::take(&mut self.sessions) {
             crate::live::session_ended(&id);
+            crate::claim::release(&id);
             if let Err(e) = d.close().await {
                 tracing::warn!(session = %id, error = %e, "session cleanup failed");
             }
@@ -110,6 +112,7 @@ impl SessionRegistry {
             self.active = None;
         }
         crate::live::session_ended(id);
+        crate::claim::release(id);
         self.sessions.remove(id)
     }
 
@@ -545,7 +548,9 @@ async fn start_session(
     if reg.contains(id) {
         return Err(Error::Session(format!("session `{id}` already exists")));
     }
-    let driver = launcher.launch(platform, device).await?;
+    // D10d: one test per device, at most `max_parallel` at once; otherwise wait in the queue.
+    crate::claim::acquire(id, platform, device).await?;
+    let driver = launcher.launch(platform, device).await.inspect_err(|_| crate::claim::release(id))?;
     let mut done = None;
     if let Some(t) = target {
         let t = substitute(t).map_err(Error::Flow)?;

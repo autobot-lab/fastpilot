@@ -488,3 +488,11 @@ pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
 /* Chat markdown (QA B6) */
 .msg .bubble .md-pre{font:400 12.5px var(--mono);background:var(--soft);border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;margin:6px 0;white-space:pre;overflow-x:auto}
 .msg .bubble .md-h{display:inline-block;margin-top:4px}
+/* Live: agents side by side (D10d, v7 #s2) */
+.live-extra{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:14px;margin-bottom:14px}
+.live-extra:empty{display:none}
+.l-agent{padding:0 14px 6px;font-size:13px}.l-agent .s{color:var(--muted)}
+.live-limit{display:flex;align-items:center;gap:8px}.live-limit .s{font:500 12.5px var(--sans);color:var(--muted)}.live-limit select{width:auto;min-width:64px}
+.q-rows li{grid-template-columns:minmax(0,1.6fr) minmax(0,.8fr) minmax(0,2fr)}
+.top .pill.warn{background:var(--warn-soft);color:#8a520a}
+.ag-st.queued{background:var(--warn-soft);color:#8a520a}

@@ -124,7 +124,8 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     let plist = std::fs::read_to_string(home.join("LaunchAgents/dev.fastpilot.schedule.checkout.plist")).expect("OS entry");
     assert_eq!(plist.matches("<key>Hour</key>").count(), 7, "{plist}");
     let heads = eval(&client, "[...document.querySelectorAll('.tbl th')].map(t => t.textContent).join('|')").await;
-    assert_eq!(heads, "\"Name|When|Next|Last|Notify|On|\"");
+    // D10d (design v7 #s3): one table for all agents, the agent first.
+    assert_eq!(heads, "\"Agent|Name|When|Next|Last|Notify|On|\"");
 
     // Design L4: the page says in its own words that fastpilot ui stopped (not "Failed to fetch").
     drop(_ui);

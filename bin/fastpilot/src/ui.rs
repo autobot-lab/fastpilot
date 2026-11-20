@@ -172,6 +172,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
+        .route("/api/live/limit", post(live_limit))
         .route("/api/schedules", get(schedules_api).post(schedules_change))
         .route("/api/schedules/report", get(schedule_report))
         .route("/api/chat", get(chat_api).post(chat_send))
@@ -471,6 +472,8 @@ async fn chat_undo(axum::Json(body): axum::Json<Value>) -> Response {
 async fn agents_api() -> Response {
     use crate::{agents, schedule};
     let busy = crate::chat::busy_agents();
+    // D10d: an agent with a session waiting in the queue shows as queued.
+    let claims = fastpilot_core::claim::entries();
     let store = schedule::load();
     let list: Vec<Value> = agents::list()
         .into_iter()
@@ -482,7 +485,9 @@ async fn agents_api() -> Response {
                 .map(|s| schedule::describe(&s.when))
                 .collect();
             let (label, tested) = agents::model_label(&a);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id), "schedules": scheds, "model_label": label, "tested": tested })
+            let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
+            let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
@@ -555,6 +560,7 @@ async fn schedules_api() -> Response {
                 "schedule": s, "when_text": schedule::describe(&s.when), "webhook": hook, "last": last,
                 "running": schedule::is_running(last), "slots": slots, "days": schedule::run_days(&s.when),
                 "tests_text": tests_text(&s.tests),
+                "agent_name": crate::agents::get_or_default(s.agent.as_deref().unwrap_or(crate::agents::DEFAULT)).name,
             })
         })
         .collect();
@@ -1064,7 +1070,43 @@ async fn live_api() -> Response {
             })
         })
         .collect();
-    axum::Json(json!({ "sessions": sessions })).into_response()
+    // D10d: which agent each session works for, the queue, the limit and today's usage per agent.
+    let agents = crate::agents::list();
+    let named = |id: Option<&str>| {
+        let a = agents.iter().find(|a| Some(a.id.as_str()) == id.or(Some(crate::agents::DEFAULT)))?;
+        Some((a.name.clone(), crate::agents::model_label(a).0))
+    };
+    let sessions: Vec<Value> = sessions
+        .into_iter()
+        .map(|mut s| {
+            if let Some((name, model)) = named(s["agent"].as_str()) {
+                s["agent_name"] = json!(name);
+                s["model_label"] = json!(model);
+            }
+            s
+        })
+        .collect();
+    let claims = fastpilot_core::claim::entries();
+    let queue: Vec<Value> = claims
+        .iter()
+        .filter(|e| e.waiting)
+        .map(|e| json!({ "agent": named(e.agent.as_deref()).map(|n| n.0), "session": e.session, "platform": e.platform, "device": e.device.as_deref().and_then(|d| d.split_once(':')).map(|(_, d)| d), "since_ms": e.since_ms, "reason": e.reason }))
+        .collect();
+    let usage: Vec<Value> = crate::agents::usage_today()
+        .into_iter()
+        .map(|(id, u)| json!({ "agent": named(Some(&id)).map(|n| n.0).unwrap_or(id), "turns": u.turns, "tokens": u.input + u.output }))
+        .collect();
+    let running = claims.iter().filter(|e| !e.waiting).count();
+    axum::Json(json!({ "sessions": sessions, "queue": queue, "running": running, "limit": fastpilot_core::claim::max_parallel(), "usage": usage })).into_response()
+}
+
+/// `{limit}`: how many tests may run at once (D10d, `max_parallel`), set on the Live page.
+async fn live_limit(axum::Json(body): axum::Json<Value>) -> Response {
+    let n = body["limit"].as_u64().unwrap_or(0);
+    match fastpilot_core::config::write("max_parallel", Some(&n.to_string())) {
+        Ok(_) => axum::Json(json!({ "limit": n })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
 }
 
 const BOUNDARY: &str = "fpframe";

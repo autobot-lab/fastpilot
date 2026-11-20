@@ -613,6 +613,7 @@ function card(s) {
   const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Session ${s.id}, ${s.platform}. Enter to see its steps.`,
     onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
+    s.agent_name ? h("div", { class: "l-agent" }, h("b", {}, s.agent_name), h("span", { class: "s" }, ` · ${s.model_label || ""}`)) : null,
     screenEl(s, false),
     h("div", { class: "card-text" }, h("div", {}, line, status), more));
   el.addEventListener("keydown", (e) => {
@@ -839,16 +840,44 @@ function livePill(sessions) {
   return h("span", { class: "pill" + (blocked || failed ? " bad" : "") }, "● " + parts.join(" · "));
 }
 
+// D10d (v7 #s2): every agent side by side; the queue with its reasons; the parallel limit and
+// today's usage per agent.
+function liveExtras(data) {
+  const box = document.getElementById("live-extra") || h("div", { id: "live-extra", class: "live-extra" });
+  const q = data.queue || [];
+  const u = data.usage || [];
+  const sig = JSON.stringify([q, u]);
+  if (box.dataset.sig === sig) return box;
+  box.dataset.sig = sig;
+  box.replaceChildren(...[
+    q.length ? h("section", { class: "grp" }, h("div", { class: "gh" }, `queue · ${q.length} waiting`),
+      h("ul", { class: "ag-rows q-rows" }, q.map((e) => h("li", {}, h("b", {}, e.agent || "—", h("span", { class: "s" }, ` · ${e.platform}${e.device && e.device !== "default" ? " · " + e.device : ""}${e.session !== "default" ? " · " + e.session : ""}`)),
+        h("span", { class: "s" }, `waiting ${Math.max(1, Math.round((Date.now() - e.since_ms) / 60000))} min`), h("span", {}, e.reason))))) : null,
+    u.length ? h("section", { class: "grp" }, h("div", { class: "gh" }, "used today, per agent"),
+      h("ul", { class: "ag-rows" }, u.map((x) => h("li", {}, h("b", {}, x.agent), h("span", {}, `${x.turns} ${x.turns === 1 ? "answer or run" : "answers and runs"}`), h("span", { class: "s" }, `${x.tokens.toLocaleString("en")} tokens`))))) : null].filter(Boolean));
+  return box;
+}
+
+function limitPicker(data) {
+  const sel = h("select", { class: "sel", "aria-label": "Tests at once" }, Array.from({ length: 10 }, (_, i) => h("option", { value: String(i + 1), selected: data.limit === i + 1 }, `${i + 1}`)));
+  sel.addEventListener("change", async () => {
+    try { await api("/api/live/limit", { limit: Number(sel.value) }); toast(`Up to ${sel.value} tests at once, from the next test.`, true); } catch (e) { toast(e.message); }
+  });
+  return h("label", { class: "right live-limit" }, h("span", { class: "s" }, "Tests at once"), sel);
+}
+
 function renderLive(data) {
   lastLive = data;
   const sessions = data.sessions || [];
-  $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions));
+  const q = (data.queue || []).length;
+  $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions),
+    q ? h("span", { class: "pill warn" }, `${q} queued`) : null, data.limit ? limitPicker(data) : null);
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();
     stepsSig = "";
     closeZoom(false);
-    $body().replaceChildren(liveEmpty());
+    $body().replaceChildren(liveExtras(data), liveEmpty());
     return;
   }
   const keys = new Set(sessions.map((s) => `${s.pid}:${s.id}`));
@@ -865,6 +894,7 @@ function renderLive(data) {
     root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }));
     $body().replaceChildren(root);
   }
+  if (!root.contains(document.getElementById("live-extra"))) root.prepend(liveExtras(data)); else liveExtras(data);
   const grid = document.getElementById("live-grid");
   for (const s of sessions) {
     const k = `${s.pid}:${s.id}`;
@@ -1400,6 +1430,7 @@ function schedRow(x) {
     onclick: () => schedAction({ action: s.enabled ? "disable" : "enable", id: s.id }) });
   const next = nextRun(x);
   return h("tr", { "data-id": s.id },
+    h("td", {}, h("a", { class: "lk", href: `#/agents/${encodeURIComponent(s.agent || "default")}/schedules` }, x.agent_name || "")),
     h("td", {}, h("b", { class: "row-name", tabindex: "-1" }, s.name), h("div", { class: "s" }, x.tests_text)),
     h("td", {}, x.when_text),
     h("td", { class: "next" }, s.enabled ? (next ? when(next) : "—") : h("span", { class: "muted" }, "Off")),
@@ -1570,7 +1601,7 @@ function pageSchedules() {
   const table = list.length
     ? h("div", { class: "grp" }, h("div", { class: "gh" }, icon("clock"), `schedules · ${list.length} · they run even when this page is closed`),
       h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
-        h("thead", {}, h("tr", {}, ["Name", "When", "Next", "Last", "Notify", "On", ""].map((t) => h("th", {}, t)))),
+        h("thead", {}, h("tr", {}, ["Agent", "Name", "When", "Next", "Last", "Notify", "On", ""].map((t) => h("th", {}, t)))),
         h("tbody", {}, list.map(schedRow)))))
     : h("div", { class: "grp" }, h("div", { class: "gh" }, "schedules · empty"),
       h("div", { class: "empty" }, icon("clock", "big"), h("b", {}, "Nothing is scheduled"),

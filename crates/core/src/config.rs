@@ -65,6 +65,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "ios_device", help: "simulator booted when none runs (default iPhone 16)", rule: Rule::Free },
     Setting { key: "ios_udid", help: "default iOS simulator or device UDID", rule: Rule::Free },
     Setting { key: "memory", help: "path memory: rw (default), readonly, off", rule: Rule::Free },
+    Setting { key: "max_parallel", help: "tests that may run at once on this computer, for all agents together (1-20, default 3); one device always runs one test", rule: Rule::Free },
     Setting { key: "daemon_idle", help: "shell CLI daemon exits after this many idle seconds (default 1800)", rule: Rule::Free },
     Setting { key: "chrome", help: "Chrome/Chromium executable", rule: Rule::HumanOnly },
     Setting { key: "claude", help: "`fastpilot run`: the claude CLI to drive", rule: Rule::HumanOnly },
@@ -304,7 +305,7 @@ fn items_of(key: &str, v: &str) -> Vec<String> {
 pub const LISTS: &[&str] = &["allowed_domains", "confirm_actions", "vars", "block_actions", "upload_dirs"];
 
 /// Settings whose value is a whole number.
-const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "action_timeout", "retry_budget", "breaker", "daemon_idle", "max_steps", "test_timeout"];
+const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "action_timeout", "retry_budget", "breaker", "daemon_idle", "max_steps", "test_timeout", "max_parallel"];
 
 /// Settings whose value is true / false.
 pub const FLAGS: &[&str] =
@@ -336,6 +337,7 @@ pub fn invalid(key: &str, value: &str) -> Option<String> {
     if NUMBERS.contains(&key) && v.parse::<u64>().is_err() {
         let unit = match key {
             "retry_budget" | "breaker" => "runs",
+            "max_parallel" => "tests",
             "max_steps" => "steps",
             "test_timeout" => "minutes",
             "state_expire_days" => "days",
@@ -377,6 +379,9 @@ pub fn invalid(key: &str, value: &str) -> Option<String> {
     }
     if key == "memory" && !MEMORY_MODES.contains(&v) {
         return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
+    }
+    if key == "max_parallel" && !v.parse::<u64>().is_ok_and(|n| (1..=20).contains(&n)) {
+        return Some(format!("`max_parallel` takes 1 to 20 tests, not `{value}`"));
     }
     if key == "max_steps" && v == "0" {
         return Some("`max_steps` takes at least 1 step".into());
