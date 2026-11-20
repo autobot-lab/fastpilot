@@ -50,6 +50,12 @@ async fn skill_matches_the_server() {
     assert!(text_of(&index).contains("- regression: ") && text_of(&index).contains("- choose-technique: "), "{}", text_of(&index));
     let reg = call("skill/regression").await.expect("skill/regression");
     assert!(reg.is_error != Some(true) && text_of(&reg).contains("New since last run"), "{}", text_of(&reg));
+    // M3: the three new skills are served and listed.
+    for n in ["checklist-based", "pairwise", "use-case-scenarios"] {
+        assert!(text_of(&index).contains(&format!("- {n}: ")), "{n} in the index");
+        let one = call(&format!("skill/{n}")).await.expect("skill");
+        assert!(one.is_error != Some(true) && text_of(&one).contains(&format!("name: {n}")), "{n}: {}", text_of(&one));
+    }
     let nope = call("skill/nope").await.expect("skill/nope");
     assert_eq!(nope.is_error, Some(true));
     client.cancel().await.expect("shutdown");
@@ -80,7 +86,7 @@ fn skill_library_is_valid_and_in_step_with_the_server() {
         .map(|e| e.path())
         .filter(|p| p.join("SKILL.md").is_file())
         .collect();
-    assert!(dirs.len() >= 18, "fastpilot + 17 skills, found {}", dirs.len());
+    assert!(dirs.len() >= 21, "fastpilot + 20 skills, found {}", dirs.len());
     let names: Vec<String> = dirs.iter().filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
     for dir in &dirs {
         let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -135,6 +141,37 @@ fn skill_library_is_valid_and_in_step_with_the_server() {
     assert!(reg.contains("failing (no earlier run)"), "no earlier result: not 'newly failing'");
     let headline = example.lines().find(|l| l.starts_with("Regression — ")).expect("headline");
     assert!(headline.find("newly failing") < headline.find("passed"), "the headline counts lead with newly failing: {headline}");
+
+    // M3 (S6, S7, S11): choose-technique routes to every technique skill, an expected refusal reads
+    // as a pass, and the ISTQB names are in the descriptions (folders keep their names).
+    let skill = |n: &str| std::fs::read_to_string(format!("{ROOT}/skills/{n}/SKILL.md")).unwrap_or_else(|_| panic!("skills/{n}"));
+    let choose = skill("choose-technique");
+    for n in ["equivalence-partitioning", "boundary-value-analysis", "decision-table", "state-transition", "pairwise", "use-case-scenarios", "ticket-to-test", "exploratory-check", "checklist-based", "edge-cases"] {
+        assert!(choose.contains(&format!("| `{n}`")) || choose.contains(&format!("+ `{n}`")) || choose.contains(&format!("a few `{n}`")), "choose-technique routes to {n}");
+    }
+    for n in ["choose-technique", "boundary-value-analysis"] {
+        let t = skill(n);
+        assert!(t.contains("17 refused ✓") && !t.contains("✗ refused"), "{n}: an expected refusal reads as a pass");
+    }
+    let front = |n: &str| skill(n).lines().find_map(|l| l.strip_prefix("description: ").map(str::to_owned)).unwrap_or_default();
+    assert!(front("edge-cases").starts_with("Error guessing"), "edge-cases = error guessing");
+    assert!(front("exploratory-check").starts_with("Exploratory testing"), "exploratory-check = exploratory testing");
+    assert!(front("ticket-to-test").starts_with("Acceptance tests (ATDD)"), "ticket-to-test = acceptance tests");
+    let explore = skill("exploratory-check");
+    assert!(["Mission:", "Area:", "Time box:", "10-20 minutes"].iter().all(|w| explore.contains(w)), "exploratory-check has a charter");
+    // The new skills keep fastpilot's safety rules: never pay, a blocked step is not worked around,
+    // sign in only where the user or saved tests say.
+    for n in ["checklist-based", "pairwise", "use-case-scenarios"] {
+        let t = skill(n);
+        assert!(t.contains("Never press Pay") || t.contains("Never pay"), "{n}: never pay");
+        assert!(t.contains("`${NAME}`"), "{n}: secrets as variables");
+    }
+    for n in ["checklist-based", "use-case-scenarios"] {
+        let t = skill(n);
+        assert!(t.contains("never suggest turning"), "{n}: limits are not worked around");
+        assert!(t.contains("Sign in only"), "{n}: credentials only on the user's host");
+    }
+    assert!(!skill("use-case-scenarios").contains("log in with Google"), "no sign-in through another site as a path");
 
     // Licence: the MIT notice of the skills adapted from petrkindlmann/qa-skills ships with fastpilot.
     let notices = std::fs::read_to_string(format!("{ROOT}/THIRD_PARTY_NOTICES")).expect("THIRD_PARTY_NOTICES");

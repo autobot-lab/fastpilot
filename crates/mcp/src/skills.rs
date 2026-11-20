@@ -9,6 +9,7 @@ pub const SKILLS: &[(&str, &str)] = &[
     ("accessibility-basics", include_str!("../../../skills/accessibility-basics/SKILL.md")),
     ("boundary-value-analysis", include_str!("../../../skills/boundary-value-analysis/SKILL.md")),
     ("bug-report", include_str!("../../../skills/bug-report/SKILL.md")),
+    ("checklist-based", include_str!("../../../skills/checklist-based/SKILL.md")),
     ("choose-technique", include_str!("../../../skills/choose-technique/SKILL.md")),
     ("decision-table", include_str!("../../../skills/decision-table/SKILL.md")),
     ("edge-cases", include_str!("../../../skills/edge-cases/SKILL.md")),
@@ -17,12 +18,14 @@ pub const SKILLS: &[(&str, &str)] = &[
     ("form-validation", include_str!("../../../skills/form-validation/SKILL.md")),
     ("login-and-otp", include_str!("../../../skills/login-and-otp/SKILL.md")),
     ("mobile-basics", include_str!("../../../skills/mobile-basics/SKILL.md")),
+    ("pairwise", include_str!("../../../skills/pairwise/SKILL.md")),
     ("regression", include_str!("../../../skills/regression/SKILL.md")),
     ("release-check", include_str!("../../../skills/release-check/SKILL.md")),
     ("safe-checkout", include_str!("../../../skills/safe-checkout/SKILL.md")),
     ("state-transition", include_str!("../../../skills/state-transition/SKILL.md")),
     ("test-report", include_str!("../../../skills/test-report/SKILL.md")),
     ("ticket-to-test", include_str!("../../../skills/ticket-to-test/SKILL.md")),
+    ("use-case-scenarios", include_str!("../../../skills/use-case-scenarios/SKILL.md")),
 ];
 
 /// A skill's text by name.
