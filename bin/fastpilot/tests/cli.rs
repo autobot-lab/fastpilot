@@ -38,10 +38,15 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
     };
     // A Chrome that does not exist: web fails, with the fix.
     let (ok, out) = run(&["doctor", "web"], Some("/nonexistent/chrome"));
-    assert!(!ok && out.contains("✗ Chrome") && out.contains("tidak bisa dijalankan") && out.contains("fastpilot config set chrome") && !out.contains("does not start"), "{out}");
+    assert!(!ok && out.contains("✗ Chrome") && out.contains("does not start") && out.contains("fastpilot config set chrome"), "{out}");
     // Unknown platform.
     let (ok, out) = run(&["doctor", "windows"], None);
-    assert!(!ok && out.contains("platform `windows` tidak dikenal"), "{out}");
+    assert!(!ok && out.contains("unknown platform"), "{out}");
+    // E1 (v0.4): --help shows the help, checks and changes nothing (it ran the checks before).
+    for cmd in ["doctor", "setup"] {
+        let (ok, out) = run(&[cmd, "--help"], Some("/nonexistent/chrome"));
+        assert!(ok && out.starts_with(&format!("usage: fastpilot {cmd}")) && !out.contains("✓") && !out.contains("✗"), "{cmd} --help: {out}");
+    }
     // Every area is listed; `setup` without a terminal never runs anything.
     let (_, out) = run(&["doctor"], None);
     for area in ["web:", "android:", "ios:", "run:"] {
@@ -52,18 +57,18 @@ fn doctor_reports_each_platform_and_setup_only_plans_without_a_terminal() {
     assert!(!ok && out.contains("✗ Chrome"), "plain doctor with web ✗ must exit ≠ 0: {out}");
     // ... and fails while a ✗ is left (here web, which no setup run can fix without a terminal).
     let (ok, out) = run(&["setup"], Some("/nonexistent/chrome"));
-    assert!(!ok && !out.contains("  selesai") && !out.contains("  dinyalakan"), "{out}");
-    if out.contains("bisa dijalankan untukmu") {
-        assert!(out.contains("rencana (jalankan di terminal"), "{out}");
+    assert!(!ok && !out.contains("  done") && !out.contains("  started"), "{out}");
+    if out.contains("can be applied") {
+        assert!(out.contains("plan (run in a terminal"), "{out}");
     }
     if std::path::Path::new("/Applications/Google Chrome.app").exists() || std::path::Path::new("/usr/bin/chromium").exists() {
         let (ok, out) = run(&["doctor", "web"], None);
-        assert!(ok && out.contains("✓ Chrome") && out.contains("bisa jalan headless"), "{out}");
+        assert!(ok && out.contains("✓ Chrome") && out.contains("starts headless"), "{out}");
         // Web ready: a ✗ in a platform nobody named (Android, iOS, run) does not fail a plain `doctor`.
         let (ok, out) = run(&["doctor"], None);
         assert!(ok, "plain doctor with web ✓ exits 0: {out}");
         let (ok, out) = run(&["setup", "web"], None);
-        assert!(ok && out.contains("tidak ada yang perlu disiapkan"), "web ready, nothing left: {out}");
+        assert!(ok && out.contains("nothing to set up"), "web ready, nothing left: {out}");
     }
 }
 
@@ -114,15 +119,15 @@ fn run_options_are_checked_and_help_is_help() {
         (out.status.code(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
     let (code, out) = run(&["run", "tests/login.md", "--reset=1"]);
-    assert!(code == Some(2) && out.contains("--reset adalah sakelar dan tidak memakai nilai") && out.contains("[--report-github[=dry]]"), "{code:?} {out}");
+    assert!(code == Some(2) && out.contains("--reset is a switch and takes no value") && out.contains("[--report-github[=dry]]"), "{code:?} {out}");
     let (code, out) = run(&["run", "tests/login.md", "--bogus"]);
-    assert!(code == Some(2) && out.contains("argumen `--bogus` tidak dikenal") && out.contains("[--record] [--reset]"), "{code:?} {out}");
+    assert!(code == Some(2) && out.contains("unknown argument `--bogus`") && out.contains("[--record] [--reset]"), "{code:?} {out}");
     let (code, out) = run(&["run", "tests/login.md", "--report-github=bogus"]);
     assert!(code == Some(1) && out.contains("--report-github takes `dry` or nothing, not `bogus`"), "{code:?} {out}");
     let (code, out) = run(&["open", "--help"]);
-    assert!(code == Some(0) && out.contains("perintah shell fastpilot"), "{code:?} {out}");
+    assert!(code == Some(0) && out.contains("fastpilot shell commands"), "{code:?} {out}");
     assert!(!dir.join("d.sock").exists(), "help must not start the daemon");
     let (_, out) = run(&["--help"]);
-    assert!(out.contains("link sekali pakai") && out.contains("pemakaian: fastpilot") && !out.contains("127.0.0.1 + token"), "{out}");
+    assert!(out.contains("one-time link") && !out.contains("127.0.0.1 + token"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

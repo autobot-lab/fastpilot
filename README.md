@@ -26,7 +26,7 @@ fastpilot init
 ```
 
 `init` asks before each change; answer `y`. It connects fastpilot to Claude Code and creates
-an example test, `tests/contoh.md`.
+an example test, `tests/example.md`.
 
 **3. Talk to fastpilot**
 

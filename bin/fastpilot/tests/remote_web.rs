@@ -93,7 +93,7 @@ async fn web_sessions_on_a_remote_chrome() {
         .await
         .expect("doctor");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success() && text.contains(&format!("Chrome jarak jauh di {endpoint}")), "{text}");
+    assert!(out.status.success() && text.contains(&format!("remote Chrome at {endpoint}")), "{text}");
 
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
         c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("FASTPILOT_CHROME_ENDPOINT", &endpoint).env("FASTPILOT_CHROME", "/nonexistent/chrome");

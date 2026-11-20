@@ -40,6 +40,11 @@ fn run_on(target: &str, dir: &std::path::Path, log: &std::path::Path, env: &[(&s
         .env("DEMO_PASS", "rahasia123")
         .env("FASTPILOT_VARS", "DEMO_PASS")
         .env("FASTPILOT_RETRY_BUDGET", "1");
+    // The run's own settings file, not the user's ~/.fastpilot/config.toml (a model chosen there
+    // changed which model these tests saw); a test that brings its own HOME uses that one's.
+    if !env.iter().any(|(k, _)| *k == "HOME") {
+        cmd.env("FASTPILOT_CONFIG", dir.join("config.toml"));
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -401,7 +406,7 @@ fn provider_drives_a_run_without_claude_code() {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
     let (ok, out) = test("sk-test-provider-999");
-    assert!(ok && out.contains("ok: custom di") && out.contains("menjawab sebagai") && out.contains("\"OK\""), "{out}");
+    assert!(ok && out.contains("ok: custom at") && out.contains("\"OK\""), "{out}");
     let (ok, out) = test("sk-wrong-key-123");
     assert!(!ok && out.contains("401") && out.contains("Incorrect API key") && !out.contains("sk-wrong-key-123"), "{out}");
     let _ = std::fs::remove_dir_all(dir);

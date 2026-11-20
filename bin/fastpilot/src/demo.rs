@@ -85,21 +85,21 @@ pub fn write_safe(base: &Path, rel: &Path, bytes: &[u8], check_base: bool) -> Re
     let link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
     let mut at = base.to_path_buf();
     if check_base && link(&at) {
-        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", at.display()));
+        return Err(format!("{} is a symlink; fastpilot does not write through symlinks", at.display()));
     }
     let parent = rel.parent().unwrap_or(Path::new(""));
     for part in parent.components() {
         at.push(part);
         if link(&at) {
-            return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", at.display()));
+            return Err(format!("{} is a symlink; fastpilot does not write through symlinks", at.display()));
         }
         if !at.exists() {
-            std::fs::create_dir(&at).map_err(|e| format!("tidak bisa membuat {}: {e}", at.display()))?;
+            std::fs::create_dir(&at).map_err(|e| format!("cannot create {}: {e}", at.display()))?;
         }
     }
     let path = base.join(rel);
     if link(&path) {
-        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", path.display()));
+        return Err(format!("{} is a symlink; fastpilot does not write through symlinks", path.display()));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.fastpilot-{}.tmp", std::process::id()));
@@ -112,7 +112,7 @@ pub fn write_safe(base: &Path, rel: &Path, bytes: &[u8], check_base: bool) -> Re
         .and_then(|()| std::fs::rename(&tmp, &path));
     written.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("tidak bisa menulis {}: {e}", path.display())
+        format!("cannot write {}: {e}", path.display())
     })
 }
 
@@ -163,15 +163,15 @@ pub fn install_hint(serial: &str, error: &str) -> Option<String> {
         .any(|e| error.contains(e));
     incompatible.then(|| {
         format!(
-            "app demo lain (tanda tangan atau versi berbeda) sudah terpasang di {serial}. Hapus dulu, lalu ulangi:\n    adb -s {serial} uninstall {APP}\n    fastpilot demo --android --device {serial}"
+            "another demo app (different signature or version) is installed on {serial}. Remove it first, then try again:\n    adb -s {serial} uninstall {APP}\n    fastpilot demo --android --device {serial}"
         )
     })
 }
 
-const USAGE: &str = "pemakaian: fastpilot demo [folder] [--force] [--android [--device SERIAL]]
-  folder     tempat demo ditulis (bawaan ./fastpilot-demo)
-  --force    tulis ke folder yang sudah ada (file bernama sama diganti; .mcp.json lama dicadangkan)
-  --android  pasang juga app demo di device atau emulator Android yang tersambung";
+const USAGE: &str = "usage: fastpilot demo [folder] [--force] [--android [--device SERIAL]]
+  folder     where to write the demo (default ./fastpilot-demo)
+  --force    write into a folder that already exists (files with the same name are replaced)
+  --android  also install the demo app on the attached Android device or emulator";
 
 pub async fn demo(args: &[String]) -> Res<()> {
     let mut folder: Option<String> = None;
@@ -181,13 +181,13 @@ pub async fn demo(args: &[String]) -> Res<()> {
         match a.as_str() {
             "--force" => force = true,
             "--android" => android = true,
-            "--device" => device = Some(it.next().cloned().ok_or("--device butuh serial device, mis. emulator-5556")?),
+            "--device" => device = Some(it.next().cloned().ok_or("--device needs a device serial, e.g. emulator-5556")?),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
             }
             s if s.starts_with('-') => {
-                eprintln!("fastpilot demo: opsi `{s}` tidak dikenal\n\n{USAGE}");
+                eprintln!("fastpilot demo: unknown option `{s}`\n\n{USAGE}");
                 std::process::exit(2);
             }
             s => folder = Some(s.to_owned()),
@@ -197,14 +197,14 @@ pub async fn demo(args: &[String]) -> Res<()> {
     let dir = PathBuf::from(&shown);
     // Run from inside a demo folder: the new one would end up nested in it.
     if is_demo_folder(Path::new(".")) && !(android && dir.exists()) {
-        println!("! Kamu sedang berada di dalam folder demo. Folder baru akan dibuat di dalamnya: {}", std::env::current_dir().map(|c| c.join(&dir).display().to_string()).unwrap_or(shown.clone()));
-        println!("  Bukan itu maksudmu? Keluar dulu dengan `cd ..`, lalu jalankan lagi.\n");
+        println!("! You are inside a demo folder. A new folder will be made inside it: {}", std::env::current_dir().map(|c| c.join(&dir).display().to_string()).unwrap_or(shown.clone()));
+        println!("  Not what you meant? Leave it with `cd ..`, then run this again.\n");
     }
     // `--android` after the folder was made: only the app.
     let write = !(android && dir.exists() && !force);
     if write {
         if dir.exists() && !force {
-            eprintln!("Folder {} sudah ada; tidak ada yang diubah.\nPakai folder lain (fastpilot demo <folder>) atau --force untuk menulis ulang isinya.", dir.display());
+            eprintln!("The folder {} already exists; nothing was changed.\nUse another folder (fastpilot demo <folder>) or --force to write its files again.", dir.display());
             std::process::exit(1);
         }
         write_folder(&dir, &shown)?;
@@ -212,8 +212,8 @@ pub async fn demo(args: &[String]) -> Res<()> {
     let installed = install_android(android, device.as_deref()).await;
     if write {
         let cd = if shown.contains(char::is_whitespace) { format!("cd \"{shown}\"") } else { format!("cd {shown}") };
-        println!("\nCoba sekarang:\n  {cd} && claude\n  lalu ketik:\n  \"Pakai fastpilot, jalankan tests/login.md lalu report\"");
-        println!("\nPassword demo (bukan rahasia): {DEMO_PASS}, sudah di .mcp.json");
+        println!("\nTry it now:\n  {cd} && claude\n  then type:\n  \"Use fastpilot to run tests/login.md, then report\"");
+        println!("\nDemo password (not a secret): {DEMO_PASS}, already in .mcp.json");
     }
     if installed == Some(false) {
         std::process::exit(1);
@@ -223,25 +223,25 @@ pub async fn demo(args: &[String]) -> Res<()> {
 
 fn write_folder(dir: &Path, shown: &str) -> Res<()> {
     let prefix = if Path::new(shown).is_absolute() || shown.starts_with('.') { shown.to_owned() } else { format!("./{shown}") };
-    println!("Membuat folder demo: {prefix}");
+    println!("Creating the demo folder: {prefix}");
     if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(format!("{} adalah symlink; fastpilot tidak menulis lewat symlink", dir.display()).into());
+        return Err(format!("{} is a symlink; fastpilot does not write through symlinks", dir.display()).into());
     }
-    std::fs::create_dir_all(dir).map_err(|e| format!("tidak bisa membuat {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     for (rel, bytes) in files() {
         write_safe(dir, &rel, &bytes, true)?;
     }
     let backup = write_mcp_json(dir)?;
     let names: Vec<String> = PAGES.iter().take(2).map(|(n, _)| format!("demo/{n}")).collect();
-    println!("  ✓ {:<42} {} halaman", format!("{}, …", names.join(", ")), PAGES.len());
+    println!("  ✓ {:<42} {} pages", format!("{}, …", names.join(", ")), PAGES.len());
     for (n, _, platform) in TESTS {
         println!("  ✓ {:<42} {platform}", format!("tests/{n}"));
     }
     println!("  ✓ {:<42} fastpilot + DEMO_PASS", ".mcp.json");
     if let Some(b) = backup {
-        println!("    .mcp.json yang sudah ada disimpan di {b}; server lain di dalamnya tetap ada");
+        println!("    the existing .mcp.json was saved as {b}; the other servers in it are kept");
     }
-    println!("  ✓ {:<42} Skill: cara menulis langkah fastpilot", ".claude/skills/fastpilot/SKILL.md");
+    println!("  ✓ {:<42} Skill: how to write fastpilot steps", ".claude/skills/fastpilot/SKILL.md");
     Ok(())
 }
 
@@ -256,34 +256,34 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
         .or_else(|| ["FASTPILOT_ANDROID_SERIAL", "ANDROID_SERIAL"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty())));
     if !asked {
         if serials.is_empty() {
-            println!("\nAndroid (dilewati: tidak ada device)\n  nyalakan emulator lalu: fastpilot demo --android\n  → memasang fastpilot-demo.apk dari binary");
+            println!("\nAndroid (skipped: no device)\n  start an emulator, then: fastpilot demo --android\n  → installs the demo app built into fastpilot");
         } else {
-            println!("\nAndroid: device tersambung ({})\n  pasang app demo: fastpilot demo --android", serials.join(", "));
+            println!("\nAndroid: devices connected ({})\n  install the demo app: fastpilot demo --android", serials.join(", "));
         }
         return None;
     }
     let serial = match (wanted, serials.as_slice()) {
         (Some(w), list) if list.contains(&w) => w,
         (Some(w), _) => {
-            println!("\nAndroid (dilewati: device {w} tidak tersambung)");
+            println!("\nAndroid (skipped: device {w} is not connected)");
             return None;
         }
         (None, []) => {
-            println!("\nAndroid (dilewati: tidak ada device)\n  nyalakan emulator lalu jalankan lagi: fastpilot demo --android");
+            println!("\nAndroid (skipped: no device)\n  start an emulator, then run again: fastpilot demo --android");
             return None;
         }
         (None, [one]) => one.clone(),
         (None, many) => {
-            println!("\nAndroid: ada {} device ({}); pilih satu: fastpilot demo --android --device <serial>", many.len(), many.join(", "));
+            println!("\nAndroid: {} devices ({}); pick one: fastpilot demo --android --device <serial>", many.len(), many.join(", "));
             return Some(false);
         }
     };
     if APK.is_empty() {
-        println!("\nAndroid: app demo tidak ikut di build fastpilot ini.\n  pakai build rilis (npm / install.sh), atau dari checkout: agent-android/build.sh lalu build ulang");
+        println!("\nAndroid: this fastpilot build has no demo app.\n  use a release build (npm / install.sh), or from a checkout: agent-android/build.sh, then build again");
         return Some(false);
     }
     if !fastpilot_core::config::flag("allow_app_install") {
-        println!("\nAndroid: memasang app dimatikan di Batasan (allow_app_install = false).\n  ubah di: fastpilot ui → Pengaturan › Batasan & izin");
+        println!("\nAndroid: installing apps is turned off in your limits (allow_app_install = false).\n  change it in: fastpilot ui → Settings › Limits & permissions");
         return Some(false);
     }
     let done = match fastpilot_android::Adb::new().await {
@@ -292,13 +292,13 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
     };
     match done {
         Ok(()) => {
-            println!("  ✓ {serial} · {APP} terpasang\n  ketik di Claude: \"Pakai fastpilot, jalankan tests/login-android.md\"");
+            println!("  ✓ {serial} · {APP} installed\n  type in Claude: \"Use fastpilot to run tests/login-android.md\"");
             Some(true)
         }
         Err(e) => {
             match install_hint(&serial, &e) {
                 Some(hint) => println!("  ✗ {serial}: {hint}"),
-                None => println!("  ✗ {serial}: app demo tidak bisa dipasang: {e}"),
+                None => println!("  ✗ {serial}: the demo app could not be installed: {e}"),
             }
             Some(false)
         }

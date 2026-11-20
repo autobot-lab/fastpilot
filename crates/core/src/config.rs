@@ -547,9 +547,9 @@ pub fn describe() -> String {
             Source::Env(v) => format!("{} (env FASTPILOT_{})", shown(&v), s.key.to_uppercase()),
             Source::File(v) => format!("{} (file)", shown(&v)),
             Source::Default => match s.key {
-                "block_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_BLOCKED.join(", ")),
-                "confirm_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_CONFIRM.join(", ")),
-                "allow_eval_script" => "off while block_actions is on, else on (default (bawaan))".to_owned(),
+                "block_actions" => format!("{} (default)", crate::policy::DEFAULT_BLOCKED.join(", ")),
+                "confirm_actions" => format!("{} (default)", crate::policy::DEFAULT_CONFIRM.join(", ")),
+                "allow_eval_script" => "off while block_actions is on, else on (default)".to_owned(),
                 _ => "— (default)".to_owned(),
             },
         };
