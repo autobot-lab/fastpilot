@@ -85,7 +85,8 @@ pub fn files() -> Vec<(PathBuf, Vec<u8>)> {
     let mut out: Vec<(PathBuf, Vec<u8>)> = PAGES.iter().map(|(n, t)| (Path::new("demo").join(n), t.as_bytes().to_vec())).collect();
     out.extend(TESTS.iter().map(|(n, t, _)| (Path::new("tests").join(n), test_case(t).into_bytes())));
     // The Skill, so Claude Code in the demo folder knows fastpilot's steps instead of guessing them.
-    out.push((PathBuf::from(".claude/skills/fastpilot/SKILL.md"), crate::init::SKILL.as_bytes().to_vec()));
+    // The whole skill library (testing techniques, regression, reports) next to it, as `init` does.
+    out.extend(fastpilot_mcp::skills::SKILLS.iter().map(|(n, t)| (Path::new(".claude/skills").join(n).join("SKILL.md"), t.as_bytes().to_vec())));
     out
 }
 
@@ -257,7 +258,7 @@ fn write_folder(dir: &Path, shown: &str) -> Res<()> {
     if let Some(b) = backup {
         println!("    the existing .mcp.json was saved as {b}; the other servers in it are kept");
     }
-    println!("  ✓ {:<42} Skill: how to write fastpilot steps", ".claude/skills/fastpilot/SKILL.md");
+    println!("  ✓ {:<42} {} skills: fastpilot steps, test techniques, regression, reports", ".claude/skills/…", fastpilot_mcp::skills::SKILLS.len());
     println!("  ✓ {:<42} {} practice pages, one hidden bug each", format!("demo/{}, …", PRACTICE[0].0), PRACTICE.len());
     Ok(())
 }

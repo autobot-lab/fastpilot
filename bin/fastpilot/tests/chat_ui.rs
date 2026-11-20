@@ -178,6 +178,8 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!(first[i + 1], "mcp__fastpilot__config");
     let sys = first.iter().position(|a| *a == "--append-system-prompt").map(|i| first[i + 1]).expect("system prompt");
     assert!(sys.contains("fastpilot-proposal") && sys.contains("block_actions ="), "{sys}");
+    // S5 (v0.4): the bot knows the skill library (index here; each skill through the docs tool).
+    assert!(sys.contains("- regression: ") && sys.contains("docs(topic: \"skill/<name>\")"), "skill index in the system prompt");
     let second = calls[1]["argv"].to_string();
     assert!(second.contains("\"--resume\",\"fake-chat-1\""), "{second}");
 

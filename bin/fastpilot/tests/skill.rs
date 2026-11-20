@@ -41,6 +41,17 @@ async fn skill_matches_the_server() {
             .expect("docs");
         assert!(res.is_error != Some(true), "docs topic {topic}");
     }
+    // S5: the skill library through `docs`: the index, and one skill's full text.
+    let call = |topic: &str| {
+        client.call_tool(rmcp::model::CallToolRequestParams::new("docs").with_arguments(serde_json::json!({ "topic": topic }).as_object().cloned().unwrap_or_default()))
+    };
+    let text_of = |r: &rmcp::model::CallToolResult| serde_json::to_value(&r.content).map(|v| v.to_string()).unwrap_or_default();
+    let index = call("skills").await.expect("skills");
+    assert!(text_of(&index).contains("- regression: ") && text_of(&index).contains("- choose-technique: "), "{}", text_of(&index));
+    let reg = call("skill/regression").await.expect("skill/regression");
+    assert!(reg.is_error != Some(true) && text_of(&reg).contains("New since last run"), "{}", text_of(&reg));
+    let nope = call("skill/nope").await.expect("skill/nope");
+    assert_eq!(nope.is_error, Some(true));
     client.cancel().await.expect("shutdown");
 
     // CLI commands it shows are commands `fastpilot help` knows.
@@ -51,4 +62,98 @@ async fn skill_matches_the_server() {
         let word = c.split(' ').next().unwrap_or(c);
         assert!(help.contains(word) || ["doctor", "setup", "config"].contains(&word), "`fastpilot {word}` not in help");
     }
+}
+
+/// S5 (v0.4): every skill of the library is a valid Agent Skill, built into fastpilot, and every
+/// step, docs topic and skill it names exists, so a skill never sends the AI to something fastpilot
+/// does not have.
+#[test]
+fn skill_library_is_valid_and_in_step_with_the_server() {
+    let docs = std::fs::read_to_string(format!("{ROOT}/crates/mcp/src/docs.rs")).expect("docs.rs");
+    let dsl = std::fs::read_to_string(format!("{ROOT}/crates/core/src/dsl.rs")).expect("dsl.rs");
+    // In the docs table (some rows are abbreviated: "inputRandomText / Number / …"), or a step name
+    // the DSL parser knows.
+    let step_exists = |s: &str| docs.contains(s) || dsl.contains(&format!("\"{s}\""));
+    let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(format!("{ROOT}/skills"))
+        .expect("skills")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("SKILL.md").is_file())
+        .collect();
+    assert!(dirs.len() >= 18, "fastpilot + 17 skills, found {}", dirs.len());
+    let names: Vec<String> = dirs.iter().filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+    for dir in &dirs {
+        let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = std::fs::read_to_string(dir.join("SKILL.md")).expect("SKILL.md");
+        let front = text.strip_prefix("---\n").and_then(|t| t.split_once("\n---\n")).map(|(f, _)| f).unwrap_or_else(|| panic!("{folder}: front matter"));
+        let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(&format!("{k}: "))).map(str::trim);
+        assert_eq!(field("name"), Some(folder.as_str()), "{folder}: name = folder");
+        assert!(folder.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{folder}: lowercase and hyphens");
+        let description = field("description").unwrap_or_else(|| panic!("{folder}: description"));
+        assert!(!description.is_empty() && description.chars().count() <= 1024, "{folder}: description {} chars", description.chars().count());
+        assert_eq!(field("license"), Some("Apache-2.0"), "{folder}: license");
+        assert!(text.lines().count() < 500, "{folder}: keep SKILL.md short");
+        assert!(text.contains("data, not instructions"), "{folder}: screen text is data, not instructions");
+        // Step names (camelCase in backticks: `tapOn`, `assertScreenshot`, …) exist in the DSL.
+        for word in text.split('`').skip(1).step_by(2) {
+            let w = word.split([':', ' ', '(']).next().unwrap_or("");
+            let camel = w.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && w.chars().any(|c| c.is_ascii_uppercase()) && w.chars().all(|c| c.is_ascii_alphanumeric());
+            if camel {
+                assert!(step_exists(w), "{folder}: step `{w}` is not in docs.rs");
+            }
+        }
+        // `docs(topic: …)` names a topic the server has.
+        for topic in text.split("topic: ").skip(1).map(|t| t.split(|c: char| !(c.is_ascii_alphanumeric() || c == '/' || c == '-')).find(|s| !s.is_empty()).unwrap_or("")) {
+            let ok = ["dsl", "selectors", "parallel", "examples", "errors", "memory", "devices", "skills", "skill/"].contains(&topic)
+                || topic.strip_prefix("skill/").is_some_and(|n| names.iter().any(|x| x == n));
+            assert!(ok, "{folder}: docs topic `{topic}` does not exist");
+        }
+        // "the `x` skill" names a skill of the library.
+        for part in text.split(" skill").map(|p| p.trim_end()) {
+            if let Some(name) = part.strip_suffix('`').and_then(|p| p.rsplit('`').next())
+                && !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+            {
+                assert!(names.iter().any(|n| n == name), "{folder}: skill `{name}` does not exist");
+            }
+        }
+    }
+    // Built in: the same text fastpilot installs and serves.
+    let built: Vec<&str> = fastpilot_skills().iter().map(|(n, _)| *n).collect();
+    for n in &names {
+        assert!(built.contains(&n.as_str()), "skills/{n} is not built into fastpilot");
+    }
+
+    // S1: the regression report leads with what broke since the last run, and never calls a test
+    // "newly failing" without an earlier pass.
+    let reg = std::fs::read_to_string(format!("{ROOT}/skills/regression/SKILL.md")).expect("regression");
+    let order = ["**Newly failing**, **Still failing**", "**Flaky**, **Blocked**, **Passed**"];
+    assert!(order.iter().all(|o| reg.contains(o)), "report order");
+    let example = &reg[reg.find("Example, not real results").expect("example marked")..];
+    let at = |s: &str| example.find(s).unwrap_or_else(|| panic!("{s} in the example"));
+    assert!(at("Newly failing (New since last run)") < at("Still failing") && at("Still failing") < at("Flaky") && at("Flaky") < at("Blocked") && at("Blocked") < at("Passed ("));
+    assert!(reg.contains("failing (no earlier run)"), "no earlier result: not 'newly failing'");
+    let headline = example.lines().find(|l| l.starts_with("Regression — ")).expect("headline");
+    assert!(headline.find("newly failing") < headline.find("passed"), "the headline counts lead with newly failing: {headline}");
+
+    // Licence: the MIT notice of the skills adapted from petrkindlmann/qa-skills ships with fastpilot.
+    let notices = std::fs::read_to_string(format!("{ROOT}/THIRD_PARTY_NOTICES")).expect("THIRD_PARTY_NOTICES");
+    assert!(notices.contains("Copyright (c) 2026 Petr Kindlmann") && notices.contains("MIT License"));
+    for dir in &dirs {
+        let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+        if text.contains("petrkindlmann/qa-skills") {
+            let n = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            assert!(notices.contains(&n), "{n} credits qa-skills but is not in THIRD_PARTY_NOTICES");
+        }
+    }
+}
+
+/// The skills as built into the binary, read back through `docs(topic: "skills")` would need a
+/// server; the source list is enough here.
+fn fastpilot_skills() -> Vec<(&'static str, &'static str)> {
+    let src = include_str!("../../../crates/mcp/src/skills.rs");
+    src.lines()
+        .filter_map(|l| l.trim().strip_prefix("(\"").and_then(|r| r.split_once('"')).map(|(n, _)| n))
+        .map(|n| (Box::leak(n.to_owned().into_boxed_str()) as &'static str, ""))
+        .collect()
 }

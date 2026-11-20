@@ -2,6 +2,7 @@
 //! `report`, `docs` (PRD §10).
 
 mod docs;
+pub mod skills;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -232,7 +233,7 @@ pub struct StateArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocsArgs {
-    /// dsl | selectors | parallel | examples | errors | memory | devices (default: dsl)
+    /// dsl | selectors | parallel | examples | errors | memory | devices | skills | skill/<name> (default: dsl)
     pub topic: Option<String>,
 }
 
@@ -909,12 +910,21 @@ impl FastPilot {
         }
     }
 
-    #[tool(description = "fastpilot reference docs. Topics: dsl, selectors, parallel, examples, errors, memory, devices.")]
+    #[tool(description = "fastpilot reference docs. Topics: dsl, selectors, parallel, examples, errors, memory, devices, skills (the testing skills: regression, bug-report, test techniques, ...), skill/<name> (one skill to follow).")]
     async fn docs(&self, Parameters(args): Parameters<DocsArgs>) -> Result<CallToolResult, ErrorData> {
         let topic = args.topic.as_deref().unwrap_or("dsl");
+        if topic == "skills" {
+            return ok(skills::index());
+        }
+        if let Some(name) = topic.strip_prefix("skill/") {
+            return match skills::get(name) {
+                Some(text) => ok(text),
+                None => fail(format!("unknown skill `{name}`; docs(topic: \"skills\") lists them")),
+            };
+        }
         match docs::topic(topic) {
             Some(md) => ok(md),
-            None => fail(format!("unknown topic `{topic}` (dsl, selectors, parallel, examples, errors, memory, devices)")),
+            None => fail(format!("unknown topic `{topic}` (dsl, selectors, parallel, examples, errors, memory, devices, skills, skill/<name>)")),
         }
     }
 }
