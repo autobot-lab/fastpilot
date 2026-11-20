@@ -637,7 +637,15 @@ mod tests {
         let add = limit_changes(&json!({ "kind": "limits", "add": { "block_actions": ["Keluar"], "confirm_actions": ["Arsipkan"] } })).expect("add");
         assert_eq!(add[0], ("block_actions".into(), Some("default".into()), "default,Keluar".into()));
         assert_eq!(add[1], ("confirm_actions".into(), Some("hapus,delete,remove".into()), "hapus,delete,remove,Arsipkan".into()));
-        for set in [json!({ "block_actions": [] }), json!({ "block_actions": ["Keluar"] }), json!({ "confirm_actions": [] }), json!({ "confirm_actions": ["hapus"] })] {
+        // Security Medium: the built-in words written out (without `default`) lose the phrase rules.
+        let written_out: Vec<&str> = fastpilot_core::policy::DEFAULT_BLOCKED.to_vec();
+        for set in [
+            json!({ "block_actions": [] }),
+            json!({ "block_actions": ["Keluar"] }),
+            json!({ "block_actions": written_out }),
+            json!({ "confirm_actions": [] }),
+            json!({ "confirm_actions": ["hapus"] }),
+        ] {
             let e = limit_changes(&json!({ "kind": "limits", "set": set })).expect_err("loosens");
             assert!(e.contains("lebih longgar") && e.contains("Pengaturan"), "{set}: {e}");
         }
