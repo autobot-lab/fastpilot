@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Event tickets</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; }
+    form { display: grid; gap: 8px; }
+    button { padding: 8px; }
+    .rules { background: #f4f5f7; border: 1px solid #d9dce1; padding: 8px 12px; }
+    [role=alert] { color: #b00020; }
+    #ok { color: #1b6e36; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Event tickets</h1>
+    <div class="rules" aria-label="Rules">
+      <p>Age: 18 to 65 (adults only).</p>
+      <p>Tickets: 1 to 10 per order, whole numbers.</p>
+    </div>
+    <form id="form">
+      <label for="age">Age</label>
+      <input id="age" inputmode="numeric">
+      <label for="qty">Tickets</label>
+      <input id="qty" inputmode="numeric">
+      <button id="submit" type="submit">Reserve tickets</button>
+      <p id="error" role="alert" hidden></p>
+      <p id="ok" role="status" hidden></p>
+    </form>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const whole = (v) => /^\s*-?\d+\s*$/.test(v) ? Number(v) : NaN;
+    $('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      $('error').hidden = true;
+      $('ok').hidden = true;
+      $('submit').disabled = true;
+      setTimeout(() => {
+        $('submit').disabled = false;
+        const age = whole($('age').value), qty = whole($('qty').value);
+        let err = '';
+        if (Number.isNaN(age)) err = 'Enter your age as a whole number';
+        else if (age < 18 || age > 65) err = 'Age must be 18 to 65';
+        else if (Number.isNaN(qty)) err = 'Enter the number of tickets as a whole number';
+        else if (qty < 1 || qty >= 10) err = 'Tickets must be 1 to 10';
+        if (err) {
+          $('error').textContent = err;
+          $('error').hidden = false;
+        } else {
+          $('ok').textContent = `Reserved: ${qty} ticket${qty === 1 ? '' : 's'} for a guest aged ${age}.`;
+          $('ok').hidden = false;
+        }
+      }, 300);
+    });
+  </script>
+</body>
+</html>

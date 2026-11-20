@@ -17,6 +17,18 @@ pub const PAGES: &[(&str, &str)] = &[
     ("pin.html", include_str!("../../../examples/demo/pin.html")),
     ("secret.html", include_str!("../../../examples/demo/secret.html")),
     ("maestro.html", include_str!("../../../examples/demo/maestro.html")),
+    // S4: pages for practising test design techniques, each with one bug to find (the answers are in
+    // docs/demo-planted-bugs.md, which is not written to the demo folder).
+    ("tickets.html", include_str!("../../../examples/demo/tickets.html")),
+    ("shipping.html", include_str!("../../../examples/demo/shipping.html")),
+    ("orders.html", include_str!("../../../examples/demo/orders.html")),
+];
+
+/// The technique practice pages and what to try on each.
+pub const PRACTICE: &[(&str, &str)] = &[
+    ("tickets.html", "boundary values"),
+    ("shipping.html", "a decision table"),
+    ("orders.html", "state transitions"),
 ];
 
 /// The example test cases of `tests/`, with the platform shown in the output.
@@ -213,6 +225,10 @@ pub async fn demo(args: &[String]) -> Res<()> {
     if write {
         let cd = if shown.contains(char::is_whitespace) { format!("cd \"{shown}\"") } else { format!("cd {shown}") };
         println!("\nTry it now:\n  {cd} && claude\n  then type:\n  \"Use fastpilot to run tests/login.md, then report\"");
+        println!("\nPractise test design (each page has one hidden bug):");
+        for (page, how) in PRACTICE {
+            println!("  \"Test demo/{page} with {how}, using the rules on the page\"");
+        }
         println!("\nDemo password (not a secret): {DEMO_PASS}, already in .mcp.json");
     }
     if installed == Some(false) {
@@ -242,6 +258,7 @@ fn write_folder(dir: &Path, shown: &str) -> Res<()> {
         println!("    the existing .mcp.json was saved as {b}; the other servers in it are kept");
     }
     println!("  ✓ {:<42} Skill: how to write fastpilot steps", ".claude/skills/fastpilot/SKILL.md");
+    println!("  ✓ {:<42} {} practice pages, one hidden bug each", format!("demo/{}, …", PRACTICE[0].0), PRACTICE.len());
     Ok(())
 }
 

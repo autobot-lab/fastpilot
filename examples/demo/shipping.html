@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Shipping cost</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; }
+    form { display: grid; gap: 8px; }
+    fieldset { display: grid; gap: 4px; }
+    button { padding: 8px; }
+    .rules { background: #f4f5f7; border: 1px solid #d9dce1; padding: 8px 12px; }
+    [role=alert] { color: #b00020; }
+    #cost { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Shipping cost</h1>
+    <div class="rules" aria-label="Rules">
+      <p>Standard shipping costs $5.00. Members get it free on orders of $50.00 or more.</p>
+      <p>Express shipping costs $15.00. Members pay $10.00 for express.</p>
+    </div>
+    <form id="form">
+      <label><input id="member" type="checkbox"> I am a member</label>
+      <label for="total">Order total ($)</label>
+      <input id="total" inputmode="decimal">
+      <fieldset>
+        <legend>Shipping</legend>
+        <label><input type="radio" name="speed" value="standard" checked> Standard</label>
+        <label><input type="radio" name="speed" value="express"> Express</label>
+      </fieldset>
+      <button id="submit" type="submit">Show shipping cost</button>
+      <p id="error" role="alert" hidden></p>
+      <p id="cost" role="status" hidden></p>
+    </form>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function shipping(member, total, express) {
+      if (member && total >= 50) return 0;
+      if (express) return member ? 10 : 15;
+      return 5;
+    }
+    $('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      $('error').hidden = true;
+      $('cost').hidden = true;
+      const raw = $('total').value.trim();
+      const total = /^\d+(\.\d{1,2})?$/.test(raw) ? Number(raw) : NaN;
+      if (Number.isNaN(total)) {
+        $('error').textContent = 'Enter the order total, e.g. 49.99';
+        $('error').hidden = false;
+        return;
+      }
+      const express = document.querySelector('input[name=speed]:checked').value === 'express';
+      $('cost').textContent = `Shipping: $${shipping($('member').checked, total, express).toFixed(2)}`;
+      $('cost').hidden = false;
+    });
+  </script>
+</body>
+</html>
