@@ -28,6 +28,11 @@ def emit(obj):
     print(json.dumps(obj), flush=True)
 
 emit({"type": "system", "subtype": "init", "session_id": session})
+if os.environ.get("FAKE_CHAT_NOLOGIN") == "1":
+    # What Claude Code says when nobody is logged in: as the answer and as the result.
+    emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "Not logged in · Please run /login"}]}})
+    emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "result": "Not logged in · Please run /login"})
+    sys.exit(1)
 time.sleep(int(os.environ.get("FAKE_CHAT_DELAY_MS", "0")) / 1000)
 low = prompt.lower()
 said = []
@@ -67,6 +72,8 @@ if "jadwal" in low:
         "every": "day", "time": "09:00", "notify": {"webhook": True, "os": True}}) + "\n```")
 if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
+if "javascript" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"allow_eval_script": False}}) + "\n```")
 if "longgar" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"max_steps": 500}}) + "\n```")
 if not text and not said:

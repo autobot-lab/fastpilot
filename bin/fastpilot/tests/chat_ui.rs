@@ -42,7 +42,13 @@ fn request(port: u16, method: &str, path: &str, cookie: &str, body: &str, origin
 }
 
 fn start_ui(home: &Path) -> Ui {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+    start_ui_with(home, &[])
+}
+
+fn start_ui_with(home: &Path, env: &[(&str, &str)]) -> Ui {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.envs(env.iter().copied());
+    let mut child = cmd
         .args(["ui", "--no-open"])
         .current_dir(ROOT)
         .env("HOME", home)
@@ -121,7 +127,9 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!((sched["kind"].as_str(), sched["status"].as_str()), (Some("schedule"), Some("pending")), "{sched}");
     assert!(sched["rows"].to_string().contains("Setiap hari 09:00"), "{sched}");
     assert_eq!((limits["kind"].as_str(), limits["status"].as_str()), (Some("limits"), Some("pending")), "{limits}");
-    assert!(limits["rows"].to_string().contains("Bayar"), "{limits}");
+    let rows = limits["rows"].to_string();
+    assert!(rows.contains("Tombol yang selalu diblokir") && rows.contains("+ Bayar") && rows.contains("Maksimal langkah per test") && rows.contains("30 (bawaan) → 20"), "plain labels, real values: {rows}");
+    assert!(!rows.contains("block_actions") && !rows.contains("max_steps"), "no raw keys: {rows}");
 
     // Nothing changed before a click.
     assert!(!home.join(".fastpilot/schedules.json").exists());
@@ -145,7 +153,7 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let v = wait_idle(&ui);
     let card = &v["messages"][3]["proposals"][0];
     assert_eq!(card["status"], "refused", "{card}");
-    assert!(card["note"].as_str().is_some_and(|n| n.contains("Pengaturan › Batasan")), "{card}");
+    assert!(card["note"].as_str().is_some_and(|n| n.contains("Pengaturan › Batasan") && n.contains("Maksimal langkah per test") && n.contains("20 → 500")), "{card}");
     let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
     assert_eq!(st, 422);
     assert!(config(&home).contains("max_steps = 20"));
@@ -168,8 +176,34 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let second = calls[1]["argv"].to_string();
     assert!(second.contains("\"--resume\",\"fake-chat-1\""), "{second}");
 
+    // Already so: no card to click (was: `allow_eval_script 0 → false`).
+    std::fs::write(home.join(".fastpilot/config.toml"), format!("{}allow_eval_script = false\n", config(&home))).expect("config");
+    let (st, body) = post("/api/chat", json!({ "message": "matikan javascript" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let card = &v["messages"][5]["proposals"][0];
+    assert!(card["status"] == "refused" && card["note"].as_str().is_some_and(|n| n.contains("Tidak ada perubahan")), "{card}");
+
     let (st, body) = post("/api/chat", json!({ "reset": true }));
     assert!(st == 200 && body.contains("\"messages\":[]"), "{body}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// Claude Code not logged in: one message, in Indonesian, with what to do.
+#[test]
+fn chat_says_once_that_claude_code_needs_a_login() {
+    let home = std::env::temp_dir().join(format!("fp-chat-login-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_NOLOGIN", "1")]);
+    let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "halo" }).to_string(), true);
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let bot = &v["messages"][1];
+    assert_eq!(bot["text"], "", "not repeated as the answer: {bot}");
+    let err = bot["error"].as_str().unwrap_or("");
+    assert!(err.starts_with("Claude Code belum login") && err.contains("`claude`") && !err.contains("Please run"), "{err}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
