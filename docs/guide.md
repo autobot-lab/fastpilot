@@ -133,7 +133,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 
 - npm dan skrip mengunduh arsip rilis dari [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   dan mengecek SHA-256-nya sebelum memasang. Skrip memasang ke `~/.local/bin`; lokasi lain:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.3.1`.
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.3.2`.
 - Tanpa instal: `npx -y fastpilot mcp`.
 - Homebrew belum tersedia (repo tap belum dibuat).
 - Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
@@ -454,8 +454,8 @@ Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa
 | `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
 | `FASTPILOT_ALLOWED_DOMAINS` | daftar host (dipisah koma, `*.contoh.com` untuk subdomain) yang boleh dibuka sesi web: `openUrl`, link, redirect, dan popup ke host lain diblokir (`blocked`). Resource lain (CDN, API) tetap jalan |
-| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`). Tidak diisi: hapus, delete, remove; kosong (`""`): tanpa konfirmasi |
-| `FASTPILOT_BLOCK_ACTIONS` | daftar kata yang selalu diblokir. Tidak diisi: daftar bawaan (pembayaran dan hapus akun); kosong (`""`): tidak ada yang diblokir |
+| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`). Tidak diisi: hapus, delete, remove. Env kosong tidak mematikan daftar bawaan; mengosongkan hanya lewat `fastpilot config set confirm_actions ""` atau tombol Kosongkan di halaman Batasan |
+| `FASTPILOT_BLOCK_ACTIONS` | daftar kata yang selalu diblokir. Tidak diisi: daftar bawaan (pembayaran dan hapus akun). Env kosong tidak mematikan daftar bawaan; mengosongkan hanya lewat `fastpilot config set block_actions ""` atau tombol Kosongkan di halaman Batasan |
 | `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | kunci AES-256 (64 hex) untuk mengenkripsi login tersimpan / umur maksimalnya (default 30 hari) |
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | model untuk `fastpilot run` (lihat di bawah) |

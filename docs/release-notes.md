@@ -1,42 +1,59 @@
-## What's new in 0.3.1
+## What's new in 0.3.2
 
-A fix release for the known limitations of 0.3.0.
+Easier to start, safe by default.
 
-### Fixes
-- **Ambil alih (takeover):** the control socket now serves only a `fastpilot ui` running the **same
-  program file** as the fastpilot process that owns the session (peer pid and executable path are
-  checked); a program merely named `fastpilot` is refused. New limit **`allow_takeover`** (default on,
-  tighten-only, pinned at start; Pengaturan › Batasan): turn it off when your agent has a shell. Run
-  `fastpilot ui` the same way as its MCP server (e.g. `npx -y fastpilot ui` with `npx -y fastpilot mcp`).
-- **PR comments (`--report-github`):** only a marked comment written by the token's own account is
-  edited; a copied marker in someone else's comment is left alone.
-- **Provider keys:** a key saved by 0.2.0 (no server recorded) is not sent to a custom or local server;
-  run `fastpilot config set-key <provider>` once. Provider redirects are no longer followed (the key and
-  the request body never go to the redirect target).
-- **Flows with their own `session` step** run without an `open` first (`unknown session default`, #9).
-- **Limits:** a tap by text, `id`, `ref` or `role` waits for its element like the tap itself and is
-  refused while a rule is on and the element cannot be seen (fail closed), so a "Bayar" button that
-  appears late is still blocked.
-- **Reports:** the video player iframe is sandboxed (`allow-scripts`, no same origin).
-- **UI:** Jadwal messages are all Indonesian; after "Kembalikan ke AI" focus goes to the page title;
-  Jadwal field errors are tied to their fields; Chat names `vars` as "Nama secret"; a stopped
-  `fastpilot ui` is reported in plain words instead of "Failed to fetch".
+### New
+- **`fastpilot demo`**: writes a demo folder (demo pages, three example tests, `.mcp.json` with the
+  public demo password, and the fastpilot Skill) from the binary alone, so a first test runs without
+  the repository: `fastpilot demo && cd fastpilot-demo && claude`, then type
+  "Pakai fastpilot, jalankan tests/login.md lalu report". `--android` installs the demo app (built
+  into the binary) on the attached device or emulator. An existing folder is never overwritten
+  (`--force` writes it again and keeps your own `.mcp.json`, saving the old one as `.mcp.json.bak`).
+- **`fastpilot init`**: sets up a project folder in one command: checks the machine, registers
+  fastpilot with Claude Code (`claude mcp add`), installs the Skill, adds `tests/contoh.md`, and shows
+  the limits in force. Every change asks first (`--yes` agrees to all); outside a terminal it only
+  prints the plan; a second run changes nothing. `--global` uses the user scope.
+- **Safe by default**: on a new install, buttons for payment and account deletion are always blocked
+  (`block_actions`: bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan, place order,
+  hapus akun, delete account; matched as whole words, also through spacing, full-width and zero-width
+  tricks, e.g. "Pay now", "Delete my account", "Place your order"), and plain deletes need
+  `confirm: true` (`confirm_actions`: hapus, delete, remove), so "Hapus filter" still works.
+  Pengaturan › Batasan & izin shows the built-in list with **Kosongkan** and **Kembalikan ke bawaan**.
+  The AI can only add to these lists, never empty or replace them.
+- **README in English, simpler**: three steps (install → demo → init); the full guide moved to
+  `docs/guide.md` (still Indonesian for now). Messages in the terminal for people (`doctor`, `setup`,
+  `init`, `demo`, `config list`, `help`) are in Indonesian; what the AI reads (tool results, Skill)
+  stays English.
+
+### Upgrading from 0.3.1: what changes for existing tests
+- **Flows that tap Bayar / Pay / Buy / Checkout / Purchase / Transfer / Place order / Hapus akun /
+  Delete account are now blocked**, also with `confirm: true`, until you change the list. Steps that
+  tap "Hapus" / "Delete" / "Remove" need `confirm: true`.
+- **`evalScript` is off while a block list is active** (the built-in list counts), because a script
+  could press a blocked button. To allow it: `fastpilot config set allow_eval_script true` (only you
+  can; the AI cannot), or the "Jalankan JavaScript bebas" switch on the Batasan page.
+- **To go back to no blocking, in one line:** `fastpilot config set block_actions ""` (or the
+  Kosongkan button), then restart the MCP server. `fastpilot config unset block_actions` restores the
+  built-in list. An empty environment variable does not switch the built-in list off.
+- Words are matched whole: "Pembayaran" (or "Paypal") is **not** blocked by "bayar"/"pay". Add your
+  own words if your app needs them (`default,<word>` keeps the built-in list).
 
 ### Known limitations
-- Takeover is still not a security boundary against an agent that can run the real `fastpilot ui`
-  (it has a shell): turn `allow_takeover` off for such agents. With `allow_takeover = false`, watching
-  an Android/iOS screen in Live still works; only steering is off.
-- After upgrading on Linux, a fastpilot process started before the upgrade refuses takeover until it
-  is restarted.
-- `--report-github` with a GitHub App installation token can post a new comment on every run (use the
-  workflow's `GITHUB_TOKEN` or a personal token).
-- A refused takeover from another installation sometimes shows "proses fastpilot itu tidak menerima
-  kendali" instead of the "same installation" message.
-- With an OpenAI-compatible provider, what the model sees (snapshots, step results, local paths) goes to
-  that provider; `${NAME}` values stay masked. Use Claude Code or a local Ollama when data must stay on
-  the machine.
-- Android system-dialog and WebView tests can be flaky on a heavily loaded machine (as in 0.3.0).
-- Not tested on: Linux, physical phones, real hosted providers and Ollama, real GitHub posting.
+- The built-in list is a list, not a guarantee: text written with invisible marks inside a word
+  (left-to-right marks, combining characters), look-alike letters or math letters can slip past it.
+- An environment value such as `FASTPILOT_BLOCK_ACTIONS=","` still empties the list; environment
+  and `.mcp.json` are trusted (whoever can write them can also run other programs).
+- `demo --force` on a `.mcp.json` that is a symlink copies its target into `.mcp.json.bak` before the
+  write is refused; `demo --android` does not check `allow_physical_devices`; `init` counts any
+  `fastpilot` entry in `.mcp.json` as registered.
+- `demo --android` from a source build needs the demo app built first (release builds include it).
+- `config set` validation errors are still in English; `setup --help` and `doctor --help` run the
+  command instead of showing help; `config list` shows a mixed "(default (bawaan))" label.
+- Carried over: a refused takeover from another installation sometimes shows a misleading message;
+  Android WebView and system-dialog tests can be flaky on a heavily loaded machine.
+- Not tested: real Claude Code answering `y/N` in a terminal, `npx` detection from the npm registry,
+  Linux, physical phones, real hosted providers and GitHub posting, the real Keychain, iOS demo
+  (comes with `fastpilot setup ios`, next release).
 
 Install (macOS arm64/x86_64, Linux x86_64):
 
@@ -47,4 +64,4 @@ npm install -g fastpilot
 
 Every archive has a `.sha256` next to it; the install script and the npm package check it.
 
-Earlier releases: https://github.com/autobot-lab/fastpilot/releases (0.3.0: Live Android/iOS + Ambil alih, Jadwal, Chat, OpenAI-compatible providers, `--reset`, video per flow, `--report-github`).
+Earlier releases: https://github.com/autobot-lab/fastpilot/releases (0.3.1: takeover only from the same installation and `allow_takeover`, provider key and redirect fixes; 0.3.0: Live Android/iOS + Ambil alih, Jadwal, Chat, OpenAI-compatible providers).
