@@ -70,8 +70,8 @@ fn macos() -> bool {
 
 /// `!` for an endpoint on another host: nothing protects that connection on the network.
 fn not_this_machine(area: &'static str, key: &str, host: &str, what: &str) -> Check {
-    check(area, "remote", Status::Warn, format!("{key} points at {host}, not this machine: {what} has no password and no encryption"))
-        .hint("reach it through an SSH tunnel and use 127.0.0.1 (README: device di mesin lain)")
+    check(area, "remote", Status::Warn, format!("{key} menunjuk ke {host}, bukan mesin ini: {what} tanpa password dan tanpa enkripsi"))
+        .hint("jangkau lewat tunnel SSH dan pakai 127.0.0.1 (README: device di mesin lain)")
 }
 
 pub async fn web() -> Vec<Check> {
@@ -83,23 +83,23 @@ pub async fn web() -> Vec<Check> {
         let shown = fastpilot_core::policy::redact_userinfo(&endpoint);
         let connected = tokio::time::timeout(Duration::from_secs(10), fastpilot_web::Browser::connect(Some(&endpoint))).await;
         out.push(match connected {
-            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT)")),
-            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown}: {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint)))
-                .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)"),
-            Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown} did not answer within 10 s"))
-                .hint("is the SSH tunnel open?"),
+            Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("Chrome jarak jauh di {shown} (FASTPILOT_CHROME_ENDPOINT)")),
+            Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("Chrome jarak jauh di {shown}: {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint)))
+                .hint("jalankan Chrome di sana dengan --remote-debugging-port lalu buka tunnel SSH (README: device di mesin lain)"),
+            Err(_) => check("web", "Chrome", Status::Fail, format!("Chrome jarak jauh di {shown} tidak menjawab dalam 10 detik"))
+                .hint("apakah tunnel SSH sudah dibuka?"),
         });
         return out;
     }
     match fastpilot_web::find_chrome() {
         None => {
-            let mut c = check("web", "Chrome", Status::Fail, "no Chrome or Chromium found").hint(if macos() {
-                "install Google Chrome (https://www.google.com/chrome/), or set `fastpilot config set chrome /path/to/chrome`"
+            let mut c = check("web", "Chrome", Status::Fail, "Chrome atau Chromium tidak ditemukan").hint(if macos() {
+                "pasang Chrome: `fastpilot setup web` (atau dari https://www.google.com/chrome/), atau atur `fastpilot config set chrome /path/ke/chrome`"
             } else {
-                "install Chromium (e.g. `sudo apt install chromium`), or set `fastpilot config set chrome /path/to/chrome`"
+                "pasang Chromium (mis. `sudo apt install chromium`), atau atur `fastpilot config set chrome /path/ke/chrome`"
             });
             if macos() && has("brew") {
-                c = c.fix("install Google Chrome with Homebrew", "brew", &["install", "--cask", "google-chrome"]);
+                c = c.fix("pasang Google Chrome lewat Homebrew", "brew", &["install", "--cask", "google-chrome"]);
             }
             out.push(c);
         }
@@ -110,11 +110,11 @@ pub async fn web() -> Vec<Check> {
             )
             .await;
             out.push(match launched {
-                Ok(Ok(_browser)) => check("web", "Chrome", Status::Ok, format!("{} (starts headless)", path.display())),
-                Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("{} does not start: {e}", path.display()))
-                    .hint("update Chrome, or point `chrome` to another build: `fastpilot config set chrome /path`"),
-                Err(_) => check("web", "Chrome", Status::Fail, format!("{} did not start within 25 s", path.display()))
-                    .hint("close other Chrome automation, then retry; or set another `chrome`"),
+                Ok(Ok(_browser)) => check("web", "Chrome", Status::Ok, format!("{} (bisa jalan headless)", path.display())),
+                Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("{} tidak bisa dijalankan: {e}", path.display()))
+                    .hint("perbarui Chrome, atau arahkan `chrome` ke build lain: `fastpilot config set chrome /path`"),
+                Err(_) => check("web", "Chrome", Status::Fail, format!("{} tidak menyala dalam 25 detik", path.display()))
+                    .hint("tutup otomasi Chrome lain lalu coba lagi, atau atur `chrome` lain"),
             });
         }
     }
@@ -128,24 +128,24 @@ pub async fn android() -> Vec<Check> {
     }
     let adb = fastpilot_android::sdk_tool("platform-tools/adb", "adb");
     let sdk_hint = if macos() {
-        "install the Android SDK (Android Studio, or `brew install --cask android-commandlinetools`), then set ANDROID_HOME"
+        "pasang Android SDK (Android Studio, atau `brew install --cask android-commandlinetools`), lalu atur ANDROID_HOME"
     } else {
-        "install the Android SDK command-line tools and set ANDROID_HOME"
+        "pasang Android SDK command-line tools lalu atur ANDROID_HOME"
     };
     let Some(version) = output(&adb, &["version"]).await else {
-        let mut c = check("android", "adb", Status::Fail, "Android SDK platform-tools (adb) not found").hint(sdk_hint);
+        let mut c = check("android", "adb", Status::Fail, "Android SDK platform-tools (adb) tidak ditemukan").hint(sdk_hint);
         if macos() && has("brew") {
-            c = c.fix("install Android platform-tools with Homebrew", "brew", &["install", "--cask", "android-platform-tools"]);
+            c = c.fix("pasang Android platform-tools lewat Homebrew", "brew", &["install", "--cask", "android-platform-tools"]);
         }
         out.push(c);
         return out;
     };
     out.push(check("android", "adb", Status::Ok, version.lines().next().unwrap_or("adb").to_owned()));
     out.push(if fastpilot_android::agent_embedded() {
-        check("android", "agent", Status::Ok, "UiAutomation agent built in")
+        check("android", "agent", Status::Ok, "agent UiAutomation sudah tertanam")
     } else {
-        check("android", "agent", Status::Fail, "this fastpilot build has no Android agent")
-            .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
+        check("android", "agent", Status::Fail, "build fastpilot ini tidak membawa agent Android")
+            .hint("pakai build rilis (npm / install.sh), atau dari checkout jalankan agent-android/build.sh lalu build ulang")
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
     let ready: Vec<_> = devices.iter().filter(|d| d.state == "device").collect();
@@ -156,9 +156,9 @@ pub async fn android() -> Vec<Check> {
         out.push(check("android", "device", Status::Ok, names.join(", ")));
     } else if let Some(avd) = avds.first() {
         out.push(
-            check("android", "device", Status::Warn, format!("no device or emulator running; emulators: {}", avds.join(", ")))
-                .hint(format!("start one: `{emulator} -avd {avd} -no-window &`, or connect a phone with USB debugging on"))
-                .fix(&format!("start emulator {avd} in the background (no window)"), &emulator, &["-avd", avd, "-no-window", "-no-audio", "-no-snapshot-save"]),
+            check("android", "device", Status::Warn, format!("belum ada device atau emulator yang menyala; emulator: {}", avds.join(", ")))
+                .hint(format!("nyalakan salah satu: `{emulator} -avd {avd} -no-window &`, atau sambungkan HP dengan USB debugging aktif"))
+                .fix(&format!("nyalakan emulator {avd} di latar belakang (tanpa jendela)"), &emulator, &["-avd", avd, "-no-window", "-no-audio", "-no-snapshot-save"]),
         );
     } else {
         let abi = if cfg!(target_arch = "aarch64") { "arm64-v8a" } else { "x86_64" };
@@ -166,10 +166,10 @@ pub async fn android() -> Vec<Check> {
         let sdkmanager = fastpilot_android::sdk_tool("cmdline-tools/latest/bin/sdkmanager", "sdkmanager");
         let avdmanager = fastpilot_android::sdk_tool("cmdline-tools/latest/bin/avdmanager", "avdmanager");
         out.push(
-            check("android", "device", Status::Warn, "no device, emulator or emulator image (AVD)")
-                .hint("connect a phone with USB debugging on, or create an emulator (`fastpilot setup android`)")
-                .fix("download the emulator and an Android 15 image (~1.5 GB)", &sdkmanager, &["emulator", &image])
-                .fix("create the emulator fastpilot_api35", &avdmanager, &["create", "avd", "-n", "fastpilot_api35", "-k", &image, "-d", "pixel_6"]),
+            check("android", "device", Status::Warn, "tidak ada device, emulator, atau image emulator (AVD)")
+                .hint("sambungkan HP dengan USB debugging aktif, atau buat emulator (`fastpilot setup android`)")
+                .fix("unduh emulator dan image Android 15 (±1,5 GB)", &sdkmanager, &["emulator", &image])
+                .fix("buat emulator fastpilot_api35", &avdmanager, &["create", "avd", "-n", "fastpilot_api35", "-k", &image, "-d", "pixel_6"]),
         );
     }
     out
@@ -186,20 +186,20 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
     out.push(match fastpilot_android::Adb::new().await {
         Ok(_) => check("android", "adb", Status::Ok, format!("adb server {server} (FASTPILOT_ADB_SERVER)")),
         Err(e) => {
-            out.push(check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (README: device di mesin lain)"));
+            out.push(check("android", "adb", Status::Fail, e.to_string()).hint("buka tunnel SSH ke mesin device (README: device di mesin lain)"));
             return out;
         }
     });
     out.push(if fastpilot_android::agent_embedded() {
-        check("android", "agent", Status::Ok, "UiAutomation agent built in")
+        check("android", "agent", Status::Ok, "agent UiAutomation sudah tertanam")
     } else {
-        check("android", "agent", Status::Fail, "this fastpilot build has no Android agent")
-            .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
+        check("android", "agent", Status::Fail, "build fastpilot ini tidak membawa agent Android")
+            .hint("pakai build rilis (npm / install.sh), atau dari checkout jalankan agent-android/build.sh lalu build ulang")
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
     let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| format!("{} ({})", d.id, d.name)).collect();
     out.push(if ready.is_empty() {
-        check("android", "device", Status::Warn, format!("no device on the adb server {server}")).hint("start the emulator or connect the phone on that machine")
+        check("android", "device", Status::Warn, format!("tidak ada device di adb server {server}")).hint("nyalakan emulator atau sambungkan HP di mesin itu")
     } else {
         check("android", "device", Status::Ok, ready.join(", "))
     });
@@ -208,13 +208,13 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
 
 pub async fn ios() -> Vec<Check> {
     if !macos() {
-        return vec![check("ios", "Xcode", Status::Warn, "iOS needs a Mac with Xcode").hint("run fastpilot on a Mac for iOS (web and Android work here)")];
+        return vec![check("ios", "Xcode", Status::Warn, "iOS butuh Mac dengan Xcode").hint("jalankan fastpilot di Mac untuk iOS (web dan Android jalan di sini)")];
     }
     let mut out = Vec::new();
     let Some(xcode) = output("xcodebuild", &["-version"]).await else {
         out.push(
-            check("ios", "Xcode", Status::Fail, "Xcode not found")
-                .hint("install Xcode from the App Store, open it once, then: sudo xcode-select -s /Applications/Xcode.app"),
+            check("ios", "Xcode", Status::Fail, "Xcode tidak ditemukan")
+                .hint("pasang Xcode dari App Store, buka sekali, lalu: sudo xcode-select -s /Applications/Xcode.app"),
         );
         return out;
     };
@@ -224,18 +224,18 @@ pub async fn ios() -> Vec<Check> {
             let phones: Vec<_> = sims.iter().filter(|(_, n, _)| n.starts_with("iPhone") || n.starts_with("iPad")).collect();
             let booted: Vec<String> = phones.iter().filter(|(_, _, s)| s == "Booted").map(|(_, n, _)| n.clone()).collect();
             out.push(match (phones.is_empty(), booted.is_empty()) {
-                (true, _) => check("ios", "simulator", Status::Fail, "no iPhone simulator installed")
-                    .hint("Xcode > Settings > Components: install an iOS simulator runtime"),
-                (false, true) => check("ios", "simulator", Status::Ok, format!("{} available (booted on first use)", phones.len())),
-                (false, false) => check("ios", "simulator", Status::Ok, format!("booted: {}", booted.join(", "))),
+                (true, _) => check("ios", "simulator", Status::Fail, "belum ada simulator iPhone")
+                    .hint("Xcode › Settings › Components: pasang runtime simulator iOS"),
+                (false, true) => check("ios", "simulator", Status::Ok, format!("{} tersedia (dinyalakan saat pertama dipakai)", phones.len())),
+                (false, false) => check("ios", "simulator", Status::Ok, format!("menyala: {}", booted.join(", "))),
             });
         }
-        Err(e) => out.push(check("ios", "simulator", Status::Fail, format!("simctl failed: {e}")).hint("open Xcode once to finish its setup")),
+        Err(e) => out.push(check("ios", "simulator", Status::Fail, format!("simctl gagal: {e}")).hint("buka Xcode sekali untuk menyelesaikan setup-nya")),
     }
     out.push(match fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator) {
         Some(p) => check("ios", "runner", Status::Ok, p.display().to_string()),
-        None => check("ios", "runner", Status::Fail, "XCUITest runner not built")
-            .hint("from a fastpilot checkout: ios-runner/build.sh (or set `fastpilot config set ios_runner <build dir>`)"),
+        None => check("ios", "runner", Status::Fail, "runner XCUITest belum di-build")
+            .hint("dari checkout fastpilot: ios-runner/build.sh (atau atur `fastpilot config set ios_runner <folder build>`)"),
     });
     out
 }
@@ -245,8 +245,8 @@ pub async fn agent() -> Vec<Check> {
     let claude = fastpilot_core::config::var("FASTPILOT_CLAUDE").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "claude".into());
     vec![match output(&claude, &["--version"]).await {
         Some(v) => check("run", "Claude Code", Status::Ok, v.lines().next().unwrap_or("").to_owned()),
-        None => check("run", "Claude Code", Status::Warn, format!("`{claude}` not found (only `fastpilot run` needs it)"))
-            .hint("install Claude Code (https://claude.com/claude-code) and log in once with `claude`"),
+        None => check("run", "Claude Code", Status::Warn, format!("`{claude}` tidak ditemukan (hanya dibutuhkan `fastpilot run`)"))
+            .hint("pasang Claude Code (https://claude.com/claude-code) lalu login sekali dengan `claude`"),
     }]
 }
 
@@ -284,7 +284,7 @@ pub fn render(checks: &[Check]) -> String {
     }
     let fixes = checks.iter().map(|c| c.fixes.len()).sum::<usize>();
     if fixes > 0 {
-        out.push(format!("\n{fixes} fix(es) can be applied for you: fastpilot setup (asks before each)"));
+        out.push(format!("\n{fixes} perbaikan bisa dijalankan untukmu: fastpilot setup (ditanya dulu satu per satu)"));
     }
     out.join("\n")
 }
@@ -301,7 +301,7 @@ fn areas(args: &[String]) -> Result<Vec<&'static str>, String> {
             "android" => Ok("android"),
             "ios" => Ok("ios"),
             "run" => Ok("run"),
-            other => Err(format!("unknown platform `{other}` (web, android, ios, run, all)")),
+            other => Err(format!("platform `{other}` tidak dikenal (web, android, ios, run, all)")),
         })
         .collect()
 }
@@ -332,14 +332,14 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
     // for the same areas as `doctor`, so CI does not go on with a platform that is not ready.
     if fixes.is_empty() {
         let manual = list.iter().filter(|c| c.status != Status::Ok).count();
-        println!("{}", if manual == 0 { "nothing to set up" } else { "nothing fastpilot can install itself: follow the → hints above" });
+        println!("{}", if manual == 0 { "tidak ada yang perlu disiapkan" } else { "tidak ada yang bisa dipasang fastpilot sendiri: ikuti petunjuk → di atas" });
         if failed(&list, args) {
             std::process::exit(1);
         }
         return Ok(());
     }
     if !interactive && !yes {
-        println!("plan (run in a terminal to be asked for each step, or add --yes):");
+        println!("rencana (jalankan di terminal supaya ditanya tiap langkah, atau tambah --yes):");
         for f in &fixes {
             println!("  - {}: {} {}", f.what, f.program, f.args.join(" "));
         }
@@ -356,7 +356,7 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
             let mut answer = String::new();
             std::io::stdin().read_line(&mut answer)?;
             if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes" | "ya") {
-                println!("  skipped");
+                println!("  dilewati");
                 continue;
             }
         }
@@ -370,19 +370,19 @@ pub async fn setup(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> 
             command.status().map(Some)
         };
         match status {
-            Ok(None) => println!("  started"),
-            Ok(Some(s)) if s.success() => println!("  done"),
-            Ok(Some(s)) => println!("  failed ({s}); see the output above"),
-            Err(e) => println!("  could not run {}: {e}", f.program),
+            Ok(None) => println!("  dinyalakan"),
+            Ok(Some(s)) if s.success() => println!("  selesai"),
+            Ok(Some(s)) => println!("  gagal ({s}); lihat output di atas"),
+            Err(e) => println!("  tidak bisa menjalankan {}: {e}", f.program),
         }
     }
     // What is left after the fixes decides the exit status.
     let after = checks(&areas(args)?).await;
     let left: Vec<&Check> = after.iter().filter(|c| c.status != Status::Ok).collect();
     if left.is_empty() {
-        println!("\nall set");
+        println!("\nsemua siap");
     } else {
-        println!("\nstill to do:\n{}", render(&left.into_iter().cloned().collect::<Vec<_>>()));
+        println!("\nmasih perlu dikerjakan:\n{}", render(&left.into_iter().cloned().collect::<Vec<_>>()));
     }
     if failed(&after, args) {
         std::process::exit(1);
@@ -403,7 +403,7 @@ mod tests {
         ];
         let text = render(&list);
         assert!(text.contains("web:\n  ✓ Chrome") && text.contains("  ✗ adb") && text.contains("→ install the SDK"), "{text}");
-        assert!(text.contains("1 fix(es) can be applied"), "{text}");
+        assert!(text.contains("1 perbaikan bisa dijalankan"), "{text}");
         let none: Vec<String> = Vec::new();
         assert!(!failed(&list, &none), "android failing does not fail a plain `doctor`");
         assert!(failed(&list, &["android".to_owned()]));

@@ -31,11 +31,11 @@ target: https://contoh.com
 - Pastikan judul halaman tampil dan tidak ada pesan error
 ";
 
-const USAGE: &str = "usage: fastpilot init [--yes] [--global]
-  set up this folder for testing with Claude Code: check the machine, register fastpilot,
-  install the Skill, add tests/contoh.md, show the limits. Asks before each change.
-  --yes     agree to every step (also outside a terminal)
-  --global  register fastpilot and the Skill for every folder (Claude Code user scope)";
+const USAGE: &str = "pemakaian: fastpilot init [--yes] [--global]
+  siapkan folder ini untuk test dengan Claude Code: cek mesin, daftarkan fastpilot,
+  pasang Skill, buat tests/contoh.md, tampilkan Batasan. Ditanya sebelum tiap perubahan.
+  --yes     setujui semua langkah (juga di luar terminal)
+  --global  daftarkan fastpilot dan Skill untuk semua folder (scope user Claude Code)";
 
 /// How each change is decided: ask in a terminal, yes with --yes, else plan only.
 #[derive(Clone, Copy, PartialEq)]

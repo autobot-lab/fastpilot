@@ -45,14 +45,14 @@ pub struct Ui {
 /// How long the printed link works.
 const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
-const USAGE: &str = "usage: fastpilot ui [--no-open] [--port N]
+const USAGE: &str = "pemakaian: fastpilot ui [--no-open] [--port N]
 
-Opens the local settings, device and Live page in your browser (only on this computer).
-  --no-open   print the link instead of opening the browser
-  --port N    listen on port N (1024-65535); default: a free port
+Membuka halaman Pengaturan, Device, dan Live di browser (hanya di komputer ini).
+  --no-open   cetak link-nya saja, tanpa membuka browser
+  --port N    pakai port N (1024-65535); bawaan: port yang kosong
 
-The link works once and for 10 minutes. Run fastpilot ui yourself, not through an AI agent:
-whoever opens the page can loosen the limits.";
+Link-nya berlaku sekali dan selama 10 menit. Jalankan fastpilot ui sendiri, bukan lewat agent AI:
+siapa pun yang membuka halaman itu bisa melonggarkan Batasan.";
 
 impl Ui {
     pub fn new(port: u16) -> Res<Self> {
@@ -120,21 +120,21 @@ pub async fn ui(args: &[String]) -> Res<()> {
             }
             "--no-open" => open = false,
             "--port" => {
-                let Some(v) = it.next() else { fail_args("--port needs a number (1024-65535)") };
-                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: use a number from 1024 to 65535")));
+                let Some(v) = it.next() else { fail_args("--port butuh angka (1024-65535)") };
+                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: pakai angka 1024 sampai 65535")));
             }
-            other => fail_args(&format!("unknown option `{other}`")),
+            other => fail_args(&format!("opsi `{other}` tidak dikenal")),
         }
     }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            fail(&format!("port {port} is already in use (another fastpilot ui?): pick another with --port, or leave --port out for a free one"))
+            fail(&format!("port {port} sudah dipakai (fastpilot ui lain?): pilih port lain dengan --port, atau hilangkan --port supaya dipilihkan yang kosong"))
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            fail(&format!("port {port} may not be used by this user: pick one from 1024 to 65535, or leave --port out"))
+            fail(&format!("port {port} tidak boleh dipakai user ini: pilih 1024 sampai 65535, atau hilangkan --port"))
         }
-        Err(e) => fail(&format!("cannot listen on 127.0.0.1:{port}: {e}")),
+        Err(e) => fail(&format!("tidak bisa membuka 127.0.0.1:{port}: {e}")),
     };
     let port = listener.local_addr()?.port();
     let state = Arc::new(Ui::new(port)?);

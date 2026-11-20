@@ -242,20 +242,20 @@ fn ui_arguments_and_port_errors_are_explained() {
     let out = Command::new(env!("CARGO_BIN_EXE_fastpilot")).args(["ui", "--bogus"]).env("HOME", std::env::temp_dir()).stdin(Stdio::null()).output().expect("run");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{err}");
-    assert!(err.starts_with("fastpilot ui: unknown option `--bogus`\n") && !err.contains("\\n") && !err.contains("Error: \""), "{err}");
+    assert!(err.starts_with("fastpilot ui: opsi `--bogus` tidak dikenal\n") && !err.contains("\\n") && !err.contains("Error: \""), "{err}");
     // These must return at once (a server would hang the test).
     let (ok, out) = run(&["ui", "--help"]);
-    assert!(ok && out.contains("usage: fastpilot ui") && !out.contains("http://"), "{out}");
+    assert!(ok && out.contains("pemakaian: fastpilot ui") && !out.contains("http://"), "{out}");
     let (ok, out) = run(&["ui", "--bogus"]);
-    assert!(!ok && out.contains("unknown option `--bogus`") && out.contains("usage:"), "{out}");
+    assert!(!ok && out.contains("opsi `--bogus` tidak dikenal") && out.contains("pemakaian:"), "{out}");
     let (ok, out) = run(&["ui", "--port", "99999"]);
-    assert!(!ok && out.contains("1024 to 65535"), "{out}");
+    assert!(!ok && out.contains("1024 sampai 65535"), "{out}");
     let (ok, out) = run(&["ui", "--port", "80"]);
-    assert!(!ok && out.contains("1024 to 65535"), "{out}");
+    assert!(!ok && out.contains("1024 sampai 65535"), "{out}");
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = taken.local_addr().expect("addr").port().to_string();
     let (ok, out) = run(&["ui", "--no-open", "--port", &port]);
-    assert!(!ok && out.contains(&format!("port {port} is already in use")) && !out.contains("Os {"), "{out}");
+    assert!(!ok && out.contains(&format!("port {port} sudah dipakai")) && !out.contains("Os {"), "{out}");
 }
 
 /// QA #4 / Design #4: a settings file that does not parse is shown as an error, not as
