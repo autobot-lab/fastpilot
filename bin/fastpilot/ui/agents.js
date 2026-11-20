@@ -149,10 +149,73 @@ function tabSettings(x) {
         } }, "Delete agent"))));
 }
 
-function tabSkills(x) {
-  return h("section", { class: "grp ag-sec" }, h("h2", { class: "gh" }, "skills"),
-    h("div", { class: "ag-pad" }, h("p", {}, `${x.agent.name} can use every installed skill (test techniques, checklists, regression, reports).`),
-      h("p", { class: "s muted" }, "Picking skills per agent comes next.")));
+// ---- Skills (D10c, S10) ----
+let libData = null;
+let skillsView = "library";
+async function library() {
+  if (!libData) libData = await api("/api/skills");
+  return libData;
+}
+// The skills an agent uses: its list, or all of them when it has none yet.
+const agentSkills = (a, lib) => new Set(a.skills.length ? a.skills : [lib.chooser, ...lib.skills.map((s) => s.id)]);
+
+function skillText(id, back) {
+  api("/api/skills?id=" + encodeURIComponent(id)).then((r) => {
+    const close = h("button", { class: "btn" }, "Close");
+    const dlg = h("dialog", { class: "loosen-dlg skill-dlg", "aria-label": `Skill text: ${id}` }, h("h2", {}, id), h("pre", {}, r.text), h("div", { class: "btns" }, close),
+      h("p", { class: "s muted" }, "Read-only here. A skill is text that tells the AI how to test; it cannot run code."));
+    const done = () => { dlg.close(); dlg.remove(); back && back.focus(); };
+    close.addEventListener("click", done);
+    dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(); });
+    document.body.append(dlg);
+    dlg.showModal();
+    close.focus();
+  }).catch((e) => toast(e.message));
+}
+
+async function tabSkills(x, box) {
+  let lib;
+  try { lib = await library(); } catch (e) { box.replaceChildren(h("div", { class: "err", role: "alert" }, e.message)); return; }
+  const a = x.agent;
+  const on = agentSkills(a, lib);
+  const set = async (id, want) => {
+    const next = new Set(on);
+    if (want) next.add(id); else next.delete(id);
+    if (await save({ ...a, skills: [...next] }, want ? "Skill on." : "Skill off.")) page(a.id, "skills");
+  };
+  const sw = (id, label) => h("button", { class: "tg", role: "switch", "aria-checked": String(on.has(id)), "aria-label": label, onclick: () => set(id, !on.has(id)) });
+  const side = h("aside", { class: "grp sk-side", "aria-live": "polite" }, h("div", { class: "ag-pad" }, h("p", { class: "muted" }, "Pick Details on a skill to read what it does.")));
+  const details = (sk, btn) => {
+    side.replaceChildren(h("div", { class: "ag-pad" }, h("small", { class: "gh-s" }, "SKILL"), h("h2", { class: "sk-h" }, sk.name),
+      h("span", { class: on.has(sk.id) ? "lvl lvl-ok" : "lvl lvl-grey" }, on.has(sk.id) ? `On for ${a.name}` : `Off for ${a.name}`),
+      h("h3", {}, "What it does"), h("p", {}, sk.line), h("p", { class: "s" }, sk.description),
+      h("dl", { class: "prop-rows" }, h("dt", {}, "Made by"), h("dd", {}, "fastpilot"), h("dt", {}, "License"), h("dd", {}, sk.license), sk.credit ? [h("dt", {}, "Credit"), h("dd", {}, sk.credit)] : null),
+      h("div", { class: "btns" }, h("button", { class: "btn", onclick: (e) => skillText(sk.id, e.target) }, "Read the full text"),
+        h("button", { class: "btn", onclick: () => set(sk.id, !on.has(sk.id)) }, on.has(sk.id) ? "Turn off" : "Turn on"))));
+    btn && side.querySelector("h2")?.setAttribute("tabindex", "-1");
+  };
+  const tabsRow = h("div", { class: "seg", role: "tablist" },
+    ...[["library", "Library"], ["community", "Community"]].map(([k, t]) => h("button", { role: "tab", "aria-selected": String(skillsView === k), class: skillsView === k ? "on" : "", onclick: () => { skillsView = k; tabSkills(x, box); } }, t)));
+  let main;
+  if (skillsView === "community") {
+    main = h("div", { class: "sk-main" },
+      h("div", { class: "page-try sk-warn", role: "note" }, icon("info", "sm"), h("div", {}, h("b", {}, "Community skills are not made or checked by fastpilot. "), "A skill is text that tells the AI how to test, so it changes how an agent behaves. fastpilot links to these libraries and installs nothing from them; read a skill and its license on its own site.")),
+      h("ul", { class: "sk-list" }, lib.community.map((c) => h("li", { class: "grp sk-com" }, h("div", { class: "ag-pad" },
+        h("div", {}, h("b", {}, c.name), h("span", { class: "s" }, ` · by ${c.by}`)), h("p", { class: "s" }, c.about),
+        h("span", { class: c.personal_only ? "lic lic-warn" : "lic lic-ok" }, c.license),
+        h("a", { class: "lk", href: c.url, target: "_blank", rel: "noopener noreferrer" }, "Open on GitHub"))))));
+  } else {
+    const count = (pack) => lib.skills.filter((s) => s.pack === pack && on.has(s.id)).length;
+    main = h("div", { class: "sk-main" },
+      h("div", { class: "grp sk-chooser" }, h("div", { class: "ag-pad sk-row" }, sw(lib.chooser, "Let fastpilot choose the technique"),
+        h("div", {}, h("b", {}, "Let fastpilot choose the technique"), h("p", { class: "s" }, "It reads your request, picks the right skill and tells you which one it used. Only skills that are on can be picked.")))),
+      lib.packs.map((p) => h("details", { class: "grp sk-pack", open: true },
+        h("summary", { class: "gh" }, h("b", {}, p.name), h("span", {}, ` · ${p.about}`), h("span", { class: "right sk-count" }, `${count(p.id)} of ${lib.skills.filter((s) => s.pack === p.id).length} on`)),
+        h("ul", { class: "sk-list" }, lib.skills.filter((s) => s.pack === p.id).map((sk) => h("li", { class: "sk-row" }, sw(sk.id, sk.name),
+          h("div", { class: "sk-txt" }, h("b", {}, sk.name), h("span", { class: "s" }, sk.line)),
+          h("button", { class: "lk", onclick: (e) => details(sk, e.target) }, "Details")))))));
+  }
+  box.replaceChildren(h("div", { class: "sk-head" }, tabsRow, h("span", { class: "s" }, `${on.size} on for ${a.name}`)), h("div", { class: "sk-wrap" }, main, skillsView === "library" ? side : null));
 }
 
 async function tabSchedules(x, box) {
@@ -212,7 +275,7 @@ function page(id, tab) {
   chatHost = null;
   if (tab === "instructions") box.replaceChildren(tabInstructions(x));
   else if (tab === "settings") box.replaceChildren(tabSettings(x));
-  else if (tab === "skills") box.replaceChildren(tabSkills(x));
+  else if (tab === "skills") tabSkills(x, box);
   else if (tab === "schedules") tabSchedules(x, box);
   else if (tab === "live") tabLive(x, box);
   else if (tab === "history") tabHistory(x, box);
@@ -252,11 +315,34 @@ function pageNew() {
   rule.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRule(); } });
   const blocked = h("input", { type: "text", value: d.blocked, placeholder: "e.g. Confirm order", "aria-label": "Extra blocked words" });
   blocked.addEventListener("input", () => { d.blocked = blocked.value; });
+  // D10c: 3–4 suggested skills, ticked, each with its reason; the rest by pack, off.
+  const skillStep = h("div", { class: "sk-step" }, h("p", { class: "s muted" }, "Loading skills…"));
+  const drawSkills = async () => {
+    let lib, sug;
+    try {
+      lib = await library();
+      sug = (await api("/api/agents", { action: "suggest", agent: { job: d.job, app: d.app, devices: d.devices } })).suggested;
+    } catch (e) { skillStep.replaceChildren(h("p", { class: "err" }, e.message)); return; }
+    if (!d.skillsTouched) d.skills = [lib.chooser, ...sug.map((x) => x.id)];
+    const why = Object.fromEntries(sug.map((x) => [x.id, x.why]));
+    const chip = (sk) => {
+      const onNow = d.skills.includes(sk.id);
+      return h("button", { type: "button", class: "chip pick" + (onNow ? " on" : ""), "aria-pressed": String(onNow), onclick: () => { d.skillsTouched = true; d.skills = onNow ? d.skills.filter((x) => x !== sk.id) : [...d.skills, sk.id]; drawSkills(); } },
+        (onNow ? "✓ " : "") + sk.name, why[sk.id] ? h("span", { class: "why" }, ` · suggested: ${why[sk.id]}`) : null);
+    };
+    skillStep.replaceChildren(
+      h("div", { class: "chips" }, lib.skills.filter((sk) => why[sk.id]).map(chip)),
+      h("details", { class: "sk-more" }, h("summary", {}, "More skills, by pack"),
+        lib.packs.map((p) => h("div", { class: "fld" }, h("span", { class: "l" }, `${p.name} · ${p.about}`), h("div", { class: "chips" }, lib.skills.filter((sk) => sk.pack === p.id && !why[sk.id]).map(chip))))),
+      h("p", { class: "s muted" }, "Skills are ready-made know-how (how to test a form, how to run a regression). Instructions are your own rules."));
+  };
+  drawSkills();
+  job.addEventListener("change", () => { if (!d.skillsTouched) drawSkills(); });
   const create = async () => {
     errs.hidden = true;
     try {
       const r = await api("/api/agents", { action: "create", agent: { id: "", name: d.name, job: d.job, devices: d.devices, app: d.app, instructions: d.instructions, blocked: d.blocked.split(",").map((w) => w.trim()).filter(Boolean),
-        provider: d.ai.provider === "claude" ? null : d.ai.provider, model: d.ai.model || null } });
+        provider: d.ai.provider === "claude" ? null : d.ai.provider, model: d.ai.model || null, skills: d.skills || [] } });
       agDraft = null;
       await loadAgents();
       toast(`Created "${r.agent.name}".`, true);
@@ -275,7 +361,7 @@ function pageNew() {
       sec(1, "who", false, h("label", { class: "fld" }, h("span", { class: "l" }, "Name"), name), h("label", { class: "fld" }, h("span", { class: "l" }, "What it does"), job)),
       sec(2, "where", false, devs, app),
       sec(3, "instructions (how this agent should work)", false, rules, h("div", { class: "add-row" }, rule, h("button", { type: "button", class: "btn", onclick: addRule }, icon("plus", "sm"), "Add")), sugs),
-      sec(4, "skills", true, h("p", { class: "s muted" }, "Every installed skill for now; picking skills per agent comes next.")),
+      sec(4, "skills", true, skillStep),
       sec(5, "this agent's AI model", true, modelPicker(d.ai)),
       sec(6, "this agent's limits", true, h("p", { class: "s" }, "It follows your global limits (pay, checkout and delete account are blocked). An agent can only be stricter."),
         h("label", { class: "fld" }, h("span", { class: "l" }, "Extra blocked words for this agent"), blocked))),

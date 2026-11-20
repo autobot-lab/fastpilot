@@ -1168,6 +1168,35 @@ function proposalCard(p) {
   return h("section", { class: "grp prop " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, rows, note, foot));
 }
 
+// D10c (S2): the bot's text with its "Techniques used" block drawn as a card: one heading per
+// technique, its lines below, "✗" marked. Everything is set as text.
+function botText(text) {
+  const parts = String(text || "").split(/```[a-z]*\n?/);
+  return parts.map((part, i) => {
+    if (i % 2 === 0) return part.trim() ? h("div", { class: "bubble" }, rich(part.trim())) : null;
+    const lines = part.replace(/\s+$/, "").split("\n");
+    if ((lines[0] || "").trim() !== "Techniques used") return h("pre", { class: "bubble code-block" }, part.trim());
+    const blocks = [];
+    for (const l of lines.slice(1)) {
+      if (!l.trim()) continue;
+      if (/^\S/.test(l)) blocks.push({ title: l.trim(), lines: [] });
+      else if (blocks.length) blocks[blocks.length - 1].lines.push(l.trim());
+    }
+    // "Tried: a ✓ · b ✗ …" and "Rules covered: … (R1 ✓, R3 ✗ …)": one chip per value.
+    const line = (x) => {
+      const [label, rest] = x.includes(":") ? [x.slice(0, x.indexOf(":")), x.slice(x.indexOf(":") + 1).trim()] : ["", x];
+      const items = rest.replace(/^[^(]*\((.*)\)$/, (_, inner) => inner).split(/ · |, /);
+      if (/^(Tried|Rules covered|Transitions)$/i.test(label) && items.length > 1) {
+        return h("div", { class: "tech-l" }, h("span", { class: "tl" }, label), h("span", { class: "tech-chips" }, items.map((it) => h("span", { class: "tchip" + (it.includes("✗") ? " no" : it.includes("not run") ? " nr" : " ok") }, it))));
+      }
+      return h("p", { class: "tech-l" }, label ? [h("b", {}, label + ": "), rest] : x);
+    };
+    return h("section", { class: "tech", "aria-label": "Techniques used" }, h("h3", {}, "Techniques used"),
+      blocks.map((b) => h("div", { class: "tech-b" + (b.lines.some((x) => x.includes("✗")) ? " tech-bad" : "") }, h("b", {}, b.title),
+        b.lines.some((x) => x.includes("✗")) ? h("span", { class: "tech-flag" }, "problem found") : null, b.lines.map(line))));
+  });
+}
+
 function chatMsg(m) {
   if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "bubble" }, m.text));
   const working = !m.done;
@@ -1177,7 +1206,7 @@ function chatMsg(m) {
     // M3: next to a card that loosens a limit, the bot's own words are folded away.
     m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
       ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, rich(m.text)))
-      : m.text ? h("div", { class: "bubble" }, rich(m.text)) : null,
+      : m.text ? botText(m.text) : null,
     working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
     m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
     (m.proposals || []).map(proposalCard),

@@ -369,7 +369,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     }
     // D10b: an agent on another provider: the same tools, prompt and cards, another model loop.
     if me.provider.as_deref().is_some_and(|p| p != "claude") {
-        let system = format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index(), context(), crate::agents::prompt(&me));
+        let system = format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me));
         return turn_provider(agent, &me, text, bot, &system, &env).await;
     }
     // QA B1: an old Claude Code answers every message with an API error; say what to do first.
@@ -379,7 +379,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     let model = me.model.clone().unwrap_or_else(crate::run::model_explore);
     cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &model])
         // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
-        .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index(), context(), crate::agents::prompt(&me))])
+        .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me))])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
         // fastpilot only, and not its `config` tool: changes go through the cards.
         .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--disallowedTools", "mcp__fastpilot__config", "--permission-mode", "dontAsk"]);
