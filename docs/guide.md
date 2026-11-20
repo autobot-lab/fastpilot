@@ -26,12 +26,12 @@ a demo page, a sample test, `.mcp.json` (fastpilot + the public demo password), 
 **3. Use it in your project** (about 5 minutes)
 
 ```bash
-cd ~/proyek-kamu && fastpilot init
+cd ~/my-project && fastpilot init
 ```
 
-`init` checks your computer, registers fastpilot with Claude Code, installs the Skill, creates `tests/contoh.md`,
+`init` checks your computer, registers fastpilot with Claude Code, installs the Skill, creates `tests/example.md`,
 and shows the Limits. It asks before each change (`--yes` approves all of them). Change `target` in
-`tests/contoh.md` to your app's URL, then ask Claude to run it.
+`tests/example.md` to your app's URL, then ask Claude to run it.
 
 ### If you get stuck
 
@@ -239,7 +239,7 @@ makes fastpilot stop with an error message; it is not silently ignored.
 
 ```bash
 fastpilot config list                              # every key, its value, and where it comes from
-fastpilot config set allowed_domains "staging.contoh.com,*.contoh.com"
+fastpilot config set allowed_domains "staging.example.com,*.example.com"
 fastpilot config get flow_timeout
 fastpilot config unset allowed_domains
 fastpilot config path
@@ -247,7 +247,7 @@ fastpilot config path
 
 ```toml
 # ~/.fastpilot/config.toml
-allowed_domains = ["staging.contoh.com", "*.contoh.com"]
+allowed_domains = ["staging.example.com", "*.example.com"]
 headful = true
 flow_timeout = 600
 ```
@@ -465,7 +465,7 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_IOS_RUNNER` | the iOS runner build folder (default `ios-runner/build`) |
 | `FASTPILOT_DIR` | location of `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), or `off` |
-| `FASTPILOT_ALLOWED_DOMAINS` | a comma-separated list of hosts (`*.contoh.com` for subdomains) that web sessions may open: `openUrl`, links, redirects, and popups to other hosts are blocked (`blocked`). Other resources (CDN, API) still load |
+| `FASTPILOT_ALLOWED_DOMAINS` | a comma-separated list of hosts (`*.example.com` for subdomains) that web sessions may open: `openUrl`, links, redirects, and popups to other hosts are blocked (`blocked`). Other resources (CDN, API) still load |
 | `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) or your own word list: a tap on an element with a name like that is refused (`blocked`) unless the step has `confirm: true` (CLI: `--confirm`). Not set: hapus, delete, remove. An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set confirm_actions ""` or the Clear button on the Limits page |
 | `FASTPILOT_BLOCK_ACTIONS` | a list of words that are always blocked. Not set: the built-in list (payments and deleting an account). An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set block_actions ""` or the Clear button on the Limits page |
 | `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | AES-256 key (64 hex) to encrypt saved logins / their maximum age (default 30 days) |
@@ -537,8 +537,8 @@ Opening the app against a staging server or in debug mode without rebuilding it 
 
 ```yaml
 - launchApp:
-    appId: com.contoh.app
-    arguments: { server: "https://staging.contoh.id", debug: true, retries: 3, fitur: [baru, beta] }
+    appId: com.example.app
+    arguments: { server: "https://staging.example.com", debug: true, retries: 3, features: [new, beta] }
     env: { API_TOKEN: "${STAGING_TOKEN}" }   # iOS only
 ```
 
@@ -777,7 +777,7 @@ network.
 **Android.** On the device computer: start the emulator/phone as usual (`adb devices` lists it). On your laptop:
 
 ```bash
-ssh -N -L 15037:127.0.0.1:5037 user@mesin-device
+ssh -N -L 15037:127.0.0.1:5037 user@device-computer
 ```
 
 ```bash
@@ -799,7 +799,7 @@ google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/f
 On your laptop:
 
 ```bash
-ssh -N -L 19222:127.0.0.1:9222 user@mesin-device
+ssh -N -L 19222:127.0.0.1:9222 user@device-computer
 ```
 
 ```bash
