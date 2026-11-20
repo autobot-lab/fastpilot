@@ -28,8 +28,8 @@ pub struct PlatformLauncher {
     web: LaunchOptions,
     browser: Mutex<Option<Arc<Browser>>>,
     devices: Devices,
-    /// `--reset`: mobile sessions reset their app before opening it.
-    fresh: std::sync::atomic::AtomicBool,
+    /// `--reset`: the apps reset so far (each once, at its session start or first launchApp).
+    fresh: std::sync::Mutex<Option<std::sync::Arc<fastpilot_core::FreshApps>>>,
 }
 
 /// Devices this server's sessions use when a start names none (suite runner: the leased
@@ -56,7 +56,7 @@ impl PlatformLauncher {
     }
 
     pub fn with_devices(web: LaunchOptions, devices: Devices) -> Self {
-        Self { web, browser: Mutex::new(None), devices, fresh: std::sync::atomic::AtomicBool::new(false) }
+        Self { web, browser: Mutex::new(None), devices, fresh: std::sync::Mutex::new(None) }
     }
 
     async fn browser(&self) -> fastpilot_core::Result<Arc<Browser>> {
@@ -80,15 +80,20 @@ impl Launcher for PlatformLauncher {
             s.check_platform(platform).map_err(Error::Flow)?;
         }
         let pick = |fallback: Option<String>| spec.as_ref().map(ToString::to_string).or(fallback);
-        match platform {
-            Platform::Web => Ok(Box::new(self.browser().await?.new_page().await?)),
-            Platform::Android => Ok(Box::new(fastpilot_android::AndroidDriver::start(pick(self.devices.android()).as_deref()).await?)),
-            Platform::Ios => Ok(Box::new(fastpilot_ios::IosDriver::start(pick(self.devices.ios()).as_deref()).await?)),
+        let driver: Box<dyn Driver> = match platform {
+            Platform::Web => Box::new(self.browser().await?.new_page().await?),
+            Platform::Android => Box::new(fastpilot_android::AndroidDriver::start(pick(self.devices.android()).as_deref()).await?),
+            Platform::Ios => Box::new(fastpilot_ios::IosDriver::start(pick(self.devices.ios()).as_deref()).await?),
+        };
+        // `session start` without a target, then `launchApp`: the first launch resets the app.
+        if let Some(f) = self.fresh() {
+            driver.reset_on_first_launch(f);
         }
+        Ok(driver)
     }
 
-    fn fresh_apps(&self) -> bool {
-        self.fresh.load(std::sync::atomic::Ordering::Relaxed)
+    fn fresh(&self) -> Option<std::sync::Arc<fastpilot_core::FreshApps>> {
+        self.fresh.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
@@ -337,7 +342,8 @@ impl FastPilot {
         };
         let mut text = format!("session {id} started ({platform})");
         if let Some(target) = &args.target {
-            if self.state.launcher.fresh_apps()
+            if platform != Platform::Web
+                && self.state.launcher.fresh().is_some_and(|f| f.claim(target))
                 && let Some(done) = fastpilot_core::reset_app(&*driver, platform, target).await?
             {
                 text = format!("{text}\n{done}");
@@ -441,7 +447,7 @@ impl FastPilot {
     /// `--reset`: every mobile session resets its app (data, permissions, orientation) before
     /// opening it.
     pub fn set_reset(&self, on: bool) {
-        self.state.launcher.fresh.store(on, std::sync::atomic::Ordering::Relaxed);
+        *self.state.launcher.fresh.lock().unwrap_or_else(|p| p.into_inner()) = on.then(|| std::sync::Arc::new(fastpilot_core::FreshApps::default()));
     }
 
     /// Record every session from its start (headless `run --record`).

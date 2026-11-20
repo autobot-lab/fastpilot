@@ -21,6 +21,25 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use std::fmt;
 use std::time::Duration;
 
+/// `--reset`: the apps already reset in this run (a test of `run --reset`, or the whole
+/// `mcp --reset` process). Each app is reset once, by whichever comes first: a session started
+/// with the app as its target, or the first `launchApp` of it.
+#[derive(Debug, Default)]
+pub struct FreshApps {
+    done: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl FreshApps {
+    /// Whether `app` (`com.x` or `com.x/.Main`) still has to be reset now; marks it reset.
+    pub fn claim(&self, app: &str) -> bool {
+        if app.contains("://") {
+            return false;
+        }
+        let id = app.split('/').next().unwrap_or(app).trim().to_owned();
+        !id.is_empty() && self.done.lock().unwrap_or_else(|p| p.into_inner()).insert(id)
+    }
+}
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -282,6 +301,8 @@ pub trait Driver: Send + Sync {
     async fn reset_app(&self, _app: &str) -> Result<String> {
         Err(Error::Unsupported("--reset is for android and ios sessions".into()))
     }
+    /// `--reset`: reset each app on its first `launchApp` (claimed in `apps`). Mobile drivers.
+    fn reset_on_first_launch(&self, _apps: std::sync::Arc<FreshApps>) {}
     /// Visible area in snapshot coordinates, when the snapshot includes off-screen nodes (web).
     async fn viewport(&self) -> Option<Rect> {
         None

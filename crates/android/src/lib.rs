@@ -233,6 +233,8 @@ pub struct AndroidDriver {
     policy: Policy,
     /// System dialogs handled on the flow's behalf, newest last (reported with failures).
     notes: Mutex<Vec<String>>,
+    /// `--reset`: apps to reset on their first launchApp in this run.
+    first_launch: Mutex<Option<std::sync::Arc<fastpilot_core::FreshApps>>>,
     /// `screenrecord` shell stream while recording.
     recording: tokio::sync::Mutex<Option<TcpStream>>,
     /// close() ran: Drop must not restore or quit again.
@@ -340,6 +342,7 @@ impl AndroidDriver {
             check_crash: std::sync::atomic::AtomicBool::new(false),
             policy: Policy::from_env(),
             notes: Mutex::default(),
+            first_launch: Mutex::default(),
             recording: tokio::sync::Mutex::new(None),
             closed: std::sync::atomic::AtomicBool::new(false),
         })
@@ -1062,6 +1065,10 @@ impl Driver for AndroidDriver {
         Ok(())
     }
 
+    fn reset_on_first_launch(&self, apps: std::sync::Arc<fastpilot_core::FreshApps>) {
+        *lock(&self.first_launch) = Some(apps);
+    }
+
     /// `--reset`: `pm clear` (data, caches, runtime permissions) and the screen upright with
     /// auto-rotate off (fixed values, nothing from the flow reaches the shell but the checked id).
     async fn reset_app(&self, app: &str) -> Result<String> {
@@ -1117,6 +1124,15 @@ impl Driver for AndroidDriver {
         }
         let app = shell_safe(app)?;
         let pkg = app.split('/').next().unwrap_or(app);
+        // `--reset` with `session start` + `launchApp`: the first launch of each app resets it.
+        let first = lock(&self.first_launch).clone();
+        if first.is_some_and(|f| f.claim(pkg)) {
+            if !fastpilot_core::config::flag("allow_app_reset") {
+                return Err(CoreError::Blocked("--reset wipes the app's data, which is turned off (allow_app_reset = false); only the user can change it in fastpilot settings".into()));
+            }
+            let done = self.reset_app(pkg).await?;
+            self.note(format!("--reset {pkg}: {done}"));
+        }
         self.shell(&format!("am force-stop {pkg}")).await?;
         *self.web.lock().await = None;
         if launch.arguments.is_empty() {
