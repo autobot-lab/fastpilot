@@ -16,13 +16,22 @@ pub enum Target {
     Device,
 }
 
-/// `ios-runner/build` (simulator) or `ios-runner/build-device`, overridable with
-/// `FASTPILOT_IOS_RUNNER` / `FASTPILOT_IOS_RUNNER_DEVICE`.
+/// The simulator runner `fastpilot setup ios` builds (F3): `~/.fastpilot/ios-runner/build`, next to
+/// the settings file. Installs from npm or a release have no checkout to build it in.
+pub fn setup_dir() -> PathBuf {
+    fastpilot_core::config::path().parent().map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir).join("ios-runner")
+}
+
+/// The simulator runner build: `FASTPILOT_IOS_RUNNER` (`ios_runner`), else a checkout's
+/// `ios-runner/build` when this binary was built from one and it is there, else the one
+/// `fastpilot setup ios` builds. Device builds: `ios-runner/build-device` /
+/// `FASTPILOT_IOS_RUNNER_DEVICE`.
 pub fn build_dir(target: Target) -> PathBuf {
     match target {
-        Target::Simulator => fastpilot_core::config::var_os("FASTPILOT_IOS_RUNNER")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build"))),
+        Target::Simulator => fastpilot_core::config::var_os("FASTPILOT_IOS_RUNNER").map(PathBuf::from).unwrap_or_else(|| {
+            let checkout = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ios-runner/build"));
+            if pick_xctestrun(&checkout.join("Build/Products"), Target::Simulator).is_some() { checkout } else { setup_dir().join("build") }
+        }),
         Target::Device => crate::device::device_build_dir(),
     }
 }

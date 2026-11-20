@@ -11,6 +11,7 @@ mod history_api;
 mod memory_api;
 mod offer;
 mod init;
+mod ios_setup;
 mod github;
 mod keystore;
 mod provider;
