@@ -82,6 +82,11 @@ async fn provider_change_puts_its_server_in_the_field() {
     assert_eq!(eval(&client, &pick("groq")).await, "\"https://api.groq.com/openai/v1|true\"");
     assert_eq!(eval(&client, &pick("ollama")).await, "\"http://127.0.0.1:11434/v1|false\"");
     assert_eq!(eval(&client, &pick("custom")).await, "\"|false\"", "custom starts empty: no server from another provider");
+    // v0.4: only Claude Code was tried on the demo; any other provider says "not tested yet".
+    let untested = "(() => { const e = document.querySelector('.prov-untested'); return String(!!e && !e.hidden && e.textContent.includes('not tested yet')); })()";
+    assert_eq!(eval(&client, untested).await, "\"true\"", "custom is not tested yet");
+    eval(&client, &pick("claude")).await;
+    assert_eq!(eval(&client, untested).await, "\"false\"", "Claude Code is the tested one");
     // An unsaved choice survives the page being redrawn (the device check finishing, a refused save).
     eval(&client, &pick("openrouter")).await;
     eval(&client, "(document.querySelector('input[aria-label=\"Model id\"]').value = 'meta/llama', document.querySelector('input[aria-label=\"Model id\"]').dispatchEvent(new Event('input')), render(), 'ok')").await;

@@ -1084,14 +1084,16 @@ async fn live_api() -> Response {
     let agents = crate::agents::list();
     let named = |id: Option<&str>| {
         let a = agents.iter().find(|a| Some(a.id.as_str()) == id.or(Some(crate::agents::DEFAULT)))?;
-        Some((a.name.clone(), crate::agents::model_label(a).0))
+        let (label, tested) = crate::agents::model_label(a);
+        Some((a.name.clone(), label, tested))
     };
     let sessions: Vec<Value> = sessions
         .into_iter()
         .map(|mut s| {
-            if let Some((name, model)) = named(s["agent"].as_str()) {
+            if let Some((name, model, tested)) = named(s["agent"].as_str()) {
                 s["agent_name"] = json!(name);
                 s["model_label"] = json!(model);
+                s["model_tested"] = json!(tested);
             }
             s
         })
