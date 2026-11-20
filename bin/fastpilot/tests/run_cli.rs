@@ -85,7 +85,7 @@ fn headless_run_drives_claude_code() {
     let xml = std::fs::read_to_string(&junit).expect("junit");
     assert!(xml.contains("tests=\"1\" failures=\"0\"") && xml.contains("name=\"login-ok: Login berhasil\""), "{xml}");
     let page = std::fs::read_to_string(&html).expect("html");
-    assert!(page.contains("checked Budi on the dashboard") && page.contains("iframe class=\"run\""), "suite html");
+    assert!(page.contains("checked Budi on the dashboard") && page.contains("iframe class=\"run\"") && page.contains("sandbox=\"allow-scripts\" srcdoc="), "suite html (run report sandboxed)");
     // --record: the session's screencast is in the run directory and inlined in its report.
     let run_dir = std::fs::read_dir(dir.join("runs")).expect("runs").filter_map(|e| e.ok()).map(|e| e.path()).next().expect("run");
     assert!(run_dir.join("recording-w.html").exists(), "{}", run_dir.display());

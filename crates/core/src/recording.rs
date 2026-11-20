@@ -30,7 +30,7 @@ impl Recording {
                 format!("<video controls preload=\"metadata\" style=\"max-width:100%;max-height:640px\" src=\"data:{mime};base64,{}\"></video>", b64(data))
             }
             Self::Frames(frames) => format!(
-                "<iframe title=\"{}\" style=\"width:100%;height:640px;border:0\" srcdoc=\"{}\"></iframe>",
+                "<iframe title=\"{}\" sandbox=\"allow-scripts\" style=\"width:100%;height:640px;border:0\" srcdoc=\"{}\"></iframe>",
                 escape_html(title),
                 escape_html(&filmstrip(title, frames))
             ),
@@ -81,8 +81,8 @@ pub struct Span {
     pub ok: bool,
 }
 
-/// The recording with its steps on it, inside an `<iframe srcdoc>` (the report page itself stays
-/// script-free): a player, a bar with one marker per step (red where a step failed; a click seeks
+/// The recording with its steps on it, inside an `<iframe srcdoc sandbox="allow-scripts">` (the
+/// report page itself stays script-free; the player runs in an opaque origin, away from the page): a player, a bar with one marker per step (red where a step failed; a click seeks
 /// there) and one button per flow that plays only that flow's part. Frames (web) play at real
 /// speed; a video (android, ios) uses `<video>`.
 pub fn timeline(title: &str, rec: &Recording, marks: &[Mark], spans: &[Span]) -> String {
@@ -138,7 +138,7 @@ if (F) {{ seek(0); layout(); }}
 "#,
         title = escape_html(title)
     );
-    format!("<iframe title=\"{}\" style=\"width:100%;height:640px;border:0\" srcdoc=\"{}\"></iframe>", escape_html(title), escape_html(&doc))
+    format!("<iframe title=\"{}\" sandbox=\"allow-scripts\" style=\"width:100%;height:640px;border:0\" srcdoc=\"{}\"></iframe>", escape_html(title), escape_html(&doc))
 }
 
 #[cfg(test)]
@@ -157,6 +157,9 @@ mod tests {
         let spans = [Span { flow: 1, from: 0.0, to: 1.2, ok: true }, Span { flow: 2, from: 0.9, to: 2.5, ok: false }];
         let html = timeline("w <login>", &frames, &marks, &spans);
         assert!(html.starts_with("<iframe title=\"w &lt;login&gt;\""), "{html}");
+        // v0.3.1 (Low): srcdoc shares the report's origin unless sandboxed; the player only needs
+        // scripts, never the page around it.
+        assert!(html.contains(" sandbox=\"allow-scripts\" ") && !html.contains("allow-same-origin"), "{html}");
         // Inside srcdoc everything is attribute-escaped: one level of &quot; for the JSON quotes.
         // Keys in JSON order (sorted): flow, label, ok, t / flow, from, ok, to.
         assert!(html.contains("{&quot;flow&quot;:1,&quot;label&quot;:&quot;tapOn \\&quot;Masuk\\&quot;&quot;,&quot;ok&quot;:true,&quot;t&quot;:0.2}"), "first step");
@@ -177,6 +180,7 @@ mod tests {
         assert_eq!(ext, "html");
         assert!(html.contains("[0.500,\"data:image/jpeg;base64,/9k=\"]") && html.contains("login &lt;web&gt;"), "{html}");
         assert!(frames.embed("x").starts_with("<iframe") && !frames.embed("x").contains("<script>"));
+        assert!(frames.embed("x").contains(" sandbox=\"allow-scripts\" "));
         let video = Recording::Video { mime: "video/mp4", data: vec![1, 2, 3] };
         assert_eq!(video.file("x").0, "mp4");
         assert!(video.embed("x").contains("data:video/mp4;base64,AQID"));

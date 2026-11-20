@@ -93,7 +93,7 @@ pub fn html(results: &[CaseResult], elapsed: Duration) -> String {
         body.push_str("</ol>");
         // The run's own report.html (steps, diffs, screenshots, recordings), inlined.
         if let Some(run) = r.report.as_ref().and_then(|p| std::fs::read_to_string(p.with_file_name("report.html")).ok()) {
-            let _ = write!(body, "<iframe class=\"run\" title=\"{}\" srcdoc=\"{}\"></iframe>", html_escape(&r.case.id), html_escape(&run));
+            let _ = write!(body, "<iframe class=\"run\" title=\"{}\" sandbox=\"allow-scripts\" srcdoc=\"{}\"></iframe>", html_escape(&r.case.id), html_escape(&run));
         }
         body.push_str("<details><summary>agent transcript</summary><ol>");
         for t in &r.transcript {
