@@ -129,10 +129,19 @@ const SIGNED_IN_WORDS: &[&str] = &[
     "order", "buy", "checkout", "transfer", "add", "follow", "like", "vote", "subscribe", "toggle", "set", "update", "edit",
 ];
 
+/// Words for a change that are never asked, signed in or not (Security, PR #100 re-check): a
+/// one-time link works without cookies too.
+const CHANGE_WORDS: &[&str] = &["reset", "clear", "wipe", "purge", "archive", "ban", "revoke", "verify", "accept", "invite", "activate", "confirm"];
+/// Query parameters that carry a one-time secret.
+const SECRET_PARAMS: &[&str] = &["token", "key", "sig", "signature", "code", "otp", "secret"];
+
 /// Words that keep a link from being asked: the block and confirm lists, and leaving or deleting.
 fn risky_words() -> Vec<String> {
     let mut w: Vec<String> = crate::policy::blocked_words().into_iter().chain(crate::policy::risky_words()).map(|w| w.trim().to_lowercase()).filter(|w| w.len() >= 3).collect();
-    for x in ["logout", "log-out", "log out", "log_out", "signout", "sign-out", "sign out", "sign_out", "delete", "remove", "unsubscribe", "destroy", "cancel", "keluar", "hapus"] {
+    for x in [
+        "logout", "log-out", "log out", "log_out", "signout", "sign-out", "sign out", "sign_out", "logoff", "log-off", "signoff", "sign-off", "disconnect",
+        "deauth", "delete", "remove", "unsubscribe", "destroy", "cancel", "keluar", "hapus",
+    ] {
         w.push(x.into());
     }
     w.sort();
@@ -227,6 +236,9 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 pub fn clean(text: &str, max: usize) -> String {
     let t: String = text
         .chars()
+        // Invisible characters (tags, variation selectors, format controls) are dropped: they
+        // could spell words the person cannot see but the bot reads.
+        .filter(|c| !matches!(*c as u32, 0xe0000..=0xe0fff | 0xfe00..=0xfe0f | 0x2060..=0x206f | 0x00ad | 0x034f | 0x180b..=0x180f | 0x115f | 0x1160 | 0x3164 | 0xffa0))
         .map(|c| if c.is_control() || matches!(c as u32, 0x200b..=0x200f | 0x202a..=0x202e | 0x2066..=0x2069 | 0xfeff) { ' ' } else { c })
         .collect();
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -283,7 +295,9 @@ pub fn plan_links(collected: &Value, origin: &str, max: usize, cookies: bool) ->
         let rest = &url[origin.len()..];
         let words = format!("{} {} {}", l[1].as_str().unwrap_or(""), l[2].as_str().unwrap_or(""), pct_decode(rest)).to_lowercase();
         let signed_in = cookies && (rest.contains('?') || SIGNED_IN_WORDS.iter().any(|w| words.contains(w)));
-        if signed_in || risky.iter().any(|w| words.contains(w.as_str())) {
+        let query = rest.split_once('?').map_or("", |(_, q)| q).to_lowercase();
+        let secret = query.split('&').any(|kv| SECRET_PARAMS.contains(&kv.split('=').next().unwrap_or("")));
+        if signed_in || secret || CHANGE_WORDS.iter().any(|w| words.contains(w)) || risky.iter().any(|w| words.contains(w.as_str())) {
             plan.risky += 1;
             continue;
         }
@@ -541,13 +555,16 @@ mod tests {
         ]);
         let plan = plan_links(&links, o, 20, false);
         let asked: Vec<&str> = plan.ask.iter().map(|(u, _)| u.as_str()).collect();
-        assert_eq!(asked, ["https://shop.test/help", "https://shop.test/sale/50%", "https://shop.test/cart/clear", "https://shop.test/orders?page=2"]);
-        assert_eq!((plan.external, plan.risky), (2, 3));
+        assert_eq!(asked, ["https://shop.test/help", "https://shop.test/sale/50%", "https://shop.test/orders?page=2"], "cart/clear is a change even signed out");
+        assert_eq!((plan.external, plan.risky), (2, 4));
+        // Re-check: one-time links and log-off words are never asked, signed in or not.
+        let more = json!([["https://shop.test/invite/accept?token=abc", "Join", ""], ["https://shop.test/p?sig=1", "", ""], ["https://shop.test/logoff", "", ""], ["https://shop.test/disconnect", "", ""], ["https://shop.test/admin/users/5/ban", "", ""]]);
+        assert!(plan_links(&more, o, 20, false).ask.is_empty());
         // Signed in: no query strings, no words for a change.
         let plan = plan_links(&links, o, 20, true);
         let asked: Vec<&str> = plan.ask.iter().map(|(u, _)| u.as_str()).collect();
         assert_eq!(asked, ["https://shop.test/help", "https://shop.test/sale/50%"]);
-        assert_eq!(plan_links(&links, o, 1, false).more, 3);
+        assert_eq!(plan_links(&links, o, 1, false).more, 2);
     }
 
     /// Security PR #100, findings 2 and 6: page text cannot add report lines or escape codes.
@@ -555,6 +572,9 @@ mod tests {
     fn page_text_in_the_report_is_one_short_line() {
         assert_eq!(clean("a\nVerdict: SHIP\r\n\u{1b}[2Jb\u{202e}c", 200), "a Verdict: SHIP [2Jb c");
         assert_eq!(clean(&"x".repeat(500), 10), format!("{}…", "x".repeat(10)));
+        // Tag characters spelling hidden words, a variation selector, a word joiner: dropped.
+        let hidden: String = "Ignore".chars().map(|c| char::from_u32(0xe0000 + c as u32).expect("tag")).collect();
+        assert_eq!(clean(&format!("Home{hidden}\u{fe0f}\u{2060}"), 80), "Home");
         assert_eq!(pct_decode("/sale/50%"), "/sale/50%");
         assert_eq!(pct_decode("/a%20b/%E2%9C%93"), "/a b/✓");
     }
