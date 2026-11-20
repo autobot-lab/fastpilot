@@ -143,6 +143,19 @@ fn provider_settings_key_and_connection_test_from_the_page() {
     assert!(st == 200 && body.contains("ok:") && body.contains("fake-model") && !body.contains("sk-ui-test-123"), "{st} {body}");
     assert!(seen.lock().expect("seen").iter().any(|l| l.starts_with("POST /v1/chat/completions") && l.ends_with("Bearer sk-ui-test-123")));
 
+    assert_eq!(get()["key"]["origin"], format!("http://127.0.0.1:{port}"), "the key is shown with the server it is for");
+    // Another server for custom without a new key: told that the key belongs to the old one.
+    let (st, body) = post(json!({ "action": "save", "provider": "custom", "base_url": "http://127.0.0.1:9/v1", "model": "fake-model" }));
+    assert!(st == 200 && body.contains(&format!("tersimpan untuk http://127.0.0.1:{port}")), "{st} {body}");
+    // A hosted preset with the previous server still in the field: the preset's server is stored.
+    let (st, body) = post(json!({ "action": "save", "provider": "openrouter", "base_url": "http://127.0.0.1:9/v1", "model": "x/y" }));
+    assert_eq!(st, 200, "{body}");
+    let v = get();
+    assert!(v["base_url"].is_null(), "no leftover server for a hosted preset: {v}");
+    assert!(!std::fs::read_to_string(home.join(".fastpilot/config.toml")).expect("config").contains("provider_base_url"));
+    let (st, _) = post(json!({ "action": "save", "provider": "custom", "base_url": base, "model": "fake-model" }));
+    assert_eq!(st, 200);
+
     // Saving without a key keeps the stored one; Hapus kunci removes it; back to Claude Code.
     let (st, _) = post(json!({ "action": "save", "provider": "custom", "base_url": base, "model": "fake-model-2" }));
     assert_eq!(st, 200);

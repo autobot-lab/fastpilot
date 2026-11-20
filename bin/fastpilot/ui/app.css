@@ -228,6 +228,7 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .fld input[aria-invalid="true"]{border-color:var(--bad)}
 .sub-fld{margin:0 0 6px 24px}
 .tbl .row-name:focus{outline:none}.tbl .row-name:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.fld input[readonly]{background:var(--soft);color:var(--muted)}
 /* narrow windows (N3): nothing wider than the screen */
 @media (max-width:600px){
   .rail{width:60px}.rail a{width:52px}
