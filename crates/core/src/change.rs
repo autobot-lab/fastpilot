@@ -136,7 +136,7 @@ pub fn apply(key: &str, before: Option<&str>, op: &Op) -> Result<Option<String>,
         }
         Op::Remove(item) => {
             let item = item.trim();
-            if key == "block_actions" && same(item, "default") {
+            if (key == "block_actions" && same(item, "default")) || (key == "confirm_actions" && list_keyword(item)) {
                 return Err(DEFAULT_ONLY_IN_SETTINGS.into());
             }
             let mut v = items(key, before);
@@ -183,6 +183,11 @@ pub fn label(key: &str) -> &'static str {
 }
 
 /// Security (D9 finding 2): every built-in block at once is never dropped from chat or a request.
+/// The words that stand for a built-in list in `confirm_actions` (`policy::expand_risky`).
+fn list_keyword(w: &str) -> bool {
+    ["default", "1", "true"].iter().any(|k| same(w, k))
+}
+
 const DEFAULT_ONLY_IN_SETTINGS: &str = "The built-in list (payment, deleting an account and the like) can only be switched off by you, in Settings. To allow one button, ask to allow it by name.";
 
 fn home() -> String {
@@ -210,6 +215,10 @@ pub fn check(c: &Change) -> Result<(), String> {
     let after = items(&c.key, c.after.as_deref());
     let before = items(&c.key, c.before.as_deref());
     let added: Vec<&String> = after.iter().filter(|a| !before.iter().any(|b| same(a, b))).collect();
+    // Security re-check A: the confirm list's built-in keyword (`default`, also `1`/`true`) stays too.
+    if c.key == "confirm_actions" && before.iter().any(|b| list_keyword(b)) && !after.iter().any(|a| list_keyword(a)) {
+        return Err(DEFAULT_ONLY_IN_SETTINGS.into());
+    }
     if c.key == "block_actions" {
         // Security (D9 findings 1, 2, 7): the built-in list stays, and the only `!word` is a
         // built-in word allowed one at a time, as `apply` writes it (lowercase, normalised).
@@ -781,6 +790,12 @@ mod tests {
         // request carries before/after only).
         assert!(apply("block_actions", None, &Op::Remove("default".into())).is_err());
         assert!(apply("block_actions", Some("default,refund"), &Op::Remove("DEFAULT".into())).is_err());
+        // Re-check A: the same for the confirm list's built-in keyword.
+        for k in ["default", "true", "1"] {
+            assert!(apply("confirm_actions", Some(&format!("{k},refund")), &Op::Remove(k.into())).is_err(), "{k}");
+            assert!(check(&ch("confirm_actions", Some(&format!("{k},refund")), Some("refund"))).is_err(), "{k}");
+        }
+        assert!(check(&ch("confirm_actions", Some("default,refund"), Some("default"))).is_ok(), "one own word may go");
         for (before, after) in [(None, Some("refund")), (Some("default,!pay"), Some("!pay")), (Some("default,refund"), Some("refund"))] {
             let c = ch("block_actions", before, after);
             let e = check(&c).expect_err(&format!("{before:?} -> {after:?}"));
