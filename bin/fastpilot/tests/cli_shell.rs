@@ -160,3 +160,28 @@ fn daemon_exits_when_idle_and_bad_input_is_explained() {
     assert!(!sh.run(&["daemon", "status"]).0, "daemon did not exit after being idle");
     assert!(!sh.socket.exists(), "socket left behind");
 }
+
+/// QA #9: `get title` / `get url` ran an evalScript (refused with allow_eval_script = false or
+/// block_actions set), and `flow` without an open session failed with "unknown session default".
+#[test]
+fn get_title_without_eval_and_flow_without_a_session() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let sh = Shell::new("get");
+    let run = |args: &[&str]| {
+        let out = sh.cmd(args).env("FASTPILOT_ALLOW_EVAL_SCRIPT", "false").env("FASTPILOT_BLOCK_ACTIONS", "Bayar").output().expect("run");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = run(&["flow", "- tapOn: Masuk\n"]);
+    assert!(!ok && out.contains("no session `default` is open") && out.contains("fastpilot open"), "{out}");
+    let (ok, out) = run(&["open", "examples/demo/login.html"]);
+    assert!(ok, "{out}");
+    let (ok, out) = run(&["get", "title"]);
+    assert!(ok && out.trim() == "Login", "get title: {out}");
+    let (ok, out) = run(&["get", "url"]);
+    assert!(ok && out.trim().starts_with("file://") && out.trim().ends_with("examples/demo/login.html"), "get url: {out}");
+    // evalScript itself is still refused.
+    let (ok, out) = run(&["eval", "document.title"]);
+    assert!(!ok && out.contains("blocked"), "{out}");
+}

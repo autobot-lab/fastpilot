@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     // The guard rails in force for this whole process are the ones in the file now (or stricter).
     fastpilot_core::config::pin_guard_rails();
-    let headful = flag("--headful") || fastpilot_core::config::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1");
+    let headful = flag("--headful") || fastpilot_core::config::flag("headful");
     let web = LaunchOptions { headless: !headful, executable: None };
 
     match args.first().map(String::as_str) {

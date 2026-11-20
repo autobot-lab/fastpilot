@@ -31,7 +31,7 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   close [--all]                close the session (--all: every session and the daemon)
   sessions | devices           list sessions / attached devices and simulators
   snapshot [-i] [--json] [--full] [--coords] [--filter TEXT]   accessibility tree with refs (@e1 ...)
-  click|tap|dblclick|longpress <sel> [--confirm]   --confirm: a risky action (FASTPILOT_CONFIRM_ACTIONS)
+  click|tap|dblclick|longpress <sel> [--confirm]   --confirm: a risky action (confirm_actions)
   fill <sel> <text>            replace the content of a field
   type <text>                  type into the focused field
   clear [N]                    erase N characters (all without N)
@@ -367,7 +367,7 @@ fn flow_source(arg: &str) -> Res<String> {
 pub fn main(argv: &[String]) -> Res<()> {
     // Global options, anywhere on the line.
     let mut session = fastpilot_core::config::var("FASTPILOT_SESSION").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "default".into());
-    let (mut json, mut headed) = (false, fastpilot_core::config::var("FASTPILOT_HEADFUL").is_ok_and(|v| v == "1"));
+    let (mut json, mut headed) = (false, fastpilot_core::config::flag("headful"));
     let mut opts: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut flags: Vec<&str> = Vec::new();
     let mut args: Vec<String> = Vec::new();
@@ -580,9 +580,24 @@ pub fn main(argv: &[String]) -> Res<()> {
             }
         }
         "get" => {
-            let yaml = match arg(1, "text, url or title")? {
-                "url" => "- evalScript: \"location.href\"\n".to_owned(),
-                "title" => "- evalScript: \"document.title\"\n".to_owned(),
+            // Title and URL come from the snapshot: no evalScript, so they work with
+            // allow_eval_script = false or block_actions set.
+            let what = arg(1, "text, url or title")?;
+            if matches!(what, "url" | "title") {
+                let v = ctx.tool("snapshot", json!({ "session": sid, "format": "json" }))?;
+                if v["ok"] == false {
+                    return finish(&ctx, &v);
+                }
+                let snap: Value = serde_json::from_str(&text_of(&v)).map_err(|e| format!("snapshot is not JSON: {e}"))?;
+                let value = snap[if what == "url" { "location" } else { "title" }].as_str().unwrap_or_default().to_owned();
+                if json {
+                    println!("{}", json!({ "ok": true, what: value }));
+                } else {
+                    println!("{value}");
+                }
+                return Ok(());
+            }
+            let yaml = match what {
                 "text" | "value" => format!("- copyTextFrom: {}\n", selector(arg(2, "a selector")?)),
                 other => return Err(format!("unknown `get {other}` (text, url, title)").into()),
             };
@@ -652,6 +667,13 @@ pub fn main(argv: &[String]) -> Res<()> {
         "hide-keyboard" => step("- hideKeyboard\n".into())?,
         "flow" => {
             let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
+            // A flow that does not start its own session runs in the shell's: say so up front.
+            if !src.contains("session:") && !ctx.has_session()? {
+                return Err(format!(
+                    "no session `{sid}` is open: run `fastpilot open <url>` first, or start one at the top of the flow with `- session: {{ start: web1, platform: web, target: <url> }}`"
+                )
+                .into());
+            }
             finish(&ctx, &ctx.flow(&src, flag("--keep-going"))?)?;
         }
         "check-flow" => {

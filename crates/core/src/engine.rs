@@ -759,6 +759,16 @@ async fn guard_risky_with(d: &dyn Driver, sel: &Selector, confirmed: bool, words
     guard_tap(d, sel, confirmed, words, &crate::policy::blocked_words()).await
 }
 
+/// The selector, with the element's name when it says more (`e3 ("Bayar")`), not twice
+/// (`"Bayar sekarang"`, not `"Bayar sekarang" ("Bayar sekarang")`).
+fn labelled(sel: &Selector, name: &str) -> String {
+    match sel {
+        Selector::Text(t) | Selector::Role { name: Some(t), .. } if t.trim().eq_ignore_ascii_case(name.trim()) => sel.to_string(),
+        _ if name.is_empty() => sel.to_string(),
+        _ => format!("{sel} ({})", crate::quote(name)),
+    }
+}
+
 /// `block_actions` (always, confirmed or not), then `confirm_actions` (unless confirmed).
 async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[String], blocked: &[String]) -> Result<()> {
     if (confirmed || words.is_empty()) && blocked.is_empty() {
@@ -784,7 +794,8 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
     for name in &names {
         if let Some(w) = crate::policy::block_match(name, blocked) {
             return Err(Error::Blocked(format!(
-                "{sel} (\"{name}\") is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it, only the user can change it in fastpilot settings"
+                "{} is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it, only the user can change it in fastpilot settings",
+                labelled(sel, name)
             )));
         }
     }
@@ -794,8 +805,9 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
     for name in &names {
         if let Some(w) = crate::policy::risky_match(name, words) {
             return Err(Error::Blocked(format!(
-                "{sel} (\"{name}\") looks like a risky action (\"{w}\", FASTPILOT_CONFIRM_ACTIONS): if it is intended, \
-                 write the step with `confirm: true`, e.g. tapOn: {{ text: \"{name}\", confirm: true }}"
+                "{} looks like a risky action (\"{w}\", confirm_actions): if it is intended, \
+                 write the step with `confirm: true`, e.g. tapOn: {{ text: \"{name}\", confirm: true }}",
+                labelled(sel, name)
             )));
         }
     }
