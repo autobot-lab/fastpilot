@@ -400,3 +400,41 @@ fn provider_drives_a_run_without_claude_code() {
     assert!(!ok && out.contains("401") && out.contains("Incorrect API key") && !out.contains("sk-wrong-key-123"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// QA / Design (Medium): a stored key goes only to the server it was saved for. A custom key saved
+/// for one server, with the run pointed at another: the run stops with the reason, the other
+/// server gets nothing, and Claude Code is not started in its place.
+#[test]
+fn provider_key_is_not_sent_to_another_server() {
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-keyorigin-{}", std::process::id()));
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let (port, log) = fake_openai();
+    let other = format!("http://127.0.0.1:{port}/v1");
+    let fp = |args: &[&str], env: &[(&str, &str)], stdin: &str| {
+        use std::io::Write;
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+        c.args(args).env("HOME", &home).env("FASTPILOT_KEYSTORE", "file").env_remove("FASTPILOT_PROVIDER_API_KEY").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let mut child = c.spawn().expect("spawn");
+        child.stdin.take().expect("stdin").write_all(stdin.as_bytes()).expect("write");
+        let out = child.wait_with_output().expect("run");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    // The key is saved for https://mine.example (the custom server at that time).
+    assert!(fp(&["config", "set", "provider", "custom"], &[], "").0);
+    assert!(fp(&["config", "set", "provider_base_url", "https://mine.example/v1"], &[], "").0);
+    assert!(fp(&["config", "set", "provider_model", "fake-model-1"], &[], "").0);
+    let (ok, out) = fp(&["config", "set-key", "custom"], &[], "sk-test-provider-999\n");
+    assert!(ok && !out.contains("sk-test"), "{out}");
+    // Pointed at another server (here through the environment): refused before any request.
+    let env = [("HOME", home.to_str().unwrap_or("")), ("FASTPILOT_KEYSTORE", "file"), ("FASTPILOT_PROVIDER_BASE_URL", other.as_str())];
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude"), &env, &[]);
+    assert!(!ok && out.contains("saved for https://mine.example, not for http://127.0.0.1:"), "{out}");
+    assert!(!out.contains("sk-test-provider-999"), "{out}");
+    assert!(log.lock().expect("log").is_empty(), "the other server must get nothing");
+    assert!(calls(&dir.join("claude")).is_empty(), "no silent fall back to Claude Code");
+    let _ = std::fs::remove_dir_all(dir);
+}

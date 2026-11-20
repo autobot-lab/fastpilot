@@ -607,6 +607,17 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   tidak bisa mengalihkan data test ke server lain). `http://` hanya untuk mesin ini (mis. Ollama); server lain
   wajib `https://`. Kembali ke Claude Code: `fastpilot config unset provider`.
 
+  Key terikat ke server tempat ia disimpan: preset (`openai`, `openrouter`, `groq`) hanya ke servernya
+  sendiri, `custom` ke `provider_base_url` saat `set-key` dijalankan. Bila server berbeda, key tidak
+  dikirim dan fastpilot memberi tahu caranya (set ulang key, atau kembalikan URL). Mengganti `provider`
+  lewat `fastpilot config set provider …` menghapus `provider_base_url` lama, sehingga provider baru memakai
+  presetnya. `FASTPILOT_KEYSTORE=file` memaksa penyimpanan file 600 (berguna di CI, atau dengan `HOME`
+  terisolasi supaya macOS tidak meminta Keychain).
+
+  **Privasi:** dengan provider pihak ketiga, isi tool yang dikirim ke model (snapshot layar, hasil langkah,
+  URL halaman, termasuk path lokal seperti `file:///Users/<nama>/…`) ikut sampai ke provider itu. Nilai
+  `${NAMA}` tetap disamarkan `***`. Pakai Ollama lokal bila data test tidak boleh keluar dari mesin ini.
+
   Sama lewat halaman: `fastpilot ui` › Atur › Model AI › *penggerak test* (penyedia, Base URL, model,
   API key, **Tes koneksi**). Key dikirim sekali ke penyimpan kunci dan tidak pernah ditampilkan lagi.
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di

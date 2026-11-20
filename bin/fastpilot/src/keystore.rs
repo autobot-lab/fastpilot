@@ -92,11 +92,39 @@ fn run_with_stdin(program: &str, args: &[&str], stdin: &str) -> Result<String, S
     }
 }
 
-/// Keep `key` for `provider`; returns where it went.
+/// Keep `key` for `provider`, tied to the server it may be sent to (the provider's preset, or the
+/// configured base URL for custom): see [`origin`]. Returns where it went.
 pub fn set(provider: &str, key: &str) -> Result<&'static str, String> {
     check_provider(provider)?;
     let key = key.trim();
     check_key(key)?;
+    let tied_to = crate::provider::key_origin(provider)?;
+    store(provider, key)?;
+    store(&format!("{provider}.origin"), &tied_to)?;
+    Ok(backend().describe())
+}
+
+/// The origin (`https://host[:port]`) a stored key was saved for; it is sent nowhere else.
+pub fn origin(provider: &str) -> Option<String> {
+    check_provider(provider).ok()?;
+    load(&format!("{provider}.origin"))
+}
+
+/// The key and the origin it was saved for; a key from FASTPILOT_PROVIDER_API_KEY has no origin
+/// (the person running fastpilot chose it for this run).
+pub fn get_bound(provider: &str) -> Option<(String, Option<String>)> {
+    if let Ok(k) = std::env::var("FASTPILOT_PROVIDER_API_KEY")
+        && !k.trim().is_empty()
+    {
+        return Some((k.trim().to_owned(), None));
+    }
+    let key = get(provider)?;
+    Some((key, origin(provider)))
+}
+
+/// One secret under `account` (a provider, or `<provider>.origin`) in the store.
+fn store(account: &str, key: &str) -> Result<(), String> {
+    let provider = account;
     let b = backend();
     match b {
         Backend::Keychain => {
@@ -123,7 +151,7 @@ pub fn set(provider: &str, key: &str) -> Result<&'static str, String> {
             std::fs::write(&path, key).map_err(|e| e.to_string())?;
         }
     }
-    Ok(b.describe())
+    Ok(())
 }
 
 /// The key for `provider`: the environment first, then the store.
@@ -134,6 +162,11 @@ pub fn get(provider: &str) -> Option<String> {
         return Some(k.trim().to_owned());
     }
     check_provider(provider).ok()?;
+    load(provider)
+}
+
+fn load(account: &str) -> Option<String> {
+    let provider = account;
     let key = match backend() {
         Backend::Keychain => {
             let out = Command::new("security").args(["find-generic-password", "-s", SERVICE, "-a", provider, "-w"]).stderr(Stdio::null()).output().ok()?;
@@ -156,6 +189,13 @@ pub fn has(provider: &str) -> bool {
 /// Forget the stored key (the environment variable is the user's own).
 pub fn delete(provider: &str) -> Result<(), String> {
     check_provider(provider)?;
+    remove(provider);
+    remove(&format!("{provider}.origin"));
+    Ok(())
+}
+
+fn remove(account: &str) {
+    let provider = account;
     match backend() {
         Backend::Keychain => {
             let _ = Command::new("security").args(["delete-generic-password", "-s", SERVICE, "-a", provider]).stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -167,7 +207,6 @@ pub fn delete(provider: &str) -> Result<(), String> {
             let _ = std::fs::remove_file(key_file(provider));
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -189,8 +228,30 @@ mod tests {
         }
         assert_eq!(backend(), Backend::File);
         assert!(!has("openai"));
+        unsafe {
+            std::env::remove_var("FASTPILOT_PROVIDER");
+            std::env::remove_var("FASTPILOT_PROVIDER_BASE_URL");
+            std::env::set_var("FASTPILOT_CONFIG", home.join("none.toml"));
+        }
         assert_eq!(set("openai", "  sk-test-abc123\n"), Ok("~/.fastpilot/keys (owner-only file)"));
         assert_eq!(get("openai").as_deref(), Some("sk-test-abc123"));
+        // Tied to the server it may go to: the preset's, or the custom base URL.
+        assert_eq!(origin("openai").as_deref(), Some("https://api.openai.com"));
+        assert_eq!(get_bound("openai"), Some(("sk-test-abc123".into(), Some("https://api.openai.com".into()))));
+        assert!(set("custom", "sk-c").expect_err("custom without its server").contains("provider_base_url"));
+        unsafe {
+            std::env::set_var("FASTPILOT_PROVIDER", "custom");
+            std::env::set_var("FASTPILOT_PROVIDER_BASE_URL", "https://llm.example.com:8443/v1");
+        }
+        set("custom", "sk-c").expect("custom");
+        assert_eq!(origin("custom").as_deref(), Some("https://llm.example.com:8443"));
+        unsafe {
+            std::env::remove_var("FASTPILOT_PROVIDER");
+            std::env::remove_var("FASTPILOT_PROVIDER_BASE_URL");
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
+        delete("custom").expect("delete");
+        assert!(origin("custom").is_none(), "the origin goes with the key");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -449,7 +449,18 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let mut forced_class = None;
     let mut failure = None;
     // B2: an OpenAI-compatible provider drives the same tools in-process, with the same limits.
-    let provider = crate::provider::Provider::configured().and_then(Result::ok);
+    // A configured provider that cannot be used (key refused for this server, missing model) fails
+    // the test with the reason: never a silent fall back to Claude Code.
+    let configured = crate::provider::Provider::configured();
+    let provider_chosen = configured.is_some();
+    let provider = match configured {
+        Some(Ok(p)) => Some(p),
+        Some(Err(e)) => {
+            failure = Some(format!("provider: {e}"));
+            None
+        }
+        None => None,
+    };
     if let Some(p) = &provider {
         models = vec![format!("{}:{}", p.name, p.model)];
         let a = agent.clone();
@@ -481,9 +492,9 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
             failure = o.failure;
         }
     }
-    let serving = if provider.is_some() { Err(std::io::Error::other("not used")) } else { serve(agent.clone(), token.clone()).await };
+    let serving = if provider_chosen { Err(std::io::Error::other("not used")) } else { serve(agent.clone(), token.clone()).await };
     match serving {
-        Err(_) if provider.is_some() => {}
+        Err(_) if provider_chosen => {}
         Err(e) => failure = Some(format!("cannot serve the tools to Claude Code: {e}")),
         Ok((addr, server)) => {
             let mut prompt = intro;
