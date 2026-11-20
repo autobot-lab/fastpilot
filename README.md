@@ -1,24 +1,24 @@
 # fastpilot
 
-**Tes aplikasi web, Android, dan iOS cukup dengan bahasa biasa.**
-Kamu tulis apa yang mau dicek, lalu AI (Claude Code) yang menjalankannya di komputermu.
-Gratis, tanpa cloud, dan tombol pembayaran diblokir sejak awal.
+**Test your web, Android, and iOS apps in plain language.**
+You write what to check, and AI (Claude Code) runs it on your own computer.
+Free, no cloud, and payment buttons are blocked from the start.
 
-## Yang kamu butuhkan
+## What you need
 
-- Mac (atau Linux)
+- A Mac (or Linux)
 - Google Chrome
-- [Claude Code](https://claude.com/claude-code) yang sudah login
+- [Claude Code](https://claude.com/claude-code), signed in
 
-## Mulai dalam 3 langkah
+## Get started in 3 steps
 
-**1. Pasang**
+**1. Install**
 
 ```bash
 npm install -g fastpilot
 ```
 
-**2. Coba demo**
+**2. Try the demo**
 
 ```bash
 fastpilot demo
@@ -26,90 +26,90 @@ cd fastpilot-demo
 claude
 ```
 
-Di Claude, ketik: *Pakai fastpilot, jalankan tests/login.md lalu report*
+In Claude, type: *Use fastpilot, run tests/login.md and then report*
 
-Kalau muncul ✓ `login-ok` lolos, fastpilot sudah jalan. 🎉
+When you see ✓ `login-ok` passed, fastpilot works. 🎉
 
-**3. Pakai di proyekmu**
+**3. Use it in your project**
 
 ```bash
-cd ~/proyek-kamu
+cd ~/your-project
 fastpilot init
 ```
 
-Buka `tests/contoh.md`, ganti `target` dengan alamat aplikasimu, lalu minta Claude menjalankannya.
+Open `tests/contoh.md`, change `target` to your app's address, then ask Claude to run it.
 
-## Pakai lewat dashboard (paling mudah)
+## Use the dashboard (easiest)
 
 ```bash
 fastpilot ui
 ```
 
-Dashboard terbuka di browser. Biarkan Terminal tetap terbuka selama dashboard dipakai.
+The dashboard opens in your browser. Keep the Terminal open while you use it.
 
-| Menu | Untuk apa |
+| Menu | What it's for |
 |---|---|
-| **Chat** | Minta test dengan kalimat biasa, mis. *"Tes https://example.com, pastikan tulisan 'Example Domain' tampil"* |
-| **Live** | Tonton test berjalan, dan ambil alih kalau perlu |
-| **Jadwal** | Jalankan test otomatis tiap hari atau tiap minggu. Kalau gagal, kamu dikabari lewat Slack atau notifikasi Mac |
-| **Device** | Cek apakah Chrome, Android, dan iOS sudah siap |
-| **Pengaturan** | Pilih model AI, atur batasan, simpan secret |
+| **Chat** | Ask for a test in plain words, e.g. *"Test https://example.com and check that 'Example Domain' is shown"* |
+| **Live** | Watch tests run, and take over if needed |
+| **Jadwal** (Schedules) | Run tests automatically every day or every week. If one fails, you get a Slack message or a Mac notification |
+| **Device** | Check whether Chrome, Android, and iOS are ready |
+| **Pengaturan** (Settings) | Pick the AI model, set limits, store secrets |
 
-Link dashboard hanya berlaku sekali selama 10 menit. Kalau kedaluwarsa, jalankan `fastpilot ui` lagi.
+The dashboard link works once and for 10 minutes. If it expires, run `fastpilot ui` again.
 
-## Menulis test
+## Write a test
 
-Satu test = satu file `.md` di folder `tests/`:
+One test = one `.md` file in the `tests/` folder:
 
 ```markdown
-# Cari produk
-id: cari-produk
+# Search for a product
+id: search-product
 platform: web
-target: https://tokomu.com
-- Ketik "sepatu" di kolom pencarian, lalu tekan Enter
-- Pastikan daftar hasil pencarian tampil
+target: https://yourshop.com
+- Type "shoes" in the search box and press Enter
+- Check that a list of search results is shown
 ```
 
-Tidak perlu selector atau kode. Tulis seperti menjelaskan ke teman.
-`platform` bisa `web`, `android`, atau `ios`.
+No selectors or code. Write it like you would explain it to a friend.
+`platform` can be `web`, `android`, or `ios`.
 
-## Aman sejak awal
+## Safe from the start
 
-- Tombol **bayar, beli, checkout, transfer, hapus akun** selalu diblokir.
-- Tombol **hapus/delete/remove** biasa harus dikonfirmasi dulu.
-- Password ditulis sebagai `${NAMA}` dan selalu tampil `***` di hasil ([cara menyimpannya](docs/panduan.md#menulis-test-sendiri)).
-- AI hanya bisa memperketat aturan, tidak bisa melonggarkannya.
+- Buttons like **pay, buy, checkout, transfer, delete account** are always blocked.
+- Plain **delete/remove** buttons must be confirmed first.
+- Passwords are written as `${NAME}` and always show as `***` in results ([how to store them](docs/guide.md#menulis-test-sendiri)).
+- The AI can only make the rules stricter, never looser.
 
-Mau mengetes checkout? Buka `fastpilot ui` → **Pengaturan › Batasan & izin**, lalu hapus katanya dari daftar.
+Want to test a checkout? Open `fastpilot ui` → **Pengaturan › Batasan & izin** (Settings › Limits) and remove the word from the list.
 
-## Kalau macet
+## If you get stuck
 
-Jalankan dulu:
+Run this first:
 
 ```bash
 fastpilot doctor
 ```
 
-`doctor` menunjukkan apa yang belum siap dan cara memperbaikinya.
+`doctor` shows what isn't ready yet and how to fix it.
 
-| Masalah | Coba |
+| Problem | Try |
 |---|---|
-| Chrome tidak ditemukan | `fastpilot setup web` |
-| fastpilot tidak muncul di Claude | `fastpilot init` lagi |
-| Android belum siap | `fastpilot setup android`, lalu `fastpilot demo --android` |
-| Test berhenti dengan "Diblokir Batasan" | Itu disengaja. Ubah di dashboard › Pengaturan › Batasan & izin |
+| Chrome not found | `fastpilot setup web` |
+| fastpilot doesn't show up in Claude | Run `fastpilot init` again |
+| Android isn't ready | `fastpilot setup android`, then `fastpilot demo --android` |
+| A test stops with "Diblokir Batasan" (blocked by limits) | That's on purpose. Change it in the dashboard › Pengaturan › Batasan & izin |
 
-## Lebih lanjut
+## Learn more
 
-Semua detail ada di **[Panduan lengkap](docs/panduan.md)**:
+Everything else is in the **[full guide](docs/guide.md)** (currently in Indonesian):
 
-- [Android](docs/panduan.md#android) dan [iOS](docs/panduan.md#ios-menyusul-di-v033-sekarang-dari-checkout)
-- [Claude Desktop](docs/panduan.md#claude-desktop)
-- [Semua pengaturan](docs/panduan.md#pengaturan)
-- [Menjalankan test tanpa membuka Claude (`fastpilot run`)](docs/panduan.md#tanpa-membuka-claude-code-fastpilot-run)
-- [Perintah satu per satu di terminal (shell CLI)](docs/panduan.md#shell-cli-satu-perintah-per-langkah)
-- [Device di mesin lain](docs/panduan.md#device-di-mesin-lain) dan [HP fisik](docs/real-devices.md)
-- [Build dari source](docs/panduan.md#build-dari-source)
-- [Batasan yang diketahui](docs/panduan.md#batasan-yang-diketahui)
+- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios-menyusul-di-v033-sekarang-dari-checkout)
+- [Claude Desktop](docs/guide.md#claude-desktop)
+- [All settings](docs/guide.md#pengaturan)
+- [Run tests without opening Claude (`fastpilot run`)](docs/guide.md#tanpa-membuka-claude-code-fastpilot-run)
+- [One command per step in the terminal (shell CLI)](docs/guide.md#shell-cli-satu-perintah-per-langkah)
+- [Devices on another machine](docs/guide.md#device-di-mesin-lain) and [physical phones](docs/real-devices.md)
+- [Build from source](docs/guide.md#build-dari-source)
+- [Known limits](docs/guide.md#batasan-yang-diketahui)
 
-Lisensi: [Apache-2.0](LICENSE)
+License: [Apache-2.0](LICENSE)

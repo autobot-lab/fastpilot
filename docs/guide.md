@@ -1,7 +1,9 @@
-# Panduan lengkap fastpilot
+# fastpilot — full guide
 
-Ini panduan lengkap dan referensi teknis. Kalau baru mulai, baca [README](../README.md) dulu: isinya hanya
-langkah-langkah yang perlu untuk memakai fastpilot.
+The complete guide and technical reference. New here? Start with the [README](../README.md): it has only the
+steps you need to get going.
+
+> This guide is still in Indonesian. An English version will follow.
 
 ## 10 menit pertama
 
