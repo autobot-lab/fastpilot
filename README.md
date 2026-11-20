@@ -582,6 +582,9 @@ fastpilot doctor web                                          # remote Chrome at
 - Bila host-nya bukan mesin ini (bukan `127.0.0.1`/`localhost`), `doctor` dan log memberi peringatan: DevTools
   dan adb tidak punya password maupun enkripsi. `user:password@` di alamat disamarkan (`***@`) di `doctor` dan pesan error.
 
+Menjalankan **fastpilot sendiri** di mesin lain (mis. Mac untuk iOS) lewat SSH, membuka `fastpilot ui`
+dari laptop, dan menghemat memori simulator iOS dengan simslim: lihat [docs/remote-machine.md](docs/remote-machine.md).
+
 ## Bench
 
 ```bash
