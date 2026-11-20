@@ -935,18 +935,28 @@ let chatData = null, chatTimer = null, chatSig = "";
 const SUGGEST = ["Test the login page in Chrome", "Write a test for the login and run it every 2 hours", "Block the Pay button in all tests"];
 const chatEdits = {}; // proposal id -> what the user is changing with Edit
 
+// D10a: whose conversation Chat shows, and where it draws (agents.js puts it in an agent's Chat tab;
+// null = the Chat page itself).
+let chatAgent = "default", chatHost = null;
+const chatQ = () => `?agent=${encodeURIComponent(chatAgent)}`;
+const chatShown = () => (location.hash || "").startsWith("#/chat") || (chatHost !== null && document.body.contains(chatHost));
+
 async function loadChat() {
-  try { chatData = await api("/api/chat"); } catch (e) { chatData = { error: e.message, messages: [], busy: false }; }
-  if ((location.hash || "").startsWith("#/chat")) renderChat();
+  const agent = chatAgent;
+  let data;
+  try { data = await api("/api/chat" + chatQ()); } catch (e) { data = { error: e.message, messages: [], busy: false }; }
+  if (agent !== chatAgent) return; // another agent was opened meanwhile
+  chatData = data;
+  if (chatShown()) renderChat();
   clearTimeout(chatTimer);
-  if (chatData.busy && (location.hash || "").startsWith("#/chat")) chatTimer = setTimeout(loadChat, 800);
+  if (chatData.busy && chatShown()) chatTimer = setTimeout(loadChat, 800);
 }
 
 async function chatSend(text) {
   const t = (text || "").trim();
   if (!t) return;
   try {
-    chatData = await api("/api/chat", { message: t });
+    chatData = await api("/api/chat", { agent: chatAgent, message: t });
     const box = document.getElementById("chat-input");
     if (box) box.value = "";
     clearToast();
@@ -956,7 +966,7 @@ async function chatSend(text) {
 
 async function chatDecide(id, apply, mode, edit, confirm) {
   try {
-    const body = { id, apply };
+    const body = { id, apply, agent: chatAgent };
     if (mode) body.mode = mode;
     if (edit) body.edit = edit;
     if (confirm !== undefined) body.confirm = confirm;
@@ -978,7 +988,7 @@ function rich(text) {
 
 async function chatRun(id) {
   try {
-    const r = await api("/api/chat/run", { id });
+    const r = await api("/api/chat/run", { id, agent: chatAgent });
     chatData = r.chat;
     toast(r.message, true);
   } catch (e) { toast(e.message); }
@@ -1037,7 +1047,7 @@ function testCard(p) {
 
 async function chatUndo(id) {
   try {
-    const r = await api("/api/chat/undo", { id });
+    const r = await api("/api/chat/undo", { id, agent: chatAgent });
     chatData = r.chat;
     toast(r.message, true);
   } catch (e) { toast(e.message); }
@@ -1116,7 +1126,27 @@ function pageAttempts(list) {
         list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said))))));
 }
 
+// D10a: "New agent · …" (v7 #s4, right): created only on Create; Edit opens the form filled in.
+function agentCard(p) {
+  const rows = h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
+  let foot;
+  if (p.status === "pending") {
+    foot = h("div", { class: "btns" },
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Create"),
+      h("button", { class: "btn", onclick: () => window.editAgentDraft && window.editAgentDraft(p.draft || {}) }, "Edit"),
+      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Dismiss"));
+  } else if (p.status === "applied") {
+    foot = h("div", { class: "btns" }, h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", p.note || "Created"),
+      p.saved && p.saved.agent ? h("a", { class: "btn", href: `#/agents/${encodeURIComponent(p.saved.agent)}/chat` }, "Open the agent") : null);
+  } else {
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, p.status === "cancelled" ? "Dismissed" : (p.note || ""));
+  }
+  return h("section", { class: "grp prop agent " + p.status, "aria-label": p.title, "data-pid": String(p.id) },
+    h("h3", { class: "gh" }, icon("plus"), h("b", {}, p.title)), h("div", { class: "prop-body" }, rows, p.status === "pending" && p.note ? h("p", { class: "s" }, p.note) : null, foot));
+}
+
 function proposalCard(p) {
+  if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
   const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : "shield"), p.title);
@@ -1156,12 +1186,20 @@ function chatMsg(m) {
 
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
-  $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"),
-    h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● bot sedang bekerja" : "● siap"),
+  const head = [h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● bot sedang bekerja" : "● siap"),
     h("button", { class: "btn sm right", disabled: busy || !(chatData && chatData.messages.length), onclick: async () => {
-      try { chatData = await api("/api/chat", { reset: true }); } catch (e) { toast(e.message); }
+      try { chatData = await api("/api/chat", { agent: chatAgent, reset: true }); } catch (e) { toast(e.message); }
+      chatSig = "";
       renderChat();
-    } }, icon("refresh", "sm"), "Percakapan baru"));
+    } }, icon("refresh", "sm"), "Percakapan baru")];
+  if (chatHost) {
+    // Inside an agent's page: its own small bar instead of the page title.
+    let bar = chatHost.querySelector(".chat-bar");
+    if (!bar) { bar = h("div", { class: "chat-bar" }); chatHost.prepend(bar); }
+    bar.replaceChildren(...head);
+  } else {
+    $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"), ...head);
+  }
   let root = document.getElementById("chat-root");
   if (!root) {
     const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Tulis ke fastpilot bot… contoh: \"tes login di Chrome\"", "aria-label": "Pesan untuk fastpilot bot" });
@@ -1170,7 +1208,7 @@ function renderChat() {
       h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Percakapan" }),
       h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Kirim")),
       h("p", { class: "s muted" }, "Bot memakai Claude Code-mu (claude -p) dan tool fastpilot. Jadwal dan batasan hanya berubah setelah kamu klik kartunya; lewat chat batasan hanya bisa diperketat."));
-    $body().replaceChildren(root);
+    if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
   }
   const send = document.getElementById("chat-send");
   if (send) send.disabled = busy;
@@ -1193,6 +1231,8 @@ function renderChat() {
 }
 
 function pageChat() {
+  // The Chat page is the first agent's conversation.
+  if (chatHost || chatAgent !== "default") { chatHost = null; chatAgent = "default"; chatData = null; chatSig = ""; }
   if (!chatData) {
     $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"));
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("b", {}, "Membaca percakapan…")));
@@ -1424,7 +1464,7 @@ function schedPanel() {
       if (kind === "week") whenOut.day = Number(day.value);
     }
     const schedule = {
-      id: f.id || "", name: name.value, tests: pick.value || path.value, enabled: f.enabled !== false, when: whenOut,
+      id: f.id || "", name: name.value, tests: pick.value || path.value, enabled: f.enabled !== false, when: whenOut, agent: f.agent || undefined,
       notify: { webhook: wh.checked, os: os.checked, github: gh.checked ? repo.value.trim() : undefined },
     };
     const body = { action: "save", schedule };

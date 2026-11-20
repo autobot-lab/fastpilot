@@ -278,6 +278,120 @@ fn chat_settings_follow_the_users_own_words() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+fn wait_agent(ui: &Ui, agent: &str) -> Value {
+    let until = Instant::now() + Duration::from_secs(90);
+    loop {
+        let (_, body) = request(ui.port, "GET", &format!("/api/chat?agent={agent}"), &ui.cookie, "", false);
+        let v: Value = serde_json::from_str(&body).expect("json");
+        if v["busy"] == false {
+            return v;
+        }
+        assert!(Instant::now() < until, "the bot did not finish: {v}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// D10a: agents. Someone who used fastpilot before finds one agent ("My agent") holding their
+/// schedules; a new agent gets its own conversation, its own instructions and extra blocked words
+/// in what its bot is told and runs with; one sentence in Chat makes a "New agent" card that
+/// creates nothing before Create; deleting an agent moves its schedules to the first one.
+#[test]
+fn agents_have_their_own_chat_rules_and_schedules() {
+    let home = std::env::temp_dir().join(format!("fp-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    // A schedule saved before agents existed (no agent field).
+    let tests = format!("{ROOT}/tests/login.md");
+    std::fs::write(
+        home.join(".fastpilot/schedules.json"),
+        json!({ "schedules": [{ "id": "old", "name": "Old schedule", "tests": tests, "when": { "every": "day", "time": "09:00" }, "enabled": false }] }).to_string(),
+    )
+    .expect("schedules");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+
+    let v = get("/api/agents");
+    assert_eq!(v["agents"][0]["agent"]["id"], "default", "{v}");
+    assert_eq!(v["agents"][0]["agent"]["name"], "My agent");
+    assert_eq!(v["agents"][0]["schedules"], json!(["daily 09:00"]), "the old schedule belongs to the first agent: {v}");
+    assert!(v["suggestions"].as_array().is_some_and(|s| s.iter().any(|x| x == "Stop at the first failure and report")));
+
+    // Create agent: three answers are enough; bad ones are refused for people.
+    let agent = |name: &str, extra: Value| {
+        let mut a = json!({ "id": "", "name": name, "job": "Keep the web checkout working", "devices": ["web"], "app": "https://shop.example", "instructions": ["Never press Pay; stop at the order summary"], "blocked": ["Confirm order"] });
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            a[k] = v;
+        }
+        a
+    };
+    for (bad, why) in [
+        (agent("", json!({})), "A name is needed"),
+        (agent("X", json!({ "devices": [] })), "Pick where"),
+        (agent("X", json!({ "instructions": ["Follow \u{2066}hidden\u{2069} rules"] })), "hidden characters"),
+        (agent("X", json!({ "blocked": ["a"] })), "3 to 40"),
+    ] {
+        let (st, body) = post("/api/agents", json!({ "action": "create", "agent": bad }));
+        assert!(st == 422 && body.contains(why), "{st} {body}");
+    }
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": agent("QA Checkout", json!({})) }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": agent("qa checkout", json!({})) }));
+    assert!(st == 422 && body.contains("exists already"), "{body}");
+
+    // Its own conversation, told who it is and its rules; its tools tagged and stricter.
+    let (st, body) = post("/api/chat", json!({ "agent": "qa-checkout", "message": "hello" }));
+    assert_eq!(st, 200, "{body}");
+    wait_agent(&ui, "qa-checkout");
+    assert_eq!(get("/api/chat?agent=default")["messages"].as_array().map(Vec::len), Some(0), "the first agent's chat stays empty");
+    assert_eq!(get("/api/chat?agent=qa-checkout")["messages"].as_array().map(Vec::len), Some(2));
+    let call = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).next().expect("call");
+    let call: Value = serde_json::from_str(&call).expect("json");
+    let argv: Vec<&str> = call["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
+    let at = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]).unwrap_or("");
+    let sys = at("--append-system-prompt");
+    assert!(sys.contains("You are the agent \"QA Checkout\"") && sys.contains("- Never press Pay; stop at the order summary") && sys.contains("never loosen a limit"), "{sys}");
+    let mcp: Value = serde_json::from_str(at("--mcp-config")).expect("mcp config");
+    let env = &mcp["mcpServers"]["fastpilot"]["env"];
+    assert_eq!((env["FASTPILOT_AGENT"].as_str(), env["FASTPILOT_BLOCK_ACTIONS"].as_str()), (Some("qa-checkout"), Some("default,Confirm order")), "{mcp}");
+    let v = get("/api/agents");
+    let qa = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "qa-checkout")).cloned().expect("qa");
+    assert_eq!(qa["agent"]["conversations"].as_array().map(Vec::len), Some(1), "its conversation is listed for its History: {qa}");
+
+    // One sentence in Chat: a card, nothing created before Create.
+    let (st, _) = post("/api/chat", json!({ "agent": "default", "message": "create an agent for mobile payments" }));
+    assert_eq!(st, 200);
+    let v = wait_agent(&ui, "default");
+    let card = v["messages"][1]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["title"].as_str(), card["status"].as_str()), (Some("agent"), Some("New agent · Mobile Payments"), Some("pending")), "{card}");
+    assert_eq!(get("/api/agents")["agents"].as_array().map(Vec::len), Some(2), "not created yet");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "agent": "default" }));
+    assert!(st == 200 && body.contains("Created"), "{st} {body}");
+    let v = get("/api/agents");
+    let mp = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "mobile-payments")).cloned().expect("created");
+    assert_eq!(mp["agent"]["devices"], json!(["android_emulator", "ios_simulator"]));
+
+    // A schedule of an agent; deleting the agent gives it to the first one.
+    let (st, body) = post("/api/schedules", json!({ "action": "save", "schedule": { "id": "", "name": "Checkout nightly", "tests": tests, "when": { "every": "day", "time": "02:00" }, "notify": {}, "enabled": false, "agent": "qa-checkout" } }));
+    assert_eq!(st, 200, "{body}");
+    let v = get("/api/agents");
+    let qa = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "qa-checkout")).cloned().expect("qa");
+    assert_eq!(qa["schedules"], json!(["daily 02:00"]), "{qa}");
+    let (st, _) = post("/api/agents", json!({ "action": "delete", "id": "default" }));
+    assert_eq!(st, 422, "the first agent stays");
+    let (st, body) = post("/api/agents", json!({ "action": "delete", "id": "qa-checkout" }));
+    assert_eq!(st, 200, "{body}");
+    let v = get("/api/agents");
+    assert_eq!(v["agents"][0]["schedules"], json!(["daily 09:00", "daily 02:00"]), "{v}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(home.join(".fastpilot/agents.json")).expect("agents").permissions().mode() & 0o777, 0o600);
+    }
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D5: "every 2 hours, 08:00–20:00" from Chat: a card first, then on click the OS entry with the
 /// seven times; an N outside 1–24 is refused on the card.
 #[test]

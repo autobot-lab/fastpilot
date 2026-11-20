@@ -178,6 +178,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/chat/run", post(chat_run))
         .route("/api/chat/undo", post(chat_undo))
+        .route("/api/agents", get(agents_api).post(agents_change))
         .route("/api/provider", get(provider_api).post(provider_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/history/report", get(crate::history_api::report))
@@ -414,43 +415,90 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
 
 // ---- Chat (C4) ----------------------------------------------------------------------------
 
-async fn chat_api() -> Response {
-    axum::Json(crate::chat::state()).into_response()
+/// `?agent=ID`: that agent's conversation (default: the first agent).
+async fn chat_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let agent = q.get("agent").cloned().unwrap_or_else(|| crate::agents::DEFAULT.into());
+    axum::Json(crate::chat::state(&agent)).into_response()
 }
 
-/// `{message}` starts the bot's answer; `{reset: true}` starts a new conversation.
+fn agent_of(body: &Value) -> String {
+    body["agent"].as_str().filter(|a| !a.is_empty()).unwrap_or(crate::agents::DEFAULT).to_owned()
+}
+
+/// `{agent?, message}` starts the bot's answer; `{agent?, reset: true}` starts a new conversation.
 async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
-    let r = if body["reset"] == true { crate::chat::reset() } else { crate::chat::send(body["message"].as_str().unwrap_or("")) };
+    let agent = agent_of(&body);
+    let r = if body["reset"] == true { crate::chat::reset(&agent) } else { crate::chat::send(&agent, body["message"].as_str().unwrap_or("")) };
     match r {
-        Ok(()) => axum::Json(crate::chat::state()).into_response(),
+        Ok(()) => axum::Json(crate::chat::state(&crate::agents::get_or_default(&agent).id)).into_response(),
         Err(e) => refuse(StatusCode::CONFLICT, &e),
     }
 }
 
-/// `{id, apply, mode?, edit?, confirm?}`: the user's click on a proposal card (`confirm`: the word
-/// the user typed on a card that asks for one, D9).
+/// `{id, apply, mode?, edit?, confirm?, agent?}`: the user's click on a proposal card (`confirm`: the
+/// word the user typed on a card that asks for one, D9).
 async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), body.get("edit").filter(|e| e.is_object()), body["confirm"].as_str()) {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
 
-/// `{id}`: Run now on a saved test's card.
+/// `{id, agent?}`: Run now on a saved test's card.
 async fn chat_run(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::run_saved(id) {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
 
-/// `{id}`: Undo / Block again on an applied settings card (D9).
+/// `{id, agent?}`: Undo / Block again on an applied settings card (D9).
 async fn chat_undo(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::undo(id) {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
+// ---- Agents (D10a) ------------------------------------------------------------------------
+
+/// The agents, with what the page needs to show them: devices, suggestions, who is busy, and each
+/// one's schedules in short.
+async fn agents_api() -> Response {
+    use crate::{agents, schedule};
+    let busy = crate::chat::busy_agents();
+    let store = schedule::load();
+    let list: Vec<Value> = agents::list()
+        .into_iter()
+        .map(|a| {
+            let scheds: Vec<String> = store
+                .schedules
+                .iter()
+                .filter(|s| s.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id)
+                .map(|s| schedule::describe(&s.when))
+                .collect();
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id), "schedules": scheds })
+        })
+        .collect();
+    let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
+    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS })).into_response()
+}
+
+/// `{action: create|update, agent}`, `{action: delete, id}`.
+async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use crate::agents;
+    let parse = || serde_json::from_value::<agents::Agent>(body["agent"].clone()).map_err(|e| format!("The agent is incomplete ({e})"));
+    let r: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        "create" => parse().and_then(agents::create).map(|a| json!({ "agent": a })),
+        "update" => parse().and_then(agents::update).map(|a| json!({ "agent": a })),
+        "delete" => agents::delete(body["id"].as_str().unwrap_or("")).map(|()| json!({})),
+        _ => Err("Unknown action".into()),
+    };
+    match r {
+        Ok(v) => axum::Json(v).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
@@ -779,6 +827,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),
+        "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
         "fonts/bricolage-grotesque-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-700.woff2")),
@@ -969,7 +1018,7 @@ async fn live_api() -> Response {
                 let by_me = mine.contains(&(p.pid, s.id.clone())) && s.taken_over_ms.is_some();
                 let device = matches!(s.platform.as_str(), "android" | "ios");
                 json!({
-                    "pid": p.pid, "kind": p.kind, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
+                    "pid": p.pid, "kind": p.kind, "agent": p.agent, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
                     "watchable": s.screen.is_some() || (device && controllable),
                     "controllable": controllable && (s.screen.is_some() || device),
                     "taken_over_ms": s.taken_over_ms,
