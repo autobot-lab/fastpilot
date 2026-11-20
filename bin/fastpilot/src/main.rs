@@ -3,6 +3,7 @@
 mod bench;
 mod cli;
 mod doctor;
+mod github;
 mod pool;
 mod report;
 mod run;
@@ -32,7 +33,7 @@ commands:
                                      95% upper bound of the failure rate
   ios doctor [udid]   why a physical iPhone can or cannot run tests yet (Xcode, signing,
                       Developer Mode, pairing, profile expiry), each with the fix
-  run <tests dir|file.md> [--workers N] [--record] [--reset] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+  run <tests dir|file.md> [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless: your Claude Code (`claude -p`, your login, no API key) drives each
           natural-language test case over the same tools; exits non-zero when a test
           outside quarantine fails (FASTPILOT_CLAUDE: path to the claude CLI)
@@ -195,6 +196,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 html: value("--html").map(Into::into),
                 record: flag("--record"),
                 reset: flag("--reset"),
+                report_github: github::Mode::from_args(&args)?,
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 web,
             };

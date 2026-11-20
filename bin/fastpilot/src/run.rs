@@ -74,6 +74,8 @@ pub struct Options {
     pub record: bool,
     /// Reset the app of every mobile session before it opens (data, permissions, orientation).
     pub reset: bool,
+    /// `--report-github`: the results as one comment on the pull request (GitHub Actions).
+    pub report_github: crate::github::Mode,
 }
 
 /// One natural-language test case (`tests/*.md`: `# Title`, `id:`, `platform:`, steps).
@@ -599,6 +601,10 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let pool = Arc::new(Pool::discover().await);
     let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
     println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary());
+    let github = crate::github::Reporter::new(opts.report_github);
+    if opts.report_github == crate::github::Mode::Live {
+        github.send(&crate::github::running_body(cases.len(), &github.target_or_local())).await;
+    }
     let started = Instant::now();
     let queue = Arc::new(Mutex::new(order.into_iter().collect::<std::collections::VecDeque<_>>()));
     let results = Arc::new(Mutex::new(Vec::new()));
@@ -624,6 +630,9 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let mut results = std::mem::take(&mut *results.lock().unwrap_or_else(|p| p.into_inner()));
     results.sort_by_key(|(i, _)| *i);
     let results: Vec<CaseResult> = results.into_iter().map(|(_, r)| r).collect();
+    if opts.report_github != crate::github::Mode::Off {
+        github.send(&crate::github::results_body(&results, started.elapsed(), &github.target_or_local())).await;
+    }
     finish_suite(&results, started.elapsed(), &opts)
 }
 

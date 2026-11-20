@@ -4,7 +4,7 @@
 //! retries and the JUnit/HTML output are exercised against real Chrome, with no model and no
 //! API key. Skips without Chrome or python3.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude");
@@ -190,4 +190,99 @@ fn parallel_suite_with_stand_in_claude() {
         assert!(cross.contains("Session plan: web: your own Chrome; android:"), "{cross}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in for the GitHub REST API (one PR, `o/r#5`): logs `METHOD path`, keeps the comments.
+type Shared<T> = std::sync::Arc<std::sync::Mutex<Vec<T>>>;
+
+fn fake_github() -> (u16, Shared<String>, Shared<Value>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let comments = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let (log2, comments2) = (log.clone(), comments.clone());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut r = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            let mut it = line.split_whitespace();
+            let (method, path) = (it.next().unwrap_or("").to_owned(), it.next().unwrap_or("").split('?').next().unwrap_or("").to_owned());
+            let (mut len, mut authorized) = (0usize, false);
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                    break;
+                }
+                let lower = h.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                authorized |= lower.trim() == "authorization: bearer test-token-123";
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let text = serde_json::from_slice::<Value>(&body).map(|v| v["body"].clone()).unwrap_or_default();
+            log2.lock().expect("log").push(format!("{method} {path}"));
+            let mut c = comments2.lock().expect("comments");
+            let (status, reply) = match (authorized, method.as_str(), path.as_str()) {
+                (false, ..) => ("401 Unauthorized", json!({})),
+                (_, "GET", "/repos/o/r/issues/5/comments") => ("200 OK", Value::Array(c.clone())),
+                (_, "POST", "/repos/o/r/issues/5/comments") => {
+                    c.push(json!({ "id": 77, "body": text }));
+                    ("201 Created", json!({ "id": 77 }))
+                }
+                (_, "PATCH", "/repos/o/r/issues/comments/77") => {
+                    c[0]["body"] = text;
+                    ("200 OK", json!({ "id": 77 }))
+                }
+                _ => ("404 Not Found", json!({})),
+            };
+            drop(c);
+            let reply = reply.to_string();
+            let mut s = stream;
+            let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    (port, log, comments)
+}
+
+/// C6: in GitHub Actions on a pull request, `--report-github` keeps one comment: "running" when the
+/// suite starts, the results when it ends. The token only reaches the API, never the output.
+#[test]
+fn report_github_keeps_one_comment_on_the_pr() {
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-gh-{}", std::process::id()));
+    let (port, log, comments) = fake_github();
+    let api = format!("http://127.0.0.1:{port}");
+    let env = [
+        ("GITHUB_ACTIONS", "true"),
+        ("GITHUB_REPOSITORY", "o/r"),
+        ("GITHUB_REF", "refs/pull/5/merge"),
+        ("GITHUB_API_URL", api.as_str()),
+        ("GITHUB_TOKEN", "test-token-123"),
+        ("GITHUB_EVENT_PATH", ""),
+    ];
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude"), &env, &["--report-github"]);
+    if out.contains("Chrome not found") {
+        return eprintln!("skipping: no Chrome");
+    }
+    assert!(ok, "{out}");
+    assert!(!out.contains("test-token-123"), "token in the output:\n{out}");
+    assert!(out.contains("report-github: updated o/r#5"), "{out}");
+    let calls = log.lock().expect("log").clone();
+    assert_eq!(calls, ["GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]);
+    let all = comments.lock().expect("comments").clone();
+    assert_eq!(all.len(), 1, "one comment: {all:?}");
+    let body = all[0]["body"].as_str().unwrap_or("");
+    assert!(body.contains("<!-- fastpilot-report -->") && body.contains("✅ 1 passed · 0 failed") && body.contains("login-ok — Login berhasil"), "{body}");
+    assert!(!body.contains("rahasia123"), "{body}");
+
+    // Dry run outside Actions: the comment is printed, nothing is sent.
+    log.lock().expect("log").clear();
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude2"), &[("GITHUB_API_URL", api.as_str())], &["--report-github=dry"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("(dry run, not posted)") && out.contains("no pull request") && out.contains("✅ 1 passed"), "{out}");
+    assert!(log.lock().expect("log").is_empty(), "dry run must not call the API");
+    let _ = std::fs::remove_dir_all(dir);
 }

@@ -541,6 +541,21 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   context browser baru (tanpa cookie dan storage). Butuh `allow_app_reset` (bawaan: boleh); bila dimatikan,
   sesi mobile ditolak dengan `blocked`. `fastpilot mcp --reset` melakukan hal yang sama untuk sesi dari chat.
   Orientasi dan setelan device dikembalikan saat sesi selesai.
+- `--report-github` (di GitHub Actions, pada pull request) menulis hasil suite sebagai **satu** komentar di PR:
+  "running" saat mulai, lalu diganti dengan tabel hasil (lolos, gagal + kelas + catatan, flaky, karantina,
+  durasi, link ke workflow run). Komentar yang sama diperbarui di run berikutnya (ditandai
+  `<!-- fastpilot-report -->`), tidak menumpuk. Token hanya dibaca dari env `GITHUB_TOKEN`, tidak pernah
+  disimpan, dimasukkan ke URL, atau dicetak. Gagal menulis komentar tidak menggagalkan suite.
+  `--report-github=dry` mencetak isi komentar tanpa mengirim apa pun. Contoh job:
+
+  ```yaml
+  permissions:
+    pull-requests: write
+  steps:
+    - run: fastpilot run tests --report-github
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ```
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 
