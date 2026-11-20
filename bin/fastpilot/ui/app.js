@@ -948,12 +948,22 @@ function pageChat() {
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
 const DAYS = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
 
+let schedTimer = null;
 async function loadSchedules() {
   schedBusy = true;
   try { schedData = await api("/api/schedules"); } catch (e) { schedData = { error: e.message, schedules: [] }; }
   schedBusy = false;
-  if ((location.hash || "").startsWith("#/schedules")) pageSchedules();
+  const here = (location.hash || "").startsWith("#/schedules");
+  // An open form keeps what is typed: the list refreshes after it closes.
+  if (here && !schedForm) pageSchedules();
+  // A run in progress: look again until it has finished.
+  clearTimeout(schedTimer);
+  const running = (schedData.schedules || []).some((x) => x.last && (x.last.passed === undefined || x.last.passed === null) && !stale(x.last));
+  if (here && running) schedTimer = setTimeout(loadSchedules, 3000);
 }
+
+// A run that started hours ago and never finished: its process is gone.
+function stale(l) { return Date.now() - l.started_ms > 3 * 3600 * 1000; }
 
 async function schedAction(body, done) {
   try {
@@ -978,6 +988,7 @@ function ago(ms) {
 
 function lastRun(l) {
   if (!l) return h("span", { class: "muted" }, "Belum jalan");
+  if ((l.passed === undefined || l.passed === null) && stale(l)) return h("span", { class: "bad" }, "Tidak selesai · ", ago(l.started_ms), h("div", { class: "s" }, "Proses run berhenti sebelum selesai (komputer tidur atau dimatikan?)."));
   if (l.passed === undefined || l.passed === null) return h("span", { class: "run" }, h("div", { class: "spin sm", "aria-hidden": "true" }), " Berjalan · ", ago(l.started_ms));
   return h("div", {},
     h("span", { class: l.passed ? "ok" : "bad" }, l.passed ? "Lolos" : "Gagal", " · ", ago(l.finished_ms || l.started_ms)),
@@ -1000,15 +1011,15 @@ function schedRow(x) {
   const on = h("button", { class: "tg", role: "switch", "aria-checked": String(!!s.enabled), "aria-label": `Jadwal ${s.name} aktif`,
     onclick: () => schedAction({ action: s.enabled ? "disable" : "enable", id: s.id }) });
   const name = s.tests.split("/").filter(Boolean).pop() || s.tests;
-  return h("tr", {},
-    h("td", {}, h("b", {}, s.name), h("div", { class: "s mono" }, s.id)),
+  return h("tr", { "data-id": s.id },
+    h("td", {}, h("b", { class: "row-name", tabindex: "-1" }, s.name), h("div", { class: "s mono" }, s.id)),
     h("td", {}, code(name), h("div", { class: "s", title: s.tests }, s.tests)),
     h("td", {}, x.when_text),
     h("td", {}, lastRun(x.last)),
     h("td", {}, notifyChips(x)),
     h("td", {}, on),
     h("td", {}, h("div", { class: "acts" },
-      h("button", { class: "btn sm", onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" dijalankan sekarang. Hasilnya muncul di Run terakhir.`, true)) }, icon("play", "sm"), "Jalankan"),
+      h("button", { class: "btn sm", onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" dijalankan sekarang. Hasilnya muncul di Run terakhir.`, true)).then(() => setTimeout(loadSchedules, 1500)) }, icon("play", "sm"), "Jalankan"),
       h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Tes notifikasi: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("gagal")))) }, "Tes notifikasi"),
       h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); } }, "Ubah"),
       h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Hapus jadwal "${s.name}"? Entri di penjadwal sistem ikut dihapus.`)) schedAction({ action: "delete", id: s.id }); } }, "Hapus"))));
@@ -1017,13 +1028,19 @@ function schedRow(x) {
 function schedPanel() {
   const f = schedForm;
   const editing = !!f.id;
-  const field = (label, input, hint) => h("label", { class: "fld" }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null);
+  // Each field has its own error line; a refused save points at the field it is about.
+  const errs = {};
+  const field = (label, input, hint, key) => {
+    const err = h("span", { class: "fld-err", role: "alert", hidden: true });
+    if (key) errs[key] = { err, input };
+    return h("label", { class: "fld" }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null, err);
+  };
   const name = h("input", { type: "text", maxlength: "80", value: f.name || "", placeholder: "mis. Checkout hari kerja" });
   const tests = h("input", { type: "text", value: f.tests || (schedData && schedData.tests_hint) || "", placeholder: "/path/lengkap/ke/tests atau file .md", class: "mono" });
   const every = h("select", { class: "sel" },
     [["day", "Setiap hari"], ["weekday", "Hari kerja (Senin–Jumat)"], ["week", "Mingguan"]].map(([v, t]) => h("option", { value: v, selected: (f.when && f.when.every) === v }, t)));
   const day = h("select", { class: "sel" }, DAYS.map((d, i) => h("option", { value: String(i + 1), selected: f.when && f.when.day === i + 1 }, d)));
-  const dayWrap = field("Hari", day);
+  const dayWrap = field("Hari", day, null, "day");
   const syncDay = () => { dayWrap.hidden = every.value !== "week"; };
   every.addEventListener("change", syncDay);
   syncDay();
@@ -1034,6 +1051,32 @@ function schedPanel() {
   const os = h("input", { type: "checkbox", checked: !!n.os });
   const gh = h("input", { type: "checkbox", checked: !!n.github });
   const repo = h("input", { type: "text", value: n.github || "", placeholder: "pemilik/repo", class: "mono" });
+  const whField = field("URL webhook", whUrl, "Disimpan sebagai rahasia (~/.fastpilot/secrets, hanya pemilik) dan tidak ditampilkan lagi.", "webhook");
+  const repoField = field("Repo GitHub", repo, h("span", {}, "Ditulis pemilik/repo. Token dari GITHUB_TOKEN / GH_TOKEN, atau Keychain item ", code("fastpilot-github"), "."), "repo");
+  const syncNotify = () => { whField.hidden = !wh.checked; repoField.hidden = !gh.checked; };
+  wh.addEventListener("change", syncNotify);
+  gh.addEventListener("change", syncNotify);
+  syncNotify();
+  const where = (msg) => {
+    const m = msg.toLowerCase();
+    if (m.includes("nama jadwal") || m.includes("id jadwal")) return "name";
+    if (m.includes("test")) return "tests";
+    if (m.includes("jam")) return "time";
+    if (m.includes("hari")) return "day";
+    if (m.includes("repo")) return "repo";
+    if (m.includes("webhook")) return "webhook";
+    return null;
+  };
+  const showError = (msg) => {
+    Object.values(errs).forEach(({ err, input }) => { err.hidden = true; input.removeAttribute("aria-invalid"); });
+    const at = errs[where(msg)];
+    if (!at || at.err.parentElement.closest("[hidden]")) { toast(msg); return; }
+    at.err.textContent = msg;
+    at.err.hidden = false;
+    at.input.setAttribute("aria-invalid", "true");
+    at.input.focus();
+  };
+  const cancel = () => { schedForm = null; clearToast(); pageSchedules(); document.querySelector(".top .btn.p")?.focus(); };
   const save = async () => {
     const schedule = {
       id: f.id || "", name: name.value, tests: tests.value, enabled: f.enabled !== false,
@@ -1042,24 +1085,30 @@ function schedPanel() {
     };
     const body = { action: "save", schedule };
     if (whUrl.value.trim()) body.webhook = whUrl.value.trim();
-    const r = await schedAction(body);
-    if (r) { schedForm = null; toast(editing ? "Jadwal disimpan." : `Jadwal disimpan dan didaftarkan ke ${schedData.backend}.`, true); pageSchedules(); }
+    let r;
+    try { r = await api("/api/schedules", body); } catch (e) { showError(e.message); return; }
+    schedForm = null;
+    await loadSchedules();
+    toast(editing ? "Jadwal disimpan." : `Jadwal disimpan dan didaftarkan ke ${schedData.backend}.`, true);
+    // Focus on the saved schedule in the list (the form and its button are gone).
+    document.querySelector(`tr[data-id="${r.id}"] .row-name`)?.focus();
   };
-  return h("section", { class: "grp sched-form", "aria-label": editing ? "Ubah jadwal" : "Jadwal baru" },
+  const panel = h("section", { class: "grp sched-form", "aria-label": editing ? "Ubah jadwal" : "Jadwal baru",
+    onkeydown: (e) => { if (e.key === "Escape") { e.preventDefault(); cancel(); } } },
     h("h2", { class: "gh" }, icon("clock"), editing ? `ubah jadwal · ${f.id}` : "jadwal baru"),
     h("div", { class: "form" },
-      field("Nama", name),
-      field("Test", tests, "Folder berisi test (*.md) atau satu file .md, path lengkap. Dijalankan dengan fastpilot run."),
-      h("div", { class: "row2" }, field("Kapan", every), dayWrap, field("Jam (waktu komputer ini)", time)),
+      field("Nama", name, null, "name"),
+      field("Test", tests, "Folder berisi test (*.md) atau satu file .md, path lengkap. Dijalankan dengan fastpilot run.", "tests"),
+      h("div", { class: "row2" }, field("Kapan", every), dayWrap, field("Jam (waktu komputer ini)", time, null, "time")),
       h("fieldset", { class: "fld" }, h("legend", { class: "l" }, "Kalau gagal (bisa lebih dari satu)"),
-        h("label", { class: "ck" }, wh, " Webhook (kompatibel Slack)"), whUrl,
-        h("span", { class: "s" }, "URL webhook disimpan sebagai rahasia (~/.fastpilot/secrets, hanya pemilik) dan tidak ditampilkan lagi."),
+        h("label", { class: "ck" }, wh, " Webhook (kompatibel Slack)"), h("div", { class: "sub-fld" }, whField),
         h("label", { class: "ck" }, os, " Notifikasi di komputer ini"),
-        h("label", { class: "ck" }, gh, " Issue GitHub di repo"), repo,
-        h("span", { class: "s" }, "Token dari GITHUB_TOKEN / GH_TOKEN, atau Keychain item ", code("fastpilot-github"), ".")),
+        h("label", { class: "ck" }, gh, " Issue GitHub"), h("div", { class: "sub-fld" }, repoField)),
       h("div", { class: "btns" },
-        h("button", { class: "btn", onclick: () => { schedForm = null; clearToast(); pageSchedules(); } }, "Batal"),
-        h("button", { class: "btn p", onclick: save }, "Simpan jadwal"))));
+        h("button", { class: "btn", onclick: cancel }, "Batal"),
+        h("button", { class: "btn p", onclick: save }, "Simpan jadwal")),
+      h("p", { class: "s muted" }, "Escape menutup panel ini tanpa menyimpan.")));
+  return panel;
 }
 
 function pageSchedules() {

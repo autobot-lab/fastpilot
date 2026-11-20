@@ -172,7 +172,7 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     let v: serde_json::Value = serde_json::from_str(&list).expect("json");
     let last = &v["schedules"][0]["last"];
     assert_eq!(last["passed"], false, "{v}");
-    assert!(last["summary"].as_str().is_some_and(|s| s.contains("1 failed") && s.contains("login-ok")), "{last}");
+    assert!(last["summary"].as_str().is_some_and(|s| s.contains("0 dari 1 test lolos, 1 gagal") && s.contains("login-ok")), "{last}");
     assert!(last["notified"].as_array().is_some_and(|n| n.len() == 3), "{last}");
 
     // Off: the entry goes; delete: the schedule and its secret go.

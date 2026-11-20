@@ -623,11 +623,23 @@ pub async fn run(id: &str) -> Res<bool> {
 
 /// The suite's own summary line (`3 tests: 2 passed, 1 failed, ...`) and the failed tests.
 pub fn summarize(output: &str, passed: bool) -> String {
-    let line = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed")).map(|l| l.split(" in ").next().unwrap_or(l).trim().trim_end_matches(',').to_owned());
+    // `3 tests: 2 passed, 1 failed, 0 quarantined failures, in …` -> `2 dari 3 test lolos, 1 gagal`.
+    let line = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed")).map(|l| {
+        let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok()).unwrap_or(0);
+        let (total, ok, bad, quarantined) = (num(" tests:"), num(" passed"), num(" failed"), num(" quarantined failures"));
+        let mut t = format!("{ok} dari {total} test lolos");
+        if bad > 0 {
+            t.push_str(&format!(", {bad} gagal"));
+        }
+        if quarantined > 0 {
+            t.push_str(&format!(", {quarantined} gagal di karantina"));
+        }
+        t
+    });
     let failed: Vec<&str> = output.lines().filter_map(|l| l.strip_prefix("✗ ")).filter_map(|l| l.split_whitespace().next()).collect();
     let mut text = line.unwrap_or_else(|| {
         let err = output.lines().rev().find(|l| l.contains("error") || l.contains("Error")).unwrap_or("").trim();
-        if passed { "lolos".to_owned() } else if err.is_empty() { "tidak jalan".to_owned() } else { err.chars().take(300).collect() }
+        if passed { "lolos".to_owned() } else if err.is_empty() { "tidak jalan".to_owned() } else { format!("tidak jalan: {}", err.chars().take(300).collect::<String>()) }
     });
     if !failed.is_empty() {
         text.push_str(&format!(" (gagal: {})", failed.join(", ")));
@@ -833,7 +845,9 @@ mod tests {
     #[test]
     fn summary_of_a_run() {
         let out = "3 tests, 1 workers, web\n✓ login 3.1s, 4 turns, haiku: ok\n✗ checkout 9.0s, 7 turns, haiku: no Bayar button\n\n3 tests: 2 passed, 1 failed, 0 quarantined failures, in 20.0s; tokens in 1 out 2\nhtml: /x.html\n";
-        assert_eq!(summarize(out, false), "3 tests: 2 passed, 1 failed, 0 quarantined failures (gagal: checkout)");
-        assert_eq!(summarize("error: fastpilot run needs Claude Code installed\n", false), "error: fastpilot run needs Claude Code installed");
+        assert_eq!(summarize(out, false), "2 dari 3 test lolos, 1 gagal (gagal: checkout)");
+        assert_eq!(summarize("\n1 tests: 1 passed, 0 failed, 0 quarantined failures, in 2.0s\n", true), "1 dari 1 test lolos");
+        assert_eq!(summarize("\n2 tests: 1 passed, 0 failed, 1 quarantined failures, in 2.0s\n", true), "1 dari 2 test lolos, 1 gagal di karantina");
+        assert_eq!(summarize("error: fastpilot run needs Claude Code installed\n", false), "tidak jalan: error: fastpilot run needs Claude Code installed");
     }
 }
