@@ -105,9 +105,11 @@ No selectors or code. Write it like you would explain it to a friend.
 - Buttons like **pay, buy, checkout, transfer, delete account** are always blocked.
 - Plain **delete/remove** buttons must be confirmed first.
 - Passwords are written as `${NAME}` and always show as `***` in results ([how to store them](docs/guide.md#menulis-test-sendiri)).
-- The AI can only make the rules stricter, never looser.
+- The AI can only make the rules stricter. To loosen one, **you** approve it: on a red card in Chat (it quotes what you asked, and Pay needs the word typed), or with `fastpilot config approve` in your own terminal. Every change is kept in `~/.fastpilot/audit.jsonl`.
 
-Want to test a checkout? Open `fastpilot ui` → **Pengaturan › Batasan & izin** (Settings › Limits) and remove the word from the list.
+Want to test a checkout? Ask in Chat: *"Allow the Pay button for this project"*, or open `fastpilot ui` → **Settings › Limits & permissions** and remove the word from the list.
+
+These limits protect you from what a tested page tells the AI. They are not a lock against programs on your own computer: anything that runs as you can edit `~/.fastpilot/config.toml`. If you let Claude Code run `fastpilot config` commands (`Bash(fastpilot config:*)`), that also covers `fastpilot config approve`; keep it out of your allowed commands.
 
 ## If you get stuck
 

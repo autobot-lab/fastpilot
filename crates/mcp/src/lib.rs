@@ -856,25 +856,39 @@ impl FastPilot {
                 ));
             }
             Rule::TightenOnly if !config::tightens(&key, current.as_deref(), value) => {
+                // D9, M13: the AI cannot loosen a guard rail. It may file a structured request that
+                // only the user approves, in a terminal (`fastpilot config approve`). Never reported as
+                // approved here.
+                use fastpilot_core::change;
+                let request = change::raw(&key).and_then(|before| {
+                    let c = change::Change { key: key.clone(), before, after: value.map(str::to_owned) };
+                    change::add_pending(&c)
+                });
                 // block_actions: words are added on top of the built-in list, which stays `default`.
-                let add = if key == "block_actions" { "; to add words keep the built-in list: value \"default,<word>\"" } else { "" };
-                return fail(format!(
-                    "`{key}` is a guard rail: this change would loosen it (now {}), so it needs the user: `fastpilot config set {key} ...` or {}{add}",
-                    current.as_deref().unwrap_or("default"),
-                    config::path().display()
-                ));
+                let add = if key == "block_actions" { "\nTo add words instead, keep the built-in list: value \"default,<word>\"; to allow one built-in word only: \"default,!<word>\"." } else { "" };
+                return match request {
+                    Ok(card) => fail(format!(
+                        "I can't loosen a limit myself. I saved a request for the user to approve:\n  {}  LOOSENS A LIMIT\n  Now:   {}\n  After: {}\nTo approve it, the user opens a terminal and runs:\n  fastpilot config approve\nNothing has changed. Tell the user; do not try another way.{add}",
+                        card.title, card.now, card.after
+                    )),
+                    Err(e) => fail(format!("`{key}` is a guard rail and this change would loosen it, so it needs the user. It was not saved as a request: {e}. Nothing has changed.{add}")),
+                };
             }
             _ => {}
         }
         if let Source::Env(v) = config::effective(&key) {
             return fail(format!("`{key}` is set by the environment (FASTPILOT_{} = {v}), which wins over the file: change it there", key.to_uppercase()));
         }
+        let before = config::file_values().remove(&key);
         match config::write(&key, value) {
-            Ok(p) => ok(format!(
+            Ok(p) => ok({
+                fastpilot_core::change::audit(&key, before.as_deref(), value, "terminal", "applied");
+                format!(
                 "{key} {} in {} (applies to the next action)",
                 value.map_or("removed".to_owned(), |v| format!("= {v}")),
                 p.display()
-            )),
+            )
+            }),
             Err(e) => fail(e),
         }
     }

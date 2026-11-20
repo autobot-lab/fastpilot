@@ -140,17 +140,29 @@ fn phrase_in(name: &[String], phrase: &[String], gap: usize) -> bool {
 /// `block_actions` items as the engine matches them ([`block_rules`]): `default` (or nothing set)
 /// becomes the built-in words, wrapped in spaces (` pay `) = whole words only; the user's own
 /// words stay as they are and match inside text.
+///
+/// `!word` (D9, M9) allows one built-in word again and changes nothing else: `default,!pay` keeps
+/// every built-in rule except " pay " (and a plain `pay` of the user's own), so allowing Pay can
+/// never rewrite the rest of the list into plain words.
 pub fn expand_blocked(items: Option<Vec<String>>) -> Vec<String> {
+    let items = items.unwrap_or_else(|| vec!["default".to_owned()]);
+    let allowed: Vec<String> = items.iter().filter_map(|w| w.strip_prefix('!')).map(|w| w.trim().to_lowercase()).collect();
     let mut out: Vec<String> = Vec::new();
-    for w in items.unwrap_or_else(|| vec!["default".to_owned()]) {
+    for w in items.into_iter().filter(|w| !w.starts_with('!')) {
         if w == "default" {
-            out.extend(DEFAULT_BLOCKED.iter().map(|d| format!(" {d} ")));
-        } else {
+            out.extend(DEFAULT_BLOCKED.iter().filter(|d| !allowed.iter().any(|a| a == *d)).map(|d| format!(" {d} ")));
+        } else if !allowed.iter().any(|a| *a == w.trim().to_lowercase()) {
             out.push(w);
         }
     }
     out.dedup();
     out
+}
+
+/// Whether `word` is one of the built-in blocked words ([`DEFAULT_BLOCKED`]).
+pub fn is_builtin_blocked(word: &str) -> bool {
+    let w = normalize(word);
+    DEFAULT_BLOCKED.iter().any(|d| *d == w)
 }
 
 fn list(var: &str) -> Vec<String> {

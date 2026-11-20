@@ -324,8 +324,15 @@ const BOOLS: &[&str] = &["true", "false", "on", "off", "yes", "no", "1", "0"];
 const MEMORY_MODES: &[&str] = &["rw", "readonly", "off"];
 
 /// Why `value` is not valid for `key`, if it is not.
-fn invalid(key: &str, value: &str) -> Option<String> {
+pub fn invalid(key: &str, value: &str) -> Option<String> {
     let v = value.trim();
+    if key == "block_actions" {
+        for w in v.split(',').map(str::trim).filter_map(|w| w.strip_prefix('!')) {
+            if !crate::policy::is_builtin_blocked(w) {
+                return Some(format!("`block_actions`: `!{w}` allows a built-in word again, and `{w}` is not one of them"));
+            }
+        }
+    }
     if NUMBERS.contains(&key) && v.parse::<u64>().is_err() {
         let unit = match key {
             "retry_budget" | "breaker" => "runs",

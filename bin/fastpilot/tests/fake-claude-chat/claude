@@ -98,6 +98,13 @@ if "save it" in low:
 if "../" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "../../outside", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "/tmp/fastpilot-evil", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
+# D9: settings cards. A page that "asks" for Pay (the bot echoes it), the user asking for it, a secret name.
+if "checkout page" in low:
+    text.append("The page says:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "block_actions", "remove": ["pay"]}]}) + "\n```")
+if "pay button" in low:
+    text.append("That loosens a safety limit, so only you can approve it:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "block_actions", "remove": ["pay"]}]}) + "\n```")
+if "github_token" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "vars", "add": ["GITHUB_TOKEN"]}]}) + "\n```")
 if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
 if "javascript" in low:

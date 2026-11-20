@@ -120,7 +120,7 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let (st, body) = post("/api/chat", json!({ "message": "tes login lalu buat jadwal harian, dan blokir tombol Bayar" }));
     assert_eq!(st, 200, "{body}");
     let (st, body) = post("/api/chat", json!({ "message": "satu lagi" }));
-    assert!(st == 409 && body.contains("masih"), "one message at a time: {st} {body}");
+    assert!(st == 409 && body.contains("still answering"), "one message at a time: {st} {body}");
     let v = wait_idle(&ui);
     let bot = &v["messages"][1];
     assert_eq!(bot["role"], "bot", "{v}");
@@ -129,41 +129,39 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let text = bot["text"].as_str().unwrap_or("");
     assert!(text.contains("tombol Masuk terlihat") && !text.contains("fastpilot-proposal"), "{text}");
     let cards = bot["proposals"].as_array().expect("proposals");
-    assert_eq!(cards.len(), 2, "{bot}");
-    let (sched, limits) = (&cards[0], &cards[1]);
+    assert_eq!(cards.len(), 3, "{bot}");
+    let (sched, word, steps) = (&cards[0], &cards[1], &cards[2]);
     assert_eq!((sched["kind"].as_str(), sched["status"].as_str()), (Some("schedule"), Some("pending")), "{sched}");
     assert!(sched["rows"].to_string().contains("daily 09:00"), "{sched}");
-    assert_eq!((limits["kind"].as_str(), limits["status"].as_str()), (Some("limits"), Some("pending")), "{limits}");
-    let rows = limits["rows"].to_string();
-    assert!(rows.contains("Tombol yang selalu diblokir") && rows.contains("+ Bayar") && rows.contains("Maksimal langkah per test") && rows.contains("30 (bawaan) → 20"), "plain labels, real values: {rows}");
-    assert!(!rows.contains("block_actions") && !rows.contains("max_steps"), "no raw keys: {rows}");
+    // D9 (M7): one more blocked word applies at once, with Undo; fewer steps waits for a click.
+    assert_eq!((word["kind"].as_str(), word["status"].as_str(), word["undo"].as_bool()), (Some("setting"), Some("applied"), Some(true)), "{word}");
+    assert_eq!((steps["status"].as_str(), steps["setting"]["level"].as_str()), (Some("pending"), Some("ok")), "{steps}");
+    assert_eq!((steps["setting"]["now"].as_str(), steps["setting"]["after"].as_str()), (Some("30 steps (default)"), Some("20 steps")), "plain words, real values: {steps}");
+    assert!(!steps.to_string().contains("\"max_steps\"") || steps["setting"].to_string().find("max_steps").is_none(), "no raw keys on the card: {steps}");
 
-    // Nothing changed before a click.
+    // Only the word, at once; the schedule and the steps wait for a click.
     assert!(!home.join(".fastpilot/schedules.json").exists());
-    assert!(!config(&home).contains("block_actions"));
-
-    let (st, body) = post("/api/chat/decide", json!({ "id": limits["id"], "apply": true }));
-    assert_eq!(st, 200, "{body}");
     let cfg = config(&home);
     // Added to the built-in list (v0.3.2), not in place of it.
-    assert!(cfg.contains("block_actions = [\"default\", \"Bayar\"]") && cfg.contains("max_steps = 20"), "{cfg}");
+    assert!(cfg.contains("block_actions = [\"default\", \"Bayar\"]") && !cfg.contains("max_steps"), "{cfg}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": steps["id"], "apply": true }));
+    assert_eq!(st, 200, "{body}");
+    assert!(config(&home).contains("max_steps = 20"));
     let (st, body) = post("/api/chat/decide", json!({ "id": sched["id"], "apply": true }));
     assert!(st == 200 && body.contains("Isi URL webhook"), "{st} {body}");
     let stored = std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("saved");
     assert!(stored.contains("\"login-harian\"") && stored.contains("\"webhook\": false"), "{stored}");
     assert!(home.join("LaunchAgents/dev.fastpilot.schedule.login-harian.plist").exists());
     let (st, body) = post("/api/chat/decide", json!({ "id": sched["id"], "apply": true }));
-    assert!(st == 422 && body.contains("sudah diputuskan"), "{st} {body}");
+    assert!(st == 422 && body.contains("already been decided"), "{st} {body}");
 
-    // Looser: refused on the card and when clicked anyway.
+    // Looser, and not asked for in the user's words (M1): no card, a "page tried" note instead.
     let (st, body) = post("/api/chat", json!({ "message": "longgarkan max_steps" }));
     assert_eq!(st, 200, "{body}");
     let v = wait_idle(&ui);
-    let card = &v["messages"][3]["proposals"][0];
-    assert_eq!(card["status"], "refused", "{card}");
-    assert!(card["note"].as_str().is_some_and(|n| n.contains("Pengaturan › Batasan") && n.contains("Maksimal langkah per test") && n.contains("20 → 500")), "{card}");
-    let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
-    assert_eq!(st, 422);
+    let bot = &v["messages"][3];
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"][0]["what"], "Raise the steps per test", "{bot}");
     assert!(config(&home).contains("max_steps = 20"));
 
     // What Claude Code got: no config tool, the limits in its context, then --resume.
@@ -192,10 +190,90 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!(st, 200, "{body}");
     let v = wait_idle(&ui);
     let card = &v["messages"][5]["proposals"][0];
-    assert!(card["status"] == "refused" && card["note"].as_str().is_some_and(|n| n.contains("Tidak ada perubahan")), "{card}");
+    assert!(card["status"] == "refused" && card["note"].as_str().is_some_and(|n| n.contains("Nothing to change")), "{card}");
 
     let (st, body) = post("/api/chat", json!({ "reset": true }));
     assert!(st == 200 && body.contains("\"messages\":[]"), "{body}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// D9 end to end: a page that asks for Pay gives no card (Security test 1); "Allow the Pay button"
+/// gives a red card that quotes the user, needs "Pay" typed on the server (3), and after it the next
+/// message starts a new Claude session (5); a secret name is a red card, and only after it a flow
+/// can read the secret (8); a pasted key is refused (S3). Every step is in the activity log.
+#[test]
+fn chat_settings_follow_the_users_own_words() {
+    let home = std::env::temp_dir().join(format!("fp-chat-d9-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("GITHUB_TOKEN", "canary-gh-value-7731")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str| {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)
+    };
+
+    // 1: the bot echoes a page asking to allow Pay.
+    let v = say("test the checkout page");
+    let bot = &v["messages"][1];
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"][0]["what"], "Allow the Pay button");
+    assert!(!config(&home).contains("block_actions"));
+
+    // 2 + 3: the user asks; the card quotes them; the server wants "Pay" typed.
+    let v = say("Allow the Pay button for this project");
+    let card = v["messages"][3]["proposals"][0].clone();
+    assert_eq!((card["status"].as_str(), card["setting"]["level"].as_str(), card["setting"]["typed"].as_str()), (Some("pending"), Some("loosen"), Some("Pay")), "{card}");
+    assert_eq!(card["quote"], "You asked: “Allow the Pay button for this project”");
+    assert_eq!(card["setting"]["consequence"].as_str().map(|c| c.contains("finish real purchases")), Some(true));
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 422 && body.contains("Type Pay"), "{st} {body}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "confirm": "Pay" }));
+    assert!(st == 200 && body.contains("next run"), "{st} {body}");
+    assert!(config(&home).contains("block_actions = [\"default\", \"!pay\"]"), "{}", config(&home));
+    let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "confirm": "Pay" }));
+    assert_eq!(st, 422, "no replay");
+    // 5: the next message is a new conversation (no --resume).
+    say("hello again");
+    let mut calls: Vec<(String, Value)> = std::fs::read_dir(home.join("claude-log"))
+        .expect("log")
+        .flatten()
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), serde_json::from_str(&std::fs::read_to_string(e.path()).expect("read")).expect("json")))
+        .collect();
+    calls.sort_by(|a, b| a.0.cmp(&b.0));
+    let resumed: Vec<bool> = calls.iter().map(|(_, c)| c["argv"].to_string().contains("--resume")).collect();
+    assert_eq!(resumed, [false, true, false], "{calls:?}");
+
+    // 8: a secret name is a red card with a typed name; values never show.
+    let v = say("add the secret GITHUB_TOKEN for the API tests");
+    let card = v["messages"][7]["proposals"][0].clone();
+    assert_eq!((card["setting"]["level"].as_str(), card["setting"]["typed"].as_str()), (Some("loosen"), Some("GITHUB_TOKEN")), "{card}");
+    let notes = card["setting"]["notes"].to_string();
+    assert!(notes.contains("Exists in this computer's environment: yes") && notes.contains("looks like a key or token"), "{notes}");
+    assert!(!v.to_string().contains("canary-gh-value-7731"));
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "confirm": "GITHUB_TOKEN" }));
+    assert_eq!(st, 200, "{body}");
+    assert!(config(&home).contains("vars = [\"GITHUB_TOKEN\"]"));
+
+    // S3: a pasted key is not sent, so it is not in the conversation either.
+    let (st, body) = post("/api/chat", json!({ "message": "use this ghp_abcdefghijklmnopqrstuvwxyz0123" }));
+    assert!(st == 409 && body.contains("looks like a password, key or token"), "{st} {body}");
+    let (_, chat) = request(ui.port, "GET", "/api/chat", &ui.cookie, "", false);
+    assert!(!chat.contains("ghp_abcdefghijklmnopqrstuvwxyz0123"));
+
+    // M14: the activity log has what happened, never a secret's value.
+    let audit = std::fs::read_to_string(home.join(".fastpilot/audit.jsonl")).expect("audit");
+    for r in ["refused-no-provenance", "applied"] {
+        assert!(audit.contains(&format!("\"result\":\"{r}\"")), "{audit}");
+    }
+    assert!(!audit.contains("canary-gh-value-7731") && audit.contains("GITHUB_TOKEN"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(home.join(".fastpilot/audit.jsonl")).expect("audit").permissions().mode() & 0o777, 0o600);
+    }
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

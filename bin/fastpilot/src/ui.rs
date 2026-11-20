@@ -176,6 +176,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat", get(chat_api).post(chat_send))
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/chat/run", post(chat_run))
+        .route("/api/chat/undo", post(chat_undo))
         .route("/api/provider", get(provider_api).post(provider_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/history/report", get(crate::history_api::report))
@@ -425,10 +426,11 @@ async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
     }
 }
 
-/// `{id, apply}`: the user's click on a proposal card.
+/// `{id, apply, mode?, edit?, confirm?}`: the user's click on a proposal card (`confirm`: the word
+/// the user typed on a card that asks for one, D9).
 async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
-    let Some(id) = body["id"].as_u64() else { return refuse(StatusCode::BAD_REQUEST, "id wajib diisi") };
-    match crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), body.get("edit").filter(|e| e.is_object())) {
+    let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
+    match crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), body.get("edit").filter(|e| e.is_object()), body["confirm"].as_str()) {
         Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
@@ -436,8 +438,17 @@ async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
 
 /// `{id}`: Run now on a saved test's card.
 async fn chat_run(axum::Json(body): axum::Json<Value>) -> Response {
-    let Some(id) = body["id"].as_u64() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
+    let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::run_saved(id) {
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
+/// `{id}`: Undo / Block again on an applied settings card (D9).
+async fn chat_undo(axum::Json(body): axum::Json<Value>) -> Response {
+    let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
+    match crate::chat::undo(id) {
         Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
