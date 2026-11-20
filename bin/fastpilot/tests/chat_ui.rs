@@ -512,6 +512,55 @@ fn an_agent_on_another_provider_chats_with_the_same_tools_and_rules() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// D10c: the skill library by pack, suggestions with their reasons, an agent's bot told only its
+/// own skills, the community linked (never installed), and the "Techniques used" block kept in the
+/// bot's answer for the page to draw.
+#[test]
+fn agents_use_their_own_skills() {
+    let home = std::env::temp_dir().join(format!("fp-agents-skills-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+
+    let lib = get("/api/skills");
+    let packs: Vec<&str> = lib["packs"].as_array().expect("packs").iter().filter_map(|p| p["name"].as_str()).collect();
+    assert_eq!(packs, ["Black-box", "Experience-based", "Collaboration", "Management"]);
+    assert_eq!(lib["skills"].as_array().map(Vec::len), Some(19), "every skill but fastpilot and the chooser");
+    let community = lib["community"].as_array().expect("community");
+    assert!(community.iter().any(|c| c["license"] == "Noncommercial — personal use only" && c["url"] == "https://github.com/naodeng/awesome-qa-skills"), "{community:?}");
+    let (st, _) = request(ui.port, "POST", "/api/skills", &ui.cookie, "{}", true);
+    assert!(st == 405 || st == 404, "nothing can be installed from here: {st}");
+    assert!(get("/api/skills?id=boundary-value-analysis")["text"].as_str().is_some_and(|t| t.contains("# Boundary value analysis")));
+    let (st, _) = request(ui.port, "GET", "/api/skills?id=../../etc/passwd", &ui.cookie, "", false);
+    assert_eq!(st, 404);
+
+    let (_, body) = post("/api/agents", json!({ "action": "suggest", "agent": { "job": "Keep cart and payment working", "app": "", "devices": ["web"] } }));
+    let sug: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(sug["suggested"][0], json!({ "id": "safe-checkout", "why": "you said \"cart\"" }), "{sug}");
+    assert_eq!(sug["suggested"].as_array().map(Vec::len), Some(4));
+
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": { "id": "", "name": "Tickets", "job": "Check the ticket limits", "devices": ["web"], "skills": ["choose-technique", "boundary-value-analysis", "equivalence-partitioning"] } }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/agents", json!({ "action": "create", "agent": { "id": "", "name": "X", "job": "x", "devices": ["web"], "skills": ["../evil"] } }));
+    assert!(st == 422 && body.contains("no skill called"), "{body}");
+
+    let (st, _) = post("/api/chat", json!({ "agent": "tickets", "message": "test the tickets page properly" }));
+    assert_eq!(st, 200);
+    let v = wait_agent(&ui, "tickets");
+    let text = v["messages"][1]["text"].as_str().unwrap_or("");
+    assert!(text.contains("```\nTechniques used\nBoundary value analysis (3-value) · Tickets") && text.contains("10 refused ✗"), "{text}");
+    let call = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).next().expect("call");
+    let call: Value = serde_json::from_str(&call).expect("json");
+    let argv: Vec<&str> = call["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
+    let sys = argv.iter().position(|a| *a == "--append-system-prompt").map(|i| argv[i + 1]).unwrap_or("");
+    assert!(sys.contains("This agent uses only") && sys.contains("- boundary-value-analysis:") && sys.contains("- fastpilot:"), "{sys}");
+    assert!(!sys.contains("- pairwise:") && !sys.contains("- release-check:"), "only its skills: {sys}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D5: "every 2 hours, 08:00–20:00" from Chat: a card first, then on click the OS entry with the
 /// seven times; an N outside 1–24 is refused on the card.
 #[test]

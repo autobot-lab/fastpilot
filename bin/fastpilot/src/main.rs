@@ -20,6 +20,7 @@ mod pool;
 mod report;
 mod run;
 mod schedule;
+mod skills_catalog;
 mod stability;
 mod ui;
 

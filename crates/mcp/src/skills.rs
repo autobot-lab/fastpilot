@@ -53,6 +53,21 @@ pub fn index() -> String {
     out
 }
 
+/// D10c: the index for an agent that uses only some skills (`fastpilot` always; empty = all).
+pub fn index_of(names: &[String]) -> String {
+    if names.is_empty() {
+        return index();
+    }
+    let mut out = String::from(
+        "# Skills\n\nRead one with docs(topic: \"skill/<name>\") before a task it fits, and follow it. This agent uses only \
+         these; the `fastpilot` skill is how to drive fastpilot.\n\n",
+    );
+    for (name, text) in SKILLS.iter().filter(|(n, _)| *n == "fastpilot" || names.iter().any(|x| x == n)) {
+        out.push_str(&format!("- {name}: {}\n", description(text)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

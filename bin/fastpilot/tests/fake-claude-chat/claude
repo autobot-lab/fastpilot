@@ -109,6 +109,9 @@ if "pay button" in low:
     text.append("That loosens a safety limit, so only you can approve it:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "block_actions", "remove": ["pay"]}]}) + "\n```")
 if "github_token" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "vars", "add": ["GITHUB_TOKEN"]}]}) + "\n```")
+# D10c: a reply with the "Techniques used" block (choose-technique format).
+if "tickets page" in low:
+    text.append("1 problem found. Everything else behaved as the rules say.\n```\nTechniques used\nBoundary value analysis (3-value) · Tickets\n  Tried: 0 refused ✓ · 1 accepted ✓ · 2 accepted ✓ · 9 accepted ✓ · 10 refused ✗ expected: accepted · 11 refused ✓\n  Coverage: 6 of 6 boundary values\n  Assumption: 10 is allowed (the page says \"1 to 10\")\n```")
 # D10a: an agent described in one sentence.
 if "create an agent" in low:
     text.append("I prepared the agent. Check it, then click Create.\n```fastpilot-proposal\n" + json.dumps({

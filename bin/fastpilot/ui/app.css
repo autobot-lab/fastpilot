@@ -445,3 +445,43 @@ dialog.hist-dlg p{margin:0 0 18px;line-height:1.5}
 .ag-mcard:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .ag-untested{display:inline-block;font:600 11px var(--sans);padding:1px 7px;border-radius:6px;background:var(--warn-soft);color:#8a520a;align-self:flex-start}
 .ag-model input{font:inherit;padding:8px 10px;border:var(--bw) solid var(--ink);border-radius:var(--r-sm)}
+/* Skills (D10c, S10) and Techniques used (S2) */
+.sk-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.seg [role=tab]{padding:7px 12px;font-weight:500;border-right:1px solid var(--line)}
+.seg [role=tab].on{background:var(--ink);color:#fff}.seg [role=tab]:last-child{border-right:0}
+.seg [role=tab]:focus-visible{outline:2px solid var(--blue);outline-offset:-3px}
+.sk-wrap{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start}
+.sk-main{display:flex;flex-direction:column;gap:12px;min-width:0}
+.sk-chooser{background:var(--purple-soft)}
+.sk-row{display:flex;align-items:center;gap:12px}
+.sk-list{list-style:none;margin:0;padding:0}
+.sk-pack .sk-row{padding:10px 16px;border-top:1px solid var(--line)}
+.sk-pack summary{cursor:pointer;list-style:none;display:flex;gap:6px;text-transform:none}
+.sk-pack summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.sk-count{font:500 11.5px var(--mono);color:var(--muted)}
+.sk-txt{display:flex;flex-direction:column;flex:1;min-width:0}.sk-txt .s{color:var(--muted);font-size:13px}
+.sk-side{position:sticky;top:12px}.sk-side h2.sk-h{font:600 18px var(--display);margin:2px 0 6px}.sk-side h3{font-size:14px;margin:6px 0 0}
+.gh-s{font:500 11px var(--mono);color:var(--muted)}
+.sk-com .ag-pad{gap:6px}
+.lic{display:inline-block;font:600 11.5px var(--sans);padding:2px 8px;border-radius:6px;align-self:flex-start}
+.lic-ok{background:var(--acc-soft);color:var(--acc-ink)}.lic-warn{background:var(--warn-soft);color:#8a520a}
+.sk-warn{max-width:none}
+dialog.skill-dlg{width:min(760px,calc(100% - 32px))}
+dialog.skill-dlg pre{white-space:pre-wrap;max-height:60vh;overflow:auto;font:12.5px var(--mono);background:var(--soft);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px}
+.chip .why{font-weight:400;color:inherit;opacity:.85}
+.sk-more summary{cursor:pointer;color:var(--muted);font-size:13px;margin:6px 0}
+.tech{border:var(--bw) solid var(--ink);border-radius:var(--r);background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px;max-width:680px}
+.tech h3{font:600 15px var(--display);margin:0}
+.tech-b{border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;background:var(--soft)}
+.tech-b.tech-bad{border-color:#f3c4c4}
+.tech-flag{margin-left:8px;font:600 11.5px var(--sans);padding:1px 7px;border-radius:6px;background:var(--bad-soft);color:var(--bad)}
+.tech-l{margin:6px 0 0;font-size:13px;overflow-wrap:anywhere;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.tech-l .tl{color:var(--muted)}.tech-chips{display:flex;gap:6px;flex-wrap:wrap}
+.tchip{font:500 12px var(--mono);padding:2px 8px;border-radius:6px;border:1px solid}
+.tchip.ok{background:var(--acc-soft);color:var(--acc-ink);border-color:#b7dfc5}.tchip.no{background:var(--bad-soft);color:var(--bad);border-color:#f3c4c4}
+.tchip.nr{background:#fff;color:var(--muted);border-style:dashed;border-color:#8b94a3}
+pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
+@media (max-width:1100px){.sk-wrap{grid-template-columns:minmax(0,1fr)}.sk-side{position:static}}
+.grp.sk-chooser .ag-pad.sk-row{flex-direction:row}
+.grp.sk-pack summary.gh{text-transform:none;font:500 13.5px var(--sans);color:var(--ink)}
+.grp.sk-pack summary.gh span{color:var(--muted)}

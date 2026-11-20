@@ -179,6 +179,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat/run", post(chat_run))
         .route("/api/chat/undo", post(chat_undo))
         .route("/api/agents", get(agents_api).post(agents_change))
+        .route("/api/skills", get(skills_api))
         .route("/api/provider", get(provider_api).post(provider_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/history/report", get(crate::history_api::report))
@@ -502,7 +503,19 @@ async fn agents_api() -> Response {
     axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore() })).into_response()
 }
 
-/// `{action: create|update, agent}`, `{action: delete, id}`.
+/// D10c: the skill library (packs, skills, community); `?id=NAME`: one skill's full text.
+async fn skills_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    match q.get("id") {
+        Some(id) if crate::skills_catalog::known(id) => match fastpilot_mcp::skills::get(id) {
+            Some(text) => axum::Json(json!({ "id": id, "text": text })).into_response(),
+            None => refuse(StatusCode::NOT_FOUND, "No such skill"),
+        },
+        Some(_) => refuse(StatusCode::NOT_FOUND, "No such skill"),
+        None => axum::Json(crate::skills_catalog::library()).into_response(),
+    }
+}
+
+/// `{action: create|update, agent}`, `{action: delete, id}`, `{action: suggest, agent}`.
 async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
     use crate::agents;
     let parse = || serde_json::from_value::<agents::Agent>(body["agent"].clone()).map_err(|e| format!("The agent is incomplete ({e})"));
@@ -510,6 +523,13 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
         "create" => parse().and_then(agents::create).map(|a| json!({ "agent": a })),
         "update" => parse().and_then(agents::update).map(|a| json!({ "agent": a })),
         "delete" => agents::delete(body["id"].as_str().unwrap_or("")).map(|()| json!({})),
+        // D10c: the skills to tick for a new agent, each with its reason.
+        "suggest" => {
+            let a = &body["agent"];
+            let devices: Vec<String> = a["devices"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            let s = crate::skills_catalog::suggest(a["job"].as_str().unwrap_or(""), a["app"].as_str().unwrap_or(""), &devices);
+            Ok(json!({ "suggested": s.iter().map(|(id, why)| json!({ "id": id, "why": why })).collect::<Vec<_>>() }))
+        }
         _ => Err("Unknown action".into()),
     };
     match r {

@@ -224,8 +224,9 @@ pub fn check(mut a: Agent) -> Res<Agent> {
             a.model = Some(m.to_owned());
         }
     }
-    if a.skills.len() > 40 || a.skills.iter().any(|s| s.is_empty() || !s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')) {
-        return Err("Unknown skill".into());
+    a.skills.dedup();
+    if let Some(s) = a.skills.iter().find(|s| !crate::skills_catalog::known(s)) {
+        return Err(format!("fastpilot has no skill called \"{s}\""));
     }
     Ok(a)
 }
