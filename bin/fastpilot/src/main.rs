@@ -4,11 +4,17 @@ mod bench;
 mod cli;
 mod doctor;
 mod github;
+mod keystore;
+mod provider;
 mod pool;
 mod report;
 mod run;
 mod stability;
 mod ui;
+
+/// Tests that change the process environment hold this.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use std::error::Error;
 
@@ -21,6 +27,8 @@ commands:
   doctor [web|android|ios|run|all]   is this machine ready? each gap with its fix
   setup [web|android|ios] [--yes]    apply the fixes doctor found, asking before each
   config [list|get K|set K V|unset K|path]   settings in ~/.fastpilot/config.toml (env wins)
+  config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
+  config test-provider                       one small request with the configured provider
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1 + token)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
@@ -49,7 +57,25 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
     use fastpilot_core::config;
     let key = || args.get(1).map(|k| k.to_lowercase()).ok_or("missing setting key; see `fastpilot config list`");
     match args.first().map(String::as_str).unwrap_or("list") {
-        "list" => println!("{}", config::describe()),
+        "list" => {
+            println!("{}", config::describe());
+            // The provider's key: whether there is one and where, never the key.
+            if let Some(p) = config::var("FASTPILOT_PROVIDER").ok().filter(|p| !p.is_empty() && p != "claude") {
+                let state = if keystore::has(&p) { format!("set ({})", keystore::backend().describe()) } else { "not set: `fastpilot config set-key <provider>`".into() };
+                println!("{:<18} {state}", format!("{p} API key"));
+            }
+        }
+        "set-key" => {
+            let p = args.get(1).ok_or("set-key needs a provider: openai, openrouter, groq, ollama or custom")?;
+            let key = read_secret(&format!("API key for {p} (input hidden): "))?;
+            let place = keystore::set(p, &key)?;
+            println!("{p} API key saved in the {place}; it is never shown again (`fastpilot config test-provider` checks it)");
+        }
+        "unset-key" => {
+            let p = args.get(1).ok_or("unset-key needs a provider")?;
+            keystore::delete(p)?;
+            println!("{p} API key removed from the {}", keystore::backend().describe());
+        }
         "path" => println!("{}", config::path().display()),
         "get" => {
             let k = key()?;
@@ -84,7 +110,7 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             let p = config::write(&k, None)?;
             println!("{k} removed  ({})", p.display());
         }
-        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path)").into()),
+        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path, set-key, unset-key, test-provider)").into()),
     }
     Ok(())
 }
@@ -99,6 +125,27 @@ where
     let out = f().await;
     fastpilot_core::live::disable();
     out
+}
+
+/// A secret from stdin: hidden while typed in a terminal, else the piped text (`< keyfile`). Never
+/// from argv, where other processes could read it.
+fn read_secret(prompt: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    use std::io::{BufRead, IsTerminal, Read};
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprint!("{prompt}");
+        let _ = std::process::Command::new("stty").arg("-echo").stdin(std::process::Stdio::inherit()).status();
+        let mut line = String::new();
+        let read = stdin.lock().read_line(&mut line);
+        let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
+        eprintln!();
+        read?;
+        Ok(line.trim().to_owned())
+    } else {
+        let mut all = String::new();
+        stdin.lock().read_to_string(&mut all)?;
+        Ok(all.trim().to_owned())
+    }
 }
 
 #[tokio::main]
@@ -130,6 +177,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     match args.first().map(String::as_str) {
         Some("mcp") => live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await,
+        Some("config") if args.get(1).is_some_and(|a| a == "test-provider") => match provider::test_provider().await {
+            Ok(msg) => {
+                println!("{msg}");
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        },
         Some("config") => config_cmd(&args[1..]),
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,

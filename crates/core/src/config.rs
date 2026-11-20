@@ -67,6 +67,9 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "daemon_idle", help: "shell CLI daemon exits after this many idle seconds (default 1800)", rule: Rule::Free },
     Setting { key: "chrome", help: "Chrome/Chromium executable", rule: Rule::HumanOnly },
     Setting { key: "claude", help: "`fastpilot run`: the claude CLI to drive", rule: Rule::HumanOnly },
+    Setting { key: "provider", help: "`fastpilot run`: who drives the tests: claude (Claude Code, default), or an OpenAI-compatible API: openai, openrouter, groq, ollama, custom (key: `fastpilot config set-key <provider>`)", rule: Rule::HumanOnly },
+    Setting { key: "provider_base_url", help: "OpenAI-compatible API base URL (default per provider; required for custom), e.g. https://api.openai.com/v1", rule: Rule::HumanOnly },
+    Setting { key: "provider_model", help: "model id at the OpenAI-compatible provider (required when provider is not claude)", rule: Rule::Free },
     Setting { key: "dir", help: "where runs, memory, states and baselines go (default ./.fastpilot)", rule: Rule::HumanOnly },
     Setting { key: "ios_runner", help: "iOS runner build folder (default ios-runner/build)", rule: Rule::HumanOnly },
     Setting { key: "adb_server", help: "adb server for Android devices on another machine, host:port (e.g. 127.0.0.1:15037 through an SSH tunnel)", rule: Rule::HumanOnly },
@@ -74,7 +77,17 @@ pub const SETTINGS: &[Setting] = &[
 ];
 
 /// Never read from the file.
-const SECRETS: &[&str] = &["FASTPILOT_STATE_KEY", "FASTPILOT_TOKEN", "FASTPILOT_RELAY_TOKEN"];
+const SECRETS: &[&str] = &["FASTPILOT_STATE_KEY", "FASTPILOT_TOKEN", "FASTPILOT_RELAY_TOKEN", "FASTPILOT_PROVIDER_API_KEY"];
+
+/// `provider` values and their default base URL (`None`: Claude Code, or set provider_base_url).
+pub const PROVIDERS: &[(&str, Option<&str>)] = &[
+    ("claude", None),
+    ("openai", Some("https://api.openai.com/v1")),
+    ("openrouter", Some("https://openrouter.ai/api/v1")),
+    ("groq", Some("https://api.groq.com/openai/v1")),
+    ("ollama", Some("http://127.0.0.1:11434/v1")),
+    ("custom", None),
+];
 
 pub fn path() -> PathBuf {
     if let Some(p) = std::env::var_os("FASTPILOT_CONFIG").filter(|p| !p.is_empty()) {
@@ -348,6 +361,24 @@ fn invalid(key: &str, value: &str) -> Option<String> {
         if host.is_none_or(str::is_empty) {
             return Some(format!("`chrome_endpoint` takes http://host:port or ws://host:port/devtools/browser/..., not `{value}`"));
         }
+    }
+    if key == "provider" && !PROVIDERS.iter().any(|(p, _)| *p == v) {
+        let names: Vec<&str> = PROVIDERS.iter().map(|(p, _)| *p).collect();
+        return Some(format!("`provider` takes one of {}, not `{value}`", names.join(", ")));
+    }
+    if key == "provider_base_url" {
+        let rest = ["https://", "http://"].iter().find_map(|s| v.strip_prefix(s));
+        let host = rest.map(|r| r.split(['/', '?', '#']).next().unwrap_or(""));
+        if host.is_none_or(str::is_empty) || v.contains(char::is_whitespace) || v.contains('@') {
+            return Some(format!("`provider_base_url` takes an http(s) URL without credentials, e.g. https://api.openai.com/v1, not `{value}`"));
+        }
+        // Prompts carry screen contents: plain http only to this machine (e.g. Ollama).
+        if v.starts_with("http://") && crate::policy::remote_host(v).is_some() {
+            return Some(format!("`provider_base_url`: plain http to another machine would send test screens unencrypted; use https, not `{value}`"));
+        }
+    }
+    if key == "provider_model" && (v.is_empty() || v.contains(char::is_whitespace)) {
+        return Some(format!("`provider_model` takes a model id, not `{value}`"));
     }
     if matches!(key, "model" | "model_replay" | "model_explore")
         && !(v.starts_with("claude-") && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'))
@@ -756,6 +787,25 @@ mod tests {
         assert!(check().is_ok());
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// B2: provider settings are checked, and the provider's base URL defaults per provider.
+    #[test]
+    fn provider_settings_are_checked() {
+        for (k, v) in [("provider", "openai"), ("provider", "ollama"), ("provider_base_url", "https://openrouter.ai/api/v1"), ("provider_base_url", "http://127.0.0.1:11434/v1"), ("provider_model", "gpt-x")] {
+            assert_eq!(invalid(k, v), None, "{k} = {v}");
+        }
+        for (k, v, want) in [
+            ("provider", "anthropic-api", "one of"),
+            ("provider_base_url", "api.openai.com/v1", "http(s) URL"),
+            ("provider_base_url", "https://user:pw@example.com/v1", "without credentials"),
+            ("provider_base_url", "http://example.com/v1", "unencrypted"),
+            ("provider_model", "two words", "model id"),
+        ] {
+            assert!(invalid(k, v).is_some_and(|e| e.contains(want)), "{k} = {v}: {:?}", invalid(k, v));
+        }
+        assert!(setting("provider").is_some_and(|s| s.rule == Rule::HumanOnly) && setting("provider_base_url").is_some_and(|s| s.rule == Rule::HumanOnly));
+        assert!(SECRETS.contains(&"FASTPILOT_PROVIDER_API_KEY"), "the key never comes from the file");
     }
 
     /// QA #6: names fastpilot would never match, or must not hand to a flow, are refused when set.

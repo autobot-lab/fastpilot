@@ -556,6 +556,22 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   ```
+- **Selain Claude Code (opsional):** `fastpilot run` bisa dijalankan oleh API yang kompatibel dengan OpenAI
+  (chat completions + tool calling). Claude Code tetap bawaan. Tool, verdict `finish`, `max_steps`, dan
+  `test_timeout` sama persis.
+
+  ```bash
+  fastpilot config set provider openrouter        # openai, openrouter, groq, ollama (lokal), custom
+  fastpilot config set provider_model <model id>  # wajib
+  fastpilot config set-key openrouter             # key dibaca dari stdin (tersembunyi), disimpan di Keychain
+  fastpilot config test-provider                  # satu request kecil untuk cek
+  ```
+
+  Key disimpan di macOS Keychain (Linux: secret service lewat `secret-tool`, kalau tidak ada: file 600 di
+  `~/.fastpilot/keys/`), atau diberikan lewat env `FASTPILOT_PROVIDER_API_KEY`. Key tidak pernah ditulis ke
+  config, log, laporan, atau argumen proses. `provider` dan `provider_base_url` hanya bisa diubah user (agent
+  tidak bisa mengalihkan data test ke server lain). `http://` hanya untuk mesin ini (mis. Ollama); server lain
+  wajib `https://`. Kembali ke Claude Code: `fastpilot config unset provider`.
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 

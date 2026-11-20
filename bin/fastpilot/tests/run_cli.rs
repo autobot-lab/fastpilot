@@ -286,3 +286,117 @@ fn report_github_keeps_one_comment_on_the_pr() {
     assert!(log.lock().expect("log").is_empty(), "dry run must not call the API");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A stand-in for an OpenAI-compatible chat-completions API that plays the agent: start the web
+/// session, log in with one run_flow, finish. Logs every request body and its Authorization.
+type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+fn fake_openai() -> (u16, Requests) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log2 = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut r = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            let (mut len, mut auth) = (0usize, String::new());
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                    break;
+                }
+                let lower = h.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                if lower.starts_with("authorization:") {
+                    auth = h.trim().to_owned();
+                }
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let req: Value = serde_json::from_slice(&body).unwrap_or_default();
+            log2.lock().expect("log").push((auth.clone(), req.clone()));
+            let tool_call = |name: &str, args: Value| {
+                json!({ "choices": [{ "message": { "role": "assistant", "content": null, "tool_calls": [{ "id": format!("call_{name}"), "type": "function", "function": { "name": name, "arguments": args.to_string() } }] } }], "usage": { "prompt_tokens": 50, "completion_tokens": 10 } })
+            };
+            let (status, reply) = if !auth.ends_with("Bearer sk-test-provider-999") {
+                ("401 Unauthorized", json!({ "error": { "message": "Incorrect API key provided" } }))
+            } else if req.get("tools").is_none() {
+                // config test-provider: a plain question.
+                ("200 OK", json!({ "choices": [{ "message": { "role": "assistant", "content": "OK" } }] }))
+            } else {
+                let done = req["messages"].as_array().map(|m| m.iter().filter(|m| m["role"] == "tool").count()).unwrap_or(0);
+                let flow = "- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n- assertVisible: Budi\n";
+                let reply = match done {
+                    0 => tool_call("session", json!({ "action": "start", "id": "w", "target": "examples/demo/login.html" })),
+                    1 => tool_call("run_flow", json!({ "flow": flow })),
+                    _ => tool_call("finish", json!({ "status": "pass", "notes": "checked Budi on the dashboard (provider)" })),
+                };
+                ("200 OK", reply)
+            };
+            let reply = reply.to_string();
+            let mut s = stream;
+            let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    (port, log)
+}
+
+/// B2: with `provider` set, an OpenAI-compatible API drives the test through the same tools and
+/// verdict; Claude Code is not started; the key only reaches the API.
+#[test]
+fn provider_drives_a_run_without_claude_code() {
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-provider-{}", std::process::id()));
+    let (port, log) = fake_openai();
+    let base = format!("http://127.0.0.1:{port}/v1");
+    let env = [
+        ("FASTPILOT_PROVIDER", "custom"),
+        ("FASTPILOT_PROVIDER_BASE_URL", base.as_str()),
+        ("FASTPILOT_PROVIDER_MODEL", "fake-model-1"),
+        ("FASTPILOT_PROVIDER_API_KEY", "sk-test-provider-999"),
+    ];
+    let html = dir.join("report.html");
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude"), &env, &["--html", html.to_str().unwrap_or("")]);
+    if out.contains("Chrome not found") {
+        return eprintln!("skipping: no Chrome");
+    }
+    assert!(ok, "{out}");
+    assert!(out.contains("driver: custom (fake-model-1)") && out.contains("✓ login-ok") && out.contains("1 passed, 0 failed"), "{out}");
+    assert!(!out.contains("sk-test-provider-999"), "key in the output:\n{out}");
+    assert!(calls(&dir.join("claude")).is_empty(), "Claude Code must not run");
+    let requests = log.lock().expect("log").clone();
+    assert_eq!(requests.len(), 3, "session, run_flow, finish: {} requests", requests.len());
+    let first = &requests[0].1;
+    assert_eq!(first["model"], "fake-model-1");
+    assert!(first["messages"][0]["content"].as_str().is_some_and(|s| s.contains("fastpilot's QA agent")), "system prompt");
+    let tools: Vec<&str> = first["tools"].as_array().map(|t| t.iter().filter_map(|t| t["function"]["name"].as_str()).collect()).unwrap_or_default();
+    assert!(tools.contains(&"run_flow") && tools.contains(&"finish") && !tools.contains(&"report") && !tools.contains(&"config"), "{tools:?}");
+    // The run_flow result went back to the model masked; the secret never left fastpilot.
+    let last = requests[2].1.to_string();
+    assert!(last.contains("ok 4/4 steps") && !last.contains("rahasia123"), "{last}");
+    let page = std::fs::read_to_string(&html).expect("html");
+    assert!(page.contains("checked Budi on the dashboard (provider)") && !page.contains("sk-test-provider-999"), "suite html");
+
+    // `config test-provider`: one small request; a wrong key is refused without being repeated.
+    let test = |key: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(["config", "test-provider"])
+            .env("FASTPILOT_PROVIDER", "custom")
+            .env("FASTPILOT_PROVIDER_BASE_URL", &base)
+            .env("FASTPILOT_PROVIDER_MODEL", "fake-model-1")
+            .env("FASTPILOT_PROVIDER_API_KEY", key)
+            .env("FASTPILOT_CONFIG", dir.join("none.toml"))
+            .output()
+            .expect("run");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = test("sk-test-provider-999");
+    assert!(ok && out.contains("ok: custom at") && out.contains("\"OK\""), "{out}");
+    let (ok, out) = test("sk-wrong-key-123");
+    assert!(!ok && out.contains("401") && out.contains("Incorrect API key") && !out.contains("sk-wrong-key-123"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
