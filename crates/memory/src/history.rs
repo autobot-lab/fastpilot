@@ -219,6 +219,18 @@ impl History {
         }
     }
 
+    /// A run's `report.html`, only when it is a real file (not a link) whose real folder is that
+    /// run's own folder in this project (Security re-check of #102, finding 5).
+    fn run_report(&self, name: &str) -> Option<PathBuf> {
+        let dir = self.runs_dir().join(name);
+        let p = dir.join("report.html");
+        if !fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
+            return None;
+        }
+        let real = fs::canonicalize(&p).ok()?;
+        (real.parent() == fs::canonicalize(&dir).ok().as_deref()).then_some(real)
+    }
+
     /// Run folders: (name, finished or last changed).
     fn run_folders(&self) -> Vec<(String, PathBuf)> {
         let Ok(rd) = fs::read_dir(self.runs_dir()) else { return vec![] };
@@ -262,7 +274,7 @@ impl History {
                 not_run: u32::from(result.is_none()),
                 platforms: vec![],
                 finished_ms: modified_ms(&dir.join("report.md")).max(modified_ms(&dir)),
-                has_report: dir.join("report.html").is_file(),
+                has_report: self.run_report(&name).is_some(),
             });
         }
         items.sort_by(|a, b| b.finished_ms.cmp(&a.finished_ms).then(b.id.cmp(&a.id)));
@@ -273,8 +285,7 @@ impl History {
     /// History or a report fastpilot wrote for the suite.
     pub fn report(&self, id: &str) -> Option<PathBuf> {
         if let Some(name) = id.strip_prefix("run:").filter(|n| safe_id(n)) {
-            let p = self.runs_dir().join(name).join("report.html");
-            return p.is_file().then_some(p);
+            return self.run_report(name);
         }
         let sid = id.strip_prefix("suite:").filter(|n| safe_id(n))?;
         let s: Suite = serde_json::from_str(&fs::read_to_string(self.suite_path(sid)).ok()?).ok()?;
@@ -519,6 +530,26 @@ mod tests {
         fs::write(h.dir().join("settings.json"), r#"{"keep_days":1}"#).expect("settings");
         assert_eq!(h.prune(now_ms()).runs, 3, "the rows go");
         assert!(victim.exists(), "the file outside History stays");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Security re-check of #102, finding 5: a run's report.html that is a link is never served.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_report_that_is_a_link_is_not_served() {
+        let root = tmp("runlink");
+        let secret = root.join("secret.html");
+        fs::write(&secret, "TOP SECRET").expect("secret");
+        let h = History::new(root.join("project"));
+        let dir = root.join("project/runs/20261120-110000-x");
+        fs::create_dir_all(&dir).expect("run");
+        fs::write(dir.join("report.md"), "# x — pass\n").expect("md");
+        std::os::unix::fs::symlink(&secret, dir.join("report.html")).expect("link");
+        assert_eq!(h.report("run:20261120-110000-x"), None);
+        assert!(h.runs().iter().all(|i| !i.has_report));
+        fs::remove_file(dir.join("report.html")).expect("rm");
+        fs::write(dir.join("report.html"), "<p>r</p>").expect("real");
+        assert!(h.report("run:20261120-110000-x").is_some(), "a real report is served");
         let _ = fs::remove_dir_all(root);
     }
 
