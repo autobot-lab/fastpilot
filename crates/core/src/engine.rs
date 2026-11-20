@@ -222,6 +222,8 @@ pub struct StepRecord {
     /// tap) on its session that reported success but left the screen as it was: most likely
     /// the action came too early (an animation swallowed it), not a product bug.
     pub after_no_effect: bool,
+    /// Wall-clock start of the step: places it on a session recording's timeline (report.html).
+    pub started: std::time::SystemTime,
     timeout: Option<Duration>,
     target: Option<(Selector, Intent)>,
 }
@@ -691,6 +693,7 @@ fn record(ctx: &Ctx, index: usize, session: Option<&str>, step: &Step, t0: Insta
         output,
         durable: None,
         after_no_effect: false,
+        started: std::time::SystemTime::now() - t0.elapsed(),
         // Retry exhaustion is the only case where the timeout is the relevant detail.
         timeout: timeout.filter(|_| error.as_ref().is_some_and(Error::is_retryable)),
         error,

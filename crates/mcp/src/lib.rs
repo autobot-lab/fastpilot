@@ -103,6 +103,8 @@ struct State {
     busy: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Record every session from its start; recordings land in the test's run (`run --record`).
     record: std::sync::atomic::AtomicBool,
+    /// When each session's recording started, to put the steps on its timeline in the report.
+    recording_started: std::sync::Mutex<HashMap<String, std::time::SystemTime>>,
 }
 
 #[derive(Clone)]
@@ -353,10 +355,14 @@ impl FastPilot {
                 Err(e) => text = format!("{text}\nsnapshot failed: {e}"),
             }
         }
-        if self.state.record.load(std::sync::atomic::Ordering::Relaxed)
-            && let Err(e) = driver.start_recording().await
-        {
-            text = format!("{text}\nrecording not started: {e}");
+        if self.state.record.load(std::sync::atomic::Ordering::Relaxed) {
+            let started = std::time::SystemTime::now();
+            match driver.start_recording().await {
+                Ok(()) => {
+                    self.state.recording_started.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), started);
+                }
+                Err(e) => text = format!("{text}\nrecording not started: {e}"),
+            }
         }
         if let Some(hint) = args.test_id.as_deref().and_then(|t| self.state.memory.hint(t, header.as_deref())) {
             text = format!("{text}\n\n{hint}");
@@ -457,7 +463,8 @@ impl FastPilot {
             if self.state.record.load(std::sync::atomic::Ordering::Relaxed) {
                 match d.stop_recording().await {
                     Ok(rec) => {
-                        if let Err(e) = run.add_recording(&id, rec) {
+                        let started = self.state.recording_started.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+                        if let Err(e) = run.add_recording(&id, rec, started) {
                             tracing::warn!(session = id, error = %e, "recording not saved");
                         }
                     }
@@ -500,8 +507,10 @@ impl FastPilot {
     async fn record(&self, test_id: &str, flow: &fastpilot_core::Flow, report: &FlowReport, reg: &SessionRegistry) -> String {
         let durable = report.records.iter().filter_map(|r| r.durable.clone().map(|d| (r.index, d))).collect();
         let yaml = flow_to_yaml(flow, &durable);
+        // The failed step's screen, or for a passing flow the screen it ended on.
         let failed_session = report.records.iter().find(|r| r.error.is_some()).and_then(|r| r.session.clone());
-        let shot = match failed_session.as_deref().map(|s| reg.get(s)) {
+        let shot_session = failed_session.or_else(|| report.records.iter().rev().find_map(|r| r.session.clone()));
+        let shot = match shot_session.as_deref().map(|s| reg.get(s)) {
             Some(Ok(d)) => d.screenshot().await.ok(),
             _ => None,
         };
@@ -546,6 +555,7 @@ impl FastPilot {
                 runs: Mutex::new(HashMap::new()),
                 busy: Mutex::new(HashMap::new()),
                 record: std::sync::atomic::AtomicBool::new(false),
+                recording_started: std::sync::Mutex::new(HashMap::new()),
             }),
             tool_router: Self::tool_router(),
         }
