@@ -284,6 +284,7 @@ function pageLimits() {
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("lock"), "data & keamanan"),
       opt("Jalankan JavaScript bebas di halaman", "Matikan untuk mencegah AI mengubah halaman di luar langkah test", toggle("allow_eval_script", "Jalankan JavaScript bebas"), get("allow_eval_script")),
+      opt("Boleh ambil alih sesi (Ambil alih di Live)", "Matikan bila agent-mu punya akses shell: input ambil alih tidak diperiksa Batasan. Berlaku untuk proses fastpilot yang mulai setelah ini.", toggle("allow_takeover", "Boleh ambil alih sesi"), get("allow_takeover")),
       opt("Folder yang boleh di-upload", "File yang diunggah test harus berasal dari folder ini.",
         chips("upload_dirs", { placeholder: "mis. ~/fixtures", addLabel: "Tambah folder", empty: "Folder mana saja" }), get("upload_dirs")),
       opt("Umur login tersimpan", "Login tersimpan yang lebih tua dari ini tidak dipakai lagi",
@@ -600,14 +601,15 @@ function liveSession(key) {
 }
 
 function setTakeLabel(btn, s) {
-  const mine = !!s.taken_over_here, elsewhere = !!s.taken_over_ms && !mine;
-  const label = mine ? "Kembalikan ke AI" : elsewhere ? "Diambil alih di halaman lain" : "Ambil alih";
+  const mine = !!s.taken_over_here, elsewhere = !!s.taken_over_ms && !mine, off = s.takeover_allowed === false && !mine;
+  const label = mine ? "Kembalikan ke AI" : elsewhere ? "Diambil alih di halaman lain" : off ? "Ambil alih dimatikan" : "Ambil alih";
   if (btn.dataset.label !== label) {
     btn.dataset.label = label;
     btn.replaceChildren(icon(mine ? "play" : "cursor", "sm"), label);
     btn.classList.toggle("p", mine);
-    btn.disabled = elsewhere;
-    btn.setAttribute("aria-label", mine ? `Kembalikan sesi ${s.id} ke AI` : elsewhere ? `Sesi ${s.id} sedang diambil alih di halaman lain` : `Ambil alih sesi ${s.id}: langkah AI dijeda`);
+    btn.disabled = elsewhere || off;
+    btn.title = off ? "Dimatikan di Pengaturan › Batasan (allow_takeover)" : "";
+    btn.setAttribute("aria-label", mine ? `Kembalikan sesi ${s.id} ke AI` : elsewhere ? `Sesi ${s.id} sedang diambil alih di halaman lain` : off ? `Ambil alih dimatikan di Batasan` : `Ambil alih sesi ${s.id}: langkah AI dijeda`);
   }
 }
 

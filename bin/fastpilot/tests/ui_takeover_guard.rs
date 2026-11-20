@@ -57,7 +57,11 @@ fn request(ui: &Ui, method: &str, path: &str, body: &str) -> (u16, String) {
 }
 
 fn start_ui(live: &Path) -> Ui {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+    start_ui_from(Path::new(env!("CARGO_BIN_EXE_fastpilot")), live)
+}
+
+fn start_ui_from(program: &Path, live: &Path) -> Ui {
+    let mut child = std::process::Command::new(program)
         .args(["ui", "--no-open"])
         .env("FASTPILOT_LIVE_DIR", live)
         .env_remove("FASTPILOT_LIVE_ANY_PEER")
@@ -142,5 +146,65 @@ async fn takeovers_belong_to_the_page_and_end_when_it_goes() {
     }
     drop(b);
     client.cancel().await.expect("shutdown");
+    let _ = std::fs::remove_dir_all(live);
+}
+
+/// v0.3.1 (FastTest T1): a program merely named `fastpilot`, run with `ui`, is not this fastpilot:
+/// a copy of the binary elsewhere is turned away; and `allow_takeover = false` switches takeover off.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn takeover_needs_this_installation_and_can_be_switched_off() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let live = std::env::temp_dir().join(format!("fp-take-path-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&live);
+    let home = live.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let page = format!("file://{ROOT}/examples/demo/login.html");
+    let mcp = |off: bool| {
+        let (l2, h2) = (live.clone(), home.clone());
+        let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+            c.arg("mcp").current_dir(ROOT).env("HOME", &h2).env("FASTPILOT_LIVE_DIR", &l2).env_remove("FASTPILOT_LIVE_ANY_PEER").env_remove("FASTPILOT_CONFIG");
+            if off {
+                c.env("FASTPILOT_ALLOW_TAKEOVER", "false");
+            } else {
+                c.env_remove("FASTPILOT_ALLOW_TAKEOVER");
+            }
+        });
+        TokioChildProcess::new(cmd).expect("spawn")
+    };
+    let on: Client = ().serve(mcp(false)).await.expect("initialize");
+    let off: Client = ().serve(mcp(true)).await.expect("initialize");
+    for (c, id) in [(&on, "shop"), (&off, "locked")] {
+        let (ok, out) = call(c, "run_flow", json!({ "flow": format!("- session: {{ start: {id}, platform: web, target: \"{page}\" }}\n") })).await;
+        assert!(ok, "{out}");
+    }
+
+    // A copy of the real binary in another folder, still named `fastpilot`, run as `fastpilot ui`.
+    let other = live.join("elsewhere");
+    std::fs::create_dir_all(&other).expect("dir");
+    let copy = other.join("fastpilot");
+    std::fs::copy(env!("CARGO_BIN_EXE_fastpilot"), &copy).expect("copy");
+    let impostor = start_ui_from(&copy, &live);
+    let pid = session(&impostor, "shop")["pid"].as_u64().expect("pid");
+    let (st, out) = request(&impostor, "POST", "/api/live/control", &json!({ "pid": pid, "session": "shop", "op": "takeover" }).to_string());
+    assert!(st == 409 && out.contains("same installation"), "{st} {out}");
+    drop(impostor);
+
+    // The real one may; the process started with allow_takeover = false says no, and says so.
+    let ui = start_ui(&live);
+    let (st, out) = request(&ui, "POST", "/api/live/control", &json!({ "pid": pid, "session": "shop", "op": "takeover" }).to_string());
+    assert_eq!(st, 200, "{out}");
+    let (st, _) = request(&ui, "POST", "/api/live/control", &json!({ "pid": pid, "session": "shop", "op": "release" }).to_string());
+    assert_eq!(st, 200);
+    let locked = session(&ui, "locked");
+    assert_eq!((locked["takeover_allowed"].as_bool(), session(&ui, "shop")["takeover_allowed"].as_bool()), (Some(false), Some(true)), "{locked}");
+    let lpid = locked["pid"].as_u64().expect("pid");
+    let (st, out) = request(&ui, "POST", "/api/live/control", &json!({ "pid": lpid, "session": "locked", "op": "takeover" }).to_string());
+    assert!(st == 409 && out.contains("allow_takeover = false"), "{st} {out}");
+    drop(ui);
+    on.cancel().await.expect("shutdown");
+    off.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(live);
 }
