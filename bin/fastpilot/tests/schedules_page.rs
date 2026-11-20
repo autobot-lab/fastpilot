@@ -98,7 +98,10 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     let opts = eval(&client, "[...document.querySelector('.sched-form select').options].map(o => o.textContent).join('|')").await;
     assert!(opts.contains("tests in this project") && opts.contains("Another folder or file"), "{opts}");
     let kinds = eval(&client, "[...document.querySelectorAll('.seg [role=radio]')].map(b => b.textContent + ':' + b.getAttribute('aria-checked')).join('|')").await;
-    assert_eq!(kinds, "\"Fixed time:true|Every N hours:false|Weekdays:false|Weekly:false\"");
+    assert_eq!(kinds, "\"Fixed time:true|Every N hours:false|Weekdays:false|Weekly:false|Release watch:false\"");
+    // R1: Release watch shows its minutes and hours and says what it notifies about.
+    let watch = eval(&client, "(() => { [...document.querySelectorAll('.seg [role=radio]')].find(b => b.textContent === 'Release watch').click(); const m = document.querySelector('select[aria-label=\"Minutes between runs\"]'); const h = document.querySelector('input[aria-label=\"Hours to watch\"]'); const out = [m && !m.closest('[hidden]'), h && h.value, document.querySelector('.sched-form legend').textContent, document.querySelector('.sched-form input[type=time]').closest('[hidden]') ? 'time hidden' : 'time shown'].join('|'); [...document.querySelectorAll('.seg [role=radio]')].find(b => b.textContent === 'Fixed time').click(); return out; })()").await;
+    assert_eq!(watch, "\"true|2|Notify me about a new problem (any you like)|time hidden\"");
     // Webhook field: labelled, shown when its box is ticked.
     let label = eval(&client, "(() => { const box = [...document.querySelectorAll('.ck')].find(l => l.textContent.includes('Slack')).querySelector('input'); const w = document.querySelector('input[type=password]'); const before = w.closest('[hidden]') ? 'hidden' : 'shown'; box.click(); return before + '>' + (w.closest('[hidden]') ? 'hidden' : 'shown') + ':' + w.closest('label.fld').querySelector('.l').textContent; })()").await;
     assert_eq!(label, "\"hidden>shown:Webhook URL\"");

@@ -121,7 +121,7 @@ pub async fn ui(args: &[String]) -> Res<()> {
             }
             "--no-open" => open = false,
             "--port" => {
-                let Some(v) = it.next() else { fail_args("--port butuh angka (1024-65535)") };
+                let Some(v) = it.next() else { fail_args("--port needs a number (1024-65535)") };
                 port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: use a number from 1024 to 65535")));
             }
             other => fail_args(&format!("unknown option `{other}`")),
@@ -543,7 +543,7 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
     }
 }
 
-// ---- Jadwal (C3) --------------------------------------------------------------------------
+// ---- Schedules (C3) --------------------------------------------------------------------------
 
 /// Schedules with their last run; a webhook is shown only as its host.
 async fn schedules_api() -> Response {
@@ -557,7 +557,7 @@ async fn schedules_api() -> Response {
             let slots: Vec<String> = schedule::slots(&s.when).iter().map(|(h, m)| format!("{h:02}:{m:02}")).collect();
             let last = store.last.get(&s.id);
             json!({
-                "schedule": s, "when_text": schedule::describe(&s.when), "webhook": hook, "last": last,
+                "schedule": s, "when_text": schedule::describe(&s.when), "watch_text": schedule::watch_text(s), "webhook": hook, "last": last,
                 "running": schedule::is_running(last), "slots": slots, "days": schedule::run_days(&s.when),
                 "tests_text": tests_text(&s.tests),
                 "agent_name": crate::agents::get_or_default(s.agent.as_deref().unwrap_or(crate::agents::DEFAULT)).name,
@@ -636,7 +636,17 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
     let id = body["id"].as_str().unwrap_or("").to_owned();
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
         "save" => match serde_json::from_value::<schedule::Schedule>(body["schedule"].clone()) {
-            Ok(s) => schedule::save(s, body["webhook"].as_str()).map(|s| json!({ "id": s.id })),
+            Ok(s) => (|| {
+                let fresh = s.id.is_empty();
+                let s = schedule::with_watch(s, body["watch_hours"].as_u64())?;
+                let watch = s.watch.is_some();
+                let s = schedule::save(s, body["webhook"].as_str())?;
+                // R1: a new release watch takes its "before" run right away.
+                if watch && fresh {
+                    schedule::start_now(&s.id)?;
+                }
+                Ok(json!({ "id": s.id, "watch": watch && fresh }))
+            })(),
             Err(e) => Err(format!("The schedule is incomplete ({e})")),
         },
         "enable" => schedule::set_enabled(&id, true).map(|()| json!({})),

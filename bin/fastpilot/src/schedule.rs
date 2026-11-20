@@ -29,6 +29,31 @@ pub enum Every {
     Week,
     /// Every `hours` hours (1–24), inside the optional `from`–`to` window, every day.
     Hours,
+    /// R1: every `minutes` minutes (5, 10, 15, 20, 30 or 60); only for a release watch.
+    Minutes,
+}
+
+/// How long a release watch may last.
+pub const MAX_WATCH_MS: u64 = 24 * 3_600_000;
+
+/// Minutes a release watch may check every (they divide an hour, so every scheduler agrees).
+pub const WATCH_MINUTES: [u16; 6] = [5, 10, 15, 20, 30, 60];
+
+/// R1 Release watch: a schedule that runs every N minutes for M hours after a release, compares
+/// each run with the first one ("before") and notifies only about a new problem, once.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Watch {
+    /// When the watch ends (ms since 1970); the schedule then removes itself from the scheduler.
+    pub until_ms: u64,
+    /// Tests failing in the first run, before the release (`None` until it ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Vec<String>>,
+    /// New problems already notified (each one once).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sent: Vec<String>,
+    /// The watch is over.
+    #[serde(default)]
+    pub ended: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +68,9 @@ pub struct When {
     /// For `hours`: run every N hours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hours: Option<u8>,
+    /// For `minutes` (a release watch): run every N minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u16>,
     /// For `hours`: the active window, `HH:MM` to `HH:MM` (both or neither; none = all day from 00:00).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -78,6 +106,9 @@ pub struct Schedule {
     /// D10a: the agent it belongs to; `None` = the first agent (`default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// R1: a release watch (with `every: minutes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<Watch>,
 }
 
 fn yes() -> bool {
@@ -250,6 +281,14 @@ pub fn validate(s: &Schedule) -> Res<()> {
         return Err("A test file must be a .md file (or pick its folder)".into());
     }
     check_when(&s.when)?;
+    match (s.when.every == Every::Minutes, &s.watch) {
+        (true, None) => return Err("Every N minutes is only for a release watch, which ends by itself".into()),
+        (false, Some(_)) => return Err("A release watch runs every 5 to 60 minutes".into()),
+        (true, Some(w)) if !w.ended && w.until_ms > now_ms() + MAX_WATCH_MS + 300_000 => {
+            return Err("A release watch lasts 1 to 24 hours".into());
+        }
+        _ => {}
+    }
     if let Some(repo) = &s.notify.github
         && !valid_repo(repo)
     {
@@ -260,6 +299,18 @@ pub fn validate(s: &Schedule) -> Res<()> {
 
 /// Whether the time part of a schedule makes sense; the reason in the user's words if not.
 pub fn check_when(w: &When) -> Res<()> {
+    if w.every == Every::Minutes {
+        if w.day.is_some() || w.hours.is_some() || w.from.is_some() || w.to.is_some() || !w.time.is_empty() {
+            return Err("A release watch has only its minutes and how long it watches".into());
+        }
+        return match w.minutes {
+            Some(m) if WATCH_MINUTES.contains(&m) => Ok(()),
+            _ => Err("Watch every 5, 10, 15, 20, 30 or 60 minutes".into()),
+        };
+    }
+    if w.minutes.is_some() {
+        return Err("Minutes are only for a release watch".into());
+    }
     if w.every == Every::Hours {
         if w.day.is_some() {
             return Err("A day is only for weekly schedules".into());
@@ -292,6 +343,9 @@ pub fn check_when(w: &When) -> Res<()> {
 
 /// The times of day a schedule runs (local time), in order.
 pub fn slots(w: &When) -> Vec<(u8, u8)> {
+    if w.every == Every::Minutes {
+        return Vec::new();
+    }
     if w.every != Every::Hours {
         return hour_minute(&w.time).into_iter().collect();
     }
@@ -305,7 +359,7 @@ pub fn slots(w: &When) -> Vec<(u8, u8)> {
 /// The days a schedule runs: `None` = every day, else 1 = Monday ... 7 = Sunday.
 pub fn run_days(w: &When) -> Option<Vec<u8>> {
     match w.every {
-        Every::Day | Every::Hours => None,
+        Every::Day | Every::Hours | Every::Minutes => None,
         Every::Weekday => Some((1..=5).collect()),
         Every::Week => Some(vec![w.day.unwrap_or(1).clamp(1, 7)]),
     }
@@ -318,6 +372,7 @@ pub fn describe(w: &When) -> String {
         Every::Day => format!("daily {}", w.time),
         Every::Weekday => format!("weekdays {}", w.time),
         Every::Week => format!("{} {}", DAYS.get(usize::from(w.day.unwrap_or(1).clamp(1, 7)) - 1).unwrap_or(&"Monday"), w.time),
+        Every::Minutes => format!("every {} minutes", w.minutes.unwrap_or(10)),
         Every::Hours => {
             let every = match w.hours.unwrap_or(1) {
                 1 => "every hour".to_owned(),
@@ -403,6 +458,11 @@ pub fn plist(s: &Schedule, exe: &str, path: &str, log: &Path) -> String {
     };
     let days: Vec<Option<u8>> = run_days(&s.when).map(|d| d.into_iter().map(Some).collect()).unwrap_or_else(|| vec![None]);
     let times: String = days.iter().flat_map(|d| slots(&s.when).into_iter().map(move |t| entry(t, *d))).collect();
+    let start = match s.when.every {
+        // R1: a release watch runs every N minutes.
+        Every::Minutes => format!("<key>StartInterval</key><integer>{}</integer>", u32::from(s.when.minutes.unwrap_or(10)) * 60),
+        _ => format!("<key>StartCalendarInterval</key><array>{times}</array>"),
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -410,7 +470,7 @@ pub fn plist(s: &Schedule, exe: &str, path: &str, log: &Path) -> String {
 <dict>
   <key>Label</key><string>{}</string>
   <key>ProgramArguments</key><array><string>{}</string><string>schedule</string><string>run</string><string>{}</string></array>
-  <key>StartCalendarInterval</key><array>{times}</array>
+  {start}
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string></dict>
   <key>StandardOutPath</key><string>{}</string>
   <key>StandardErrorPath</key><string>{}</string>
@@ -435,11 +495,18 @@ fn systemd_word(s: &str) -> String {
 pub fn systemd_units(s: &Schedule, exe: &str, path: &str) -> (String, String) {
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let days = match s.when.every {
-        Every::Day | Every::Hours => String::new(),
+        Every::Day | Every::Hours | Every::Minutes => String::new(),
         Every::Weekday => "Mon..Fri ".into(),
         Every::Week => format!("{} ", DAYS[usize::from(s.when.day.unwrap_or(1).clamp(1, 7)) - 1]),
     };
-    let calendar: String = slots(&s.when).iter().map(|(h, m)| format!("OnCalendar={days}*-*-* {h:02}:{m:02}:00\n")).collect();
+    let calendar: String = match s.when.every {
+        // R1: every N minutes, from when the watch starts.
+        Every::Minutes => match s.when.minutes.unwrap_or(10) {
+            m if m >= 60 => "OnCalendar=*-*-* *:00:00\n".to_owned(),
+            m => format!("OnCalendar=*-*-* *:0/{m}:00\n"),
+        },
+        _ => slots(&s.when).iter().map(|(h, m)| format!("OnCalendar={days}*-*-* {h:02}:{m:02}:00\n")).collect(),
+    };
     let service = format!(
         "[Unit]\nDescription=fastpilot schedule {id}\n\n[Service]\nType=oneshot\nEnvironment={}\nExecStart={} schedule run {id}\n",
         systemd_word(&format!("PATH={path}")),
@@ -460,10 +527,15 @@ fn shell_quote(s: &str) -> String {
 /// One crontab line per minute-of-the-hour (every N hours from 08:30 is `30 8,10,12 ...`).
 pub fn cron_lines(s: &Schedule, exe: &str, path: &str) -> Vec<String> {
     let dow = match s.when.every {
-        Every::Day | Every::Hours => "*".to_owned(),
+        Every::Day | Every::Hours | Every::Minutes => "*".to_owned(),
         Every::Weekday => "1-5".to_owned(),
         Every::Week => (s.when.day.unwrap_or(1) % 7).to_string(),
     };
+    if s.when.every == Every::Minutes {
+        let m = s.when.minutes.unwrap_or(10);
+        let minute = if m >= 60 { "0".to_owned() } else { format!("*/{m}") };
+        return vec![format!("{minute} * * * * PATH={} {} schedule run {} # fastpilot-schedule:{}", shell_quote(path), shell_quote(exe), s.id, s.id)];
+    }
     let mut by_minute: std::collections::BTreeMap<u8, Vec<String>> = Default::default();
     for (h, m) in slots(&s.when) {
         by_minute.entry(m).or_default().push(h.to_string());
@@ -628,6 +700,28 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
     Ok(s)
 }
 
+/// R1: the page gives a release watch as how many hours it lasts; fastpilot keeps its state (the
+/// "before" run and what was sent), never the page.
+pub fn with_watch(mut s: Schedule, hours: Option<u64>) -> Res<Schedule> {
+    if s.when.every != Every::Minutes {
+        s.watch = None;
+        return Ok(s);
+    }
+    let old = if s.id.is_empty() { None } else { load().schedules.into_iter().find(|x| x.id == s.id).and_then(|x| x.watch) };
+    let mut w = old.unwrap_or_default();
+    match hours {
+        Some(h @ 1..=24) => {
+            w.until_ms = now_ms() + h * 3_600_000;
+            w.ended = false;
+        }
+        Some(_) => return Err("A release watch lasts 1 to 24 hours".into()),
+        None if w.until_ms == 0 => return Err("Say how many hours the release watch lasts (1 to 24)".into()),
+        None => {}
+    }
+    s.watch = Some(w);
+    Ok(s)
+}
+
 /// D10a: an agent's schedules go to another (when it is deleted). No OS entry changes.
 pub fn move_agent(from: &str, to: &str) -> Res<()> {
     let mut store = load();
@@ -724,6 +818,14 @@ pub async fn run(id: &str) -> Res<bool> {
         println!("\"{}\" is already running; this start is skipped.", s.name);
         return Ok(true);
     }
+    // R1: a release watch ends by itself; its scheduler entry is removed then.
+    if let Some(w) = &s.watch
+        && (w.ended || now_ms() >= w.until_ms)
+    {
+        end_watch(&s)?;
+        println!("The release watch \"{}\" has ended.", s.name);
+        return Ok(true);
+    }
     let started = now_ms();
     let reports = reports_dir();
     std::fs::create_dir_all(&reports).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
@@ -755,6 +857,23 @@ pub async fn run(id: &str) -> Res<bool> {
     let report = report.exists().then(|| report.to_string_lossy().into_owned());
     let (ok, total) = counts(&text).unzip();
     let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None };
+    if let Some(w) = s.watch.clone() {
+        // R1: compared with the first run; only a new problem is sent, once.
+        let (w, new, text) = watch_step(w, &text, &summary);
+        last.summary = text;
+        if !new.is_empty() {
+            let list = new.iter().map(|(id, why)| if why.is_empty() { id.clone() } else { format!("{id}: {why}") }).collect::<Vec<_>>().join("; ");
+            let msg = format!(
+                "fastpilot: a new problem since the release in \"{}\" — {list}{}",
+                s.name,
+                report.as_deref().map(|r| format!("\nReport: {r}")).unwrap_or_default()
+            );
+            last.notified = notify(&s, &format!("Release watch \"{}\": a new problem", s.name), &msg).await;
+        }
+        set_watch(id, w)?;
+        set_last(id, last)?;
+        return Ok(new.is_empty());
+    }
     if !passed {
         let msg = format!(
             "fastpilot: schedule \"{}\" failed — {summary}{}",
@@ -765,6 +884,92 @@ pub async fn run(id: &str) -> Res<bool> {
     }
     set_last(id, last)?;
     Ok(passed)
+}
+
+/// The tests that failed in a run's output (`✗ id …: why`), with why.
+pub fn failed_tests(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|l| l.strip_prefix("✗ "))
+        .map(|l| (l.split_whitespace().next().unwrap_or("").to_owned(), l.split_once(": ").map(|(_, why)| clip(why.trim(), 160)).unwrap_or_default()))
+        .filter(|(id, _)| !id.is_empty())
+        .collect()
+}
+
+/// What could not run is a problem too (no summary line: the suite did not start).
+const NOT_RUN: &str = "(the tests could not run)";
+
+/// One run of a release watch: the first sets "before"; a later one finds the failures that are
+/// new (not failing before, not sent yet). The watch's new state, the new problems, the summary.
+pub fn watch_step(mut w: Watch, output: &str, summary: &str) -> (Watch, Vec<(String, String)>, String) {
+    let mut failing = failed_tests(output);
+    if counts(output).is_none() {
+        failing.push((NOT_RUN.into(), clip(summary, 160)));
+    }
+    let until = local_time(w.until_ms);
+    let Some(before) = w.before.clone() else {
+        w.before = Some(failing.iter().map(|(id, _)| id.clone()).collect());
+        return (w, vec![], format!("Before the release: {summary}. Watching for new problems until {until}."));
+    };
+    let new: Vec<(String, String)> = failing.into_iter().filter(|(id, _)| !before.contains(id) && !w.sent.contains(id)).collect();
+    w.sent.extend(new.iter().map(|(id, _)| id.clone()));
+    let text = if new.is_empty() {
+        format!("No new problem since the release (watching until {until}) — {summary}")
+    } else {
+        format!("{} new since the release — {summary}", if new.len() == 1 { "1 problem".to_owned() } else { format!("{} problems", new.len()) })
+    };
+    (w, new, text)
+}
+
+/// What the Schedules page shows for a release watch: "until 14:30" or "ended".
+pub fn watch_text(s: &Schedule) -> Option<String> {
+    let w = s.watch.as_ref()?;
+    Some(if w.ended || now_ms() >= w.until_ms {
+        "Release watch · ended".to_owned()
+    } else if w.before.is_none() {
+        format!("Release watch until {} · taking the \"before\" run", local_time(w.until_ms))
+    } else {
+        format!("Release watch until {} · notifies only about a new problem", local_time(w.until_ms))
+    })
+}
+
+/// `HH:MM` on this computer.
+fn local_time(ms: u64) -> String {
+    fastpilot_core::claim::local_hm(ms)
+}
+
+fn set_watch(id: &str, w: Watch) -> Res<()> {
+    let mut store = load();
+    if let Some(s) = store.schedules.iter_mut().find(|x| x.id == id) {
+        s.watch = Some(w);
+    }
+    save_store(&store)
+}
+
+/// The end of a release watch: off the scheduler, kept in the list with how it went.
+fn end_watch(s: &Schedule) -> Res<()> {
+    uninstall(&s.id)?;
+    let mut store = load();
+    let mut sent = 0;
+    if let Some(x) = store.schedules.iter_mut().find(|x| x.id == s.id) {
+        x.enabled = false;
+        if let Some(w) = x.watch.as_mut() {
+            w.ended = true;
+            sent = w.sent.len();
+        }
+    }
+    save_store(&store)?;
+    let mut last = load().last.get(&s.id).cloned().unwrap_or_default();
+    if !last.summary.starts_with("Release watch ended") {
+        last.summary = match sent {
+            0 => "Release watch ended: no new problem since the release".to_owned(),
+            1 => "Release watch ended: 1 new problem since the release (notified)".to_owned(),
+            n => format!("Release watch ended: {n} new problems since the release (notified)"),
+        };
+        last.pid = None;
+        set_last(&s.id, last)?;
+    }
+    Ok(())
 }
 
 /// `(passed, total)` from the suite's summary line `3 tests: 2 passed, ...`.
@@ -953,7 +1158,7 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`";
+pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID | watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`\n  watch: after a release, run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first run is the\n  \"before\", and you hear only about a problem that is new since then, once (Mac notification or GitHub issue)";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match (args.first().map(String::as_str), args.get(1)) {
@@ -964,7 +1169,11 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             }
             for s in &store.schedules {
                 let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "not run yet".into());
-                println!("{} {:<20} {:<18} {} [{}]", if s.enabled { "●" } else { "○" }, s.id, describe(&s.when), s.tests, last);
+                let when = match watch_text(s) {
+                    Some(w) => format!("{} · {w}", describe(&s.when)),
+                    None => describe(&s.when),
+                };
+                println!("{} {:<20} {:<18} {} [{}]", if s.enabled { "●" } else { "○" }, s.id, when, s.tests, last);
             }
             Ok(())
         }
@@ -975,6 +1184,34 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             Ok(())
         }
         (Some("remove"), Some(id)) => Ok(delete(id)?),
+        (Some("watch"), Some(tests)) => {
+            let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+            let num = |k: &str| opt(k).map(|v| v.trim_end_matches(['m', 'h']).parse::<u64>().map_err(|_| format!("{k} needs a number")));
+            let minutes = num("--every").transpose()?.ok_or("say how often: --every 10 (minutes)")?;
+            let hours = num("--for").transpose()?.ok_or("say for how long: --for 2 (hours)")?;
+            let path = std::fs::canonicalize(tests).map_err(|_| format!("Tests not found: {tests}"))?;
+            let name = opt("--name").unwrap_or_else(|| format!("Release watch: {}", path.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default()));
+            let s = Schedule {
+                id: String::new(),
+                name,
+                tests: path.to_string_lossy().into_owned(),
+                when: When { every: Every::Minutes, minutes: Some(u16::try_from(minutes).unwrap_or(0)), ..Default::default() },
+                notify: Notify { webhook: false, os: args.iter().any(|a| a == "--os"), github: opt("--github") },
+                enabled: true,
+                agent: None,
+                watch: None,
+            };
+            let s = save(with_watch(s, Some(hours))?, None)?;
+            start_now(&s.id)?;
+            let until = s.watch.as_ref().map(|w| local_time(w.until_ms)).unwrap_or_default();
+            println!("Release watch \"{}\" ({}): every {minutes} minutes until {until}.", s.name, s.id);
+            println!("The first run starts now: it is the \"before\". After that you hear only about a problem that is new since then, once.");
+            if !s.notify.os && s.notify.github.is_none() {
+                println!("No notification is set: add --os or --github owner/repo, or a Slack webhook on the Schedules page.");
+            }
+            println!("Stop it early: fastpilot schedule remove {}", s.id);
+            Ok(())
+        }
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -986,6 +1223,60 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
 mod tests {
     use super::*;
 
+    /// R1: the first run is "before"; later only failures that are new and not sent yet count.
+    #[test]
+    fn a_release_watch_compares_with_before_and_sends_each_new_problem_once() {
+        let out = |failed: &[&str]| {
+            let mut t: String = failed.iter().map(|id| format!("✗ {id} 3.0s, 2 turns, haiku [product]: {id} broke\n")).collect();
+            t.push_str(&format!("\n3 tests: {} passed, {} failed, 0 quarantined failures, in 9.0s; tokens in 1 (cache read 0) out 1\n", 3 - failed.len(), failed.len()));
+            t
+        };
+        let w = Watch { until_ms: now_ms() + 3_600_000, ..Default::default() };
+        let (w, new, text) = watch_step(w, &out(&["search"]), "2 of 3 tests passed, 1 failed");
+        assert!(new.is_empty() && text.starts_with("Before the release: 2 of 3 tests passed"), "{text}");
+        assert_eq!(w.before.as_deref(), Some(&["search".to_owned()][..]));
+        // "search" failed before: not new. "checkout" is.
+        let (w, new, text) = watch_step(w, &out(&["search", "checkout"]), "1 of 3 tests passed, 2 failed");
+        assert_eq!(new, [("checkout".to_owned(), "checkout broke".to_owned())]);
+        assert!(text.starts_with("1 problem new since the release"), "{text}");
+        // Still failing: sent once only.
+        let (w, new, _) = watch_step(w, &out(&["search", "checkout"]), "x");
+        assert!(new.is_empty());
+        // The suite could not run at all: that is new once too.
+        let (w, new, _) = watch_step(w, "error: Chrome not found", "did not run: Chrome not found");
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].0, NOT_RUN);
+        let (_, new, _) = watch_step(w, "error: Chrome not found", "did not run");
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn a_release_watch_runs_every_n_minutes_on_every_scheduler() {
+        let mut s = sched(Every::Day, None);
+        s.when = When { every: Every::Minutes, minutes: Some(10), ..Default::default() };
+        s.watch = Some(Watch { until_ms: now_ms() + 3_600_000, ..Default::default() });
+        assert!(check_when(&s.when).is_ok());
+        assert_eq!(describe(&s.when), "every 10 minutes");
+        assert!(plist(&s, "/bin/fastpilot", "/usr/bin", Path::new("/tmp/l")).contains("<key>StartInterval</key><integer>600</integer>"));
+        assert!(systemd_units(&s, "/bin/fastpilot", "/usr/bin").1.contains("OnCalendar=*-*-* *:0/10:00"));
+        assert!(cron_lines(&s, "/bin/fastpilot", "/usr/bin")[0].starts_with("*/10 * * * * "));
+        s.when.minutes = Some(60);
+        assert!(cron_lines(&s, "/bin/fastpilot", "/usr/bin")[0].starts_with("0 * * * * "));
+        assert!(systemd_units(&s, "/bin/fastpilot", "/usr/bin").1.contains("OnCalendar=*-*-* *:00:00"));
+        // Only the minutes that divide an hour; minutes only for a watch, a watch only every N minutes.
+        assert!(check_when(&When { every: Every::Minutes, minutes: Some(7), ..Default::default() }).is_err());
+        assert!(check_when(&When { every: Every::Day, time: "08:00".into(), minutes: Some(10), ..Default::default() }).is_err());
+        let mut forever = s.clone();
+        forever.watch = None;
+        assert!(validate(&forever).unwrap_err().contains("only for a release watch"));
+        let mut daily = sched(Every::Day, None);
+        daily.watch = Some(Watch::default());
+        assert!(validate(&daily).is_err());
+        let mut long = s.clone();
+        long.watch = Some(Watch { until_ms: now_ms() + 48 * 3_600_000, ..Default::default() });
+        assert!(validate(&long).unwrap_err().contains("1 to 24 hours"));
+    }
+
     fn sched(every: Every, day: Option<u8>) -> Schedule {
         Schedule {
             id: "login-harian".into(),
@@ -995,6 +1286,7 @@ mod tests {
             notify: Notify::default(),
             enabled: true,
             agent: None,
+            watch: None,
         }
     }
 

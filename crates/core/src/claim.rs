@@ -245,6 +245,16 @@ pub fn local_day() -> i64 {
     (secs + tm.tm_gmtoff) / 86_400
 }
 
+/// `HH:MM` on this computer's clock for a time in ms since 1970 (R1: "watching until 14:30").
+pub fn local_hm(ms: u64) -> String {
+    let secs = (ms / 1000) as i64;
+    // SAFETY: an all-zero `tm` is valid; localtime_r writes only into it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let t = secs as libc::time_t;
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
