@@ -168,6 +168,21 @@ fn init_without_claude_code_prints_the_command_and_global_uses_the_user_scope() 
     assert!(out.contains("✓ sudah terdaftar") && g.adds().len() == 1, "{out}");
 }
 
+/// Security Low 1: a project whose `tests/` or `.claude/` is a symlink: init writes nothing through it.
+#[cfg(unix)]
+#[test]
+fn init_never_writes_through_a_symlink() {
+    let b = Box_::new("symlink");
+    let outside = b.root.join("outside");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::os::unix::fs::symlink(&outside, b.project().join("tests")).expect("link");
+    std::os::unix::fs::symlink(&outside, b.project().join(".claude")).expect("link");
+    let (code, out) = b.init(&["--yes"], FAKE);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.matches("symlink; fastpilot tidak menulis lewat symlink").count() >= 2, "{out}");
+    assert_eq!(std::fs::read_dir(&outside).expect("outside").count(), 0, "nothing written outside the project");
+}
+
 #[test]
 fn help_names_init_and_demo() {
     for args in [vec!["help"], vec!["--help"]] {

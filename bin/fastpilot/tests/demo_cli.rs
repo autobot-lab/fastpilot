@@ -101,6 +101,10 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     }
     let login = std::fs::read_to_string(folder.join("tests/login.md")).expect("test");
     assert!(login.contains("target: demo/login.html"), "{login}");
+    // QA Low 4: the Skill is in the demo folder, so Claude knows the steps.
+    let skill = std::fs::read(format!("{ROOT}/skills/fastpilot/SKILL.md")).expect("repo skill");
+    assert_eq!(std::fs::read(folder.join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
+    assert!(out.contains(".claude/skills/fastpilot/SKILL.md"), "{out}");
 
     // Already there: nothing changes, exit ≠ 0; --force writes it again.
     let before = snapshot(&folder);
@@ -115,6 +119,44 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     // --android without a device: skipped, exit 0.
     let (code, out) = demo(&tmp, &["--android"], false);
     assert!(code == Some(0) && out.contains("dilewati: tidak ada device"), "{code:?} {out}");
+    // QA Low 5: run from inside the demo folder: warned that the new one is nested.
+    let (code, out) = demo(&folder, &[], false);
+    assert!(code == Some(0) && out.contains("di dalam folder demo") && out.contains("cd .."), "{code:?} {out}");
+    let _ = std::fs::remove_dir_all(folder.join("fastpilot-demo"));
+    let (_, out) = demo(&tmp, &["elsewhere"], false);
+    assert!(!out.contains("di dalam folder demo"), "no warning outside a demo folder: {out}");
+
+    // Security Low 2: --force keeps the user's own .mcp.json (other servers stay, a backup is made).
+    let mine = "{\n  \"mcpServers\": {\n    \"other\": { \"command\": \"other-mcp\" }\n  }\n}\n";
+    std::fs::write(folder.join(".mcp.json"), mine).expect("mine");
+    let (code, out) = demo(&tmp, &["--force"], false);
+    assert!(code == Some(0) && out.contains("disimpan di .mcp.json.bak"), "{code:?} {out}");
+    assert_eq!(std::fs::read_to_string(folder.join(".mcp.json.bak")).expect("backup"), mine);
+    let merged: Value = serde_json::from_str(&std::fs::read_to_string(folder.join(".mcp.json")).expect("merged")).expect("json");
+    assert_eq!(merged["mcpServers"]["other"]["command"], "other-mcp", "the other server stays");
+    assert_eq!(merged["mcpServers"]["fastpilot"]["env"]["FASTPILOT_VARS"], "DEMO_PASS");
+    let (_, out) = demo(&tmp, &["--force"], false);
+    assert!(!out.contains(".mcp.json.bak") && !folder.join(".mcp.json.bak-2").exists(), "nothing to save the second time: {out}");
+    std::fs::remove_file(folder.join(".mcp.json.bak")).expect("rm");
+
+    // Security Low 1: never written through a symlink (a folder inside, or the demo folder itself).
+    #[cfg(unix)]
+    {
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::rename(folder.join("tests"), tmp.join("tests-real")).expect("move");
+        std::os::unix::fs::symlink(&outside, folder.join("tests")).expect("link");
+        let (code, out) = demo(&tmp, &["--force"], false);
+        assert!(code != Some(0) && out.contains("symlink"), "{code:?} {out}");
+        assert_eq!(std::fs::read_dir(&outside).expect("outside").count(), 0, "nothing written outside");
+        std::fs::remove_file(folder.join("tests")).expect("unlink");
+        std::fs::rename(tmp.join("tests-real"), folder.join("tests")).expect("back");
+        std::os::unix::fs::symlink(&outside, tmp.join("linked-demo")).expect("link");
+        let (code, out) = demo(&tmp, &["linked-demo", "--force"], false);
+        assert!(code != Some(0) && out.contains("symlink"), "{code:?} {out}");
+        assert_eq!(std::fs::read_dir(&outside).expect("outside").count(), 0);
+    }
+
     // Another folder name.
     let (code, out) = demo(&tmp, &["coba lagi"], false);
     assert!(code == Some(0) && out.contains("cd \"coba lagi\" && claude") && tmp.join("coba lagi/.mcp.json").exists(), "{out}");
@@ -144,6 +186,30 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     let tmp = std::env::temp_dir().join(format!("fp-demo-and-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).expect("tmp");
+
+    // QA Low 3: a demo app signed with another key is installed: the message says how to fix it.
+    let sdk = std::env::var("ANDROID_HOME").unwrap_or_else(|_| format!("{}/Library/Android/sdk", std::env::var("HOME").unwrap_or_default()));
+    let signer = std::fs::read_dir(format!("{sdk}/build-tools")).ok().and_then(|d| d.flatten().map(|e| e.path().join("apksigner")).filter(|p| p.exists()).max());
+    if let Some(signer) = signer {
+        let key = tmp.join("other.jks");
+        let apk = tmp.join("other.apk");
+        std::fs::copy(format!("{ROOT}/examples/demo-android/out/fastpilot-demo.apk"), &apk).expect("copy");
+        let made = std::process::Command::new("keytool")
+            .args(["-genkeypair", "-keystore"]).arg(&key)
+            .args(["-storepass", "android", "-keypass", "android", "-alias", "other", "-keyalg", "RSA", "-keysize", "2048", "-validity", "1", "-dname", "CN=other"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let signed = made
+            && std::process::Command::new(&signer).args(["sign", "--ks"]).arg(&key).args(["--ks-pass", "pass:android"]).arg(&apk).output().is_ok_and(|o| o.status.success());
+        if signed && std::process::Command::new(&adb).args(["-s", &serial, "install", "-r"]).arg(&apk).output().is_ok_and(|o| o.status.success()) {
+            let (code, out) = demo(&tmp, &["other-demo", "--android", "--device", &serial], true);
+            assert_eq!(code, Some(1), "{out}");
+            assert!(out.contains(&format!("adb -s {serial} uninstall com.fastpilot.demo")) && !out.contains("INSTALL_FAILED"), "{out}");
+        } else {
+            eprintln!("note: could not install a differently signed demo app; the hint is covered by the unit test");
+        }
+        let _ = std::process::Command::new(&adb).args(["-s", &serial, "uninstall", "com.fastpilot.demo"]).output();
+    }
     let (code, out) = demo(&tmp, &["--android", "--device", &serial], true);
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains(&format!("✓ {serial} · com.fastpilot.demo terpasang")) && out.contains("tests/login-android.md"), "{out}");
