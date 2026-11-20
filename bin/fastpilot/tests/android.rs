@@ -174,6 +174,31 @@ async fn android_login_webview_and_cross_platform_over_mcp() {
     client.cancel().await.expect("shutdown");
 }
 
+/// FastTest F7: `launchApp` failed with "io: early eof" right after a session started, because the
+/// agent had been stopped in between (another fastpilot session on the same device stops the agent
+/// when it starts). The next step now finds the agent gone, starts it again, and goes on; nothing is
+/// sent twice.
+#[tokio::test]
+async fn android_agent_stopped_between_steps_is_started_again() {
+    let _device = DEVICE.lock().await;
+    if prepare().is_none() {
+        return;
+    }
+    let client: Client = ().serve(server()).await.expect("initialize");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: and9, platform: android }\n" })).await;
+    assert!(ok, "{out}");
+    // What a second fastpilot's session start does to the first one's agent.
+    let _ = adb_s(&["shell", "am", "force-stop", "com.fastpilot.agent"]).output();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let flow = "- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n- inputText: { into: \"Email\", text: \"a@b.com\" }\n";
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow, "session": "and9" })).await;
+    assert!(ok && !out.contains("early eof"), "{out}");
+    let (ok, out) = call(&client, "snapshot", json!({ "session": "and9" })).await;
+    assert!(ok && out.contains("a@b.com"), "typed once, in the restarted agent's session: {out}");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "and9" })).await;
+    client.cancel().await.expect("shutdown");
+}
+
 fn adb_shell(cmd: &str) -> String {
     let out = adb_s(&["shell", cmd]).output().expect("adb");
     String::from_utf8_lossy(&out.stdout).into_owned()
