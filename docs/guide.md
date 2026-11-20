@@ -3,53 +3,51 @@
 The complete guide and technical reference. New here? Start with the [README](../README.md): it has only the
 steps you need to get going.
 
-> This guide is still in Indonesian. An English version will follow.
+## The first 10 minutes
 
-## 10 menit pertama
+You need: macOS or Linux, Chrome, and [Claude Code](https://claude.com/claude-code), already signed in.
 
-Butuh: macOS atau Linux, Chrome, dan [Claude Code](https://claude.com/claude-code) yang sudah login.
-
-**1. Pasang** (± 1 menit)
+**1. Install** (about 1 minute)
 
 ```bash
 npm install -g fastpilot
 ```
 
-**2. Coba demo** (± 3 menit)
+**2. Try the demo** (about 3 minutes)
 
 ```bash
 fastpilot demo && cd fastpilot-demo && claude
 ```
 
-Ketik di Claude: *"Pakai fastpilot, jalankan tests/login.md lalu report"* (setujui server `fastpilot` saat
-Claude menanyakannya). Hasil: ✓ `login-ok` lolos, laporan di `.fastpilot/runs/`. `fastpilot demo` membuat
-halaman demo, contoh test, `.mcp.json` (fastpilot + password demo publik), dan Skill fastpilot di folder itu.
+Type in Claude: *"Use fastpilot, run tests/login.md, then report"* (approve the `fastpilot` server when
+Claude asks). Result: ✓ `login-ok` passes, and the report is in `.fastpilot/runs/`. `fastpilot demo` creates
+a demo page, a sample test, `.mcp.json` (fastpilot + the public demo password), and the fastpilot Skill in that folder.
 
-**3. Pakai di proyekmu** (± 5 menit)
+**3. Use it in your project** (about 5 minutes)
 
 ```bash
 cd ~/proyek-kamu && fastpilot init
 ```
 
-`init` mengecek mesin, mendaftarkan fastpilot ke Claude Code, memasang Skill, membuat `tests/contoh.md`,
-dan menampilkan Batasan; tiap perubahan ditanya dulu (`--yes` untuk menyetujui semua). Ubah `target` di
-`tests/contoh.md` ke URL aplikasimu, lalu minta Claude menjalankannya.
+`init` checks your computer, registers fastpilot with Claude Code, installs the Skill, creates `tests/contoh.md`,
+and shows the Limits. It asks before each change (`--yes` approves all of them). Change `target` in
+`tests/contoh.md` to your app's URL, then ask Claude to run it.
 
-### Kalau macet
+### If you get stuck
 
-Jalankan `fastpilot doctor` dulu; biasanya penyebab dan perbaikannya langsung tampil.
+Run `fastpilot doctor` first. It usually shows the cause and the fix right away.
 
-| Lihat pesan | Lakukan |
+| If you see | Do this |
 |---|---|
-| `Chrome atau Chromium tidak ditemukan` | `fastpilot setup web` |
-| fastpilot tidak muncul di Claude | `claude mcp list`, lalu `fastpilot init` lagi |
-| `blocked: … (block_actions, built-in list)` / "Diblokir Batasan" di Live | sengaja: tombol pembayaran dan hapus akun diblokir bawaan. Ubah di `fastpilot ui` → Pengaturan › Batasan & izin |
-| `evalScript is off while block_actions is on` | toggle "Jalankan JavaScript bebas" di Batasan & izin, atau `fastpilot config set allow_eval_script true` |
-| `looks like a risky action … confirm_actions` | tombol hapus/delete/remove: tulis langkahnya dengan `confirm: true` kalau memang dimaksud |
-| `build fastpilot ini tidak membawa agent Android` | pakai binary rilis (npm/curl), atau `agent-android/build.sh` lalu build ulang |
-| `runner XCUITest belum di-build` | `ios-runner/build.sh` dari checkout (iOS, lihat di bawah) |
-| `variable X is not allowed` | tambahkan `X` ke `FASTPILOT_VARS` di konfigurasi MCP |
-| Log detail | tambahkan `-e FASTPILOT_LOG=debug` (log ke stderr server MCP) |
+| `Chrome not found` | `fastpilot setup web` |
+| fastpilot does not show up in Claude | `claude mcp list`, then `fastpilot init` again |
+| `blocked: … (block_actions, built-in list)` / "Blocked by Limits" in Live | on purpose: payment and delete-account buttons are blocked by the built-in limits. Change this in `fastpilot ui` → Settings › Limits & permissions |
+| `evalScript is off while block_actions is on` | the "Run any JavaScript" toggle in Limits & permissions, or `fastpilot config set allow_eval_script true` |
+| `looks like a risky action … confirm_actions` | a delete/remove button: write that step with `confirm: true` if you really mean it |
+| `this fastpilot build has no Android agent` / `agent APK not embedded` | use a release binary (npm/curl), or run `agent-android/build.sh` and build again |
+| `runner not built` | `ios-runner/build.sh` from a checkout (iOS, see below) |
+| `variable X is not allowed` | add `X` to `FASTPILOT_VARS` in the MCP configuration |
+| Detailed log | add `-e FASTPILOT_LOG=debug` (logs go to the MCP server's stderr) |
 
 ### Android
 
@@ -61,15 +59,15 @@ fastpilot setup android
 fastpilot demo --android
 ```
 
-`setup android` menyiapkan SDK dan emulator (ditanya dulu tiap langkah); `demo --android` memasang app demo
-di device atau emulator yang tersambung (`--device SERIAL` kalau ada beberapa). Lalu di folder demo:
-*"Pakai fastpilot, jalankan tests/login-android.md"*. Langkah terakhirnya mencoba menekan "Bayar" dan
-mengharapkan fastpilot menolaknya.
+`setup android` sets up the SDK and the emulator (it asks before each step). `demo --android` installs the demo app
+on the connected device or emulator (`--device SERIAL` if there are several). Then, in the demo folder:
+*"Use fastpilot, run tests/login-android.md"*. Its last step tries to press "Bayar" and
+expects fastpilot to refuse it.
 
-### iOS (menyusul di v0.3.3; sekarang dari checkout)
+### iOS (coming in v0.3.3; for now from a checkout)
 
-iOS butuh Xcode dan runner XCUITest yang dibangun dari checkout (`ios-runner/build.sh`, lihat
-[Build dari source](#build-dari-source)).
+iOS needs Xcode and the XCUITest runner built from a checkout (`ios-runner/build.sh`, see
+[Build from source](#build-from-source)).
 
 **iOS (simulator):**
 
@@ -81,14 +79,14 @@ xcrun simctl boot "iPhone 16"
 xcrun simctl install booted ios-runner/build/Build/Products/Debug-iphonesimulator/FastpilotDemo.app
 ```
 
-Lalu minta Claude: *"Pakai fastpilot di platform ios, buka app com.fastpilot.demo, login pakai a@b.com /
-`${DEMO_PASS}`, pastikan 'Selamat datang, Budi' tampil."* Sesi iOS pertama butuh sekitar 20–30 detik
-untuk menyalakan runner.
+Then ask Claude: *"Use fastpilot on the ios platform, open the app com.fastpilot.demo, log in with a@b.com /
+`${DEMO_PASS}`, and check that 'Selamat datang, Budi' shows."* The first iOS session takes about 20–30 seconds
+to start the runner.
 
 ### Claude Desktop
 
-Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) atau
-`%APPDATA%\Claude\claude_desktop_config.json` (Windows), lalu restart Claude Desktop:
+Add the block below to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows), then restart Claude Desktop:
 
 ```json
 {
@@ -102,74 +100,74 @@ Tambahkan blok berikut ke `~/Library/Application Support/Claude/claude_desktop_c
 }
 ```
 
-Claude Desktop tidak menjalankan server dari folder proyek. Karena itu, pakai path command absolut (lihat
-`which fastpilot`; `~/.local/bin` untuk skrip instal, `~/.cargo/bin` untuk `cargo install`), URL atau path
-absolut di `target`, dan set `FASTPILOT_DIR` ke folder hasil yang bisa ditulisi.
+Claude Desktop does not start the server from your project folder. So use an absolute command path (see
+`which fastpilot`; `~/.local/bin` for the install script, `~/.cargo/bin` for `cargo install`), a URL or an absolute
+path in `target`, and set `FASTPILOT_DIR` to a results folder you can write to.
 
-### Batasan aman bawaan
+### Built-in safety limits
 
-Sejak 0.3.2, selama kamu belum mengisi daftarnya:
+Since 0.3.2, as long as you have not filled in the lists yourself:
 
-- **Selalu diblokir** (`block_actions`): bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan,
-  place order, hapus akun, delete account. Dicocokkan per kata utuh ("Pay now" dan "Delete my account" kena,
-  "Paypal" tidak), juga dengan `confirm: true`.
-- **Butuh konfirmasi** (`confirm_actions`): hapus, delete, remove. AI harus menulis `confirm: true`.
-- **evalScript mati** selama daftar blokir aktif, karena script bisa menekan tombol yang diblokir. Nyalakan
-  sendiri lewat toggle "Jalankan JavaScript bebas" atau `fastpilot config set allow_eval_script true`;
-  AI tidak bisa menyalakannya.
-- **Mengosongkan:** tombol **Kosongkan** di `fastpilot ui` › Pengaturan › Batasan & izin, atau
-  `fastpilot config set block_actions ""`, lalu restart server MCP. Kembali ke bawaan:
-  `fastpilot config unset block_actions`. AI (lewat chat atau tool `config`) hanya bisa memperketat.
+- **Always blocked** (`block_actions`): bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan,
+  place order, hapus akun, delete account. Matched on whole words ("Pay now" and "Delete my account" are caught,
+  "Paypal" is not), even with `confirm: true`.
+- **Needs confirmation** (`confirm_actions`): hapus, delete, remove. The AI must write `confirm: true`.
+- **evalScript is off** while the block list is active, because a script could press a blocked button. Turn it on
+  yourself with the "Run any JavaScript" toggle or `fastpilot config set allow_eval_script true`.
+  The AI cannot turn it on.
+- **Clearing the list:** the **Empty it** button in `fastpilot ui` › Settings › Limits & permissions, or
+  `fastpilot config set block_actions ""`, then restart the MCP server. To go back to the built-in list:
+  `fastpilot config unset block_actions`. The AI (through chat or the `config` tool) can only make limits stricter.
 
-Semua pengaturan: [Pengaturan](#pengaturan).
+All settings: [Settings](#settings).
 
-## Detail pemasangan
+## Installation details
 
-### Cara pasang lain
+### Other ways to install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
 ```
 
-- npm dan skrip mengunduh arsip rilis dari [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
-  dan mengecek SHA-256-nya sebelum memasang. Skrip memasang ke `~/.local/bin`; lokasi lain:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`, versi tertentu: `FASTPILOT_VERSION=0.3.2`.
-- Tanpa instal: `npx -y fastpilot mcp`.
-- Homebrew belum tersedia (repo tap belum dibuat).
-- Agent Android sudah tertanam di binary rilis. iOS tetap butuh Xcode dan runner dari checkout
-  (`ios-runner/build.sh`, lihat [Build dari source](#build-dari-source)).
+- npm and the script download the release archive from [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
+  and check its SHA-256 before installing. The script installs to `~/.local/bin`. For another location:
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.3.2`.
+- Without installing: `npx -y fastpilot mcp`.
+- Homebrew is not available yet (the tap repo does not exist yet).
+- The Android agent is already built into the release binary. iOS still needs Xcode and the runner from a checkout
+  (`ios-runner/build.sh`, see [Build from source](#build-from-source)).
 
-### Cek dan siapkan mesin
+### Check and prepare your computer
 
 ```bash
 fastpilot doctor
 ```
 
-`doctor` mengecek tiap platform dan menampilkan ✓/!/✗ dengan petunjuk perbaikan:
+`doctor` checks each platform and shows ✓/!/✗ with hints on how to fix things:
 
-- **web:** Chrome ditemukan dan bisa dinyalakan headless.
-- **android:** `adb`, agent tertanam, device/emulator menyala, AVD tersedia.
-- **ios:** Xcode, simulator, runner XCUITest.
-- **run:** Claude Code (`claude`) untuk `fastpilot run`.
+- **web:** Chrome is found and can start headless.
+- **android:** `adb`, the built-in agent, a running device/emulator, an available AVD.
+- **ios:** Xcode, simulator, XCUITest runner.
+- **run:** Claude Code (`claude`) for `fastpilot run`.
 
-`fastpilot doctor android` (atau `web`, `ios`) hanya mengecek satu platform dan keluar dengan kode ≠ 0
-kalau platform itu belum siap. `fastpilot doctor` tanpa argumen menampilkan semua platform, tapi kode
-keluarnya hanya ditentukan oleh web (≠ 0 bila ada ✗ di web), aturan yang sama dengan `setup`. Di CI,
-sebut platform yang dipakai, mis. `fastpilot doctor web android`. Untuk memperbaiki yang bisa diperbaiki otomatis (pasang Chrome lewat
-Homebrew, unduh image Android, buat AVD `fastpilot_api35`, nyalakan emulator):
+`fastpilot doctor android` (or `web`, `ios`) checks only one platform and exits with a code ≠ 0
+if that platform is not ready. `fastpilot doctor` with no arguments shows every platform, but its exit
+code depends only on web (≠ 0 if web has a ✗), the same rule as `setup`. In CI,
+name the platforms you use, e.g. `fastpilot doctor web android`. To fix what can be fixed automatically (install Chrome with
+Homebrew, download the Android image, create the `fastpilot_api35` AVD, start the emulator):
 
 ```bash
 fastpilot setup android
 ```
 
-`setup` menanyakan tiap perbaikan (y/N) sebelum menjalankannya; `--yes` untuk menyetujui semuanya. Di luar
-terminal (CI, agent) `setup` hanya mencetak rencananya. Seperti `doctor`, `setup` keluar dengan kode ≠ 0
-kalau sesudahnya masih ada ✗ (yang tidak bisa diperbaiki otomatis, dilewati, gagal, atau baru direncanakan)
-di platform yang disebut, atau di web bila tidak ada platform yang disebut.
+`setup` asks about each fix (y/N) before running it. `--yes` approves all of them. Outside a
+terminal (CI, an agent) `setup` only prints its plan. Like `doctor`, `setup` exits with a code ≠ 0
+if a ✗ remains afterwards (things that cannot be fixed automatically, or were skipped, failed, or only planned)
+on the named platforms, or on web if no platform is named.
 
-### Daftarkan ke Claude Code secara manual
+### Register with Claude Code manually
 
-`fastpilot init` melakukan ini untukmu. Manualnya, dari folder proyek:
+`fastpilot init` does this for you. To do it by hand, from your project folder:
 
 ```bash
 claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- fastpilot mcp
@@ -179,68 +177,68 @@ claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- 
 claude mcp list
 ```
 
-`fastpilot` harus tampil dengan status connected. Variabel di `FASTPILOT_VARS` (Secret) adalah satu-satunya
-variabel yang boleh dipakai flow lewat `${NAMA}`, dan nilainya selalu tampil sebagai `***` di output. Untuk
-melihat browser saat test berjalan, tambahkan `-e FASTPILOT_HEADFUL=1` (atau `fastpilot config set headful true`).
+`fastpilot` must show with the status connected. The variables in `FASTPILOT_VARS` (Secrets) are the only
+variables a flow may use through `${NAMA}`, and their values always show as `***` in output. To
+see the browser while a test runs, add `-e FASTPILOT_HEADFUL=1` (or `fastpilot config set headful true`).
 
-Diuji dengan Claude Code dan Claude Desktop. Klien MCP lain (Cursor, Codex, Gemini CLI) memakai cara yang
-sama (`fastpilot mcp` lewat stdio), tapi belum diuji.
+Tested with Claude Code and Claude Desktop. Other MCP clients (Cursor, Codex, Gemini CLI) use the same
+method (`fastpilot mcp` over stdio), but they have not been tested.
 
-**Agent Skill** (`fastpilot init` dan `fastpilot demo` sudah memasangnya). [`skills/fastpilot/SKILL.md`](../skills/fastpilot/SKILL.md) (format
-[Agent Skills](https://agentskills.io)) mengajari agent cara memakai fastpilot: alur `session` →
-`run_flow` → `report`, hint path memory, secret sebagai `${NAMA}`, dan batasan yang tidak boleh diakali.
-Claude Code memuatnya otomatis saat tugasnya cocok:
+**Agent Skill** (`fastpilot init` and `fastpilot demo` already install it). [`skills/fastpilot/SKILL.md`](../skills/fastpilot/SKILL.md) (in the
+[Agent Skills](https://agentskills.io) format) teaches the agent how to use fastpilot: the `session` →
+`run_flow` → `report` sequence, path memory hints, secrets as `${NAMA}`, and the limits it must not work around.
+Claude Code loads it automatically when the task matches:
 
 ```bash
-mkdir -p ~/.claude/skills && cp -R skills/fastpilot ~/.claude/skills/        # semua proyek
+mkdir -p ~/.claude/skills && cp -R skills/fastpilot ~/.claude/skills/        # every project
 ```
 
 ```bash
-mkdir -p .claude/skills && cp -R /path/ke/fastpilot/skills/fastpilot .claude/skills/   # satu proyek
+mkdir -p .claude/skills && cp -R /path/ke/fastpilot/skills/fastpilot .claude/skills/   # one project
 ```
 
-Tanpa checkout: unduh foldernya dari GitHub (`skills/fastpilot/`). Klien lain yang mendukung format Agent
-Skills memakai folder yang sama di lokasi skill masing-masing (belum diuji).
+Without a checkout: download the folder from GitHub (`skills/fastpilot/`). Other clients that support the Agent
+Skills format use the same folder in their own skill location (not tested).
 
-### Menulis test sendiri
+### Write your own tests
 
-Tulis test case Markdown seperti `tests/login.md`: judul, `id`, `platform`, `target`, lalu langkah dan
-harapan dalam bahasa biasa. Tidak perlu menulis selector atau script; Claude yang menyusun flow-nya.
-Simpan secret di konfigurasi MCP (`-e NAMA=nilai`, lalu tambahkan `NAMA` ke `FASTPILOT_VARS`), bukan di
-file config. Menjalankan test yang sama dua kali: kali kedua `session start` mengembalikan *hint* dari run
-sebelumnya, sehingga test bisa selesai dalam satu `run_flow`.
+Write a Markdown test case like `tests/login.md`: a title, `id`, `platform`, `target`, then the steps and
+expected results in plain language. You do not need to write selectors or scripts; Claude builds the flow.
+Store secrets in the MCP configuration (`-e NAMA=nilai`, then add `NAMA` to `FASTPILOT_VARS`), not in the
+config file. If you run the same test twice, the second time `session start` returns a *hint* from the
+previous run, so the test can finish in a single `run_flow`.
 
-## Fitur
+## Features
 
-- **Web:** CDP langsung lewat satu WebSocket (tanpa Node/chromedriver). Mode *launch* (Chrome milik
-  fastpilot, satu `BrowserContext` per sesi) atau *attach* (Chrome milik user).
-- **Android:** protokol adb server ditulis di Rust, plus agent instrumentation (UiAutomation) yang
-  di-embed di binary. Konten WebView digabung ke snapshot dan dikendalikan lewat CDP.
-- **iOS (simulator dan iPhone):** runner XCUITest milik fastpilot sendiri (`ios-runner/`), dibangun dari
-  source, tanpa Appium/WebDriverAgent. Konten WKWebView lewat Web Inspector.
-- DSL YAML kompatibel Maestro, ditambah `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
+- **Web:** CDP directly over one WebSocket (no Node/chromedriver). *Launch* mode (Chrome owned by
+  fastpilot, one `BrowserContext` per session) or *attach* mode (the user's own Chrome).
+- **Android:** the adb server protocol written in Rust, plus an instrumentation agent (UiAutomation)
+  embedded in the binary. WebView content is merged into the snapshot and controlled over CDP.
+- **iOS (simulator and iPhone):** fastpilot's own XCUITest runner (`ios-runner/`), built from
+  source, without Appium/WebDriverAgent. WKWebView content goes through Web Inspector.
+- A Maestro-compatible YAML DSL, plus `openUrl`, `evalScript`, `session`, `parallel`, `pressKey`,
   `selectOption`, `uploadFile`.
-- **Andal:**
-  - Auto-wait tanpa `sleep` (actionability, DOM/a11y quiet, navigasi, dan request yang dipicu aksi).
-  - Ref stabil: ref mengikuti elemen dan tidak pernah pindah ke elemen lain.
-  - Stop-early dengan alasan, kategori, dan kandidat.
-  - Dialog JS ditangani otomatis.
-- **Path memory:** flow yang lolos disimpan sebagai *hint* untuk replay dalam 1 round-trip berikutnya.
-  Evidence tiap run tersimpan di `.fastpilot/runs/`.
+- **Reliable:**
+  - Auto-wait without `sleep` (actionability, DOM/a11y quiet, navigation, and requests triggered by an action).
+  - Stable refs: a ref follows its element and never moves to another element.
+  - Stop-early with a reason, a category, and candidates.
+  - JS dialogs are handled automatically.
+- **Path memory:** a flow that passes is saved as a *hint* so the next run can replay it in 1 round-trip.
+  Evidence from each run is stored in `.fastpilot/runs/`.
 
-Spesifikasi: [docs/PRD.md](PRD.md). Riset improvement: [docs/research-improvements.md](research-improvements.md).
+Specification: [docs/PRD.md](PRD.md). Improvement research: [docs/research-improvements.md](research-improvements.md).
 
-## Pengaturan
+## Settings
 
-Pengaturan dibaca berurutan: **env** (mis. `-e` di MCP config) → **file** `~/.fastpilot/config.toml` (atau
-path di `FASTPILOT_CONFIG`) → default. File dibaca ulang saat berubah, jadi tidak perlu restart server.
-Kecuali batasan: nilainya dikunci saat fastpilot mulai (server MCP, daemon shell, `fastpilot run`), dan
-selama jalan hanya nilai yang lebih ketat yang diikuti. Nilai yang lebih longgar baru berlaku setelah
-restart (server MCP atau `fastpilot daemon stop`), juga kalau batasan itu belum pernah dipakai. File yang tidak valid
-membuat fastpilot berhenti dengan pesan error, tidak diam-diam diabaikan.
+Settings are read in this order: **env** (e.g. `-e` in the MCP config) → the **file** `~/.fastpilot/config.toml` (or
+the path in `FASTPILOT_CONFIG`) → default. The file is read again when it changes, so you do not need to restart the server.
+Limits are the exception: their values are locked when fastpilot starts (MCP server, shell daemon, `fastpilot run`), and
+while it runs only stricter values are followed. Looser values take effect only after a
+restart (of the MCP server, or `fastpilot daemon stop`), even if that limit was never used before. An invalid file
+makes fastpilot stop with an error message; it is not silently ignored.
 
 ```bash
-fastpilot config list                              # semua kunci, nilai, dan asalnya
+fastpilot config list                              # every key, its value, and where it comes from
 fastpilot config set allowed_domains "staging.contoh.com,*.contoh.com"
 fastpilot config get flow_timeout
 fastpilot config unset allowed_domains
@@ -254,142 +252,142 @@ headful = true
 flow_timeout = 600
 ```
 
-**Lewat browser:** `fastpilot ui` membuka halaman Live, Pengaturan, dan Device di browser default (hanya
-`127.0.0.1`, port acak; `--no-open` hanya mencetak link-nya, `--port N` memilih port, `--help` bantuan).
-Link-nya berisi kode **sekali pakai** yang berlaku 10 menit; begitu dibuka, kode ditukar ke cookie sesi
-dan tidak berlaku lagi (jalankan `fastpilot ui` lagi untuk link baru). Jalankan `fastpilot ui` sendiri,
-bukan lewat agent AI: siapa pun yang membuka halamannya bisa melonggarkan batasan. Kalau
-`config.toml` rusak, halaman Pengaturan menampilkan error-nya dan tidak menyimpan apa pun sampai file
-diperbaiki.
-Isinya Model AI untuk `fastpilot run`, Batasan & izin, nama Secret (nilainya tidak pernah tampil), dan
-hasil `doctor` dengan tombol Cek ulang. Perubahan dari halaman ini adalah perubahan user: boleh
-melonggarkan, ditulis atomik ke file (mode 600), dan berlaku mulai run berikutnya. Semua aset dan font
-ada di dalam binary, jadi halaman ini jalan tanpa internet.
+**In the browser:** `fastpilot ui` opens the Live, Settings, and Device pages in your default browser (only
+`127.0.0.1`, random port; `--no-open` only prints the link, `--port N` picks the port, `--help` shows help).
+The link holds a **one-time** code that is valid for 10 minutes. Once opened, the code is swapped for a session cookie
+and stops working (run `fastpilot ui` again for a new link). Run `fastpilot ui` yourself,
+not through an AI agent: anyone who opens the page can loosen the limits. If
+`config.toml` is broken, the Settings page shows the error and saves nothing until the file
+is fixed.
+It contains the AI model for `fastpilot run`, Limits & permissions, the names of your Secrets (their values never show), and
+the `doctor` results with a Check again button. Changes made on this page are user changes: they may
+loosen limits, they are written atomically to the file (mode 600), and they apply from the next run. All assets and fonts
+are inside the binary, so this page works without internet.
 
-**Panel Live** (`fastpilot ui`, menu Live): sesi yang sedang berjalan dari server MCP (Claude Code),
-CLI, dan `fastpilot run`, masing-masing dengan langkah flow-nya (✓ selesai, ▶ berjalan, 🔒 diblokir
-atau akan diblokir Batasan) dan layarnya secara live, hanya selama panel terbuka:
+**Live panel** (`fastpilot ui`, Live menu): the sessions currently running from the MCP server (Claude Code),
+the CLI, and `fastpilot run`, each with its flow steps (✓ done, ▶ running, 🔒 blocked
+or about to be blocked by Limits) and its screen, live, only while the panel is open:
 
-- **Web** (Chrome milik fastpilot): screencast lewat koneksi DevTools terpisah, sekitar 2 fps untuk
-  thumbnail dan 8 fps saat diperbesar.
-- **Android dan iOS**: screenshot dari device (agent/runner yang sama dengan langkah `takeScreenshot`),
-  1 fps untuk thumbnail dan 3 fps saat diperbesar. Ini juga berlaku untuk HP fisik dan adb di mesin lain.
-- Chrome milikmu (mode attach) tidak ditampilkan; langkahnya tetap terlihat.
+- **Web** (Chrome owned by fastpilot): a screencast over a separate DevTools connection, about 2 fps for the
+  thumbnail and 8 fps when enlarged.
+- **Android and iOS**: screenshots from the device (the same agent/runner as the `takeScreenshot` step),
+  1 fps for the thumbnail and 3 fps when enlarged. This also works for physical phones and adb on another computer.
+- Your own Chrome (attach mode) is not shown; its steps are still visible.
 
-**Ambil alih.** Tombol *Ambil alih* di kartu sesi menjeda langkah otomatis sesi itu dan membuka layar besar:
-klik untuk tap, seret untuk swipe, kolom *Ketik* untuk teks di kolom yang aktif, tombol Enter/Hapus (dan
-*Kembali* di Android/iOS). Langkah AI berikutnya menunggu sampai kamu menekan *Kembalikan*, lalu hasil
-`run_flow` berikutnya untuk sesi itu memberi tahu AI bahwa user sempat mengambil alih (berapa lama, berapa
-tap/teks); dengan `test_id` catatan ini juga masuk `steps.jsonl` dan laporan run. Batasan tetap berlaku
-untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak diperiksa Batasan.
+**Take over.** The *Take over* button on a session card pauses that session's automatic steps and opens a large screen:
+click to tap, drag to swipe, the *Type* field for text in the active field, the Enter/Delete buttons (and
+*Back* on Android/iOS). The AI's next step waits until you press *Give back to the AI*. Then the next
+`run_flow` result for that session tells the AI that a user took over for a while (how long, how many
+taps/texts). With a `test_id`, this note also goes into `steps.jsonl` and the run report. Limits still apply
+to all automatic steps, but the input you type yourself is not checked by Limits.
 
-- Input hanya diterima dari halaman `fastpilot ui` (cookie sesi, Origin, JSON). Halaman meneruskannya ke
-  proses fastpilot pemilik sesi lewat socket `~/.fastpilot/live/<pid>.sock` (folder 0700, socket 0600).
-- Socket itu hanya melayani proses `fastpilot ui` dari **file program yang sama** dengan proses fastpilot
-  pemilik sesi: pid dan path program di ujung lain dicek tiap koneksi, jadi skrip, agent, atau program lain
-  yang sekadar bernama `fastpilot` ditolak (juga untuk frame). Akibatnya `fastpilot ui` dan server MCP harus
-  dari instalasi yang sama (mis. keduanya dari npm), dan binary yang di-rename tidak bisa memakai Ambil alih.
-  Jalankan `fastpilot ui` dengan cara yang sama seperti server MCP-nya: kalau MCP didaftarkan sebagai
-  `npx -y fastpilot mcp`, buka halamannya dengan `npx -y fastpilot ui`. Tiap ambil alih memberi token acak yang
-  hanya ada di memori proses fastpilot dan `fastpilot ui` yang memulainya (tidak di file, tidak dikirim ke
-  browser). Tap, ketik, dan Kembalikan wajib membawa token itu, jadi halaman lain tidak bisa ikut
-  mengendalikan atau menutup ambil alih orang lain.
-- Ambil alih berakhir sendiri bila halaman berhenti mengirim tanda hidup selama ±45 detik (tab ditutup,
-  laptop tidur) atau setelah 30 menit. Menutup layar besar (Tutup / Escape) juga mengembalikan sesi. Selama
-  diambil alih, penanda kuning tampil di semua halaman `fastpilot ui` dengan tombol *Kembalikan ke AI*.
-- **Sisa risiko, jujur saja:** pemeriksaan di atas membedakan `fastpilot ui` dari proses lain milik user
-  yang sama, tetapi bukan batas keamanan terhadap kode yang sudah berjalan sebagai kamu. Agent yang punya
-  akses shell (Bash) bisa menjalankan `fastpilot ui` sendiri, membaca link sekali pakainya, lalu mengambil
-  alih tanpa klik manusia; input ambil alih memang tidak diperiksa Batasan. Agent seperti itu juga bisa
-  melewati Batasan dengan cara lain (menjalankan Chrome atau `adb` langsung). Batasan fastpilot melindungi
-  dari AI yang hanya memegang tool fastpilot; untuk agent dengan shell, batasi akses shell-nya di aplikasi
-  agent itu, dan matikan Ambil alih: `fastpilot config set allow_takeover false` (atau Pengaturan › Batasan ›
-  *Boleh ambil alih sesi*). Seperti batasan lain, nilai ini dikunci saat proses fastpilot mulai, jadi
-  menyalakannya lagi baru berlaku setelah restart.
-- Waktu selama diambil alih tetap dihitung ke batas waktu flow (`FASTPILOT_FLOW_TIMEOUT`).
-- macOS dan Linux saja (Unix socket).
+- Input is accepted only from the `fastpilot ui` page (session cookie, Origin, JSON). The page passes it on to
+  the fastpilot process that owns the session through the socket `~/.fastpilot/live/<pid>.sock` (folder 0700, socket 0600).
+- That socket only serves a `fastpilot ui` process from the **same program file** as the fastpilot process
+  that owns the session: the pid and program path on the other end are checked on every connection, so scripts, agents, or other programs
+  that are merely named `fastpilot` are refused (for frames too). As a result, `fastpilot ui` and the MCP server must
+  come from the same installation (e.g. both from npm), and a renamed binary cannot use Take over.
+  Run `fastpilot ui` the same way as its MCP server: if MCP is registered as
+  `npx -y fastpilot mcp`, open the page with `npx -y fastpilot ui`. Each take-over gets a random token that
+  exists only in the memory of the fastpilot process and the `fastpilot ui` that started it (not in a file, not sent to the
+  browser). Taps, typing, and Give back must carry that token, so another page cannot also
+  control or close someone else's take-over.
+- A take-over ends on its own if the page stops sending a heartbeat for about 45 seconds (tab closed,
+  laptop asleep) or after 30 minutes. Closing the large screen (Close / Escape) also gives the session back. While
+  a session is taken over, a yellow marker shows on every `fastpilot ui` page with a *Give back to the AI* button.
+- **Remaining risk, to be honest:** the checks above tell `fastpilot ui` apart from other processes of the
+  same user, but they are not a security boundary against code that already runs as you. An agent with
+  shell access (Bash) can run `fastpilot ui` itself, read its one-time link, and then take
+  over without a human click; take-over input is not checked by Limits. Such an agent can also
+  get around Limits in other ways (running Chrome or `adb` directly). fastpilot's Limits protect
+  against an AI that only holds the fastpilot tools. For an agent with a shell, restrict its shell access in that agent's
+  app, and turn off Take over: `fastpilot config set allow_takeover false` (or Settings › Limits ›
+  *May take over sessions*). Like other limits, this value is locked when the fastpilot process starts, so
+  turning it back on takes effect only after a restart.
+- Time spent while taken over still counts toward the flow time limit (`FASTPILOT_FLOW_TIMEOUT`).
+- macOS and Linux only (Unix socket).
 
-Data sesi ada di `~/.fastpilot/live/` (hanya bisa dibaca pemiliknya); alamat DevTools tidak pernah
-dikirim ke browser.
+Session data is in `~/.fastpilot/live/` (only its owner can read it). The DevTools address is never
+sent to the browser.
 
-**Jadwal** (`fastpilot ui`, menu Jadwal): jalankan test (`fastpilot run` pada folder `tests/` atau satu
-file `.md`) setiap hari, hari kerja, atau mingguan pada jam tertentu (waktu komputer ini).
+**Schedules** (`fastpilot ui`, Schedules menu): run tests (`fastpilot run` on the `tests/` folder or one
+`.md` file) every day, on weekdays, or weekly at a set time (this computer's time).
 
-- Jadwal disimpan di `~/.fastpilot/schedules.json` dan didaftarkan ke penjadwal sistem **hanya saat kamu
-  menyimpannya**: LaunchAgent launchd di macOS (`~/Library/LaunchAgents/dev.fastpilot.schedule.<id>.plist`),
-  systemd user timer di Linux, atau crontab bila systemd tidak ada. Mematikan atau menghapus jadwal
-  menghapus entri itu. Entri hanya berisi `fastpilot schedule run <id>`; path test dan notifikasi ada di
-  file JSON.
-- **Kalau gagal**: webhook https yang kompatibel Slack (`{"text": ...}`), notifikasi di komputer ini,
-  dan/atau issue GitHub di `pemilik/repo` (token dari `GITHUB_TOKEN`/`GH_TOKEN`, atau Keychain item
-  `fastpilot-github`: `security add-generic-password -s fastpilot-github -a fastpilot -w`). Tombol
-  *Tes notifikasi* mengirim pesan contoh.
-- URL webhook diperlakukan sebagai rahasia: disimpan di `~/.fastpilot/secrets/` (hanya pemilik), tidak
-  di file jadwal, dan halaman hanya menampilkan host-nya.
-- Komputer harus menyala dan kamu login saat jadwal jalan (launchd menjalankan yang terlewat saat bangun
-  dari sleep; systemd memakai `Persistent=true`). Laporan HTML tiap run ada di
-  `~/.fastpilot/schedules/reports/`, log di `~/.fastpilot/schedules/<id>.log`.
-- Dari terminal: `fastpilot schedule list`, `fastpilot schedule run <id>`, `fastpilot schedule remove <id>`.
+- Schedules are stored in `~/.fastpilot/schedules.json` and registered with the system scheduler **only when you
+  save them**: a launchd LaunchAgent on macOS (`~/Library/LaunchAgents/dev.fastpilot.schedule.<id>.plist`),
+  a systemd user timer on Linux, or crontab if there is no systemd. Turning off or deleting a schedule
+  removes that entry. The entry contains only `fastpilot schedule run <id>`; the test path and notifications are in the
+  JSON file.
+- **On failure**: a Slack-compatible https webhook (`{"text": ...}`), a notification on this computer,
+  and/or a GitHub issue in `pemilik/repo` (token from `GITHUB_TOKEN`/`GH_TOKEN`, or the Keychain item
+  `fastpilot-github`: `security add-generic-password -s fastpilot-github -a fastpilot -w`). The
+  *Test notification* button sends a sample message.
+- The webhook URL is treated as a secret: it is stored in `~/.fastpilot/secrets/` (owner only), not
+  in the schedules file, and the page shows only its host.
+- The computer must be on and you must be logged in when the schedule runs (launchd runs missed ones when the computer wakes
+  from sleep; systemd uses `Persistent=true`). The HTML report for each run is in
+  `~/.fastpilot/schedules/reports/`, the log in `~/.fastpilot/schedules/<id>.log`.
+- From the terminal: `fastpilot schedule list`, `fastpilot schedule run <id>`, `fastpilot schedule remove <id>`.
 
-**Chat** (`fastpilot ui`, menu Chat): minta fastpilot bot menjalankan test, menjelaskan kegagalan, membuat
-jadwal, atau memperketat batasan dengan bahasa biasa. Tiap pesan dijawab oleh Claude Code-mu sendiri
-(`claude -p`, login-mu, tanpa API key) dengan tool fastpilot saja, sama seperti `fastpilot run`;
-percakapan berlanjut dengan `--resume`. Sesi yang dibuka bot muncul di Live dan bisa diambil alih.
+**Chat** (`fastpilot ui`, Chat menu): ask the fastpilot bot to run tests, explain failures, create
+schedules, or make limits stricter, in plain language. Each message is answered by your own Claude Code
+(`claude -p`, your login, no API key) with only the fastpilot tools, the same as `fastpilot run`.
+The conversation continues with `--resume`. Sessions the bot opens appear in Live and can be taken over.
 
-- Bot **tidak bisa** mengubah pengaturan atau jadwal sendiri: tool `config` tidak tersedia untuknya. Ia
-  hanya mengusulkan, dan usulan tampil sebagai kartu (Jadwal baru / Batasan baru). Tidak ada yang berubah
-  sampai kamu klik *Simpan jadwal* atau *Terapkan batasan*.
-- Lewat chat batasan hanya bisa **diperketat**. Usulan yang melonggarkan (mis. `max_steps` lebih besar,
-  menghapus kata dari `block_actions`) ditolak di kartunya dan juga saat diklik; melonggarkan hanya lewat
-  Pengaturan › Batasan.
-- URL webhook dan token tidak pernah lewat chat: jadwal dari chat yang meminta webhook disimpan tanpa
-  webhook, lalu URL-nya diisi di Jadwal › Ubah.
-- Model: `model_explore` (lihat Pengaturan › Model AI).
+- The bot **cannot** change settings or schedules by itself: the `config` tool is not available to it. It
+  only makes proposals, and a proposal shows as a card (New schedule, or a settings change). Nothing changes
+  until you click *Save the schedule*, *Apply* or *Allow*.
+- Through chat, limits can only be **made stricter**. A proposal that loosens them (e.g. a larger `max_steps`,
+  removing a word from `block_actions`) is refused on its card and again when clicked. You can loosen limits only in
+  Settings › Limits.
+- Webhook URLs and tokens never go through chat: a schedule from chat that asks for a webhook is saved without
+  the webhook, and you then fill in the URL in Schedules › Edit.
+- Model: `model_explore` (see Settings › AI model).
 
-Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
+Limits and permissions you can set (all are also `fastpilot config` keys):
 
-| Kunci | Arti |
+| Key | Meaning |
 |---|---|
-| `allowed_domains` | sesi web hanya membuka host ini |
-| `confirm_actions` | tap pada elemen bernama begini butuh `confirm: true` (cocok per kata). **Bawaan (sejak 0.3.2, selama belum diisi):** `hapus`, `delete`, `remove`. `[]` = tanpa konfirmasi |
-| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran"). **Bawaan (sejak 0.3.2, selama belum diisi):** `bayar`, `pay`, `beli`, `buy`, `checkout`, `purchase`, `transfer`, `buat pesanan`, `place order`, `hapus akun`, `delete account`, dicocokkan per kata utuh ("pay" kena "Pay now", tidak kena "Paypal"); `default` di daftar = kata bawaan itu. Mengosongkan: `fastpilot config set block_actions ""` atau tombol **Kosongkan** di `fastpilot ui` (berlaku setelah server MCP di-restart; variabel env kosong tidak mengosongkannya); kembali ke bawaan: `fastpilot config unset block_actions`. Teks dinormalkan dulu (karakter tak terlihat, huruf fullwidth, spasi aneh), dan frasa bawaan boleh disela satu kata ("Delete my account"). Tap koordinat (`point`) dicek terhadap elemen di titik itu; bila elemennya tidak bisa dipastikan, tap ditolak selama `block_actions`/`confirm_actions` aktif. Juga `pressKey Enter`/`Space` yang bisa menekan tombol itu (dari kolom isian: selama ada tombol terblokir di layar), dan `evalScript` dimatikan selama `block_actions` aktif |
-| `allow_app_install` | langkah `installApp` / `uninstallApp` (bawaan: boleh) |
-| `allow_app_reset` | `clearState` / `clearKeychain` (bawaan: boleh) |
-| `allow_physical_devices` | sesi boleh memakai HP fisik; `false` = hanya emulator/simulator (bawaan: boleh) |
-| `allow_device_settings` | `setNetwork`, `setLocation`, `setPermissions`, `setLocale` di Android/iOS (bawaan: boleh) |
-| `allow_eval_script` | langkah `evalScript`. Bawaan (sejak 0.3.2): **mati selama `block_actions` aktif** (termasuk daftar bawaan), karena script bisa menekan tombol yang diblokir; boleh kalau daftar blokir dikosongkan. `true` = selalu boleh (hanya user: `fastpilot config set allow_eval_script true` atau toggle "Jalankan JavaScript bebas"; AI tidak bisa menyalakannya) |
-| `allow_takeover` | user boleh mengambil alih sesi di `fastpilot ui` (bawaan: boleh; matikan untuk agent yang punya shell) |
-| `upload_dirs` | `uploadFile` hanya mengambil file di folder ini (kosong = mana saja) |
-| `state_expire_days` | umur maksimal login tersimpan (bawaan 30 hari) |
-| `max_steps` / `test_timeout` | `fastpilot run`: maksimal panggilan tool AI per test (bawaan 30) / menit per test (bawaan 30) |
+| `allowed_domains` | web sessions only open these hosts |
+| `confirm_actions` | a tap on an element with a name like this needs `confirm: true` (matched per word). **Built-in (since 0.3.2, as long as you have not filled it in):** `hapus`, `delete`, `remove`. `[]` = no confirmation |
+| `block_actions` | a tap on an element whose text **contains** one of these words is always refused, even with `confirm: true` ("Bayar" also blocks "Lanjut ke Pembayaran"). **Built-in (since 0.3.2, as long as you have not filled it in):** `bayar`, `pay`, `beli`, `buy`, `checkout`, `purchase`, `transfer`, `buat pesanan`, `place order`, `hapus akun`, `delete account`, matched on whole words ("pay" catches "Pay now", not "Paypal"); `default` in the list = those built-in words. To clear it: `fastpilot config set block_actions ""` or the **Empty it** button in `fastpilot ui` (takes effect after the MCP server restarts; an empty env variable does not clear it). To go back to the built-in list: `fastpilot config unset block_actions`. Text is normalized first (invisible characters, fullwidth letters, odd spaces), and a built-in phrase may have one word in between ("Delete my account"). A coordinate tap (`point`) is checked against the element at that point; if the element cannot be determined, the tap is refused while `block_actions`/`confirm_actions` is active. This also covers `pressKey Enter`/`Space` that could press such a button (from an input field: while a blocked button is on screen), and `evalScript` is turned off while `block_actions` is active |
+| `allow_app_install` | the `installApp` / `uninstallApp` steps (built-in: allowed) |
+| `allow_app_reset` | `clearState` / `clearKeychain` (built-in: allowed) |
+| `allow_physical_devices` | sessions may use physical phones; `false` = emulators/simulators only (built-in: allowed) |
+| `allow_device_settings` | `setNetwork`, `setLocation`, `setPermissions`, `setLocale` on Android/iOS (built-in: allowed) |
+| `allow_eval_script` | the `evalScript` step. Built-in (since 0.3.2): **off while `block_actions` is active** (including the built-in list), because a script could press a blocked button; allowed if the block list is cleared. `true` = always allowed (user only: `fastpilot config set allow_eval_script true` or the "Run any JavaScript" toggle; the AI cannot turn it on) |
+| `allow_takeover` | the user may take over sessions in `fastpilot ui` (built-in: allowed; turn it off for agents that have a shell) |
+| `upload_dirs` | `uploadFile` only takes files from these folders (empty = anywhere) |
+| `state_expire_days` | the maximum age of a saved login (built-in: 30 days) |
+| `max_steps` / `test_timeout` | `fastpilot run`: maximum AI tool calls per test (built-in: 30) / minutes per test (built-in: 30) |
 
-Lewat chat, agent memakai tool `config` dengan aturan:
+Through chat, the agent uses the `config` tool with these rules:
 
-- **Batasan** (tabel di atas, plus `vars`): agent hanya boleh memperketat (menambah kata/domain,
-  mematikan izin, menurunkan batas). Melonggarkan atau menghapusnya hanya oleh user lewat
-  `fastpilot config` atau `fastpilot ui`.
-- **Program, lokasi, dan mesin lain** (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`):
-  hanya user. fastpilot yang sedang jalan memakai nilai saat ia mulai; perubahan file berlaku setelah restart.
-- **Lainnya** (`headful`, `model*`, `flow_timeout`, `action_timeout`, `retry_budget`, `breaker`, device default,
-  `memory`, `daemon_idle`): bebas. `action_timeout` (detik, bawaan 5) adalah batas satu aksi (tap, ketik,
-  pilih, scroll); `inputText` di Android/iOS mendapat 3× nilai itu karena keyboard bisa lambat muncul. Bisa juga lewat env
-  `FASTPILOT_ACTION_TIMEOUT` (env menang atas file).
-- Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env. Token relay
-  extension dibuat acak untuk tiap sesi; `FASTPILOT_RELAY_TOKEN` hanya untuk browser tanpa native messaging.
-- Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
-- Batasan ini melindungi dari agent yang hanya memakai tool fastpilot. Proses fastpilot yang sedang
-  jalan (server MCP, daemon, `run`) mengunci batasan dan kunci "hanya user" sejak ia mulai, jadi file
-  yang diubah di tengah jalan tidak berpengaruh. Tapi agent yang juga punya akses shell atau file
-  (mis. Bash di Claude Code) bisa mengubah file lalu me-restart fastpilot (`fastpilot daemon stop`).
-  Itu batas desain: set batasan lewat **env** di konfigurasi MCP, dan tolak akses itu di izin agent,
-  mis. di Claude Code `"deny": ["Bash(fastpilot config:*)", "Bash(fastpilot daemon:*)", "Edit(~/.fastpilot/**)"]`.
+- **Limits** (the table above, plus `vars`): the agent may only make them stricter (add words/domains,
+  turn off permissions, lower limits). Only the user can loosen or remove them, through
+  `fastpilot config` or `fastpilot ui`.
+- **Programs, locations, and other computers** (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`):
+  user only. A running fastpilot uses the values from when it started; file changes take effect after a restart.
+- **Everything else** (`headful`, `model*`, `flow_timeout`, `action_timeout`, `retry_budget`, `breaker`, default device,
+  `memory`, `daemon_idle`): free to change. `action_timeout` (seconds, built-in: 5) is the limit for one action (tap, type,
+  select, scroll); `inputText` on Android/iOS gets 3× that value because the keyboard can be slow to appear. You can also set it with the env
+  `FASTPILOT_ACTION_TIMEOUT` (env wins over the file).
+- Secrets (`FASTPILOT_STATE_KEY`, relay token) are never read from the file, only from env. The extension relay
+  token is generated randomly for each session; `FASTPILOT_RELAY_TOKEN` is only for browsers without native messaging.
+- During `fastpilot run` (with nobody in front of the screen), the `config` tool is not available.
+- These limits protect against an agent that only uses the fastpilot tools. A running fastpilot
+  process (MCP server, daemon, `run`) locks the limits and the "user only" keys from the moment it starts, so a file
+  changed while it runs has no effect. But an agent that also has shell or file access
+  (e.g. Bash in Claude Code) can change the file and then restart fastpilot (`fastpilot daemon stop`).
+  That is a design boundary: set limits through **env** in the MCP configuration, and deny that access in the agent's permissions,
+  e.g. in Claude Code `"deny": ["Bash(fastpilot config:*)", "Bash(fastpilot daemon:*)", "Edit(~/.fastpilot/**)"]`.
 
-Nama kunci = nama env tanpa `FASTPILOT_` dan huruf kecil (`FASTPILOT_FLOW_TIMEOUT` → `flow_timeout`).
+Key name = env name without `FASTPILOT_`, in lowercase (`FASTPILOT_FLOW_TIMEOUT` → `flow_timeout`).
 
-## Build dari source
+## Build from source
 
-Butuh Rust 1.88+ (edition 2024) dan Google Chrome/Chromium. Untuk Android dan iOS, artefak on-device
-dibangun dari source (tanpa download):
+You need Rust 1.88+ (edition 2024) and Google Chrome/Chromium. For Android and iOS, the on-device artifacts
+are built from source (no downloads):
 
 ```bash
 git clone https://github.com/autobot-lab/fastpilot.git && cd fastpilot
@@ -407,22 +405,22 @@ ios-runner/build.sh
 cargo install --path bin/fastpilot --locked
 ```
 
-- `agent-android/build.sh` butuh Android SDK (build-tools + platform 35) dan JDK 17. Hasilnya adalah agent
-  APK (di-embed ke binary saat build, jadi jalankan sebelum `cargo`) dan demo APK.
-- `ios-runner/build.sh` butuh Xcode 16+. Hasilnya adalah runner XCUITest dan demo app.
-- `cargo install` memasang ke `~/.cargo/bin`; `cargo build --release` saja menaruhnya di
+- `agent-android/build.sh` needs the Android SDK (build-tools + platform 35) and JDK 17. It produces the agent
+  APK (embedded in the binary at build time, so run it before `cargo`) and the demo APK.
+- `ios-runner/build.sh` needs Xcode 16+. It produces the XCUITest runner and the demo app.
+- `cargo install` installs to `~/.cargo/bin`; `cargo build --release` on its own puts it in
   `target/release/fastpilot`.
-- Cara merilis: [docs/releasing.md](releasing.md).
+- How to release: [docs/releasing.md](releasing.md).
 
-## Konfigurasi MCP
+## MCP configuration
 
-**Claude Code** (dari root proyek yang mau dites):
+**Claude Code** (from the root of the project you want to test):
 
 ```bash
 claude mcp add fastpilot -e FASTPILOT_VARS=DEMO_PASS -e DEMO_PASS=rahasia123 -- /path/to/fastpilot mcp
 ```
 
-atau `.mcp.json`:
+or `.mcp.json`:
 
 ```json
 {
@@ -436,52 +434,52 @@ atau `.mcp.json`:
 }
 ```
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` di macOS,
-`%APPDATA%\Claude\claude_desktop_config.json` di Windows): blok `mcpServers` yang sama. Claude Desktop tidak
-menjalankan server dari folder proyek, jadi pakai path absolut di `target`/`openUrl`.
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows): the same `mcpServers` block. Claude Desktop does not
+start the server from your project folder, so use absolute paths in `target`/`openUrl`.
 
-Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa ditaruh di
-`~/.fastpilot/config.toml`; lihat [Pengaturan](#pengaturan). Env selalu menang.
+Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go in
+`~/.fastpilot/config.toml`; see [Settings](#settings). Env always wins.
 
-| Env | Fungsi |
+| Env | Purpose |
 |---|---|
-| `FASTPILOT_VARS` | daftar variabel (dipisah koma) yang boleh dipakai flow lewat `${NAMA}`; nilainya selalu disamarkan `***` di output |
-| `FASTPILOT_CHROME` | path executable Chrome/Chromium |
-| `FASTPILOT_HEADFUL=1` | tampilkan jendela browser (sama dengan `fastpilot mcp --headful`) |
-| `FASTPILOT_ANDROID_SERIAL` / `FASTPILOT_IOS_UDID` | device default untuk `session: { start, platform }` di flow |
-| `FASTPILOT_IOS_DEVICE` | simulator yang di-boot jika belum ada yang menyala (default `iPhone 16`) |
-| `FASTPILOT_IOS_RUNNER` | folder build runner iOS (default `ios-runner/build`) |
-| `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
-| `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
-| `FASTPILOT_ALLOWED_DOMAINS` | daftar host (dipisah koma, `*.contoh.com` untuk subdomain) yang boleh dibuka sesi web: `openUrl`, link, redirect, dan popup ke host lain diblokir (`blocked`). Resource lain (CDN, API) tetap jalan |
-| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`). Tidak diisi: hapus, delete, remove. Env kosong tidak mematikan daftar bawaan; mengosongkan hanya lewat `fastpilot config set confirm_actions ""` atau tombol Kosongkan di halaman Batasan |
-| `FASTPILOT_BLOCK_ACTIONS` | daftar kata yang selalu diblokir. Tidak diisi: daftar bawaan (pembayaran dan hapus akun). Env kosong tidak mematikan daftar bawaan; mengosongkan hanya lewat `fastpilot config set block_actions ""` atau tombol Kosongkan di halaman Batasan |
-| `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | kunci AES-256 (64 hex) untuk mengenkripsi login tersimpan / umur maksimalnya (default 30 hari) |
-| `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
-| `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | model untuk `fastpilot run` (lihat di bawah) |
-| `FASTPILOT_CONFIG` | lokasi file pengaturan (default `~/.fastpilot/config.toml`) |
-| `FASTPILOT_ADB_SERVER` | adb server di mesin lain, `host:port` (lihat [Device di mesin lain](#device-di-mesin-lain)) |
-| `FASTPILOT_CHROME_ENDPOINT` | Chrome di mesin lain untuk semua sesi web: `http://host:port` atau `ws://...` |
-| `FASTPILOT_LOG` | filter tracing, mis. `debug` (log ke stderr; stdout dipakai MCP) |
+| `FASTPILOT_VARS` | a comma-separated list of variables a flow may use through `${NAMA}`; their values are always masked as `***` in output |
+| `FASTPILOT_CHROME` | path to the Chrome/Chromium executable |
+| `FASTPILOT_HEADFUL=1` | show the browser window (same as `fastpilot mcp --headful`) |
+| `FASTPILOT_ANDROID_SERIAL` / `FASTPILOT_IOS_UDID` | default device for `session: { start, platform }` in a flow |
+| `FASTPILOT_IOS_DEVICE` | the simulator to boot if none is running (default `iPhone 16`) |
+| `FASTPILOT_IOS_RUNNER` | the iOS runner build folder (default `ios-runner/build`) |
+| `FASTPILOT_DIR` | location of `.fastpilot/` (runs + memory) |
+| `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), or `off` |
+| `FASTPILOT_ALLOWED_DOMAINS` | a comma-separated list of hosts (`*.contoh.com` for subdomains) that web sessions may open: `openUrl`, links, redirects, and popups to other hosts are blocked (`blocked`). Other resources (CDN, API) still load |
+| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) or your own word list: a tap on an element with a name like that is refused (`blocked`) unless the step has `confirm: true` (CLI: `--confirm`). Not set: hapus, delete, remove. An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set confirm_actions ""` or the Clear button on the Limits page |
+| `FASTPILOT_BLOCK_ACTIONS` | a list of words that are always blocked. Not set: the built-in list (payments and deleting an account). An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set block_actions ""` or the Clear button on the Limits page |
+| `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | AES-256 key (64 hex) to encrypt saved logins / their maximum age (default 30 days) |
+| `FASTPILOT_FLOW_TIMEOUT` | time limit for one `run_flow`, in seconds (default 300) |
+| `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | models for `fastpilot run` (see below) |
+| `FASTPILOT_CONFIG` | location of the settings file (default `~/.fastpilot/config.toml`) |
+| `FASTPILOT_ADB_SERVER` | an adb server on another computer, `host:port` (see [Devices on another computer](#devices-on-another-computer)) |
+| `FASTPILOT_CHROME_ENDPOINT` | Chrome on another computer for all web sessions: `http://host:port` or `ws://...` |
+| `FASTPILOT_LOG` | tracing filter, e.g. `debug` (logs go to stderr; stdout is used by MCP) |
 
 ## Tools (10)
 
-| Tool | Fungsi |
+| Tool | Purpose |
 |---|---|
-| `session` | `start` / `stop` / `list` / `devices` / `start_device`. `start` mengembalikan snapshot pertama, dan hint path memory jika `test_id` diberikan. Web: `mode: launch\|attach` (+`endpoint`). Android/iOS: `endpoint` = serial/UDID (untuk `start_device`: nama AVD/simulator) |
-| `run_flow` | Jalankan flow YAML (multi-langkah, multi-sesi, lintas platform, `parallel:`). Mengembalikan timing per langkah dan diff per sesi. Dengan `test_id`, flow dan evidence direkam |
-| `check_flow` | Validasi tanpa eksekusi: syntax, step belum didukung, sesi tak dikenal, aturan parallel, `${VAR}` tidak diizinkan |
-| `snapshot` | Snapshot ringkas. `filter` = find (hasil + ancestor), `coords`, `full`, `file` (tulis ke `.fastpilot/snapshots/`). Jarang dibutuhkan |
-| `screenshot` | JPEG. `annotate: som` = kotak bernomor per target (digambar di web) + daftar ref → koordinat |
-| `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministik dengan auto-retry |
-| `report` | Tutup run: `report.md`, `steps.jsonl`, `assertions.json`, screenshot kegagalan. Status `pass` memperbarui path memory |
-| `state` | Simpan/muat login (web: cookies + localStorage) supaya test berikutnya tidak perlu login: `save` / `load` / `list` / `delete`. File hanya bisa dibaca pemiliknya, kedaluwarsa setelah 30 hari (`FASTPILOT_STATE_EXPIRE_DAYS`), dan dienkripsi AES-256-GCM bila `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) di-set. Sama dengan langkah `saveState` / `loadState` |
-| `config` | Lihat dan ubah pengaturan (`~/.fastpilot/config.toml`) lewat chat: `list` / `get` / `set` / `unset`. Agent hanya boleh **memperketat** batasan (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, izin `allow_*`, `upload_dirs`, `max_steps`, `test_timeout`); pengetatan langsung berlaku, pelonggaran baru setelah restart. Path program, lokasi, dan mesin lain (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) hanya bisa diubah user lewat `fastpilot config set` atau `fastpilot ui` |
-| `docs` | Referensi on-demand: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
+| `session` | `start` / `stop` / `list` / `devices` / `start_device`. `start` returns the first snapshot, and a path memory hint if a `test_id` is given. Web: `mode: launch\|attach` (+`endpoint`). Android/iOS: `endpoint` = serial/UDID (for `start_device`: AVD/simulator name) |
+| `run_flow` | Run a YAML flow (multi-step, multi-session, cross-platform, `parallel:`). Returns timing per step and a diff per session. With a `test_id`, the flow and evidence are recorded |
+| `check_flow` | Validate without running: syntax, steps not supported yet, unknown sessions, parallel rules, `${VAR}` not allowed |
+| `snapshot` | A compact snapshot. `filter` = find (results + ancestors), `coords`, `full`, `file` (writes to `.fastpilot/snapshots/`). Rarely needed |
+| `screenshot` | JPEG. `annotate: som` = numbered boxes per target (drawn on web) + a list of ref → coordinates |
+| `assert` | `visible` / `not_visible` / `text_equals` / `contains` / `enabled`, deterministic with auto-retry |
+| `report` | Closes the run: `report.md`, `steps.jsonl`, `assertions.json`, failure screenshots. A `pass` status updates path memory |
+| `state` | Save/load a login (web: cookies + localStorage) so the next test does not have to log in: `save` / `load` / `list` / `delete`. Only the owner can read the files, they expire after 30 days (`FASTPILOT_STATE_EXPIRE_DAYS`), and they are encrypted with AES-256-GCM if `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) is set. Same as the `saveState` / `loadState` steps |
+| `config` | View and change settings (`~/.fastpilot/config.toml`) through chat: `list` / `get` / `set` / `unset`. The agent may only **make limits stricter** (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, the `allow_*` permissions, `upload_dirs`, `max_steps`, `test_timeout`); stricter values apply right away, looser ones only after a restart. Program paths, locations, and other computers (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) can only be changed by the user with `fastpilot config set` or `fastpilot ui` |
+| `docs` | On-demand reference: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 
-## Contoh
+## Examples
 
-Login web dalam satu round-trip ([tests/login.md](../tests/login.md),
+A web login in one round-trip ([tests/login.md](../tests/login.md),
 [examples/demo/login.html](../examples/demo/login.html)):
 
 ```yaml
@@ -506,8 +504,8 @@ e9 text "Budi"
 e10 button "Keluar"
 ```
 
-Android + WebView ([tests/login-android.md](../tests/login-android.md)). Langkah di halaman WebView
-dijalankan lewat CDP:
+Android + WebView ([tests/login-android.md](../tests/login-android.md)). Steps on the WebView page
+run over CDP:
 
 ```yaml
 - session: { start: and1, platform: android }
@@ -521,24 +519,24 @@ dijalankan lewat CDP:
 - assertVisible: "Pembayaran berhasil"
 ```
 
-Membuka app ke server staging atau mode debug tanpa build ulang (`launchApp` dengan `arguments` dan `env`):
+Opening the app against a staging server or in debug mode without rebuilding it (`launchApp` with `arguments` and `env`):
 
 ```yaml
 - launchApp:
     appId: com.contoh.app
     arguments: { server: "https://staging.contoh.id", debug: true, retries: 3, fitur: [baru, beta] }
-    env: { API_TOKEN: "${STAGING_TOKEN}" }   # hanya iOS
+    env: { API_TOKEN: "${STAGING_TOKEN}" }   # iOS only
 ```
 
-- `arguments`: di Android menjadi intent extras (teks, angka bulat, `true`/`false`, daftar teks tanpa
-  koma; dibaca dengan `getIntent().getStringExtra(...)` dan sejenisnya), di iOS menjadi launch argument
-  `-server https://...` (dibaca dengan `UserDefaults.standard.string(forKey: "server")`).
-- `env` (iOS): environment app (`ProcessInfo.processInfo.environment`). Nilainya selalu tampil `***`
-  di output dan laporan; run yang direkam hanya menyimpan referensi `${NAMA}`, jadi taruh secret di
-  `FASTPILOT_VARS`. Nama yang mengubah cara app dimuat (`DYLD_*`, `LD_*`, `MALLOC*`, `OBJC_*`,
-  `XPC_*`) dan `FASTPILOT_*` ditolak.
+- `arguments`: on Android these become intent extras (text, whole numbers, `true`/`false`, lists of text without
+  commas; read them with `getIntent().getStringExtra(...)` and similar). On iOS they become launch arguments
+  `-server https://...` (read them with `UserDefaults.standard.string(forKey: "server")`).
+- `env` (iOS): the app's environment (`ProcessInfo.processInfo.environment`). Its values always show as `***`
+  in output and reports; a recorded run only stores the `${NAMA}` reference, so put secrets in
+  `FASTPILOT_VARS`. Names that change how the app is loaded (`DYLD_*`, `LD_*`, `MALLOC*`, `OBJC_*`,
+  `XPC_*`) and `FASTPILOT_*` are refused.
 
-Lintas platform dalam satu `run_flow` ([tests/login-cross-platform.md](../tests/login-cross-platform.md)):
+Cross-platform in one `run_flow` ([tests/login-cross-platform.md](../tests/login-cross-platform.md)):
 
 ```yaml
 - session: { start: web1, target: "examples/demo/login.html" }
@@ -560,26 +558,26 @@ Lintas platform dalam satu `run_flow` ([tests/login-cross-platform.md](../tests/
         - assertVisible: "Selamat datang, Budi"
 ```
 
-Langkah gagal berhenti dini dan mengembalikan kandidat:
+A failed step stops early and returns candidates:
 
 ```
 fail step 1/1 [web1] tapOn "Hapus Akun": not_found: no element matches "Hapus Akun" (timeout 5000ms)
 candidates: e10 button "Keluar"
 ```
 
-Path memory: `session start` dengan `test_id` mengembalikan hint YAML dari run lolos terakhir. Kirim hint
-itu sebagai satu `run_flow` dengan `test_id` yang sama, lalu tutup dengan `report`. Lihat `docs` topic `memory`.
+Path memory: `session start` with a `test_id` returns a YAML hint from the last passing run. Send that hint
+as one `run_flow` with the same `test_id`, then close with `report`. See the `docs` topic `memory`.
 
-## Shell CLI: satu perintah per langkah
+## Shell CLI: one command per step
 
-Untuk agent yang hanya bisa menjalankan perintah shell, atau untuk dicoba manual. Sesi tetap terbuka di
-daemon latar belakang (`~/.fastpilot/cli.sock`, dinyalakan otomatis oleh perintah pertama, mati sendiri
-setelah 30 menit tanpa perintah atau lewat `fastpilot daemon stop`), jadi tiap perintah cepat.
+For agents that can only run shell commands, or for trying things by hand. Sessions stay open in a
+background daemon (`~/.fastpilot/cli.sock`, started automatically by the first command; it stops by itself
+after 30 minutes without commands, or with `fastpilot daemon stop`), so each command is fast.
 
 ```bash
-export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123   # dibaca daemon saat menyala
+export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123   # read by the daemon when it starts
 fastpilot open examples/demo/login.html
-fastpilot snapshot -i                  # hanya elemen yang bisa diaksi, dengan ref
+fastpilot snapshot -i                  # only elements you can act on, with refs
 fastpilot fill @e2 a@b.com
 fastpilot fill "Password" '${DEMO_PASS}'
 fastpilot click @e5
@@ -588,8 +586,8 @@ fastpilot screenshot hasil.jpg --annotate
 fastpilot close
 ```
 
-- Selector: `@e7` (ref dari snapshot), `"Masuk"` (teks), `#email` (id), `role=button:Masuk`, `120,340` (titik).
-- Perintah: `open`, `attach`, `close [--all]`, `sessions`, `devices`, `snapshot [-i] [--json] [--full]
+- Selectors: `@e7` (a ref from a snapshot), `"Masuk"` (text), `#email` (id), `role=button:Masuk`, `120,340` (a point).
+- Commands: `open`, `attach`, `close [--all]`, `sessions`, `devices`, `snapshot [-i] [--json] [--full]
   [--coords] [--filter T]`, `click`/`tap`, `dblclick`, `longpress`, `fill`, `type`, `clear`, `press`,
   `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
   `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
@@ -597,56 +595,56 @@ fastpilot close
   `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`,
   `diff screenshot <name> [--update] [--ignore sel]`, `errors`,
   `docs`, `daemon status|stop`.
-  `fastpilot help` menampilkan semuanya.
-- Web, Android dan iOS sama saja: `fastpilot open com.app/.MainActivity --platform android`.
-- Beberapa sesi sekaligus: `--session NAMA` (atau `FASTPILOT_SESSION`); `--json` untuk output mentah.
-- Exit code ≠ 0 bila langkah gagal; outputnya alasan, kandidat, dan layar saat itu, sama seperti MCP.
-- macOS dan Linux (Unix socket). Secret di `FASTPILOT_VARS` tetap tersamar `***`.
+  `fastpilot help` shows them all.
+- Web, Android and iOS work the same way: `fastpilot open com.app/.MainActivity --platform android`.
+- Several sessions at once: `--session NAMA` (or `FASTPILOT_SESSION`); `--json` for raw output.
+- Exit code ≠ 0 if a step fails; the output is the reason, the candidates, and the current screen, the same as MCP.
+- macOS and Linux (Unix socket). Secrets in `FASTPILOT_VARS` are still masked as `***`.
 
-## Tanpa membuka Claude Code: `fastpilot run`
+## Without opening Claude Code: `fastpilot run`
 
-Menjalankan test case bahasa natural (`tests/*.md`) tanpa sesi chat: fastpilot memanggil **Claude Code
-milik user** (`claude -p`, login dan langganan user sendiri) dan memberinya tool fastpilot lewat MCP.
-fastpilot tidak memanggil API model sendiri, jadi **tidak perlu API key**. Syaratnya `claude` ter-install
-dan sudah login sekali (`claude`); lokasi lain: `fastpilot config set claude /path/ke/claude`.
+Runs natural-language test cases (`tests/*.md`) without a chat session: fastpilot calls **the user's own
+Claude Code** (`claude -p`, with the user's own login and subscription) and gives it the fastpilot tools through MCP.
+fastpilot does not call a model API itself, so **you do not need an API key**. You need `claude` installed
+and signed in once (`claude`). For another location: `fastpilot config set claude /path/ke/claude`.
 
 ```bash
 DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   fastpilot run tests/ --junit junit.xml --html report.html
 ```
 
-- Claude Code hanya mendapat tool fastpilot: tool bawaan (shell, file, web) dimatikan dan izin tool
-  fastpilot disetujui otomatis, karena tidak ada yang menunggu di depan layar. Tool `report` dan `config`
-  tidak diberikan.
-- Test dengan hint path memory diputar ulang oleh model cepat (`claude-haiku-5-5`); bila replay gagal
-  atau belum ada hint, model besar (`claude-opus-5-5`) melanjutkan dari layar terakhir (keduanya bisa
-  diganti: `model_replay`, `model_explore`). `--model` (atau `model`) memaksa satu model, `--max-steps` membatasi jumlah panggilan tool per test (default 30).
-- Kegagalan diulang selama `FASTPILOT_RETRY_BUDGET` (default 3) masih ada; retry yang lolos = flaky.
-  Setelah `FASTPILOT_BREAKER` (default 3) kegagalan infra beruntun, sisa test dilewati sebagai infra.
-- `--workers N` menjalankan N test sekaligus. Tiap test punya Chrome sendiri; device Android dan simulator
-  iOS yang sudah boot dipinjamkan ke satu test pada satu waktu (dicek sehat saat dipinjam, device yang
-  gagal cek dikeluarkan), retry memakai device lain bila ada, dan antrean diurutkan dari durasi tercatat
-  terlama (test yang belum pernah jalan lebih dulu).
-- `--record` merekam layar tiap sesi (web: screencast CDP jadi filmstrip HTML; Android: `screenrecord`;
-  iOS: `simctl io recordVideo`). `--html` menghasilkan satu file HTML mandiri yang memuat laporan tiap
-  run (langkah, durasi, diff, screenshot, rekaman); `--junit` untuk dashboard CI.
-  Di laporan tiap run, rekaman punya penanda tiap langkah (merah di langkah yang gagal; klik untuk lompat)
-  dan satu tombol per flow yang memutar bagian flow itu saja. Flow yang lolos menyertakan screenshot
-  layar akhirnya.
-- `--reset` membuat tiap test mulai dari keadaan bersih: sesi Android/iOS me-reset app-nya sebelum dibuka,
-  sekali per app per run (per test untuk `run`, per proses untuk `mcp`): lewat `target` sesi, atau pada
-  `launchApp` pertama untuk app itu
-  (Android: `pm clear` untuk data dan izin runtime, layar tegak; simulator iOS: data dan semua izin privasi,
-  orientasi tidak bisa diatur lewat simctl; iPhone fisik tidak didukung). Sesi web memang selalu mulai dengan
-  context browser baru (tanpa cookie dan storage). Butuh `allow_app_reset` (bawaan: boleh); bila dimatikan,
-  sesi mobile ditolak dengan `blocked`. `fastpilot mcp --reset` melakukan hal yang sama untuk sesi dari chat.
-  Orientasi dan setelan device dikembalikan saat sesi selesai.
-- `--report-github` (di GitHub Actions, pada pull request) menulis hasil suite sebagai **satu** komentar di PR:
-  "running" saat mulai, lalu diganti dengan tabel hasil (lolos, gagal + kelas + catatan, flaky, karantina,
-  durasi, link ke workflow run). Komentar yang sama diperbarui di run berikutnya (ditandai
-  `<!-- fastpilot-report -->`), tidak menumpuk. Token hanya dibaca dari env `GITHUB_TOKEN`, tidak pernah
-  disimpan, dimasukkan ke URL, atau dicetak. Gagal menulis komentar tidak menggagalkan suite.
-  `--report-github=dry` mencetak isi komentar tanpa mengirim apa pun. Contoh job:
+- Claude Code gets only the fastpilot tools: its built-in tools (shell, files, web) are turned off and the fastpilot
+  tool permissions are approved automatically, because nobody is waiting in front of the screen. The `report` and `config` tools
+  are not given.
+- Tests with a path memory hint are replayed by a fast model (`claude-haiku-5-5`). If the replay fails
+  or there is no hint yet, a large model (`claude-opus-5-5`) continues from the last screen (both can be
+  changed: `model_replay`, `model_explore`). `--model` (or `model`) forces one model, and `--max-steps` limits the number of tool calls per test (default 30).
+- Failures are retried while `FASTPILOT_RETRY_BUDGET` (default 3) is not used up; a retry that passes = flaky.
+  After `FASTPILOT_BREAKER` (default 3) infra failures in a row, the remaining tests are skipped as infra.
+- `--workers N` runs N tests at once. Each test has its own Chrome. Booted Android devices and iOS simulators
+  are lent to one test at a time (checked for health when lent; a device that
+  fails the check is taken out), a retry uses another device if there is one, and the queue is ordered by the longest
+  recorded duration (tests that have never run go first).
+- `--record` records the screen of each session (web: a CDP screencast as an HTML filmstrip; Android: `screenrecord`;
+  iOS: `simctl io recordVideo`). `--html` produces one self-contained HTML file with the report for each
+  run (steps, durations, diffs, screenshots, recordings); `--junit` is for CI dashboards.
+  In each run's report, the recording has a marker for each step (red on failed steps; click to jump there)
+  and one button per flow that plays only that flow's part. A flow that passes includes a screenshot
+  of its final screen.
+- `--reset` makes each test start from a clean state: Android/iOS sessions reset their app before it opens,
+  once per app per run (per test for `run`, per process for `mcp`): through the session's `target`, or on the
+  first `launchApp` for that app
+  (Android: `pm clear` for data and runtime permissions, portrait screen; iOS simulator: data and all privacy permissions,
+  orientation cannot be set through simctl; physical iPhones are not supported). Web sessions always start with
+  a new browser context anyway (no cookies or storage). Needs `allow_app_reset` (built-in: allowed); if it is turned off,
+  mobile sessions are refused with `blocked`. `fastpilot mcp --reset` does the same for sessions from chat.
+  Orientation and device settings are restored when the session ends.
+- `--report-github` (in GitHub Actions, on a pull request) writes the suite results as **one** comment on the PR:
+  "running" when it starts, then replaced by a results table (passed, failed + class + notes, flaky, quarantined,
+  duration, link to the workflow run). The same comment is updated on later runs (marked
+  `<!-- fastpilot-report -->`), so comments do not pile up. The token is read only from the `GITHUB_TOKEN` env; it is never
+  stored, put into a URL, or printed. A failure to write the comment does not fail the suite.
+  `--report-github=dry` prints the comment content without sending anything. Example job:
 
   ```yaml
   permissions:
@@ -656,110 +654,110 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   ```
-- **Selain Claude Code (opsional):** `fastpilot run` bisa dijalankan oleh API yang kompatibel dengan OpenAI
-  (chat completions + tool calling). Claude Code tetap bawaan. Tool, verdict `finish`, `max_steps`, dan
-  `test_timeout` sama persis.
+- **Besides Claude Code (optional):** `fastpilot run` can be driven by an OpenAI-compatible API
+  (chat completions + tool calling). Claude Code stays the built-in default. The tools, the `finish` verdict, `max_steps`, and
+  `test_timeout` are exactly the same.
 
   ```bash
-  fastpilot config set provider openrouter        # openai, openrouter, groq, ollama (lokal), custom
-  fastpilot config set provider_model <model id>  # wajib
-  fastpilot config set-key openrouter             # key dibaca dari stdin (tersembunyi), disimpan di Keychain
-  fastpilot config test-provider                  # satu request kecil untuk cek
+  fastpilot config set provider openrouter        # openai, openrouter, groq, ollama (local), custom
+  fastpilot config set provider_model <model id>  # required
+  fastpilot config set-key openrouter             # key is read from stdin (hidden) and stored in Keychain
+  fastpilot config test-provider                  # one small request to check
   ```
 
-  Key disimpan di macOS Keychain (Linux: secret service lewat `secret-tool`, kalau tidak ada: file 600 di
-  `~/.fastpilot/keys/`), atau diberikan lewat env `FASTPILOT_PROVIDER_API_KEY`. Key tidak pernah ditulis ke
-  config, log, laporan, atau argumen proses. `provider` dan `provider_base_url` hanya bisa diubah user (agent
-  tidak bisa mengalihkan data test ke server lain). `http://` hanya untuk mesin ini (mis. Ollama); server lain
-  wajib `https://`. Kembali ke Claude Code: `fastpilot config unset provider`.
+  The key is stored in the macOS Keychain (Linux: the secret service through `secret-tool`; if that is missing: a 600 file in
+  `~/.fastpilot/keys/`), or given through the `FASTPILOT_PROVIDER_API_KEY` env. The key is never written to
+  config, logs, reports, or process arguments. Only the user can change `provider` and `provider_base_url` (an agent
+  cannot redirect test data to another server). `http://` is only for this computer (e.g. Ollama); other servers
+  must use `https://`. To go back to Claude Code: `fastpilot config unset provider`.
 
-  Key terikat ke server tempat ia disimpan: preset (`openai`, `openrouter`, `groq`) hanya ke servernya
-  sendiri, `custom` ke `provider_base_url` saat `set-key` dijalankan. Bila server berbeda, key tidak
-  dikirim dan fastpilot memberi tahu caranya (set ulang key, atau kembalikan URL). Key yang disimpan
-  fastpilot versi lama (sebelum key terikat) hanya dipakai untuk server preset hosted; untuk `custom` atau
-  `ollama` jalankan `fastpilot config set-key <provider>` sekali lagi. Redirect dari server provider
-  tidak diikuti (isi permintaan tidak ikut ke server lain). Mengganti `provider`
-  lewat `fastpilot config set provider …` menghapus `provider_base_url` lama, sehingga provider baru memakai
-  presetnya. `FASTPILOT_KEYSTORE=file` memaksa penyimpanan file 600 (berguna di CI, atau dengan `HOME`
-  terisolasi supaya macOS tidak meminta Keychain).
+  A key is tied to the server it was stored for: presets (`openai`, `openrouter`, `groq`) only go to their own
+  server, and `custom` goes to the `provider_base_url` set when `set-key` was run. If the server is different, the key is not
+  sent and fastpilot tells you what to do (set the key again, or restore the URL). Keys stored by an
+  older fastpilot version (before keys were tied to a server) are only used for hosted preset servers; for `custom` or
+  `ollama`, run `fastpilot config set-key <provider>` once more. Redirects from the provider's server
+  are not followed (the request content does not go to another server). Changing `provider`
+  with `fastpilot config set provider …` deletes the old `provider_base_url`, so the new provider uses
+  its preset. `FASTPILOT_KEYSTORE=file` forces storage in a 600 file (useful in CI, or with an isolated `HOME`
+  so macOS does not ask for Keychain).
 
-  **Privasi:** dengan provider pihak ketiga, isi tool yang dikirim ke model (snapshot layar, hasil langkah,
-  URL halaman, termasuk path lokal seperti `file:///Users/<nama>/…`) ikut sampai ke provider itu. Nilai
-  `${NAMA}` tetap disamarkan `***`. Pakai Ollama lokal bila data test tidak boleh keluar dari mesin ini.
+  **Privacy:** with a third-party provider, the tool content sent to the model (screen snapshots, step results,
+  page URLs, including local paths like `file:///Users/<nama>/…`) also reaches that provider. `${NAMA}`
+  values are still masked as `***`. Use a local Ollama if test data must not leave this computer.
 
-  Sama lewat halaman: `fastpilot ui` › Atur › Model AI › *penggerak test* (penyedia, Base URL, model,
-  API key, **Tes koneksi**). Key dikirim sekali ke penyimpan kunci dan tidak pernah ditampilkan lagi.
-- Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
-  test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
+  The same is available on a page: `fastpilot ui` › Settings › AI model › *who runs the tests* (provider, Base URL, model,
+  API key, **Test the connection**). The key is sent once to the key store and is never shown again.
+- Exit code ≠ 0 if a test outside quarantine fails. `FASTPILOT_VARS` values written in a
+  test case are sent to the model as `${NAMA}`, never as their values.
 
-## Chrome harian dan iPhone fisik
+## Everyday Chrome and physical iPhones
 
-- **Chrome sehari-hari tanpa restart**: muat `extension-chrome/` (chrome://extensions → Developer mode →
-  Load unpacked), minta `session { action: start, mode: attach, endpoint: extension }`, lalu klik tombol
-  extension di tab yang mau dikendalikan. Relay hanya menerima koneksi yang membawa token acak per sesi;
-  extension mengambilnya lewat native messaging (tidak bisa dijangkau halaman web). Detail di
+- **Your everyday Chrome without restarting it**: load `extension-chrome/` (chrome://extensions → Developer mode →
+  Load unpacked), request `session { action: start, mode: attach, endpoint: extension }`, then click the
+  extension button in the tab you want to control. The relay only accepts connections that carry a random per-session token;
+  the extension gets it through native messaging (web pages cannot reach it). Details in
   [extension-chrome/README.md](../extension-chrome/README.md).
-- **iPhone/iPad dan ponsel Android fisik**: lihat [docs/real-devices.md](real-devices.md). Ringkasnya:
-  cek kesiapan dengan `fastpilot ios doctor`, build runner untuk iPhone, lalu mulai sesi dengan
-  `device: ios-device:<udid>` atau `device: android-device:<serial>`.
+- **Physical iPhone/iPad and Android phones**: see [docs/real-devices.md](real-devices.md). In short:
+  check readiness with `fastpilot ios doctor`, build the runner for iPhone, then start a session with
+  `device: ios-device:<udid>` or `device: android-device:<serial>`.
 
 ```bash
 FASTPILOT_IOS_TEAM=<team id> FASTPILOT_IOS_BUNDLE_PREFIX=com.<nama>.fastpilot ios-runner/build.sh --device <udid>
 ```
 
-## Device di mesin lain
+## Devices on another computer
 
-Emulator Android dan Chrome bisa berjalan di mesin lain (mis. PC Linux dengan KVM), sementara fastpilot
-dan agent AI tetap di laptop. Semua lalu lintas lewat **SSH tunnel**; port debug tidak pernah dibuka ke
-jaringan.
+The Android emulator and Chrome can run on another computer (e.g. a Linux PC with KVM), while fastpilot
+and the AI agent stay on your laptop. All traffic goes through an **SSH tunnel**; debug ports are never opened to the
+network.
 
-> Port adb (5037) dan port remote debugging Chrome memberi kendali penuh atas device dan browser,
-> tanpa password. Jangan pernah membukanya ke internet atau LAN (`adb -a`, `--remote-debugging-address=0.0.0.0`).
-> Biarkan keduanya mendengarkan di `127.0.0.1` mesin itu dan sambungkan lewat SSH.
+> The adb port (5037) and Chrome's remote debugging port give full control over the device and the browser,
+> with no password. Never open them to the internet or the LAN (`adb -a`, `--remote-debugging-address=0.0.0.0`).
+> Keep both listening on `127.0.0.1` on that computer and connect through SSH.
 
-**Android.** Di mesin device: nyalakan emulator/HP seperti biasa (`adb devices` menampilkannya). Di laptop:
+**Android.** On the device computer: start the emulator/phone as usual (`adb devices` lists it). On your laptop:
 
 ```bash
 ssh -N -L 15037:127.0.0.1:5037 user@mesin-device
 ```
 
 ```bash
-fastpilot config set adb_server 127.0.0.1:15037      # atau env FASTPILOT_ADB_SERVER
+fastpilot config set adb_server 127.0.0.1:15037      # or the env FASTPILOT_ADB_SERVER
 fastpilot doctor android                             # adb server 127.0.0.1:15037 ✓, device ✓
 ```
 
-- Pakai port lokal selain 5037, supaya tidak tertukar dengan adb server di laptop sendiri.
-- fastpilot meneruskan koneksi ke agent dan WebView lewat adb server itu sendiri, jadi cukup satu tunnel.
-- Yang hanya bisa dari mesin emulator: `setLocation`, `setNetwork` (throttling) dan perintah konsol
-  emulator lain (ditolak dengan pesan jelas), serta `session start_device` (menyalakan AVD).
+- Use a local port other than 5037, so it is not mixed up with the adb server on your own laptop.
+- fastpilot passes its connections to the agent and the WebView through that adb server itself, so one tunnel is enough.
+- Things that only work from the emulator's computer: `setLocation`, `setNetwork` (throttling) and other emulator console
+  commands (refused with a clear message), and `session start_device` (starting an AVD).
 
-**Chrome.** Di mesin itu, jalankan Chrome dengan profil terpisah dan port debug hanya di localhost:
+**Chrome.** On that computer, run Chrome with a separate profile and the debug port on localhost only:
 
 ```bash
 google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/fastpilot-chrome
 ```
 
-Di laptop:
+On your laptop:
 
 ```bash
 ssh -N -L 19222:127.0.0.1:9222 user@mesin-device
 ```
 
 ```bash
-fastpilot config set chrome_endpoint http://127.0.0.1:19222   # atau env FASTPILOT_CHROME_ENDPOINT
+fastpilot config set chrome_endpoint http://127.0.0.1:19222   # or the env FASTPILOT_CHROME_ENDPOINT
 fastpilot doctor web                                          # remote Chrome at http://127.0.0.1:19222 ✓
 ```
 
-- Tiap sesi tetap mendapat `BrowserContext` sendiri (cookie dan storage terpisah); fastpilot tidak
-  menyalakan Chrome lokal.
-- Path file dibaca oleh mesin Chrome: `target` lokal (`examples/demo/login.html`), `uploadFile`, dan
-  unduhan memakai sistem file mesin itu. Pakai URL `http(s)://` untuk aplikasi yang dites.
-- `adb_server` dan `chrome_endpoint` hanya bisa diubah user (`fastpilot config set`), tidak oleh agent.
-- Bila host-nya bukan mesin ini (bukan `127.0.0.1`/`localhost`), `doctor` dan log memberi peringatan: DevTools
-  dan adb tidak punya password maupun enkripsi. `user:password@` di alamat disamarkan (`***@`) di `doctor` dan pesan error.
+- Each session still gets its own `BrowserContext` (separate cookies and storage); fastpilot does not
+  start a local Chrome.
+- File paths are read by the Chrome computer: a local `target` (`examples/demo/login.html`), `uploadFile`, and
+  downloads use that computer's file system. Use an `http(s)://` URL for the app you test.
+- Only the user can change `adb_server` and `chrome_endpoint` (`fastpilot config set`), not the agent.
+- If the host is not this computer (not `127.0.0.1`/`localhost`), `doctor` and the logs show a warning: DevTools
+  and adb have neither a password nor encryption. `user:password@` in the address is masked (`***@`) in `doctor` and error messages.
 
-Menjalankan **fastpilot sendiri** di mesin lain (mis. Mac untuk iOS) lewat SSH, membuka `fastpilot ui`
-dari laptop, dan menghemat memori simulator iOS dengan simslim: lihat [docs/remote-machine.md](remote-machine.md).
+Running **fastpilot itself** on another computer (e.g. a Mac for iOS) over SSH, opening `fastpilot ui`
+from your laptop, and saving iOS simulator memory with simslim: see [docs/remote-machine.md](remote-machine.md).
 
 ## Bench
 
@@ -771,30 +769,30 @@ dari laptop, dan menghemat memori simulator iOS dengan simslim: lihat [docs/remo
 ./target/release/fastpilot bench android --iterations 20
 ```
 
-Hasil di M1 Pro (Chrome headless; emulator Android API 35; simulator iPhone 16 iOS 18.1):
+Results on an M1 Pro (headless Chrome; Android emulator API 35; iPhone 16 simulator, iOS 18.1):
 
-| Metrik | Web | Android | iOS | Target PRD |
+| Metric | Web | Android | iOS | PRD target |
 |---|---|---|---|---|
-| Session start | 149 ms (warm) | 629 ms | ±23 s (xcodebuild menyalakan runner) | <1 s / <2 s |
+| Session start | 149 ms (warm) | 629 ms | about 23 s (xcodebuild starts the runner) | <1 s / <2 s |
 | Snapshot p50 | 1.1 ms | 4.3 ms | 16–55 ms | <50 / <100 ms |
-| Tap → diff p50 | 119 ms | 154 ms (dengan verifikasi tap) | ±0.4–1.4 s (XCUITest menunggu animasi) | <200 ms |
+| Tap → diff p50 | 119 ms | 154 ms (with tap verification) | about 0.4–1.4 s (XCUITest waits for animations) | <200 ms |
 
-iOS diukur manual lewat klien protokol; belum ada `bench ios`.
+iOS was measured by hand with a protocol client; there is no `bench ios` yet.
 
-Biaya token yang dibaca AI (aproksimasi offline; aturannya dicetak di output):
+Token cost of what the AI reads (offline approximation; the rules are printed in the output):
 
 ```bash
-./target/release/fastpilot bench tokens web      # atau android / ios
+./target/release/fastpilot bench tokens web      # or android / ios
 ```
 
-| Yang dibaca AI (aproksimasi) | Web | Android |
+| What the AI reads (approximation) | Web | Android |
 |---|---|---|
-| Snapshot layar login | 111 | 86 |
-| `run_flow` 1 langkah (tap → diff) | 92 | 60 |
-| `run_flow` login 4 langkah | 236 | 379 |
-| Screenshot sebagai pembanding (w·h/750) | 1366 | 1229 |
+| Login screen snapshot | 111 | 86 |
+| `run_flow`, 1 step (tap → diff) | 92 | 60 |
+| `run_flow`, 4-step login | 236 | 379 |
+| Screenshot, for comparison (w·h/750) | 1366 | 1229 |
 
-Stabilitas (PRD G6) diukur dengan pass^k dan batas atas failure rate, bukan dari satu angka "lolos 20 kali":
+Stability (PRD G6) is measured with pass^k and an upper bound on the failure rate, not with a single "passed 20 times" number:
 
 ```bash
 FASTPILOT_VARS=DEMO_PASS DEMO_PASS=rahasia123 ./target/release/fastpilot stability examples/flows/login-web.yaml --runs 30
@@ -814,56 +812,56 @@ failure rate <= 11.4% (95% Wilson upper bound); a <=1% claim needs >= 381 runs w
 cargo test
 ```
 
-- Unit test: `crates/core` (DSL, `check_flow`, prune/ref/diff, resolusi selector, engine), `crates/memory`,
-  dan konversi node di `crates/android` serta `crates/ios`.
-- `bin/fastpilot/tests/mcp_login.rs` menjalankan `fastpilot mcp` lewat stdio dengan Chrome sungguhan:
-  - login, stop-early, dua sesi paralel;
-  - widget (select, klik div, confirm dialog, pressKey, upload, iframe, shadow DOM);
-  - assert, report, dan path memory;
-  - attach ke Chrome yang sudah berjalan.
-- `bin/fastpilot/tests/web_advanced.rs` menguji iframe lintas situs (OOPIF), popup, download, elemen
-  `opacity:0`, error console/HTTP di laporan gagal, Set-of-Mark, snapshot find/file, dan tool di sesi lain
-  yang tidak ikut menunggu flow yang sedang berjalan.
-- `bin/fastpilot/tests/android.rs` menguji login Android, WebView, dan skenario web+Android paralel di
-  emulator yang disebut di `FASTPILOT_ANDROID_SERIAL`.
-- `bin/fastpilot/tests/ios.rs` menguji login di iOS simulator.
-- `bin/fastpilot/tests/cli.rs`, `cli_shell.rs`, `config_web.rs`, `state_web.rs`, `policy_web.rs` dan
-  lainnya menguji CLI, daemon shell, pengaturan, login tersimpan, dan guard rail di Chrome sungguhan.
-- Test Android (`android.rs`, `ui_takeover_device.rs`, demo Android di `demo_cli.rs`) tidak pernah
-  di-skip diam-diam dan tidak pernah memilih device sendiri:
-  - jalankan dengan `FASTPILOT_ANDROID_SERIAL=emulator-5556` (emulator yang boleh dipakai test);
-  - tanpa itu, tanpa device, device belum siap, tanpa adb, atau APK belum di-build
-    (`agent-android/build.sh`): test gagal dan menyebut sebabnya;
-  - `FASTPILOT_SKIP_ANDROID=1` melewatinya dengan sengaja, dan output-nya bilang begitu.
-- Test yang butuh Chrome atau simulator iOS otomatis di-skip kalau tidak tersedia.
-- CI GitHub hanya build (`cargo build --workspace --all-targets --locked`); test dijalankan lokal.
+- Unit tests: `crates/core` (DSL, `check_flow`, prune/ref/diff, selector resolution, engine), `crates/memory`,
+  and node conversion in `crates/android` and `crates/ios`.
+- `bin/fastpilot/tests/mcp_login.rs` runs `fastpilot mcp` over stdio with a real Chrome:
+  - login, stop-early, two parallel sessions;
+  - widgets (select, clicking a div, confirm dialog, pressKey, upload, iframe, shadow DOM);
+  - assert, report, and path memory;
+  - attaching to a Chrome that is already running.
+- `bin/fastpilot/tests/web_advanced.rs` tests cross-site iframes (OOPIF), popups, downloads, `opacity:0`
+  elements, console/HTTP errors in failure reports, Set-of-Mark, snapshot find/file, and tools in other sessions
+  that do not wait for a running flow.
+- `bin/fastpilot/tests/android.rs` tests Android login, WebView, and a parallel web+Android scenario on the
+  emulator named in `FASTPILOT_ANDROID_SERIAL`.
+- `bin/fastpilot/tests/ios.rs` tests login on the iOS simulator.
+- `bin/fastpilot/tests/cli.rs`, `cli_shell.rs`, `config_web.rs`, `state_web.rs`, `policy_web.rs` and
+  others test the CLI, the shell daemon, settings, saved logins, and guard rails in a real Chrome.
+- Android tests (`android.rs`, `ui_takeover_device.rs`, the Android demo in `demo_cli.rs`) are never
+  skipped silently and never pick a device by themselves:
+  - run them with `FASTPILOT_ANDROID_SERIAL=emulator-5556` (an emulator that tests may use);
+  - without it, without a device, with a device that is not ready, without adb, or with APKs not built yet
+    (`agent-android/build.sh`): the tests fail and name the cause;
+  - `FASTPILOT_SKIP_ANDROID=1` skips them on purpose, and the output says so.
+- Tests that need Chrome or an iOS simulator are skipped automatically if those are not available.
+- GitHub CI only builds (`cargo build --workspace --all-targets --locked`); tests are run locally.
 
 ## Layout
 
 ```
-crates/core      config (env → config.toml), policy, Driver trait, Selector, Snapshot (prune, ref stabil, diff), DSL + check_flow, engine, assert, SessionRegistry
+crates/core      config (env → config.toml), policy, Driver trait, Selector, Snapshot (prune, stable ref, diff), DSL + check_flow, engine, assert, SessionRegistry
 crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserContext
 crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
 crates/ios       simctl/devicectl + XCUITest runner, usbmux, Web Inspector, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
 crates/mcp       rmcp stdio server, 10 tools, docs
 bin/fastpilot    entrypoint: `mcp`, shell CLI + daemon, `run`, `doctor`/`setup`, `config`, `bench`, `stability`
-agent-android/   instrumentation APK (Java, UiAutomation), dibangun tanpa Gradle
-ios-runner/      XCUITest runner + demo app iOS
-examples/        demo web (login, widgets), demo Android
-tests/           test case bahasa natural
-skills/fastpilot Agent Skill (SKILL.md) untuk agent AI
+agent-android/   instrumentation APK (Java, UiAutomation), built without Gradle
+ios-runner/      XCUITest runner + iOS demo app
+examples/        web demo (login, widgets), Android demo
+tests/           natural-language test cases
+skills/fastpilot Agent Skill (SKILL.md) for AI agents
 ```
 
-## Batasan yang diketahui
+## Known limitations
 
-- iOS device fisik: kode sudah ada (usbmux/tunnel, `fastpilot ios doctor`) tapi belum diuji di hardware.
-  Butuh Xcode yang cocok dengan iOS-nya (iOS 26 → Xcode 26) dan Apple ID di Xcode; profil gratis berlaku
-  7 hari dan maksimal 3 app per device. `setLocation`, `pushNotification`, rekaman layar, `clearKeychain`
-  dan izin allow/deny hanya ada di simulator. Lihat [docs/real-devices.md](real-devices.md).
-- iOS WKWebView: lewat Web Inspector, hanya jika app memasang `webView.isInspectable = true` (iOS 16.4+);
-  di iPhone juga Settings → Safari → Advanced → Web Inspector. Tap web berupa `click()` DOM (bukan
-  sentuhan), dengan beberapa WKWebView dipakai halaman pertama, dan jalur RemoteXPC belum ada.
-- iOS `setNetwork`: tidak didukung (simulator memakai jaringan Mac).
-- Web attach lewat extension relay ([extension-chrome/](../extension-chrome/)) perlu klik tombol extension
-  di tab yang mau dikendalikan; tanpa extension: Chrome M144+ `autoConnect` atau `--remote-debugging-port`.
+- Physical iOS devices: the code exists (usbmux/tunnel, `fastpilot ios doctor`) but has not been tested on hardware.
+  You need an Xcode that matches the iOS version (iOS 26 → Xcode 26) and an Apple ID in Xcode; a free profile lasts
+  7 days and allows at most 3 apps per device. `setLocation`, `pushNotification`, screen recording, `clearKeychain`
+  and allow/deny permissions only exist on the simulator. See [docs/real-devices.md](real-devices.md).
+- iOS WKWebView: through Web Inspector, only if the app sets `webView.isInspectable = true` (iOS 16.4+);
+  on an iPhone, also Settings → Safari → Advanced → Web Inspector. A web tap is a DOM `click()` (not a
+  touch), with several WKWebViews the first page is used, and the RemoteXPC path does not exist yet.
+- iOS `setNetwork`: not supported (the simulator uses the Mac's network).
+- Web attach through the extension relay ([extension-chrome/](../extension-chrome/)) needs a click on the extension button
+  in the tab you want to control; without the extension: Chrome M144+ `autoConnect` or `--remote-debugging-port`.

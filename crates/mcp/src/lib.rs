@@ -193,7 +193,7 @@ pub struct AssertArgs {
     pub session: Option<String>,
     /// visible | not_visible | text_equals | contains | enabled
     pub kind: String,
-    /// DSL selector: `"Dashboard"`, `e7`, `{ role: button, name: Masuk }`, `{ id: total }`.
+    /// DSL selector: `"Dashboard"`, `e7`, `{ role: button, name: "Sign in" }`, `{ id: total }`.
     pub selector: String,
     /// Expected text for text_equals / contains.
     pub text: Option<String>,

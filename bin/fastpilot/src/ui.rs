@@ -46,14 +46,14 @@ pub struct Ui {
 /// How long the printed link works.
 const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
-const USAGE: &str = "pemakaian: fastpilot ui [--no-open] [--port N]
+const USAGE: &str = "usage: fastpilot ui [--no-open] [--port N]
 
-Membuka halaman Pengaturan, Device, dan Live di browser (hanya di komputer ini).
-  --no-open   cetak link-nya saja, tanpa membuka browser
-  --port N    pakai port N (1024-65535); bawaan: port yang kosong
+Opens the dashboard (Chat, Live, Schedules, Settings, Device, …) in your browser, on this computer only.
+  --no-open   only print the link, without opening a browser
+  --port N    use port N (1024-65535); default: a free port
 
-Link-nya berlaku sekali dan selama 10 menit. Jalankan fastpilot ui sendiri, bukan lewat agent AI:
-siapa pun yang membuka halaman itu bisa melonggarkan Batasan.";
+The link works once, for 10 minutes. Start fastpilot ui yourself, not through an AI agent:
+whoever opens that page can loosen the Limits.";
 
 impl Ui {
     pub fn new(port: u16) -> Res<Self> {
@@ -122,20 +122,20 @@ pub async fn ui(args: &[String]) -> Res<()> {
             "--no-open" => open = false,
             "--port" => {
                 let Some(v) = it.next() else { fail_args("--port butuh angka (1024-65535)") };
-                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: pakai angka 1024 sampai 65535")));
+                port = v.parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or_else(|| fail_args(&format!("--port {v}: use a number from 1024 to 65535")));
             }
-            other => fail_args(&format!("opsi `{other}` tidak dikenal")),
+            other => fail_args(&format!("unknown option `{other}`")),
         }
     }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            fail(&format!("port {port} sudah dipakai (fastpilot ui lain?): pilih port lain dengan --port, atau hilangkan --port supaya dipilihkan yang kosong"))
+            fail(&format!("port {port} is already in use (another fastpilot ui?): pick another one with --port, or leave --port out to get a free one"))
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            fail(&format!("port {port} tidak boleh dipakai user ini: pilih 1024 sampai 65535, atau hilangkan --port"))
+            fail(&format!("port {port} is not allowed for this user: pick 1024 to 65535, or leave --port out"))
         }
-        Err(e) => fail(&format!("tidak bisa membuka 127.0.0.1:{port}: {e}")),
+        Err(e) => fail(&format!("cannot open 127.0.0.1:{port}: {e}")),
     };
     let port = listener.local_addr()?.port();
     let state = Arc::new(Ui::new(port)?);
@@ -246,25 +246,25 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
     let ours = [format!("127.0.0.1:{}", ui.port), format!("localhost:{}", ui.port)];
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
     if !ours.iter().any(|o| o == host) {
-        return refuse(StatusCode::MISDIRECTED_REQUEST, "Host salah: buka link 127.0.0.1 yang dicetak `fastpilot ui`");
+        return refuse(StatusCode::MISDIRECTED_REQUEST, "wrong host: open the 127.0.0.1 link that `fastpilot ui` printed");
     }
     let origin = headers.get(header::ORIGIN).and_then(|h| h.to_str().ok());
     if let Some(o) = origin
         && !ours.iter().any(|h| o == format!("http://{h}"))
     {
-        return refuse(StatusCode::FORBIDDEN, "permintaan dari situs lain ditolak");
+        return refuse(StatusCode::FORBIDDEN, "requests from other sites are refused");
     }
     if req.method() != Method::GET && req.method() != Method::HEAD {
         let json = headers.get(header::CONTENT_TYPE).and_then(|h| h.to_str().ok()).is_some_and(|c| c.starts_with("application/json"));
         if origin.is_none() || !json {
-            return refuse(StatusCode::FORBIDDEN, "perubahan hanya diterima dari halaman fastpilot ui");
+            return refuse(StatusCode::FORBIDDEN, "changes are only accepted from the fastpilot ui page");
         }
     }
     let code = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("code="))).map(str::to_owned);
     let cookie_ok = cookie(headers, &cookie_name(ui.port)).is_some_and(|c| same(&c, &ui.session));
     if let Some(code) = code {
         if req.method() != Method::GET || req.uri().path() != "/" {
-            return refuse(StatusCode::UNAUTHORIZED, "kode akses hanya untuk membuka halaman");
+            return refuse(StatusCode::UNAUTHORIZED, "the access code only opens the page");
         }
         if !ui.redeem(&code) {
             if cookie_ok {
@@ -273,7 +273,7 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
             }
             return refuse(
                 StatusCode::UNAUTHORIZED,
-                "link ini sudah dipakai atau kedaluwarsa (berlaku sekali, 10 menit). Jalankan `fastpilot ui` lagi untuk link baru.",
+                "this link was already used or has expired (it works once, for 10 minutes). Run `fastpilot ui` again for a new link.",
             );
         }
         // Trade the code for the session cookie, and drop it from the address bar.
@@ -284,7 +284,7 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
         return r;
     }
     if !cookie_ok {
-        return refuse(StatusCode::UNAUTHORIZED, "buka link yang dicetak `fastpilot ui` (berisi kode akses sekali pakai)");
+        return refuse(StatusCode::UNAUTHORIZED, "open the link that `fastpilot ui` printed (it holds a one-time access code)");
     }
     let mut r = next.run(req).await;
     let h = r.headers_mut();
@@ -346,20 +346,20 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
         "save" => (|| {
             if let Err(e) = config::check() {
-                return Err(format!("file pengaturan rusak, perbaiki dulu: {e}"));
+                return Err(format!("the settings file is damaged; fix it first: {e}"));
             }
             for k in ["FASTPILOT_PROVIDER", "FASTPILOT_PROVIDER_BASE_URL", "FASTPILOT_PROVIDER_MODEL"] {
                 if std::env::var(k).is_ok_and(|v| !v.is_empty()) {
-                    return Err(format!("{k} diatur lewat environment, yang menang atas file pengaturan: ubah di sana"));
+                    return Err(format!("{k} is set in the environment, which wins over the settings file: change it there"));
                 }
             }
             let name = text("provider").unwrap_or_else(|| "claude".into());
-            let preset = config::PROVIDERS.iter().find(|(p, _)| *p == name).ok_or("penyedia tidak dikenal")?;
+            let preset = config::PROVIDERS.iter().find(|(p, _)| *p == name).ok_or("unknown provider")?;
             if name == "claude" {
                 for k in ["provider", "provider_base_url", "provider_model"] {
                     config::write(k, None)?;
                 }
-                return Ok(json!({ "message": "Test dijalankan oleh Claude Code lagi." }));
+                return Ok(json!({ "message": "Tests run with Claude Code again." }));
             }
             let (url, model) = (text("base_url"), text("model"));
             // Hosted presets talk to their own server only; a preset's own URL is stored as "unset",
@@ -367,29 +367,29 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
             let hosted = matches!(name.as_str(), "openai" | "openrouter" | "groq");
             let url = if hosted || url.as_deref().map(config::origin) == Some(preset.1.and_then(config::origin)) { None } else { url };
             if url.is_none() && preset.1.is_none() {
-                return Err("isi Base URL untuk penyedia custom".into());
+                return Err("enter the Base URL of the custom provider".into());
             }
-            let model = model.ok_or("isi id model, mis. gpt-4.1-mini atau llama3.1")?;
+            let model = model.ok_or("enter the model id, for example gpt-4.1-mini or llama3.1")?;
             // Values are checked by the settings themselves (https, no credentials, model id).
             config::write("provider_base_url", url.as_deref())?;
             config::write("provider_model", Some(&model))?;
             config::write("provider", Some(&name))?;
-            let mut message = format!("Tersimpan: {name} · {model}.");
+            let mut message = format!("Saved: {name} · {model}.");
             if let Some(key) = text("key") {
                 let place = crate::keystore::set(&name, &key)?;
-                message.push_str(&format!(" API key disimpan di {place}."));
+                message.push_str(&format!(" The API key is saved in {place}."));
             } else if crate::keystore::has(&name) {
                 // A key saved for another server is not sent here (the run says so); say it now.
                 let now = url.as_deref().or(preset.1).and_then(config::origin);
                 if let Some(saved) = crate::keystore::origin(&name).filter(|o| Some(o) != now.as_ref()) {
-                    message.push_str(&format!(" API key {name} tersimpan untuk {saved}, bukan server ini: isi API key lagi."));
+                    message.push_str(&format!(" The {name} API key was saved for {saved}, not this server: enter the API key again."));
                 }
             }
             Ok(json!({ "message": message }))
         })(),
         "delete-key" => {
             let name = current();
-            crate::keystore::delete(&name).map(|()| json!({ "message": format!("API key {name} dihapus.") }))
+            crate::keystore::delete(&name).map(|()| json!({ "message": format!("The {name} API key was deleted.") }))
         }
         // A new process: it reads the settings as saved now (this one pinned them at start).
         "test" => match std::env::current_exe() {
@@ -401,12 +401,12 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
                         if o.status.success() { Ok(json!({ "message": said })) } else { Err(said) }
                     }
                     Ok(Err(e)) => Err(e.to_string()),
-                    Err(_) => Err("penyedia tidak menjawab dalam 90 detik".into()),
+                    Err(_) => Err("the provider did not answer within 90 seconds".into()),
                 }
             }
             Err(e) => Err(e.to_string()),
         },
-        _ => Err("perintah tidak dikenal".into()),
+        _ => Err("unknown command".into()),
     };
     match result {
         Ok(v) => axum::Json(v).into_response(),
@@ -639,12 +639,12 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
         "run" => schedule::start_now(&id).map(|()| json!({})),
         "test" => match schedule::load().schedules.into_iter().find(|s| s.id == id) {
             Some(s) => {
-                let sent = schedule::notify(&s, &format!("Tes notifikasi: {}", s.name), &format!("fastpilot: ini tes notifikasi untuk jadwal \"{}\".", s.name)).await;
-                if sent.is_empty() { Err("Jadwal ini belum punya notifikasi".into()) } else { Ok(json!({ "sent": sent })) }
+                let sent = schedule::notify(&s, &format!("Test notification: {}", s.name), &format!("fastpilot: this is a test notification for the schedule \"{}\".", s.name)).await;
+                if sent.is_empty() { Err("This schedule has no notification yet".into()) } else { Ok(json!({ "sent": sent })) }
             }
-            None => Err("Jadwal tidak ditemukan".into()),
+            None => Err("Schedule not found".into()),
         },
-        _ => Err("Perintah tidak dikenal".into()),
+        _ => Err("Unknown command".into()),
     };
     match result {
         Ok(v) => axum::Json(v).into_response(),
@@ -667,7 +667,7 @@ fn can_control(pid: u32) -> bool {
 #[cfg(unix)]
 async fn control(pid: u32, req: &Value) -> Result<Value, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let gone = "proses fastpilot itu tidak menerima kendali (sudah berhenti, atau versi lama)";
+    let gone = "that fastpilot process does not take control (it has stopped, or it is an older version)";
     let mut s = tokio::net::UnixStream::connect(control_socket(pid)).await.map_err(|_| gone.to_owned())?;
     s.write_all(format!("{req}\n").as_bytes()).await.map_err(|_| gone.to_owned())?;
     let mut line = String::new();
@@ -675,15 +675,15 @@ async fn control(pid: u32, req: &Value) -> Result<Value, String> {
     match tokio::time::timeout(std::time::Duration::from_secs(20), r.read_line(&mut line)).await {
         Ok(Ok(n)) if n > 0 => {}
         Ok(_) => return Err(gone.to_owned()),
-        Err(_) => return Err("device tidak menjawab dalam 20 detik".to_owned()),
+        Err(_) => return Err("the device did not answer within 20 seconds".to_owned()),
     }
     let v: Value = serde_json::from_str(&line).map_err(|_| gone.to_owned())?;
-    if v["ok"].as_bool() == Some(true) { Ok(v) } else { Err(v["error"].as_str().unwrap_or("gagal").to_owned()) }
+    if v["ok"].as_bool() == Some(true) { Ok(v) } else { Err(v["error"].as_str().unwrap_or("failed").to_owned()) }
 }
 
 #[cfg(not(unix))]
 async fn control(_pid: u32, _req: &Value) -> Result<Value, String> {
-    Err("Ambil alih belum tersedia di sistem ini".to_owned())
+    Err("Take over is not available on this system yet".to_owned())
 }
 
 /// Android / iOS screens: the device's own screenshot, asked from the fastpilot process that holds
@@ -753,23 +753,23 @@ async fn keep_takeovers() {
 
 async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
     let Some(pid) = req["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else {
-        return refuse(StatusCode::BAD_REQUEST, "pid wajib diisi");
+        return refuse(StatusCode::BAD_REQUEST, "pid is required");
     };
     let Some(session) = req["session"].as_str().map(str::to_owned) else {
-        return refuse(StatusCode::BAD_REQUEST, "session wajib diisi");
+        return refuse(StatusCode::BAD_REQUEST, "session is required");
     };
     let op = req["op"].as_str().unwrap_or("");
     if !matches!(op, "takeover" | "release" | "tap" | "swipe" | "type" | "key" | "back") {
-        return refuse(StatusCode::BAD_REQUEST, "perintah tidak dikenal");
+        return refuse(StatusCode::BAD_REQUEST, "unknown command");
     }
     if !fastpilot_core::live::read_all().iter().any(|p| p.pid == pid) {
-        return refuse(StatusCode::NOT_FOUND, "proses fastpilot itu sudah berhenti");
+        return refuse(StatusCode::NOT_FOUND, "that fastpilot process has stopped");
     }
     let key = (pid, session.clone());
     let mut fwd = json!({ "op": op, "session": session });
     if op != "takeover" {
         let Some(token) = takeovers().get(&key).cloned() else {
-            return refuse(StatusCode::CONFLICT, "ambil alih sesi ini dulu (dari halaman ini)");
+            return refuse(StatusCode::CONFLICT, "take over this session first (from this page)");
         };
         fwd["token"] = json!(token);
     }
@@ -791,7 +791,7 @@ async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
         }
         Err(e) => {
             // Ended meanwhile (time limit, or the session closed): forget the token.
-            if op != "takeover" && (e.contains("ambil alih sesi ini dulu") || e.contains("tidak ada lagi") || e.contains("bukan pengambil")) {
+            if op != "takeover" && (e.contains("take over this session first") || e.contains("is gone") || e.contains("did not take over")) {
                 takeovers().remove(&key);
             }
             refuse(StatusCode::CONFLICT, &e)
@@ -882,7 +882,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
 async fn asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
     match static_file(&path) {
         Some((ty, body)) => ([(header::CONTENT_TYPE, ty)], body).into_response(),
-        None => refuse(StatusCode::NOT_FOUND, "file tidak ada"),
+        None => refuse(StatusCode::NOT_FOUND, "no such file"),
     }
 }
 
@@ -947,35 +947,35 @@ fn bad_item(key: &str, item: &str) -> Option<String> {
             let ok = !host.is_empty()
                 && host.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
                 && !item.contains("://");
-            (!ok).then(|| format!("\"{item}\" bukan nama domain: tulis host saja, mis. toko.com atau *.toko.com (tanpa https:// dan path)"))
+            (!ok).then(|| format!("\"{item}\" is not a domain name: write the host only, for example shop.com or *.shop.com (no https:// and no path)"))
         }
         "vars" => {
             let ok = item.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && item.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             if !ok {
-                Some(format!("\"{item}\" bukan nama variabel: huruf, angka, dan _ saja, mis. DEMO_PASS"))
+                Some(format!("\"{item}\" is not a variable name: letters, digits and _ only, for example DEMO_PASS"))
             } else if item.to_ascii_uppercase().starts_with("FASTPILOT_") {
-                Some(format!("\"{item}\" adalah pengaturan fastpilot sendiri, bukan secret yang boleh dibaca flow"))
+                Some(format!("\"{item}\" is one of fastpilot's own settings, not a secret a flow may read"))
             } else {
                 None
             }
         }
-        "upload_dirs" => (!(item.starts_with('/') || item.starts_with("~/"))).then(|| format!("\"{item}\": tulis folder lengkap, mis. ~/fastpilot/fixtures atau /Users/nama/fixtures")),
-        "confirm_actions" | "block_actions" => (item.chars().count() > 60).then(|| "kata terlalu panjang (maksimal 60 huruf)".to_owned()),
+        "upload_dirs" => (!(item.starts_with('/') || item.starts_with("~/"))).then(|| format!("\"{item}\": write the full folder, for example ~/fastpilot/fixtures or /Users/name/fixtures")),
+        "confirm_actions" | "block_actions" => (item.chars().count() > 60).then(|| "the word is too long (60 characters at most)".to_owned()),
         _ => None,
     }
 }
 
 async fn change(axum::Json(body): axum::Json<Value>) -> Response {
     if let Err(e) = config::check() {
-        return refuse(StatusCode::CONFLICT, &format!("file pengaturan rusak, perbaiki dulu sebelum menyimpan: {e}"));
+        return refuse(StatusCode::CONFLICT, &format!("the settings file is damaged; fix it before saving: {e}"));
     }
     let Some(key) = body["key"].as_str().filter(|k| KEYS.contains(k)) else {
-        return refuse(StatusCode::BAD_REQUEST, "pengaturan ini tidak bisa diubah di sini");
+        return refuse(StatusCode::BAD_REQUEST, "this setting cannot be changed here");
     };
     if std::env::var(format!("FASTPILOT_{}", key.to_uppercase())).is_ok() {
         return refuse(
             StatusCode::CONFLICT,
-            &format!("`{key}` diatur lewat environment (FASTPILOT_{}), yang menang atas file pengaturan: ubah di sana", key.to_uppercase()),
+            &format!("`{key}` is set in the environment (FASTPILOT_{}), which wins over the settings file: change it there", key.to_uppercase()),
         );
     }
     let value = match &body["value"] {
@@ -991,14 +991,14 @@ async fn change(axum::Json(body): axum::Json<Value>) -> Response {
         Value::Array(items) => {
             let items: Vec<&str> = items.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).collect();
             if items.iter().any(|s| s.contains(',')) {
-                return refuse(StatusCode::BAD_REQUEST, "satu item tidak boleh berisi koma");
+                return refuse(StatusCode::BAD_REQUEST, "an item cannot contain a comma");
             }
             if let Some(why) = items.iter().find_map(|i| bad_item(key, i)) {
                 return refuse(StatusCode::BAD_REQUEST, &why);
             }
             (!items.is_empty()).then(|| items.join(","))
         }
-        Value::Object(_) => return refuse(StatusCode::BAD_REQUEST, "nilai tidak dikenal"),
+        Value::Object(_) => return refuse(StatusCode::BAD_REQUEST, "unknown value"),
     };
     match config::write(key, value.as_deref()) {
         Ok(_) => settings().await,
@@ -1074,23 +1074,23 @@ const BOUNDARY: &str = "fpframe";
 /// connection that only screencasts; it ends when the page stops showing the stream.
 async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
     let (Some(pid), Some(session)) = (q.get("pid").and_then(|p| p.parse::<u32>().ok()), q.get("session")) else {
-        return refuse(StatusCode::BAD_REQUEST, "pid dan session wajib diisi");
+        return refuse(StatusCode::BAD_REQUEST, "pid and session are required");
     };
     let fps = q.get("fps").and_then(|f| f.parse::<u64>().ok()).unwrap_or(2).clamp(1, 15);
     let width = q.get("w").and_then(|w| w.parse::<u32>().ok()).unwrap_or(480).clamp(160, 1920);
     let found = fastpilot_core::live::read_all().into_iter().filter(|p| p.pid == pid).flat_map(|p| p.sessions).find(|s| &s.id == session);
     let Some(found) = found else {
-        return refuse(StatusCode::NOT_FOUND, "tidak ada sesi dengan nama itu");
+        return refuse(StatusCode::NOT_FOUND, "there is no session with that name");
     };
     let Some(screen) = found.screen else {
         if matches!(found.platform.as_str(), "android" | "ios") && can_control(pid) {
             return device_frames(pid, session.clone(), fps.min(3));
         }
-        return refuse(StatusCode::NOT_FOUND, "sesi ini tidak bisa ditonton (Chrome milikmu yang di-attach, atau proses fastpilot versi lama)");
+        return refuse(StatusCode::NOT_FOUND, "this session cannot be watched (your own Chrome that fastpilot attached to, or an older fastpilot process)");
     };
     let cast = match fastpilot_web::Screencast::start(&screen.ws, &screen.target, width, if width > 800 { 70 } else { 55 }).await {
         Ok(c) => c,
-        Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("layar tidak bisa ditampilkan: {e}")),
+        Err(e) => return refuse(StatusCode::BAD_GATEWAY, &format!("the screen cannot be shown: {e}")),
     };
     let rx = cast.frames();
     let period = std::time::Duration::from_millis(1000 / fps);

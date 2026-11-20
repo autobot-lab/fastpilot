@@ -142,8 +142,8 @@ pub fn secret_path(id: &str) -> PathBuf {
 /// Write `text` owner-only (0600), replacing the file atomically; its folder becomes 0700.
 fn write_private(path: &Path, text: &str) -> Res<()> {
     use std::io::Write;
-    let dir = path.parent().ok_or("Folder tidak dikenal")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("Tidak bisa membuat folder {}: {e}", dir.display()))?;
+    let dir = path.parent().ok_or("Unknown folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create the folder {}: {e}", dir.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -157,7 +157,7 @@ fn write_private(path: &Path, text: &str) -> Res<()> {
     o.open(&tmp)
         .and_then(|mut f| f.write_all(text.as_bytes()))
         .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|e| format!("Tidak bisa menulis {}: {e}", path.display()))
+        .map_err(|e| format!("Cannot write {}: {e}", path.display()))
 }
 
 pub fn load() -> Store {
@@ -189,7 +189,7 @@ pub fn new_id(name: &str, taken: &[String]) -> String {
         .join("-");
     base.truncate(40);
     let base = base.trim_end_matches('-').to_owned();
-    let base = if base.is_empty() { "jadwal".to_owned() } else { base };
+    let base = if base.is_empty() { "schedule".to_owned() } else { base };
     (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|id| !taken.contains(id)).unwrap_or(base)
 }
 
@@ -374,7 +374,7 @@ fn label(id: &str) -> String {
 }
 
 fn exe() -> Res<String> {
-    let p = std::env::current_exe().map_err(|e| format!("File program fastpilot tidak ditemukan: {e}"))?;
+    let p = std::env::current_exe().map_err(|e| format!("The fastpilot program file was not found: {e}"))?;
     Ok(p.to_string_lossy().into_owned())
 }
 
@@ -481,13 +481,13 @@ fn run_cmd(cmd: &str, args: &[&str], stdin: Option<&str>) -> Res<String> {
     if stdin.is_some() {
         c.stdin(std::process::Stdio::piped());
     }
-    let mut child = c.spawn().map_err(|e| format!("Perintah `{cmd}` tidak bisa dijalankan: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("The command `{cmd}` cannot start: {e}"))?;
     if let (Some(text), Some(mut i)) = (stdin, child.stdin.take()) {
-        i.write_all(text.as_bytes()).map_err(|e| format!("Perintah `{cmd}` gagal: {e}"))?;
+        i.write_all(text.as_bytes()).map_err(|e| format!("The command `{cmd}` failed: {e}"))?;
     }
-    let out = child.wait_with_output().map_err(|e| format!("Perintah `{cmd}` gagal: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("The command `{cmd}` failed: {e}"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    if out.status.success() { Ok(text) } else { Err(format!("Perintah `{cmd} {}` gagal: {}", args.join(" "), text.trim())) }
+    if out.status.success() { Ok(text) } else { Err(format!("The command `{cmd} {}` failed: {}", args.join(" "), text.trim())) }
 }
 
 fn uid() -> String {
@@ -534,23 +534,23 @@ pub fn install(s: &Schedule) -> Res<()> {
         Backend::Launchd => {
             let file = launch_agents().join(format!("{}.plist", label(&s.id)));
             let log = home().join("schedules").join(format!("{}.log", s.id));
-            std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+            std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
             if dry_dir().is_none() {
                 let _ = run_cmd("launchctl", &["bootout", &format!("gui/{}/{}", uid(), label(&s.id))], None);
             }
-            std::fs::create_dir_all(launch_agents()).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
-            std::fs::write(&file, plist(s, &exe, &path, &log)).map_err(|e| format!("Tidak bisa menulis {}: {e}", file.display()))?;
+            std::fs::create_dir_all(launch_agents()).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
+            std::fs::write(&file, plist(s, &exe, &path, &log)).map_err(|e| format!("Cannot write {}: {e}", file.display()))?;
             if dry_dir().is_none() {
                 run_cmd("launchctl", &["bootstrap", &format!("gui/{}", uid()), &file.to_string_lossy()], None)?;
             }
         }
         Backend::Systemd => {
             let dir = systemd_dir();
-            std::fs::create_dir_all(&dir).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
             let (service, timer) = systemd_units(s, &exe, &path);
             let unit = format!("fastpilot-schedule-{}", s.id);
-            std::fs::write(dir.join(format!("{unit}.service")), service).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
-            std::fs::write(dir.join(format!("{unit}.timer")), timer).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+            std::fs::write(dir.join(format!("{unit}.service")), service).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
+            std::fs::write(dir.join(format!("{unit}.timer")), timer).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
             if dry_dir().is_none() {
                 run_cmd("systemctl", &["--user", "daemon-reload"], None)?;
                 run_cmd("systemctl", &["--user", "enable", "--now", &format!("{unit}.timer")], None)?;
@@ -715,7 +715,7 @@ pub fn start_now(id: &str) -> Res<()> {
 /// and the notifications when it fails.
 pub async fn run(id: &str) -> Res<bool> {
     let store = load();
-    let s = store.schedules.iter().find(|x| x.id == id).cloned().ok_or_else(|| format!("Jadwal `{id}` tidak ditemukan"))?;
+    let s = store.schedules.iter().find(|x| x.id == id).cloned().ok_or_else(|| format!("Schedule `{id}` not found"))?;
     // Another run of it is still going (an OS start during a long Run now): this one is skipped.
     if let Some(l) = store.last.get(id)
         && l.pid.is_some_and(|p| p != std::process::id())
@@ -726,7 +726,7 @@ pub async fn run(id: &str) -> Res<bool> {
     }
     let started = now_ms();
     let reports = reports_dir();
-    std::fs::create_dir_all(&reports).map_err(|e| format!("Tidak bisa menyiapkan file jadwal: {e}"))?;
+    std::fs::create_dir_all(&reports).map_err(|e| format!("Cannot prepare the schedule's files: {e}"))?;
     let report = reports.join(format!("{id}-{started}.html"));
     set_last(id, LastRun { started_ms: started, pid: Some(std::process::id()), ..Default::default() })?;
     // Test cases name pages and files relative to the project (the folder above `tests/`), and
@@ -747,7 +747,7 @@ pub async fn run(id: &str) -> Res<bool> {
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("fastpilot run tidak bisa dimulai: {e}"))?;
+        .map_err(|e| format!("fastpilot run cannot start: {e}"))?;
     let text = fastpilot_core::redact(&format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     print!("{text}");
     let passed = out.status.success();
@@ -884,7 +884,7 @@ fn http() -> Res<reqwest::Client> {
 /// Slack-compatible incoming webhook: `{"text": msg}`. Errors never include the URL.
 pub async fn webhook(url: &str, msg: &str) -> Res<()> {
     check_webhook(url)?;
-    let r = http()?.post(url).json(&json!({ "text": msg })).send().await.map_err(|e| if e.is_timeout() { "tidak menjawab dalam 15 detik".to_owned() } else { "tidak bisa dihubungi".to_owned() })?;
+    let r = http()?.post(url).json(&json!({ "text": msg })).send().await.map_err(|e| if e.is_timeout() { "did not answer within 15 seconds".to_owned() } else { "cannot be reached".to_owned() })?;
     if r.status().is_success() { Ok(()) } else { Err(format!("server menjawab {}", r.status().as_u16())) }
 }
 
@@ -931,17 +931,17 @@ fn github_api() -> String {
 
 pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
     if !valid_repo(repo) {
-        return Err("Repo GitHub tidak valid".into());
+        return Err("Not a valid GitHub repository".into());
     }
-    let token = github_token().ok_or("Token GitHub tidak ada (GITHUB_TOKEN / GH_TOKEN, atau Keychain `fastpilot-github`)")?;
+    let token = github_token().ok_or("No GitHub token (GITHUB_TOKEN / GH_TOKEN, or the Keychain item `fastpilot-github`)")?;
     let r = http()?
         .post(format!("{}/repos/{repo}/issues", github_api()))
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
-        .json(&json!({ "title": title, "body": format!("{body}\n\n_Dibuat oleh jadwal fastpilot._") }))
+        .json(&json!({ "title": title, "body": format!("{body}\n\n_Opened by a fastpilot schedule._") }))
         .send()
         .await
-        .map_err(|_| "GitHub tidak bisa dihubungi".to_owned())?;
+        .map_err(|_| "GitHub cannot be reached".to_owned())?;
     let status = r.status();
     let v: Value = r.json().await.unwrap_or(Value::Null);
     if status.is_success() {
@@ -953,17 +953,17 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-pub const USAGE: &str = "pemakaian: fastpilot schedule <list | run ID | remove ID>\n  Jadwal dibuat di `fastpilot ui` (menu Jadwal); penjadwal OS menjalankan `fastpilot schedule run ID`";
+pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match (args.first().map(String::as_str), args.get(1)) {
         (Some("list") | None, _) => {
             let store = load();
             if store.schedules.is_empty() {
-                println!("belum ada jadwal (buat di `fastpilot ui`, menu Jadwal)");
+                println!("no schedules yet (make one in `fastpilot ui`, on the Schedules page)");
             }
             for s in &store.schedules {
-                let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "belum jalan".into());
+                let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "not run yet".into());
                 println!("{} {:<20} {:<18} {} [{}]", if s.enabled { "●" } else { "○" }, s.id, describe(&s.when), s.tests, last);
             }
             Ok(())
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(new_id("Login harian!", &[]), "login-harian");
         assert_eq!(new_id("Login harian", &["login-harian".into()]), "login-harian-2");
         assert_eq!(new_id("$(rm -rf ~)", &[]), "rm-rf");
-        assert_eq!(new_id("日本", &[]), "jadwal");
+        assert_eq!(new_id("日本", &[]), "schedule");
         assert_eq!(hour_minute("08:05"), Some((8, 5)));
         assert!(hour_minute("24:00").is_none() && hour_minute("8:5").is_none());
         assert!(valid_repo("autobot-lab/fastpilot") && !valid_repo("a/../b") && !valid_repo("a") && !valid_repo("../x"));

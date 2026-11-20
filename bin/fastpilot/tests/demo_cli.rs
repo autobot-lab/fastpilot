@@ -312,7 +312,7 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: \"Selamat datang, Budi\"\n- assertNotVisible: \"Total Rp 150.000\"\n", "session": "and1" })).await;
     assert!(ok, "still on the dashboard: {out}");
     let md = std::fs::read_to_string(folder.join("tests/login-android.md")).expect("login-android.md");
-    assert!(md.contains("diblokir") && !md.contains("Bayar sekarang"), "{md}");
+    assert!(md.contains("must block that step") && !md.contains("Bayar sekarang"), "{md}");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(&tmp);
 }

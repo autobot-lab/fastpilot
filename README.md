@@ -79,9 +79,11 @@ Good to know:
 |---|---|
 | **Chat** | Ask for a test in plain words, e.g. *"Test https://example.com and check that 'Example Domain' is shown"* |
 | **Live** | Watch tests run, and take over if needed |
-| **Jadwal** (Schedules) | Run tests automatically every day or every week. If one fails, you get a Slack message or a Mac notification |
-| **Device** | Check whether Chrome, Android, and iOS are ready |
-| **Pengaturan** (Settings) | Pick the AI model, set limits, store secrets |
+| **Schedules** | Run tests automatically every few hours, every day or every week. If one fails, you get a Slack message or a Mac notification |
+| **Memory** | What fastpilot learned about each test, and short project notes for every agent |
+| **History** | Past runs and Chat conversations; delete them, or have them deleted after a number of days |
+| **Device** | Check whether Chrome, Android, and iOS are ready, and set them up with one click |
+| **Settings** | Pick the AI model, set limits, store secrets |
 
 ## Write a test yourself (optional)
 
@@ -104,7 +106,7 @@ No selectors or code. Write it like you would explain it to a friend.
 
 - Buttons like **pay, buy, checkout, transfer, delete account** are always blocked.
 - Plain **delete/remove** buttons must be confirmed first.
-- Passwords are written as `${NAME}` and always show as `***` in results ([how to store them](docs/guide.md#menulis-test-sendiri)).
+- Passwords are written as `${NAME}` and always show as `***` in results ([how to store them](docs/guide.md#write-your-own-tests)).
 - The AI can only make the rules stricter. To loosen one, **you** approve it: on a red card in Chat (it quotes what you asked, and Pay needs the word typed), or with `fastpilot config approve` in your own terminal. Every change is kept in `~/.fastpilot/audit.jsonl`.
 
 Want to test a checkout? Ask in Chat: *"Allow the Pay button for this project"*, or open `fastpilot ui` → **Settings › Limits & permissions** and remove the word from the list.
@@ -127,16 +129,16 @@ fastpilot doctor
 | fastpilot doesn't show up in Claude | Run `fastpilot init` again |
 | The dashboard link doesn't work | It works once, for 10 minutes. Press `Ctrl-C`, then run `fastpilot ui` again |
 | Android isn't ready | `fastpilot setup android`, then `fastpilot doctor android` |
-| A test stops with "Diblokir Batasan" (blocked by limits) | That's on purpose. Change it in the dashboard › Pengaturan › Batasan & izin |
+| A test stops with "Blocked by Limits" | That's on purpose. Change it in the dashboard › Settings › Limits & permissions |
 
 ## Learn more
 
 More details, including the technical ones, are in the **[full guide](docs/guide.md)** (currently in Indonesian):
 
-- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios-menyusul-di-v033-sekarang-dari-checkout)
+- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios-coming-in-v033-for-now-from-a-checkout)
 - [Claude Desktop](docs/guide.md#claude-desktop)
-- [All settings](docs/guide.md#pengaturan)
-- [Devices on another machine](docs/guide.md#device-di-mesin-lain) and [physical phones](docs/real-devices.md)
-- [Known limits](docs/guide.md#batasan-yang-diketahui)
+- [All settings](docs/guide.md#settings)
+- [Devices on another machine](docs/guide.md#devices-on-another-computer) and [physical phones](docs/real-devices.md)
+- [Known limits](docs/guide.md#known-limitations)
 
 License: [Apache-2.0](LICENSE)

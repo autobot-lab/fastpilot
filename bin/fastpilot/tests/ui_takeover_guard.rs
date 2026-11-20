@@ -124,10 +124,10 @@ async fn takeovers_belong_to_the_page_and_end_when_it_goes() {
     let (st, out) = request(&a, "POST", "/api/live/control", &body("takeover"));
     assert_eq!(st, 200, "{out}");
     let (st, out) = request(&b, "POST", "/api/live/control", &body("takeover"));
-    assert!(st == 409 && out.contains("halaman lain"), "{st} {out}");
+    assert!(st == 409 && out.contains("another page"), "{st} {out}");
     for op in ["tap", "release"] {
         let (st, out) = request(&b, "POST", "/api/live/control", &body(op));
-        assert!(st == 409 && out.contains("dari halaman ini"), "{op}: {st} {out}");
+        assert!(st == 409 && out.contains("from this page"), "{op}: {st} {out}");
     }
     assert_eq!((session(&a, "shop")["taken_over_here"].as_bool(), session(&b, "shop")["taken_over_here"].as_bool()), (Some(true), Some(false)));
     assert!(session(&b, "shop")["taken_over_ms"].is_u64());

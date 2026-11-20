@@ -71,7 +71,7 @@ fn macos() -> bool {
 /// `!` for an endpoint on another host: nothing protects that connection on the network.
 fn not_this_machine(area: &'static str, key: &str, host: &str, what: &str) -> Check {
     check(area, "remote", Status::Warn, format!("{key} points at {host}, not this machine: {what} has no password and no encryption"))
-        .hint("reach it through an SSH tunnel and use 127.0.0.1 (README: device di mesin lain)")
+        .hint("reach it through an SSH tunnel and use 127.0.0.1 (see docs/remote-machine.md)")
 }
 
 pub async fn web() -> Vec<Check> {
@@ -85,7 +85,7 @@ pub async fn web() -> Vec<Check> {
         out.push(match connected {
             Ok(Ok(_)) => check("web", "Chrome", Status::Ok, format!("remote Chrome at {shown} (FASTPILOT_CHROME_ENDPOINT)")),
             Ok(Err(e)) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown}: {}", fastpilot_core::policy::redact_userinfo_in(&e.to_string(), &endpoint)))
-                .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (README: device di mesin lain)"),
+                .hint("start Chrome there with --remote-debugging-port and open the SSH tunnel (see docs/remote-machine.md)"),
             Err(_) => check("web", "Chrome", Status::Fail, format!("remote Chrome at {shown} did not answer within 10 s"))
                 .hint("is the SSH tunnel open?"),
         });
@@ -186,7 +186,7 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
     out.push(match fastpilot_android::Adb::new().await {
         Ok(_) => check("android", "adb", Status::Ok, format!("adb server {server} (FASTPILOT_ADB_SERVER)")),
         Err(e) => {
-            out.push(check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (README: device di mesin lain)"));
+            out.push(check("android", "adb", Status::Fail, e.to_string()).hint("open the SSH tunnel to the device machine (see docs/remote-machine.md)"));
             return out;
         }
     });

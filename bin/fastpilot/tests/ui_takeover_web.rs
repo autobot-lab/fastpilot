@@ -1,4 +1,4 @@
-//! C7b "Ambil alih" on a web session, as a user does it in `fastpilot ui` (driven by fastpilot in
+//! C7b "Take over" on a web session, as a user does it in `fastpilot ui` (driven by fastpilot in
 //! Chrome): take the session over, the AI's next step waits, tap and type from the panel, give it
 //! back; the step then runs on what the user typed and its result tells the AI what happened.
 //! Input is refused while the session is not taken over. Skips without Chrome.
@@ -82,18 +82,18 @@ async fn take_over_a_web_session_and_give_it_back() {
     let at = eval(&client, "shop", "(() => { const r = document.querySelector('#email').getBoundingClientRect(); return [(r.left + r.width / 2) / innerWidth, (r.top + r.height / 2) / innerHeight].join(','); })()").await;
     let (fx, fy) = at.trim_matches('"').split_once(',').expect("fractions");
 
-    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Ambil alih\", timeout: 10000 }}\n", link.trim());
+    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Take over\", timeout: 10000 }}\n", link.trim());
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
-    assert!(ok, "the shop card offers Ambil alih: {out}");
+    assert!(ok, "the shop card offers Take over: {out}");
 
     // Input before taking over is refused.
     eval(&client, "viewer", &post(&format!("{{ pid: Number(document.querySelector('[data-fk^=\"take:\"]').dataset.fk.split(':')[1]), session: 'shop', op: 'tap', x: {fx}, y: {fy} }}"))).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(eval(&client, "viewer", "window.__st").await, "409", "no input without a takeover");
 
-    // Ambil alih: the large screen opens with the steering bar.
+    // Take over: the large screen opens with the steering bar.
     eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').click(), 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Diambil alih olehmu\", timeout: 5000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Taken over by you\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     assert_eq!(eval(&client, "viewer", "!!document.querySelector('dialog.zoom.steering[open] .steer-text')").await, "true");
 
@@ -108,35 +108,35 @@ async fn take_over_a_web_session_and_give_it_back() {
         eval(&client, "viewer", &post(&format!("{{ pid: Number(document.querySelector('[data-fk^=\"take:\"]').dataset.fk.split(':')[1]), session: 'shop', op: 'tap', x: {fx}, y: {fy} }}"))).await;
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert_eq!(eval(&client, "viewer", "window.__st").await, "200");
-        eval(&client, "viewer", "(() => { const i = document.querySelector('.steer-text'); i.value = 'budi@contoh.id'; [...document.querySelectorAll('.steer-row button')].find(b => b.textContent === 'Ketik').click(); return 'ok'; })()").await;
+        eval(&client, "viewer", "(() => { const i = document.querySelector('.steer-text'); i.value = 'budi@contoh.id'; [...document.querySelectorAll('.steer-row button')].find(b => b.textContent === 'Type').click(); return 'ok'; })()").await;
         tokio::time::sleep(Duration::from_millis(1200)).await;
-        assert!(tokio::time::timeout(Duration::from_millis(10), &mut waiting).await.is_err(), "still waiting before Kembalikan");
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut waiting).await.is_err(), "still waiting before Give back");
 
-        // Kembalikan: the waiting step runs on what the user typed, and says the user stepped in.
+        // Give back: the waiting step runs on what the user typed, and says the user stepped in.
         eval(&client, "viewer", "document.querySelector('[data-fk^=\"take-zoom:\"]').click(), 'ok'").await;
-        let (ok, out) = tokio::time::timeout(Duration::from_secs(10), waiting).await.expect("runs after Kembalikan");
+        let (ok, out) = tokio::time::timeout(Duration::from_secs(10), waiting).await.expect("runs after Give back");
         assert!(ok, "{out}");
         assert!(out.contains("= \"budi@contoh.id\""), "the user's text is in the field: {out}");
         assert!(out.contains("the user took over session `shop` in fastpilot ui") && out.contains("1 tap, 1 text input"), "{out}");
     }
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Ambil alih\"");
+    assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Take over\"");
 
     // Taken over, the banner follows to other pages; Escape on the large screen gives it back.
     eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').click(), 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Kembalikan & tutup\", timeout: 5000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Give back & close\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "the close button says it gives the session back: {out}");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- pressKey: Escape\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Ambil alih\"", "closing returned it");
+    assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Take over\"", "closing returned it");
     eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').click(), 'ok'").await;
     tokio::time::sleep(Duration::from_millis(1200)).await;
     eval(&client, "viewer", "document.querySelector('dialog.zoom') && document.querySelector('dialog.zoom').close(), location.hash = '#/settings/limits', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Kamu sedang mengambil alih\", timeout: 8000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"You are taking over\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "banner on Batasan: {out}");
-    eval(&client, "viewer", "[...document.querySelectorAll('#take-banner button')].find(b => b.textContent.includes('Kembalikan')).click(), 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertNotVisible: { text: \"Kamu sedang mengambil alih\", timeout: 8000 }\n", "session": "viewer" })).await;
+    eval(&client, "viewer", "[...document.querySelectorAll('#take-banner button')].find(b => b.textContent.includes('Give back')).click(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertNotVisible: { text: \"You are taking over\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     // Design L1: focus on the page title, not lost to body.
     tokio::time::sleep(Duration::from_millis(500)).await;

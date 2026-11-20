@@ -157,7 +157,7 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     let (st, body) = post(r#"{"action":"test","id":"login-harian"}"#);
     assert!(st == 200 && body.contains("Webhook: sent") && body.contains("issues/7"), "{st} {body}");
     let first = hook.lock().expect("hook")[0].clone();
-    assert!(first.starts_with("POST /services/T000/B000/rahasia") && first.contains("\"text\"") && first.contains("tes notifikasi"), "{first}");
+    assert!(first.starts_with("POST /services/T000/B000/rahasia") && first.contains("\"text\"") && first.contains("test notification"), "{first}");
     let issue = gh.lock().expect("gh")[0].clone();
     assert!(issue.starts_with("POST /repos/acme/shop/issues") && issue.to_lowercase().contains("authorization: bearer ghp_test_token"), "{issue}");
 

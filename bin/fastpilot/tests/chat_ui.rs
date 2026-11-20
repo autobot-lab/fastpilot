@@ -148,7 +148,7 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!(st, 200, "{body}");
     assert!(config(&home).contains("max_steps = 20"));
     let (st, body) = post("/api/chat/decide", json!({ "id": sched["id"], "apply": true }));
-    assert!(st == 200 && body.contains("Isi URL webhook"), "{st} {body}");
+    assert!(st == 200 && body.contains("Enter the webhook URL"), "{st} {body}");
     let stored = std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("saved");
     assert!(stored.contains("\"login-harian\"") && stored.contains("\"webhook\": false"), "{stored}");
     assert!(home.join("LaunchAgents/dev.fastpilot.schedule.login-harian.plist").exists());
