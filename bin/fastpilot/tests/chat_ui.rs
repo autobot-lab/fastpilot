@@ -845,8 +845,13 @@ fn chat_adds_a_note_only_from_the_users_own_words() {
     assert_eq!(card["rows"][0], json!(["New note · How things work", "Sign-in uses a one-time code."]));
     assert!(card["expires_ms"].as_u64().is_some());
     assert!(notes().is_empty(), "nothing before the click");
-    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
-    assert!(st == 200 && body.contains("Note saved"), "{st} {body}");
+    // Two quick clicks (Security PR #98, finding 4): saved once.
+    let clicks: Vec<(u16, String)> = std::thread::scope(|s| {
+        let a = s.spawn(|| post("/api/chat/decide", json!({ "id": card["id"], "apply": true })));
+        let b = s.spawn(|| post("/api/chat/decide", json!({ "id": card["id"], "apply": true })));
+        vec![a.join().expect("a"), b.join().expect("b")]
+    });
+    assert_eq!(clicks.iter().filter(|(st, body)| *st == 200 && body.contains("Note saved")).count(), 1, "{clicks:?}");
     assert_eq!(notes(), ["Sign-in uses a one-time code."]);
     let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
     assert_eq!(st, 422, "no replay");

@@ -48,7 +48,7 @@ pub struct Listing {
 /// Why a note was not saved; `kind` lets the page show the matching state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Refused {
-    /// `secret`, `hidden`, `limit`, `empty`, `group`, `missing` or `io`.
+    /// `secret`, `hidden`, `limit`, `empty`, `group`, `duplicate`, `missing` or `io`.
     pub kind: &'static str,
     pub message: String,
 }
@@ -77,7 +77,7 @@ pub fn hidden(c: char) -> bool {
         0x00ad | 0x034f | 0x061c | 0x115f | 0x1160 | 0x17b4 | 0x17b5 | 0x180b..=0x180f | 0x200b..=0x200f
         | 0x202a..=0x202e | 0x2060..=0x206f | 0x3164 | 0xfe00..=0xfe0f | 0xfeff | 0xffa0 | 0xfff9..=0xfffb
         | 0x0600..=0x0605 | 0x06dd | 0x070f | 0x08e2 | 0x110bd | 0x110cd | 0x1bca0..=0x1bca3 | 0x1d173..=0x1d17a
-        | 0xe0000..=0xe0fff | 0xe000..=0xf8ff | 0xf0000..=0x10ffff | 0xfdd0..=0xfdef)
+        | 0x2800 | 0xfffc | 0xe0000..=0xe0fff | 0xe000..=0xf8ff | 0xf0000..=0x10ffff | 0xfdd0..=0xfdef)
         || (c as u32 & 0xfffe) == 0xfffe
 }
 
@@ -232,6 +232,14 @@ pub fn looks_secret(text: &str) -> Option<&'static str> {
             if (j > start || colon) && PASSWORD_WORDS.contains(&kw) && words.get(j).is_some_and(|v| password_value(v)) {
                 return Some("This looks like a password.");
             }
+            // "…, password demo1234": no "is" or colon, but a value that mixes letters and digits.
+            if j == start && !colon && PASSWORD_WORDS.contains(&kw) && words.get(j).is_some_and(|v| secret_like(v, false)) {
+                return Some("This looks like a password.");
+            }
+            // "credentials: qa / Qa!2024xyz": an account and its password a few words on.
+            if kw == "credentials" && (j > start || colon) && words.iter().skip(j).take(4).any(|v| secret_like(v, false)) {
+                return Some("This looks like a password.");
+            }
         }
     }
     None
@@ -319,6 +327,9 @@ impl Notes {
             return Err(refused("secret", format!("{why} Notes are not hidden, so it was not saved. Save it as a secret instead and write only its name.")));
         }
         let others: Vec<&Note> = notes.iter().filter(|x| Some(x.id.as_str()) != replacing).collect();
+        if others.iter().any(|x| clean(&x.text).to_lowercase() == text.to_lowercase()) {
+            return Err(refused("duplicate", "This note is already saved."));
+        }
         if replacing.is_none() && others.len() >= MAX_NOTES {
             return Err(refused("limit", format!("{MAX_NOTES} of {MAX_NOTES} notes. Remove or shorten a note to add another.")));
         }
@@ -427,6 +438,9 @@ mod tests {
             "Use ghp_aBcDeF1234567890aBcDeF1234567890",
             "Key sk-live-1234567890abcdef",
             "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123",
+            // Security PR #98, finding 6: no connector after the word; credentials a few words on.
+            "use the demo account demo@shop.test, password demo1234",
+            "credentials: qa / Qa!2024xyz",
             "Deploy key 9f8e7d6c5b4a39281706f5e4d3c2b1a0",
             "kata sandi adalah Rahasia123",
             // Security Low (PR #85): a word alone after "password" is a password too.
@@ -454,6 +468,22 @@ mod tests {
         ] {
             assert_eq!(looks_secret(ok), None, "{ok:?} is a fact, not a secret");
         }
+    }
+
+    /// Security Low 5 (PR #98): the same note twice is refused (Memory page and Chat card alike),
+    /// and two more invisible characters count as hidden.
+    #[test]
+    fn a_note_is_saved_once_and_braille_blanks_are_hidden() {
+        let root = std::env::temp_dir().join(format!("fp-notes-dup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let notes = Notes::at(root.join("notes.json"));
+        notes.add("how", "Login uses a one-time code.").expect("first");
+        assert_eq!(notes.would_add("how", "login  uses a one-time code.").map_err(|r| r.kind), Err("duplicate"));
+        assert_eq!(notes.add("never", "Login uses a one-time code.").map_err(|r| r.kind), Err("duplicate"));
+        assert_eq!(notes.would_add("how", "Staging is https://staging.shop.example"), Ok("Staging is https://staging.shop.example".to_owned()));
+        assert_eq!(notes.list().len(), 1, "would_add writes nothing");
+        assert!(hidden('\u{2800}') && hidden('\u{fffc}'));
+        let _ = fs::remove_dir_all(root);
     }
 
     /// Security Medium 1 (PR #85): the visible text was 39 characters, the model got 82 more it
