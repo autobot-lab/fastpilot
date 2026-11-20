@@ -104,7 +104,10 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     // QA Low 4: the Skill is in the demo folder, so Claude knows the steps.
     let skill = std::fs::read(format!("{ROOT}/skills/fastpilot/SKILL.md")).expect("repo skill");
     assert_eq!(std::fs::read(folder.join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
-    assert!(out.contains(".claude/skills/fastpilot/SKILL.md"), "{out}");
+    assert!(out.contains("18 skills"), "{out}");
+    // S5 (v0.4): the whole skill library is in the demo folder too.
+    let regression = std::fs::read(format!("{ROOT}/skills/regression/SKILL.md")).expect("repo regression");
+    assert_eq!(std::fs::read(folder.join(".claude/skills/regression/SKILL.md")).expect("regression"), regression);
 
     // Already there: nothing changes, exit ≠ 0; --force writes it again.
     let before = snapshot(&folder);

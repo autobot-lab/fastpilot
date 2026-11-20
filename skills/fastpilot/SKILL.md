@@ -109,6 +109,21 @@ give it back, and the result then starts with `note: the user took over session 
 user's help (e.g. a captcha or a code they typed), not as a failure: look at the new state before you go
 on, do not undo what they entered, and mention the takeover when you report the test result.
 
+## Saved tests, regression and the other skills
+
+- **A test case** is a `tests/<id>.md` file: `# Title`, `id: <id>`, `platform: web|android|ios`,
+  `target: <url or app>`, then one plain-language step per line (`- Open the cart`), with at least one
+  thing that must be visible and one that must not. "Create a test for … and save it": show it first,
+  save only after the user agrees, never overwrite an existing file (pick a new id), secrets as
+  `${NAME}`.
+- **"Run a regression" / "run all tests"**: follow the `regression` skill. It runs every saved test and
+  reports **Newly failing** (New since last run) first, then still failing, flaky, blocked, passed.
+- **"Run the Android tests only"**: the saved tests with `platform: android` (or the ones the user names).
+- **"Why did X fail?"**: read the latest report of that test in `.fastpilot/runs/` (the failing step,
+  its reason and the screenshot) and answer from it; offer the `bug-report` skill. Do not guess.
+- More skills (test techniques, checklists, reports): `docs(topic: "skills")` lists them, and
+  `docs(topic: "skill/<name>")` returns one to follow.
+
 ## Small reference
 
 ```yaml

@@ -18,8 +18,6 @@ use crate::doctor::{Check, Status};
 
 type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-/// The fastpilot Skill, as in `skills/fastpilot/SKILL.md`.
-pub const SKILL: &str = include_str!("../../../skills/fastpilot/SKILL.md");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `tests/example.md`: a test case to start from (its target is to be changed).
@@ -101,9 +99,9 @@ pub async fn init(args: &[String]) -> Res<()> {
     register(mode, scope);
 
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let skill_dir = if global { home.join(".claude/skills/fastpilot") } else { PathBuf::from(".claude/skills/fastpilot") };
-    println!("\n3/5 Install the fastpilot Skill (teaches Claude how to use fastpilot)");
-    skill(mode, &skill_dir.join("SKILL.md"), global);
+    let skills_dir = if global { home.join(".claude/skills") } else { PathBuf::from(".claude/skills") };
+    println!("\n3/5 Install the fastpilot Skills (teach Claude how to use fastpilot and how to test)");
+    skills(mode, &skills_dir, global);
 
     println!("\n4/5 Example test");
     example(mode);
@@ -217,22 +215,48 @@ fn register(mode: Mode, scope: &str) {
     }
 }
 
-fn skill(mode: Mode, path: &Path, global: bool) {
-    let shown = if global { format!("~/{}", path.strip_prefix(std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()).unwrap_or(path).display()) } else { path.display().to_string() };
-    match std::fs::read_to_string(path) {
-        Ok(text) if text == SKILL => println!("  ✓ already installed (version {VERSION}) · {shown}"),
-        Ok(_) => {
-            println!("  → {shown} differs from the Skill in fastpilot {VERSION}");
-            if ask(mode, &format!("Update it to {VERSION}?")) {
-                write(path, SKILL, "updated");
-            }
+/// Every skill of the library (`fastpilot` plus the testing skills) in `dir/<name>/SKILL.md`: one
+/// question for the missing ones, one for those that differ (never replaced without asking).
+fn skills(mode: Mode, dir: &Path, global: bool) {
+    let shown = if global { format!("~/{}", dir.strip_prefix(std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()).unwrap_or(dir).display()) } else { dir.display().to_string() };
+    let all = fastpilot_mcp::skills::SKILLS;
+    let (mut missing, mut differ) = (Vec::new(), Vec::new());
+    for (name, text) in all {
+        match std::fs::read_to_string(dir.join(name).join("SKILL.md")) {
+            Ok(t) if t == *text => {}
+            Ok(_) => differ.push((*name, *text)),
+            Err(_) => missing.push((*name, *text)),
         }
-        Err(_) => {
-            println!("  → {shown}");
-            if ask(mode, "Install it?") {
-                write(path, SKILL, &format!("installed (version {VERSION}, built into fastpilot)"));
-            }
+    }
+    if missing.is_empty() && differ.is_empty() {
+        println!("  ✓ already installed ({} skills, version {VERSION}) · {shown}", all.len());
+        return;
+    }
+    let names = |l: &[(&str, &str)]| l.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    if !differ.is_empty() {
+        println!("  → {shown}: {} skill(s) differ from fastpilot {VERSION}: {}", differ.len(), names(&differ));
+        if ask(mode, &format!("Update them to {VERSION}?")) {
+            write_skills(dir, &differ, "updated");
         }
+    }
+    if !missing.is_empty() {
+        println!("  → {shown}: {} skills ({})", missing.len(), names(&missing));
+        if ask(mode, "Install them?") {
+            write_skills(dir, &missing, &format!("installed (version {VERSION}, built into fastpilot)"));
+        }
+    }
+}
+
+fn write_skills(dir: &Path, list: &[(&str, &str)], done: &str) {
+    let mut failed = false;
+    for (name, text) in list {
+        if let Err(e) = write_file(&dir.join(name).join("SKILL.md"), text) {
+            println!("  ✗ {e}");
+            failed = true;
+        }
+    }
+    if !failed {
+        println!("  ✓ {done}: {} skills", list.len());
     }
 }
 
@@ -258,17 +282,20 @@ fn example(mode: Mode) {
 /// checkout cannot point `tests/` at another place); with `--global` only the file itself, so a
 /// symlinked ~/.claude of the user's dotfiles keeps working.
 fn write(path: &Path, text: &str, done: &str) {
-    let made = if path.is_absolute() {
+    match write_file(path, text) {
+        Ok(()) => println!("  ✓ {done}"),
+        Err(e) => println!("  ✗ {e}"),
+    }
+}
+
+fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    if path.is_absolute() {
         let parent = path.parent().unwrap_or(Path::new("/"));
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))
             .and_then(|()| crate::demo::write_safe(parent, Path::new(path.file_name().unwrap_or_default()), text.as_bytes(), false))
     } else {
         crate::demo::write_safe(Path::new("."), path, text.as_bytes(), false)
-    };
-    match made {
-        Ok(()) => println!("  ✓ {done}"),
-        Err(e) => println!("  ✗ {e}"),
     }
 }
 
@@ -307,7 +334,7 @@ mod tests {
     #[test]
     fn the_skill_is_the_repository_skill_and_the_command_is_claudes() {
         let repo = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills/fastpilot/SKILL.md")).expect("skill");
-        assert_eq!(SKILL, repo);
+        assert_eq!(fastpilot_mcp::skills::get("fastpilot"), Some(repo.as_str()));
         let args = add_args("project");
         assert_eq!(args[..6], ["mcp", "add", "fastpilot", "--scope", "project", "--"]);
         assert_eq!(args.last().map(String::as_str), Some("mcp"));
