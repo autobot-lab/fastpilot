@@ -631,7 +631,10 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 
   Key terikat ke server tempat ia disimpan: preset (`openai`, `openrouter`, `groq`) hanya ke servernya
   sendiri, `custom` ke `provider_base_url` saat `set-key` dijalankan. Bila server berbeda, key tidak
-  dikirim dan fastpilot memberi tahu caranya (set ulang key, atau kembalikan URL). Mengganti `provider`
+  dikirim dan fastpilot memberi tahu caranya (set ulang key, atau kembalikan URL). Key yang disimpan
+  fastpilot versi lama (sebelum key terikat) hanya dipakai untuk server preset hosted; untuk `custom` atau
+  `ollama` jalankan `fastpilot config set-key <provider>` sekali lagi. Redirect dari server provider
+  tidak diikuti (isi permintaan tidak ikut ke server lain). Mengganti `provider`
   lewat `fastpilot config set provider …` menghapus `provider_base_url` lama, sehingga provider baru memakai
   presetnya. `FASTPILOT_KEYSTORE=file` memaksa penyimpanan file 600 (berguna di CI, atau dengan `HOME`
   terisolasi supaya macOS tidak meminta Keychain).
