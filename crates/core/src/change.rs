@@ -107,11 +107,22 @@ fn same(a: &str, b: &str) -> bool {
 /// The value after `op` on `before`.
 pub fn apply(key: &str, before: Option<&str>, op: &Op) -> Result<Option<String>, String> {
     let list = config::LISTS.contains(&key);
+    if let Op::Add(item) | Op::Remove(item) = op
+        && list
+        && item.contains(',')
+    {
+        return Err("Add or remove one item at a time (no commas).".into());
+    }
     match op {
         Op::Add(_) | Op::Remove(_) if !list => Err(format!("{} is not a list: set its value instead", label(key))),
         Op::Set(_) if list => Err(format!("{} is a list: add or remove one item at a time", label(key))),
         Op::Add(item) => {
             let item = item.trim();
+            // Security (D9): "!pay" or "default" are not words; allowing a built-in word is the
+            // "Allow Pay" change (remove), with its typed word.
+            if matches!(key, "block_actions" | "confirm_actions") && (item.starts_with('!') || same(item, "default")) {
+                return Err(format!("\"{item}\" is not a word to block or confirm. To allow a blocked button, ask to allow it by name; the built-in list itself is changed only in Settings."));
+            }
             let mut v = items(key, before);
             if key == "block_actions" && let Some(i) = v.iter().position(|x| x.strip_prefix('!').is_some_and(|w| same(w, item))) {
                 // A built-in word allowed earlier is blocked again.
@@ -125,6 +136,9 @@ pub fn apply(key: &str, before: Option<&str>, op: &Op) -> Result<Option<String>,
         }
         Op::Remove(item) => {
             let item = item.trim();
+            if (key == "block_actions" && same(item, "default")) || (key == "confirm_actions" && list_keyword(item)) {
+                return Err(DEFAULT_ONLY_IN_SETTINGS.into());
+            }
             let mut v = items(key, before);
             let had = v.len();
             v.retain(|x| !same(x, item));
@@ -168,6 +182,14 @@ pub fn label(key: &str) -> &'static str {
     }
 }
 
+/// Security (D9 finding 2): every built-in block at once is never dropped from chat or a request.
+/// The words that stand for a built-in list in `confirm_actions` (`policy::expand_risky`).
+fn list_keyword(w: &str) -> bool {
+    ["default", "1", "true"].iter().any(|k| same(w, k))
+}
+
+const DEFAULT_ONLY_IN_SETTINGS: &str = "The built-in list (payment, deleting an account and the like) can only be switched off by you, in Settings. To allow one button, ask to allow it by name.";
+
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default().trim_end_matches('/').to_owned()
 }
@@ -193,6 +215,25 @@ pub fn check(c: &Change) -> Result<(), String> {
     let after = items(&c.key, c.after.as_deref());
     let before = items(&c.key, c.before.as_deref());
     let added: Vec<&String> = after.iter().filter(|a| !before.iter().any(|b| same(a, b))).collect();
+    // Security re-check A: the confirm list's built-in keyword (`default`, also `1`/`true`) stays too.
+    if c.key == "confirm_actions" && before.iter().any(|b| list_keyword(b)) && !after.iter().any(|a| list_keyword(a)) {
+        return Err(DEFAULT_ONLY_IN_SETTINGS.into());
+    }
+    if c.key == "block_actions" {
+        // Security (D9 findings 1, 2, 7): the built-in list stays, and the only `!word` is a
+        // built-in word allowed one at a time, as `apply` writes it (lowercase, normalised).
+        if before.iter().any(|b| b == "default") && !after.iter().any(|a| a == "default") {
+            return Err(DEFAULT_ONLY_IN_SETTINGS.into());
+        }
+        for w in added.iter().filter_map(|w| w.strip_prefix('!')) {
+            if !(policy::is_builtin_blocked(w) && policy::normalize(w) == w && after.iter().any(|a| a == "default")) {
+                return Err(format!("\"!{w}\" is not a built-in word that can be allowed. To allow a blocked button, ask to allow it by name."));
+            }
+        }
+    }
+    if c.key == "confirm_actions" && added.iter().any(|w| w.starts_with('!')) {
+        return Err("A word to confirm cannot start with \"!\".".into());
+    }
     if matches!(c.key.as_str(), "block_actions" | "confirm_actions") {
         for w in added.iter().filter(|w| !w.starts_with('!') && w.as_str() != "default") {
             let n = w.chars().count();
@@ -292,7 +333,7 @@ pub fn unblocked(before: Option<&str>, after: Option<&str>) -> Vec<String> {
 /// A built-in word allowed by this change (`!word` added), if that is what it does.
 fn allowed_word(c: &Change) -> Option<String> {
     let before = items(&c.key, c.before.as_deref());
-    items(&c.key, c.after.as_deref()).into_iter().filter(|a| !before.contains(a)).find_map(|a| a.strip_prefix('!').map(str::to_owned))
+    items(&c.key, c.after.as_deref()).into_iter().filter(|a| !before.contains(a)).find_map(|a| a.strip_prefix('!').map(policy::normalize))
 }
 
 fn title_case(w: &str) -> String {
@@ -735,5 +776,45 @@ mod tests {
             }
         }
         assert!(seen > 30, "{seen}");
+    }
+
+    #[test]
+    fn chat_never_drops_the_built_in_list_or_adds_an_allow_word() {
+        // Security D9 finding 1: "!pay" is not a word to add (block or confirm list).
+        for key in ["block_actions", "confirm_actions"] {
+            assert!(apply(key, None, &Op::Add("!pay".into())).is_err(), "{key}");
+            assert!(apply(key, None, &Op::Add("default".into())).is_err(), "{key}");
+            assert!(apply(key, None, &Op::Add("refund,!pay".into())).is_err(), "{key}: a comma makes two items");
+        }
+        // Finding 2: removing `default` is refused, through apply and through check (a pending
+        // request carries before/after only).
+        assert!(apply("block_actions", None, &Op::Remove("default".into())).is_err());
+        assert!(apply("block_actions", Some("default,refund"), &Op::Remove("DEFAULT".into())).is_err());
+        // Re-check A: the same for the confirm list's built-in keyword.
+        for k in ["default", "true", "1"] {
+            assert!(apply("confirm_actions", Some(&format!("{k},refund")), &Op::Remove(k.into())).is_err(), "{k}");
+            assert!(check(&ch("confirm_actions", Some(&format!("{k},refund")), Some("refund"))).is_err(), "{k}");
+        }
+        assert!(check(&ch("confirm_actions", Some("default,refund"), Some("default"))).is_ok(), "one own word may go");
+        for (before, after) in [(None, Some("refund")), (Some("default,!pay"), Some("!pay")), (Some("default,refund"), Some("refund"))] {
+            let c = ch("block_actions", before, after);
+            let e = check(&c).expect_err(&format!("{before:?} -> {after:?}"));
+            assert!(e.contains("only be switched off by you, in Settings"), "{e}");
+        }
+        // Only the canonical allow word of a built-in word passes, and only with the list kept.
+        for after in ["default,!PAY", "default,!Pay", "default,!refund", "default,!payment-x", "!pay"] {
+            assert!(check(&ch("block_actions", Some("default"), Some(after))).is_err(), "{after}");
+        }
+        assert!(check(&ch("block_actions", None, Some("default,!pay"))).is_ok());
+        // "Allow Pay" (remove) still works and still needs the typed word.
+        let after = apply("block_actions", None, &Op::Remove("PAY".into())).expect("allow");
+        assert_eq!(after.as_deref(), Some("default,!pay"));
+        let c = ch("block_actions", None, after.as_deref());
+        check(&c).expect("allow pay");
+        let k = card(&c);
+        assert_eq!(k.typed.as_deref(), Some("Pay"));
+        assert!(k.consequence.contains("finish real purchases"), "{}", k.consequence);
+        // A user who already switched the list off in Settings can still block a word from chat.
+        assert!(check(&ch("block_actions", Some("refund"), Some("refund,wipe"))).is_ok());
     }
 }

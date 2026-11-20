@@ -159,6 +159,13 @@ pub fn get_or_default(id: &str) -> Agent {
     get(id).unwrap_or_else(|| get(DEFAULT).unwrap_or_else(default_agent))
 }
 
+/// Security (D10a finding 1): an agent's own words only add blocks. `!pay` would allow Pay and
+/// `default` is the built-in list, so neither is a word an agent may have.
+fn blocking_word(w: &str) -> bool {
+    let w = w.trim();
+    !w.starts_with('!') && !w.eq_ignore_ascii_case("default") && !w.contains(',')
+}
+
 /// Characters that show nothing or change how text reads (bidi, zero-width, tags, variation
 /// selectors): refused in what an agent tells the AI (Security, D6 notes).
 fn hidden(c: char) -> bool {
@@ -200,6 +207,9 @@ pub fn check(mut a: Agent) -> Res<Agent> {
         let n = w.trim().chars().count();
         if !(3..=40).contains(&n) || w.chars().any(hidden) {
             return Err(format!("A blocked word needs 3 to 40 plain characters (\"{w}\")"));
+        }
+        if !blocking_word(w) {
+            return Err(format!("\"{}\" is not a word to block: an agent can only block more, never allow a blocked button", w.trim()));
         }
     }
     a.blocked = a.blocked.iter().map(|w| w.trim().to_owned()).collect();
@@ -343,7 +353,8 @@ pub fn block_actions(a: &Agent) -> Option<String> {
         fastpilot_core::config::Source::Default => "default".into(),
     };
     let mut items: Vec<String> = global.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
-    for w in &a.blocked {
+    // An agent file written before this check (or by hand) cannot loosen anything either.
+    for w in a.blocked.iter().filter(|w| blocking_word(w) && !w.chars().any(hidden)) {
         if !items.iter().any(|x| x.eq_ignore_ascii_case(w)) {
             items.push(w.clone());
         }
@@ -444,6 +455,22 @@ mod tests {
         }
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Security D10a finding 1: an agent only adds blocks; `!pay`, `default` or a comma never
+    /// reach its runs, also from an agents.json written before the check.
+    #[test]
+    fn an_agent_can_only_block_more() {
+        for w in ["!pay", "!Pay", "default", "DEFAULT", "refund,!pay"] {
+            let e = check(Agent { blocked: vec![w.into()], ..agent("A") }).unwrap_err();
+            assert!(e.contains("not a word to block"), "{w}: {e}");
+        }
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old = Agent { blocked: vec!["!pay".into(), "default".into(), "x,!buy".into(), "Refund".into()], ..agent("Old") };
+        assert_eq!(block_actions(&old).as_deref(), Some("default,Refund"));
+        let rules = fastpilot_core::policy::expand_blocked(Some(block_actions(&old).unwrap_or_default().split(',').map(|s| s.trim().to_lowercase()).collect()));
+        assert!(fastpilot_core::policy::block_match("Pay", &rules).is_some(), "Pay stays blocked");
+        assert!(fastpilot_core::policy::block_match("Refund", &rules).is_some());
     }
 
     /// D10b: provider then model; Claude Code takes Claude ids only; the label everywhere.
