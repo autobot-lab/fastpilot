@@ -161,6 +161,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
+        .route("/api/schedules", get(schedules_api).post(schedules_change))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -281,6 +282,53 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
+// ---- Jadwal (C3) --------------------------------------------------------------------------
+
+/// Schedules with their last run; a webhook is shown only as its host.
+async fn schedules_api() -> Response {
+    use crate::schedule;
+    let store = schedule::load();
+    let list: Vec<Value> = store
+        .schedules
+        .iter()
+        .map(|s| {
+            let hook = std::fs::read_to_string(schedule::secret_path(&s.id)).ok().map(|u| schedule::mask_webhook(u.trim()));
+            json!({ "schedule": s, "when_text": schedule::describe(&s.when), "webhook": hook, "last": store.last.get(&s.id) })
+        })
+        .collect();
+    let cwd = std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned());
+    let tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
+    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests })).into_response()
+}
+
+/// `{action: save, schedule, webhook?}`, `{action: enable|disable|delete|run|test, id}`.
+async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use crate::schedule;
+    let id = body["id"].as_str().unwrap_or("").to_owned();
+    let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        "save" => match serde_json::from_value::<schedule::Schedule>(body["schedule"].clone()) {
+            Ok(s) => schedule::save(s, body["webhook"].as_str()).map(|s| json!({ "id": s.id })),
+            Err(e) => Err(format!("isi jadwal tidak lengkap: {e}")),
+        },
+        "enable" => schedule::set_enabled(&id, true).map(|()| json!({})),
+        "disable" => schedule::set_enabled(&id, false).map(|()| json!({})),
+        "delete" => schedule::delete(&id).map(|()| json!({})),
+        "run" => schedule::start_now(&id).map(|()| json!({})),
+        "test" => match schedule::load().schedules.into_iter().find(|s| s.id == id) {
+            Some(s) => {
+                let sent = schedule::notify(&s, &format!("Tes notifikasi: {}", s.name), &format!("fastpilot: ini tes notifikasi untuk jadwal \"{}\".", s.name)).await;
+                if sent.is_empty() { Err("jadwal ini belum punya notifikasi".into()) } else { Ok(json!({ "sent": sent })) }
+            }
+            None => Err("jadwal tidak ditemukan".into()),
+        },
+        _ => Err("perintah tidak dikenal".into()),
+    };
+    match result {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
 // ---- Ambil alih (C7b) ---------------------------------------------------------------------
 
 /// The control socket of a fastpilot process (see `fastpilot_core::live`).
@@ -381,6 +429,7 @@ const ICONS: &[(&str, &str)] = &[
     ("alert", include_str!("../ui/icons/alert.svg")),
     ("chev", include_str!("../ui/icons/chev.svg")),
     ("clock", include_str!("../ui/icons/clock.svg")),
+    ("chat", include_str!("../ui/icons/chat.svg")),
     ("close", include_str!("../ui/icons/close.svg")),
     ("cursor", include_str!("../ui/icons/cursor.svg")),
     ("device", include_str!("../ui/icons/device.svg")),

@@ -251,6 +251,25 @@ untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak dipe
 Data sesi ada di `~/.fastpilot/live/` (hanya bisa dibaca pemiliknya); alamat DevTools tidak pernah
 dikirim ke browser.
 
+**Jadwal** (`fastpilot ui`, menu Jadwal): jalankan test (`fastpilot run` pada folder `tests/` atau satu
+file `.md`) setiap hari, hari kerja, atau mingguan pada jam tertentu (waktu komputer ini).
+
+- Jadwal disimpan di `~/.fastpilot/schedules.json` dan didaftarkan ke penjadwal sistem **hanya saat kamu
+  menyimpannya**: LaunchAgent launchd di macOS (`~/Library/LaunchAgents/dev.fastpilot.schedule.<id>.plist`),
+  systemd user timer di Linux, atau crontab bila systemd tidak ada. Mematikan atau menghapus jadwal
+  menghapus entri itu. Entri hanya berisi `fastpilot schedule run <id>`; path test dan notifikasi ada di
+  file JSON.
+- **Kalau gagal**: webhook https yang kompatibel Slack (`{"text": ...}`), notifikasi di komputer ini,
+  dan/atau issue GitHub di `pemilik/repo` (token dari `GITHUB_TOKEN`/`GH_TOKEN`, atau Keychain item
+  `fastpilot-github`: `security add-generic-password -s fastpilot-github -a fastpilot -w`). Tombol
+  *Tes notifikasi* mengirim pesan contoh.
+- URL webhook diperlakukan sebagai rahasia: disimpan di `~/.fastpilot/secrets/` (hanya pemilik), tidak
+  di file jadwal, dan halaman hanya menampilkan host-nya.
+- Komputer harus menyala dan kamu login saat jadwal jalan (launchd menjalankan yang terlewat saat bangun
+  dari sleep; systemd memakai `Persistent=true`). Laporan HTML tiap run ada di
+  `~/.fastpilot/schedules/reports/`, log di `~/.fastpilot/schedules/<id>.log`.
+- Dari terminal: `fastpilot schedule list`, `fastpilot schedule run <id>`, `fastpilot schedule remove <id>`.
+
 Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 
 | Kunci | Arti |
