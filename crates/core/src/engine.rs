@@ -149,6 +149,27 @@ impl SessionRegistry {
 pub trait Launcher: Send + Sync {
     /// `device`: a `DeviceSpec` (tagged id, plain id or name); `None` = the platform default.
     async fn launch(&self, platform: Platform, device: Option<&str>) -> Result<Box<dyn Driver>>;
+    /// `run --reset` / `mcp --reset`: mobile sessions reset their app before opening it.
+    fn fresh_apps(&self) -> bool {
+        false
+    }
+}
+
+/// `--reset`: before a mobile session opens an app, the app is reset to a fresh install (data,
+/// permissions) and the screen put upright, so every test starts from the same state. Web needs
+/// nothing: each session already gets its own browser context (no cookies, no storage). Wiping app
+/// data is a guard rail: refused while allow_app_reset = false. Returns what was reset, if anything.
+pub async fn reset_app(driver: &dyn Driver, platform: Platform, target: &str) -> Result<Option<String>> {
+    if platform == Platform::Web || target.contains("://") {
+        return Ok(None);
+    }
+    if !crate::config::flag("allow_app_reset") {
+        return Err(Error::Blocked(
+            "--reset wipes the app's data, which is turned off (allow_app_reset = false); only the user can change it in fastpilot settings".into(),
+        ));
+    }
+    let app = target.split('/').next().unwrap_or(target);
+    driver.reset_app(app).await.map(|done| Some(format!("reset {app}: {done}")))
 }
 
 #[derive(Debug, Clone)]
@@ -356,7 +377,7 @@ pub async fn run_flow(
                     baselines.retain(|(s, _)| s != id);
                     baselines.push((id.clone(), None));
                 }
-                record(&ctx, index, Some(id), &fs.step, t0, res.map(|()| None))
+                record(&ctx, index, Some(id), &fs.step, t0, res)
             }
             Step::UseSession(id) => {
                 index += 1;
@@ -503,16 +524,22 @@ async fn start_session(
     platform: Platform,
     target: Option<&str>,
     device: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     if reg.contains(id) {
         return Err(Error::Session(format!("session `{id}` already exists")));
     }
     let driver = launcher.launch(platform, device).await?;
+    let mut done = None;
     if let Some(t) = target {
-        driver.open(&substitute(t).map_err(Error::Flow)?).await?;
+        let t = substitute(t).map_err(Error::Flow)?;
+        if launcher.fresh_apps() {
+            done = reset_app(&*driver, platform, &t).await?;
+        }
+        driver.open(&t).await?;
         settle(&*driver).await;
     }
-    reg.insert(id.to_string(), driver)
+    reg.insert(id.to_string(), driver)?;
+    Ok(done)
 }
 
 async fn ensure_baseline(reg: &SessionRegistry, baselines: &mut Vec<(SessionId, Option<Snapshot>)>, sid: &str) {
@@ -1916,6 +1943,105 @@ mod tests {
             live: None,
         };
         exec_with(d, step, &ctx, false).await.map(|_| ())
+    }
+
+    /// Records the order of calls; any platform.
+    struct Recorder {
+        platform: Platform,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Driver for Recorder {
+        fn platform(&self) -> Platform {
+            self.platform
+        }
+        async fn open(&self, target: &str) -> Result<()> {
+            self.calls.lock().unwrap_or_else(|p| p.into_inner()).push(format!("open {target}"));
+            Ok(())
+        }
+        async fn reset_app(&self, app: &str) -> Result<String> {
+            self.calls.lock().unwrap_or_else(|p| p.into_inner()).push(format!("reset {app}"));
+            Ok("data and permissions cleared".into())
+        }
+        async fn snapshot(&self) -> Result<Snapshot> {
+            Ok(Snapshot::build("App", "fake://", vec![node("text", "Halo")], &mut RefRegistry::default()))
+        }
+        async fn tap(&self, _: &Selector) -> Result<()> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &Selector, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn scroll(&self, _: Direction, _: Option<&Selector>) -> Result<()> {
+            Ok(())
+        }
+        async fn swipe(&self, _: Point, _: Point) -> Result<()> {
+            Ok(())
+        }
+        async fn back(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn wait_idle(&self, _: Duration) -> Result<()> {
+            Ok(())
+        }
+        async fn eval_script(&self, _: &str) -> Result<Value> {
+            Ok(Value::Null)
+        }
+    }
+
+    struct ResetLauncher {
+        fresh: bool,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Launcher for ResetLauncher {
+        async fn launch(&self, platform: Platform, _device: Option<&str>) -> Result<Box<dyn Driver>> {
+            Ok(Box::new(Recorder { platform, calls: self.calls.clone() }))
+        }
+        fn fresh_apps(&self) -> bool {
+            self.fresh
+        }
+    }
+
+    /// E3: with `--reset`, a mobile session resets its app (data, permissions, orientation) before
+    /// opening it, once per session start; web sessions and runs without `--reset` do not; wiping
+    /// app data obeys allow_app_reset.
+    #[test]
+    fn reset_runs_before_a_mobile_app_opens() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+        rt.block_on(async {
+            let flow = |yaml: &str| parse_flow(yaml).expect("flow");
+            let go = |fresh: bool, yaml: &'static str| async move {
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let launcher = ResetLauncher { fresh, calls: calls.clone() };
+                let report = run_flow(&mut SessionRegistry::default(), &launcher, &flow(yaml), &RunOptions::default()).await;
+                let calls = calls.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                (report, calls)
+            };
+            // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+            unsafe { std::env::remove_var("FASTPILOT_ALLOW_APP_RESET") };
+            let (report, calls) = go(true, "- session: { start: a, platform: android, target: com.x/.Main }\n").await;
+            assert!(report.passed(), "{report}");
+            assert_eq!(calls, ["reset com.x", "open com.x/.Main"]);
+            assert!(report.to_string().contains("reset com.x: data and permissions cleared"), "{report}");
+            // Without --reset, or a web session: nothing is reset.
+            let (_, calls) = go(false, "- session: { start: a, platform: android, target: com.x }\n").await;
+            assert_eq!(calls, ["open com.x"]);
+            let (_, calls) = go(true, "- session: { start: w, platform: web, target: \"https://example.com\" }\n").await;
+            assert_eq!(calls, ["open https://example.com"]);
+            // allow_app_reset = false: the session does not start, nothing is wiped or opened.
+            unsafe { std::env::set_var("FASTPILOT_ALLOW_APP_RESET", "false") };
+            let (report, calls) = go(true, "- session: { start: a, platform: ios, target: com.x }\n").await;
+            assert!(!report.passed() && report.to_string().contains("allow_app_reset"), "{report}");
+            assert!(calls.is_empty(), "{calls:?}");
+            unsafe { std::env::remove_var("FASTPILOT_ALLOW_APP_RESET") };
+        });
     }
 
     struct FakeLauncher;

@@ -514,6 +514,12 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 - `--record` merekam layar tiap sesi (web: screencast CDP jadi filmstrip HTML; Android: `screenrecord`;
   iOS: `simctl io recordVideo`). `--html` menghasilkan satu file HTML mandiri yang memuat laporan tiap
   run (langkah, durasi, diff, screenshot, rekaman); `--junit` untuk dashboard CI.
+- `--reset` membuat tiap test mulai dari keadaan bersih: sesi Android/iOS me-reset app-nya sebelum dibuka
+  (Android: `pm clear` untuk data dan izin runtime, layar tegak; simulator iOS: data dan semua izin privasi,
+  orientasi tidak bisa diatur lewat simctl; iPhone fisik tidak didukung). Sesi web memang selalu mulai dengan
+  context browser baru (tanpa cookie dan storage). Butuh `allow_app_reset` (bawaan: boleh); bila dimatikan,
+  sesi mobile ditolak dengan `blocked`. `fastpilot mcp --reset` melakukan hal yang sama untuk sesi dari chat.
+  Orientasi dan setelan device dikembalikan saat sesi selesai.
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 

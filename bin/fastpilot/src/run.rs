@@ -72,6 +72,8 @@ pub struct Options {
     pub workers: usize,
     /// Record every session (web screencast, Android screenrecord, iOS simctl) into the run.
     pub record: bool,
+    /// Reset the app of every mobile session before it opens (data, permissions, orientation).
+    pub reset: bool,
 }
 
 /// One natural-language test case (`tests/*.md`: `# Title`, `id:`, `platform:`, steps).
@@ -398,6 +400,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let pick = |p: Platform| devices.iter().find(|d| d.platform == p).map(|d| d.id.clone());
     let fp = FastPilot::with_devices(opts.web.clone(), Devices { android: pick(Platform::Android), ios: pick(Platform::Ios) });
     fp.set_record(opts.record);
+    fp.set_reset(opts.reset);
     let hint = fp.hint(&case.id);
     let mut model = match (&opts.model, &hint) {
         (Some(m), _) => m.clone(),
