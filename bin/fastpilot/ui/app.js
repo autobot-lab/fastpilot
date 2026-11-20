@@ -853,8 +853,15 @@ async function chatDecide(id, apply) {
     const r = await api("/api/chat/decide", { id, apply });
     chatData = r.chat;
     toast(r.message, true);
-  } catch (e) { toast(e.message); await loadChat(); return; }
+  } catch (e) { toast(e.message); await loadChat(); }
   renderChat();
+  // The clicked button is gone: keyboard focus goes to the card's new state.
+  document.querySelector(`.prop[data-pid="${id}"] .prop-state`)?.focus();
+}
+
+// `kode` in a message becomes a code span; everything else stays plain text.
+function rich(text) {
+  return String(text || "").split(/`([^`\n]+)`/).map((part, i) => (i % 2 ? code(part) : part));
 }
 
 function proposalCard(p) {
@@ -866,15 +873,15 @@ function proposalCard(p) {
       h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Simpan jadwal" : "Terapkan batasan"),
       h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Batal"));
   } else if (p.status === "applied") {
-    foot = h("div", { class: "prop-state ok" }, "✓ ", p.note || "Tersimpan");
+    foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Tersimpan"));
   } else if (p.status === "cancelled") {
-    foot = h("div", { class: "prop-state muted" }, "Dibatalkan");
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dibatalkan");
   } else {
-    foot = h("div", { class: "prop-state bad" }, p.note || "Tidak bisa dipakai",
+    foot = h("div", { class: "prop-state bad", tabindex: "-1" }, rich(p.note || "Tidak bisa dipakai"),
       p.kind === "limits" ? [" ", h("a", { class: "lk", href: "#/settings/limits" }, "Buka Pengaturan › Batasan")] : null);
   }
-  const note = p.status === "pending" && p.note ? h("p", { class: "s" }, p.note) : null;
-  return h("section", { class: "grp prop " + p.status, "aria-label": p.title }, head, h("div", { class: "prop-body" }, rows, note, foot));
+  const note = p.status === "pending" && p.note ? h("p", { class: "s" }, rich(p.note)) : null;
+  return h("section", { class: "grp prop " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, rows, note, foot));
 }
 
 function chatMsg(m) {
@@ -883,9 +890,9 @@ function chatMsg(m) {
   return h("li", { class: "msg bot" },
     h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
     m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "Yang dikerjakan bot" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
-    m.text ? h("div", { class: "bubble" }, m.text) : null,
+    m.text ? h("div", { class: "bubble" }, rich(m.text)) : null,
     working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
-    m.error ? h("div", { class: "err", role: "alert" }, m.error) : null,
+    m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
     (m.proposals || []).map(proposalCard));
 }
 

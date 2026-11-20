@@ -256,7 +256,16 @@ async fn turn(text: &str, bot: u64, resume: Option<String>) -> Res<()> {
     }
     let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
     match result {
-        Some(r) if r["is_error"] == true => Err(format!("Claude Code: {}", clip(r["result"].as_str().unwrap_or("gagal"), 400))),
+        Some(r) if r["is_error"] == true => {
+            let raw = r["result"].as_str().unwrap_or("gagal").to_owned();
+            // The same text often came as the bot's answer too: say it once.
+            with_bot(bot, |m| {
+                if raw.contains(m.text.trim()) || m.text.contains("/login") {
+                    m.text.clear();
+                }
+            });
+            Err(claude_failure(&raw))
+        }
         Some(r) => {
             // Some versions put the final text only in the result.
             let final_text = fastpilot_core::redact(r["result"].as_str().unwrap_or(""));
@@ -269,8 +278,25 @@ async fn turn(text: &str, bot: u64, resume: Option<String>) -> Res<()> {
         }
         None => {
             let err = String::from_utf8_lossy(&out.stderr);
+            if is_login_problem(&err) {
+                return Err(claude_failure(&err));
+            }
             Err(format!("Claude Code berhenti tanpa jawaban ({}): {}", out.status, clip(err.trim(), 400)))
         }
+    }
+}
+
+fn is_login_problem(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("/login") || t.contains("not logged in") || t.contains("invalid api key") || t.contains("please log in")
+}
+
+/// What Claude Code's failure means for the user, in the page's language.
+fn claude_failure(raw: &str) -> String {
+    if is_login_problem(raw) {
+        "Claude Code belum login di komputer ini. Buka Terminal, jalankan `claude`, login sekali, lalu kirim pesanmu lagi.".into()
+    } else {
+        format!("Claude Code gagal: {}", clip(raw.trim(), 400))
     }
 }
 
@@ -354,7 +380,7 @@ fn card(id: u64, body: &str) -> Proposal {
                 id,
                 kind: "limits".into(),
                 title: "Batasan baru · berlaku untuk semua test".into(),
-                rows: changes.iter().map(|(k, old, new)| (k.clone(), format!("{} → {}", old.as_deref().unwrap_or("(bawaan)"), new))).collect(),
+                rows: changes.iter().map(|(k, old, new)| (label(k).to_owned(), change_text(k, old.as_deref(), new))).collect(),
                 status: "pending".into(),
                 note: Some("Mulai berlaku di run berikutnya. Lewat chat batasan hanya bisa diperketat.".into()),
                 data: v,
@@ -393,6 +419,69 @@ fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
 }
 
 /// `(key, old, new)` for every change, each one stricter than now; else why not.
+/// The setting as Pengaturan › Batasan names it.
+fn label(key: &str) -> &'static str {
+    match key {
+        "allowed_domains" => "Domain yang boleh dibuka",
+        "confirm_actions" => "Tombol yang butuh konfirmasi",
+        "block_actions" => "Tombol yang selalu diblokir",
+        "state_expire_days" => "Login tersimpan berlaku (hari)",
+        "allow_app_install" => "Boleh install / uninstall aplikasi",
+        "allow_app_reset" => "Boleh hapus data aplikasi",
+        "allow_physical_devices" => "Boleh pakai HP fisik",
+        "allow_device_settings" => "Boleh ubah setting HP",
+        "allow_eval_script" => "Boleh jalankan JavaScript (evalScript)",
+        "upload_dirs" => "Folder yang boleh diunggah",
+        "max_steps" => "Maksimal langkah per test",
+        "test_timeout" => "Batas waktu per test (menit)",
+        _ => "Pengaturan lain",
+    }
+}
+
+fn items(v: Option<&str>) -> Vec<String> {
+    v.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+/// A value as the page shows it, with the default spelled out when unset.
+fn shown(key: &str, v: Option<&str>) -> String {
+    let v = v.map(str::trim).filter(|v| !v.is_empty());
+    if key.starts_with("allow_") {
+        let on = v.is_none_or(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"));
+        return if on { "boleh".into() } else { "tidak boleh".into() };
+    }
+    match (key, v) {
+        ("max_steps" | "state_expire_days", None) => "30 (bawaan)".into(),
+        ("test_timeout", None) => "tanpa batas".into(),
+        ("test_timeout", Some("0")) => "tanpa batas".into(),
+        ("allowed_domains", None) => "semua domain".into(),
+        (_, None) => "kosong".into(),
+        (_, Some(v)) => items(Some(v)).join(", "),
+    }
+}
+
+/// `boleh → tidak boleh`; for lists that grow, only what is added (`+ Bayar`).
+fn change_text(key: &str, old: Option<&str>, new: &str) -> String {
+    if ADDS.contains(&key) {
+        let had = items(old);
+        let added: Vec<String> = items(Some(new)).into_iter().filter(|w| !had.iter().any(|h| h.eq_ignore_ascii_case(w))).collect();
+        return format!("+ {}", added.join(", "));
+    }
+    format!("{} → {}", shown(key, old), shown(key, Some(new)))
+}
+
+/// Whether `new` is what the setting already is (no real change).
+fn unchanged(key: &str, old: Option<&str>, new: &str) -> bool {
+    let set = |v: Option<&str>| {
+        let mut x: Vec<String> = items(v).iter().map(|s| s.to_lowercase()).collect();
+        x.sort();
+        x.dedup();
+        x
+    };
+    if LISTS_SHOWN.contains(&key) { set(old) == set(Some(new)) } else { shown(key, old) == shown(key, Some(new)) }
+}
+
+const LISTS_SHOWN: &[&str] = &["allowed_domains", "confirm_actions", "block_actions", "upload_dirs"];
+
 fn limit_changes(v: &Value) -> Res<Vec<(String, Option<String>, String)>> {
     let mut out = Vec::new();
     let as_text = |x: &Value| match x {
@@ -405,13 +494,13 @@ fn limit_changes(v: &Value) -> Res<Vec<(String, Option<String>, String)>> {
     for (kind, map) in [("add", &v["add"]), ("set", &v["set"])] {
         for (key, val) in map.as_object().into_iter().flatten() {
             if !LIMITS.contains(&key.as_str()) || (kind == "add" && !ADDS.contains(&key.as_str())) {
-                return Err(format!("`{key}` tidak bisa diubah lewat chat"));
+                return Err(format!("\"{}\" tidak bisa diubah lewat chat", if LIMITS.contains(&key.as_str()) { label(key) } else { key.as_str() }));
             }
             if matches!(config::current(key), Source::Env(_)) {
-                return Err(format!("`{key}` diatur lewat environment (FASTPILOT_{}); ubah di sana", key.to_uppercase()));
+                return Err(format!("\"{}\" diatur lewat environment (FASTPILOT_{}); ubah di sana", label(key), key.to_uppercase()));
             }
             let old = current(key);
-            let given = as_text(val).ok_or_else(|| format!("nilai `{key}` tidak dikenal"))?;
+            let given = as_text(val).ok_or_else(|| format!("nilai untuk \"{}\" tidak dikenal", label(key)))?;
             let new = if kind == "add" {
                 let mut items: Vec<String> = old.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
                 for w in given.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -423,14 +512,21 @@ fn limit_changes(v: &Value) -> Res<Vec<(String, Option<String>, String)>> {
             } else {
                 given
             };
+            if !new.is_empty() && unchanged(key, old.as_deref(), &new) {
+                continue;
+            }
             if new.is_empty() || !config::tightens(key, old.as_deref(), Some(&new)) {
-                return Err(format!("`{key}` akan jadi lebih longgar. Melonggarkan batasan hanya bisa lewat Pengaturan › Batasan."));
+                return Err(format!(
+                    "\"{}\" akan jadi lebih longgar ({}). Melonggarkan batasan hanya bisa lewat Pengaturan › Batasan.",
+                    label(key),
+                    change_text(key, old.as_deref(), &new)
+                ));
             }
             out.push((key.clone(), old, new));
         }
     }
     if out.is_empty() {
-        return Err("usulan batasan kosong".into());
+        return Err("Tidak ada perubahan: batasannya sudah seperti itu.".into());
     }
     Ok(out)
 }
@@ -498,6 +594,14 @@ mod tests {
         assert_eq!(cards.len(), 2);
         assert!(cards.iter().all(|c| c.status == "refused"));
         assert_eq!(next, 13);
+        assert_eq!(shown("allow_eval_script", Some("0")), "tidak boleh");
+        assert_eq!(shown("allow_eval_script", None), "boleh");
+        assert!(unchanged("allow_eval_script", Some("0"), "false"), "already off: no row");
+        assert!(unchanged("block_actions", Some("Bayar"), "bayar"));
+        assert_eq!(change_text("block_actions", Some("Keluar"), "Keluar,Bayar"), "+ Bayar");
+        assert_eq!(change_text("max_steps", None, "20"), "30 (bawaan) → 20");
+        assert_eq!(label("allow_eval_script"), "Boleh jalankan JavaScript (evalScript)");
+        assert!(claude_failure("Not logged in · Please run /login").starts_with("Claude Code belum login"));
         assert_eq!(tool_line("mcp__fastpilot__session", &json!({ "action": "start", "id": "web1", "platform": "web" })), "session · start web1 web");
     }
 }
