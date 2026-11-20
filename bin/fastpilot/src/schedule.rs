@@ -75,6 +75,9 @@ pub struct Schedule {
     pub notify: Notify,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// D10a: the agent it belongs to; `None` = the first agent (`default`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 fn yes() -> bool {
@@ -625,6 +628,17 @@ pub fn save(mut s: Schedule, webhook: Option<&str>) -> Res<Schedule> {
     Ok(s)
 }
 
+/// D10a: an agent's schedules go to another (when it is deleted). No OS entry changes.
+pub fn move_agent(from: &str, to: &str) -> Res<()> {
+    let mut store = load();
+    let mut moved = false;
+    for s in store.schedules.iter_mut().filter(|s| s.agent.as_deref() == Some(from)) {
+        s.agent = (to != crate::agents::DEFAULT).then(|| to.to_owned());
+        moved = true;
+    }
+    if moved { save_store(&store) } else { Ok(()) }
+}
+
 pub fn set_enabled(id: &str, on: bool) -> Res<()> {
     let mut store = load();
     let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;
@@ -933,6 +947,7 @@ mod tests {
             when: When { every, time: "08:05".into(), day, ..Default::default() },
             notify: Notify::default(),
             enabled: true,
+            agent: None,
         }
     }
 

@@ -97,6 +97,9 @@ pub struct LiveProcess {
     #[serde(default = "takeover_default")]
     pub takeover: bool,
     pub updated_ms: u64,
+    /// D10a: the agent this process works for (`FASTPILOT_AGENT`, set by the dashboard's Chat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub sessions: Vec<LiveSession>,
     pub flows: Vec<LiveFlow>,
 }
@@ -128,7 +131,13 @@ pub fn enable(kind: &str) {
     control::listen(path.with_extension("sock"));
     *lock() = Some(State {
         path,
-        proc: LiveProcess { pid: std::process::id(), kind: kind.to_owned(), takeover: crate::config::flag("allow_takeover"), ..Default::default() },
+        proc: LiveProcess {
+            pid: std::process::id(),
+            kind: kind.to_owned(),
+            takeover: crate::config::flag("allow_takeover"),
+            agent: std::env::var("FASTPILOT_AGENT").ok().filter(|a| !a.is_empty() && a.len() <= 40 && a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')),
+            ..Default::default()
+        },
         next_flow: 1,
     });
     write();
