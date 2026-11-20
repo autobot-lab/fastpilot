@@ -228,9 +228,12 @@ fn fake_github() -> (u16, Shared<String>, Shared<Value>) {
             let mut c = comments2.lock().expect("comments");
             let (status, reply) = match (authorized, method.as_str(), path.as_str()) {
                 (false, ..) => ("401 Unauthorized", json!({})),
+                // Like the Actions token: no /user, comments as github-actions[bot] (GitHub always
+                // sends the author; fastpilot only edits a marked comment of its own account).
+                (_, "GET", "/user") => ("403 Forbidden", json!({ "message": "Resource not accessible by integration" })),
                 (_, "GET", "/repos/o/r/issues/5/comments") => ("200 OK", Value::Array(c.clone())),
                 (_, "POST", "/repos/o/r/issues/5/comments") => {
-                    c.push(json!({ "id": 77, "body": text }));
+                    c.push(json!({ "id": 77, "body": text, "user": { "login": "github-actions[bot]", "type": "Bot" } }));
                     ("201 Created", json!({ "id": 77 }))
                 }
                 (_, "PATCH", "/repos/o/r/issues/comments/77") => {
@@ -271,7 +274,10 @@ fn report_github_keeps_one_comment_on_the_pr() {
     assert!(!out.contains("test-token-123"), "token in the output:\n{out}");
     assert!(out.contains("report-github: updated o/r#5"), "{out}");
     let calls = log.lock().expect("log").clone();
-    assert_eq!(calls, ["GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]);
+    assert_eq!(
+        calls,
+        ["GET /user", "GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /user", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]
+    );
     let all = comments.lock().expect("comments").clone();
     assert_eq!(all.len(), 1, "one comment: {all:?}");
     let body = all[0]["body"].as_str().unwrap_or("");
