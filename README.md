@@ -10,42 +10,64 @@ Free, no cloud, and payment buttons are blocked from the start.
 - Google Chrome
 - [Claude Code](https://claude.com/claude-code), signed in
 
-## Get started in 3 steps
+## How to use it
 
-**1. Install**
+**1. Install** (once)
 
 ```bash
 npm install -g fastpilot
 ```
 
-**2. Try the demo**
-
-```bash
-fastpilot demo
-cd fastpilot-demo
-claude
-```
-
-In Claude, type: *Use fastpilot, run tests/login.md and then report*
-
-When you see ✓ `login-ok` passed, fastpilot works. 🎉
-
-**3. Use it in your project**
+**2. Set up your project** (once per project)
 
 ```bash
 cd ~/your-project
 fastpilot init
 ```
 
-Open `tests/contoh.md`, change `target` to your app's address, then ask Claude to run it.
+`init` asks before each change; answer `y`. It connects fastpilot to Claude Code and creates
+an example test, `tests/contoh.md`.
 
-## Use the dashboard (easiest)
+**3. Write your test**
+
+Open `tests/contoh.md` and change `target` to your app's address (see [Write a test](#write-a-test)).
+
+**4. Run it**
 
 ```bash
-fastpilot ui
+claude
 ```
 
-The dashboard opens in your browser. Keep the Terminal open while you use it.
+In Claude, type: *Use fastpilot, run tests/contoh.md and then report*
+
+Claude runs the test in Chrome and tells you whether it passed. The report is saved in
+`.fastpilot/runs/`.
+
+## Open the dashboard
+
+The dashboard is a page in your browser where you can chat, watch tests run, schedule them, and
+change settings, without typing commands in Claude.
+
+1. Open the **Terminal** app.
+2. Type this and press Enter:
+
+   ```bash
+   fastpilot ui
+   ```
+
+3. Your browser opens the dashboard by itself.
+   If it does not, the Terminal shows a link like `http://127.0.0.1:53712/?code=...`.
+   Copy it into your browser.
+4. Keep the Terminal open while you use the dashboard. To close it, press `Ctrl-C` in the Terminal.
+
+Good to know:
+
+- The link works **once** and for **10 minutes**. If it expired, or you closed the page, press
+  `Ctrl-C` and run `fastpilot ui` again for a new link.
+- The dashboard only works on this computer, not from your phone or another computer.
+- Open it yourself. Do not ask the AI to open it for you: the dashboard can loosen the limits.
+
+## What's in the dashboard
 
 | Menu | What it's for |
 |---|---|
@@ -54,8 +76,6 @@ The dashboard opens in your browser. Keep the Terminal open while you use it.
 | **Jadwal** (Schedules) | Run tests automatically every day or every week. If one fails, you get a Slack message or a Mac notification |
 | **Device** | Check whether Chrome, Android, and iOS are ready |
 | **Pengaturan** (Settings) | Pick the AI model, set limits, store secrets |
-
-The dashboard link works once and for 10 minutes. If it expires, run `fastpilot ui` again.
 
 ## Write a test
 
@@ -96,7 +116,8 @@ fastpilot doctor
 |---|---|
 | Chrome not found | `fastpilot setup web` |
 | fastpilot doesn't show up in Claude | Run `fastpilot init` again |
-| Android isn't ready | `fastpilot setup android`, then `fastpilot demo --android` |
+| The dashboard link doesn't work | It works once, for 10 minutes. Press `Ctrl-C`, then run `fastpilot ui` again |
+| Android isn't ready | `fastpilot setup android`, then `fastpilot doctor android` |
 | A test stops with "Diblokir Batasan" (blocked by limits) | That's on purpose. Change it in the dashboard › Pengaturan › Batasan & izin |
 
 ## Learn more
