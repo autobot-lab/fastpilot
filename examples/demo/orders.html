@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Order status</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 460px; margin: 48px auto; }
+    .rules { background: #f4f5f7; border: 1px solid #d9dce1; padding: 8px 12px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    button { padding: 8px; }
+    #status { font-weight: 600; }
+    [role=alert] { color: #b00020; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Order #1001</h1>
+    <div class="rules" aria-label="Rules">
+      <p>An order goes Created → Paid → Shipped → Delivered.</p>
+      <p>It can be cancelled while it is Created or Paid. Shipped, Delivered and Cancelled orders cannot be cancelled.</p>
+    </div>
+    <p>Status: <span id="status" role="status">Created</span></p>
+    <div class="actions">
+      <button id="paid" type="button">Mark as paid</button>
+      <button id="ship" type="button">Ship</button>
+      <button id="deliver" type="button">Mark as delivered</button>
+      <button id="cancel" type="button">Cancel order</button>
+    </div>
+    <p id="error" role="alert" hidden></p>
+    <h2>History</h2>
+    <ol id="history"><li>Created</li></ol>
+    <button id="reset" type="button">Start a new order</button>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    // Which button works in which state.
+    const next = {
+      paid: { Created: 'Paid' },
+      ship: { Paid: 'Shipped' },
+      deliver: { Shipped: 'Delivered' },
+      cancel: { Created: 'Cancelled', Paid: 'Cancelled', Shipped: 'Cancelled' },
+    };
+    let state = 'Created';
+    function show() {
+      $('status').textContent = state;
+      for (const id of Object.keys(next)) $(id).disabled = !next[id][state];
+    }
+    for (const id of Object.keys(next)) {
+      $(id).addEventListener('click', () => {
+        $('error').hidden = true;
+        const to = next[id][state];
+        if (!to) {
+          $('error').textContent = `Not allowed while the order is ${state}`;
+          $('error').hidden = false;
+          return;
+        }
+        state = to;
+        $('history').append(Object.assign(document.createElement('li'), { textContent: to }));
+        show();
+      });
+    }
+    $('reset').addEventListener('click', () => {
+      state = 'Created';
+      $('history').replaceChildren(Object.assign(document.createElement('li'), { textContent: 'Created' }));
+      $('error').hidden = true;
+      show();
+    });
+    show();
+  </script>
+</body>
+</html>
