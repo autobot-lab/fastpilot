@@ -25,6 +25,21 @@ impl DeviceKind {
         }
     }
 
+    /// What a person calls it (QA B9: the Device page showed only raw ids).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Simulator => "iPhone simulator",
+            Self::IosDevice => "iPhone (physical)",
+            Self::Emulator => "Android emulator",
+            Self::AndroidDevice => "Android phone (physical)",
+        }
+    }
+
+    /// The kind of an adb serial: `emulator-5556` is an emulator, anything else a phone.
+    pub fn of_android_serial(serial: &str) -> Self {
+        if serial.starts_with("emulator-") { Self::Emulator } else { Self::AndroidDevice }
+    }
+
     pub fn platform(self) -> Platform {
         match self {
             Self::Simulator | Self::IosDevice => Platform::Ios,

@@ -142,7 +142,7 @@ fn history_lists_opens_and_deletes_runs_and_conversations() {
     assert_eq!((named["tests"].as_u64(), named["passed"].as_u64(), named["has_report"].as_bool()), (Some(1), Some(1), Some(true)), "{named}");
     assert_eq!(named["platforms"], json!(["web"]));
     let failed = runs.iter().find(|r| r["failed"] == 1).expect("failed suite");
-    assert_eq!(failed["title"], "Login berhasil", "one test: its title");
+    assert_eq!(failed["title"], "Login works", "one test: its title");
     assert!(runs.iter().any(|r| r["id"] == "run:20261120-090000-solo-check" && r["passed"] == 1));
     assert_eq!(h["keep_days"], Value::Null, "auto-delete is off until the user picks it");
 
@@ -150,7 +150,7 @@ fn history_lists_opens_and_deletes_runs_and_conversations() {
     let id = named["id"].as_str().expect("id").to_owned();
     let (st, head, body) = request(&ui, "GET", &format!("/api/history/report?id={id}"), "");
     assert_eq!(st, 200);
-    assert!(head.to_lowercase().contains("content-security-policy: sandbox") && body.contains("Login berhasil"), "{head}");
+    assert!(head.to_lowercase().contains("content-security-policy: sandbox") && body.contains("Login works"), "{head}");
     for bad in ["run:..%2Fsecret", "suite:..%2F..%2Fx", "run:", "x"] {
         let (st, _, _) = request(&ui, "GET", &format!("/api/history/report?id={bad}"), "");
         assert_eq!(st, 404, "{bad}");

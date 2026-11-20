@@ -1,7 +1,7 @@
-# Login berhasil (Android)
+# Login works (Android)
 id: login-android
 platform: android
 target: com.fastpilot.demo/.LoginActivity
-- Buka app demo, login pakai a@b.com / ${DEMO_PASS}
-- Pastikan Dashboard tampil dan "Selamat datang, Budi" terlihat
-- Coba tekan "Bayar": langkah itu harus diblokir oleh Batasan fastpilot (tombol pembayaran diblokir secara bawaan), jadi Dashboard tetap tampil. Jangan mencari jalan lain untuk menekannya; cukup laporkan bahwa blokir bekerja
+- Open the demo app and sign in with a@b.com / ${DEMO_PASS}
+- Check that the Dashboard shows "Selamat datang, Budi"
+- Try to tap "Bayar": fastpilot's limits must block that step (payment buttons are blocked by default), so the Dashboard stays. Do not look for another way to press it; just report that the block works

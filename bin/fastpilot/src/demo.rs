@@ -45,6 +45,11 @@ const APP: &str = "com.fastpilot.demo";
 /// The public demo password of the demo pages and app (not a secret).
 pub const DEMO_PASS: &str = "rahasia123";
 
+/// "Android emulator (emulator-5556), Android phone (physical) (R58M…)" (QA B9: raw ids only).
+fn labelled(serials: &[String]) -> String {
+    serials.iter().map(|s| format!("{} ({s})", fastpilot_core::DeviceKind::of_android_serial(s).label())).collect::<Vec<_>>().join(", ")
+}
+
 /// A test case as written to the demo folder: pages are under `demo/`.
 pub fn test_case(text: &str) -> String {
     text.replace("examples/demo/", "demo/")
@@ -292,7 +297,7 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
         if serials.is_empty() {
             println!("\nAndroid (skipped: no device)\n  start an emulator, then: fastpilot demo --android\n  → installs the demo app built into fastpilot");
         } else {
-            println!("\nAndroid: devices connected ({})\n  install the demo app: fastpilot demo --android", serials.join(", "));
+            println!("\nAndroid: connected: {}\n  install the demo app: fastpilot demo --android", labelled(&serials));
         }
         return None;
     }
@@ -308,7 +313,7 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
         }
         (None, [one]) => one.clone(),
         (None, many) => {
-            println!("\nAndroid: {} devices ({}); pick one: fastpilot demo --android --device <serial>", many.len(), many.join(", "));
+            println!("\nAndroid: {} devices ({}); pick one: fastpilot demo --android --device <serial>", many.len(), labelled(many));
             return Some(false);
         }
     };
