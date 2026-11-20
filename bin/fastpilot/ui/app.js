@@ -926,7 +926,8 @@ async function pollLive() {
 
 // ---- Chat (C4) ----
 let chatData = null, chatTimer = null, chatSig = "";
-const SUGGEST = ["Tes login di Chrome", "Jadwalkan tests/login.md setiap hari jam 09:00", "Blokir tombol Bayar di semua test"];
+const SUGGEST = ["Test the login page in Chrome", "Write a test for the login and run it every 2 hours", "Block the Pay button in all tests"];
+const chatEdits = {}; // proposal id -> what the user is changing with Edit
 
 async function loadChat() {
   try { chatData = await api("/api/chat"); } catch (e) { chatData = { error: e.message, messages: [], busy: false }; }
@@ -947,12 +948,17 @@ async function chatSend(text) {
   loadChat();
 }
 
-async function chatDecide(id, apply) {
+async function chatDecide(id, apply, mode, edit) {
   try {
-    const r = await api("/api/chat/decide", { id, apply });
+    const body = { id, apply };
+    if (mode) body.mode = mode;
+    if (edit) body.edit = edit;
+    const r = await api("/api/chat/decide", body);
+    delete chatEdits[id];
     chatData = r.chat;
     toast(r.message, true);
   } catch (e) { toast(e.message); await loadChat(); }
+  chatSig = "";
   renderChat();
   // The clicked button is gone: keyboard focus goes to the card's new state.
   document.querySelector(`.prop[data-pid="${id}"] .prop-state`)?.focus();
@@ -963,7 +969,67 @@ function rich(text) {
   return String(text || "").split(/`([^`\n]+)`/).map((part, i) => (i % 2 ? code(part) : part));
 }
 
+async function chatRun(id) {
+  try {
+    const r = await api("/api/chat/run", { id });
+    chatData = r.chat;
+    toast(r.message, true);
+  } catch (e) { toast(e.message); }
+  chatSig = "";
+  renderChat();
+  loadChat();
+}
+
+// A test the bot wrote (D1, v7 #s1): one card, saved only when the user clicks.
+function testCard(p) {
+  const ed = chatEdits[p.id];
+  const head = h("h3", { class: "gh" }, icon("tests"), h("span", {}, p.schedules ? "Save test & schedule" : "Save test", " · "), h("b", { class: "t-title" }, p.title));
+  let body;
+  if (ed) {
+    const title = h("input", { type: "text", maxlength: "80", value: ed.title, "aria-label": "Test title" });
+    const steps = h("textarea", { rows: String(Math.max(3, ed.steps.length + 1)), "aria-label": "Steps, one per line" }, ed.steps.join("\n"));
+    const target = h("input", { type: "text", maxlength: "500", value: ed.target, "aria-label": "Address or app" });
+    const file = h("input", { type: "text", maxlength: "48", value: ed.id, class: "mono", "aria-label": "File name" });
+    const read = () => ({ title: title.value, target: target.value, id: file.value, steps: steps.value.split("\n").map((x) => x.trim()).filter(Boolean) });
+    // Typed text survives a refresh of the conversation while the bot answers.
+    [title, steps, target, file].forEach((el) => el.addEventListener("input", () => { chatEdits[p.id] = read(); }));
+    body = h("div", { class: "form t-edit" },
+      h("label", { class: "fld" }, h("span", { class: "l" }, "Title"), title),
+      h("label", { class: "fld" }, h("span", { class: "l" }, "Steps"), steps, h("span", { class: "s" }, "One step per line, in plain words. Secrets only as ${NAME}.")),
+      h("label", { class: "fld" }, h("span", { class: "l" }, "Address or app"), target),
+      h("label", { class: "fld" }, h("span", { class: "l" }, "File name"), file),
+      h("div", { class: "btns" },
+        p.schedules ? h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "schedule", read()) }, "Save & schedule") : null,
+        h("button", { class: p.schedules ? "btn" : "btn p", onclick: () => chatDecide(p.id, true, "test", read()) }, "Save test only"),
+        h("button", { class: "btn", onclick: () => { delete chatEdits[p.id]; chatSig = ""; renderChat(); } }, "Cancel edit")));
+  } else {
+    body = [
+      h("ul", { class: "t-steps", "aria-label": "Steps" }, p.steps.map((x) => h("li", {}, x))),
+      p.rows.length ? h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null,
+    ];
+  }
+  let foot = null;
+  if (p.status === "pending" && !ed) {
+    foot = h("div", { class: "btns" },
+      p.schedules ? h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "schedule") }, "Save & schedule") : null,
+      h("button", { class: p.schedules ? "btn" : "btn p", onclick: () => chatDecide(p.id, true, "test") }, "Save test only"),
+      h("button", { class: "btn", onclick: () => { chatEdits[p.id] = JSON.parse(JSON.stringify(p.draft)); chatSig = ""; renderChat(); document.querySelector(`.prop[data-pid="${p.id}"] input`)?.focus(); } }, "Edit"),
+      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Dismiss"));
+  } else if (p.status === "applied") {
+    foot = [h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved")),
+      h("div", { class: "btns" }, h("button", { class: "btn", onclick: () => chatRun(p.id) }, icon("play", "sm"), "Run now"),
+        p.saved && p.saved.schedule ? h("a", { class: "btn", href: "#/schedules" }, "Open Schedules") : null, h("a", { class: "btn", href: "#/live" }, "Open Live"))];
+  } else if (p.status === "cancelled") {
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dismissed");
+  }
+  const note = p.status === "pending" && p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
+  const detail = p.detail ? h("details", { class: "t-detail" }, h("summary", {}, "Details"), h("p", { class: "s" }, p.detail)) : null;
+  return h("section", { class: "grp prop test " + p.status, "aria-label": (p.schedules ? "Save test & schedule: " : "Save test: ") + p.title, "data-pid": String(p.id) },
+    head, h("div", { class: "prop-body" }, body, note, detail, foot));
+}
+
 function proposalCard(p) {
+  if (p.kind === "test" && p.status !== "refused") return testCard(p);
   const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : "shield"), p.title);
   const rows = p.rows.length ? h("dl", { class: "prop-rows" }, p.rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null;
   let foot;

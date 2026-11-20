@@ -247,6 +247,18 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .tbl td.next{white-space:nowrap;font-weight:500}
 .tbl a.lk.ok{color:var(--acc-ink);font-weight:600}.tbl a.lk.bad{color:var(--bad);font-weight:600}
 .empty .btns{align-items:center;justify-content:center}
+/* Chat: Save test & schedule (D1) */
+.prop.test{max-width:680px}
+.prop.test h3.gh{text-transform:none;font:500 14px var(--sans);color:var(--ink);letter-spacing:0}
+.prop.test h3.gh .t-title{font-weight:600}
+.t-steps{margin:0;padding:10px 14px 10px 30px;background:var(--soft);border:1px solid var(--line);border-radius:var(--r-sm);display:flex;flex-direction:column;gap:3px}
+.t-detail summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+.t-detail summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.t-edit{display:flex;flex-direction:column;gap:10px}
+.t-edit textarea{font:inherit;padding:8px 10px;border:var(--bw) solid var(--ink);border-radius:var(--r-sm);background:#fff;resize:vertical}
+.t-edit textarea:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.prop .warnline{color:#8a520a;font-weight:600}
+.btn.quiet{border-color:transparent;box-shadow:none;color:var(--muted)}
 /* narrow windows (N3): nothing wider than the screen */
 @media (max-width:600px){
   .rail{width:60px}.rail a{width:52px}
