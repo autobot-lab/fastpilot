@@ -89,7 +89,13 @@ fn headless_run_drives_claude_code() {
     // --record: the session's screencast is in the run directory and inlined in its report.
     let run_dir = std::fs::read_dir(dir.join("runs")).expect("runs").filter_map(|e| e.ok()).map(|e| e.path()).next().expect("run");
     assert!(run_dir.join("recording-w.html").exists(), "{}", run_dir.display());
-    assert!(std::fs::read_to_string(run_dir.join("report.html")).expect("report").contains("Recording [w]"));
+    let report = std::fs::read_to_string(run_dir.join("report.html")).expect("report");
+    assert!(report.contains("Recording [w]"));
+    // E4: the run's steps are on the recording's timeline (one marker per step, flow 1's segment),
+    // and the passing flow's final screen is in the report.
+    assert!(report.matches("{&quot;flow&quot;:1,&quot;label&quot;:").count() >= 4, "step markers missing");
+    assert!(report.contains("&quot;flow&quot;:1,&quot;from&quot;:") && report.contains("▶ flow "), "flow segment missing");
+    assert!(run_dir.join("flow-1.jpg").exists() && report.contains("flow 1 (final)"), "final screen of the passing flow");
 
     // Second run: the passing flow is now path memory, so the fast model replays it.
     let log2 = dir.join("claude2");

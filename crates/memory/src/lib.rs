@@ -260,7 +260,8 @@ pub struct Run {
     takeovers: Vec<String>,
     outputs: Vec<(bool, String)>,
     shots: Vec<(String, Vec<u8>)>,
-    recordings: Vec<(String, Recording)>,
+    /// `(session, recording, start in ms since the epoch)`: the start places the steps on it.
+    recordings: Vec<(String, Recording, Option<u64>)>,
 }
 
 impl Run {
@@ -290,6 +291,7 @@ impl Run {
                 "session": r.session,
                 "label": fastpilot_core::redact(&r.label),
                 "ms": r.elapsed.as_millis() as u64,
+                "t": r.started.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
                 "ok": r.error.is_none(),
                 "reason": r.error.as_ref().map(|e| e.reason()),
                 "category": r.category(),
@@ -316,6 +318,13 @@ impl Run {
         if report.passed() {
             self.flows.push(durable_yaml);
             self.duration_ms += report.elapsed.as_millis() as u64;
+            // The screen a passing flow ended on (the report shows it under the flow).
+            if let Some(jpeg) = screenshot {
+                let n = self.outputs.len();
+                let shot = self.dir.join(format!("flow-{n}.jpg"));
+                fs::write(&shot, &jpeg).map_err(io(&shot))?;
+                self.shots.push((format!("flow {n} (final)"), jpeg));
+            }
         } else {
             self.failures += 1;
             let n = self.failures;
@@ -346,13 +355,15 @@ impl Run {
         self.shots.push((label.to_owned(), jpeg));
     }
 
-    /// A session's screen recording: saved as `recording-<session>.mp4|html` and embedded.
-    pub fn add_recording(&mut self, session: &str, rec: Recording) -> Result<()> {
+    /// A session's screen recording: saved as `recording-<session>.mp4|html` and embedded, with
+    /// the steps on its timeline when `started` (when the recording began) is known.
+    pub fn add_recording(&mut self, session: &str, rec: Recording, started: Option<SystemTime>) -> Result<()> {
         let safe: String = session.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
         let (ext, bytes) = rec.file(&format!("{} {session}", self.test_id));
         let path = self.dir.join(format!("recording-{safe}.{ext}"));
         fs::write(&path, bytes).map_err(io(&path))?;
-        self.recordings.push((session.to_owned(), rec));
+        let started = started.and_then(|s| s.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+        self.recordings.push((session.to_owned(), rec, started));
         Ok(())
     }
 
@@ -561,8 +572,45 @@ impl Run {
             }
             b.push_str("</div>");
         }
-        for (session, rec) in &self.recordings {
-            b.push_str(&format!("<h2>Recording [{}]</h2>{}", e(session), rec.embed(session)));
+        for (session, rec, started) in &self.recordings {
+            b.push_str(&format!("<h2>Recording [{}]</h2>", e(session)));
+            match started {
+                // Each step of this session at its moment; one button per flow plays that flow.
+                Some(t0) => {
+                    let at = |r: &serde_json::Value| (r["t"].as_u64().unwrap_or(0).saturating_sub(*t0)) as f64 / 1000.0;
+                    let mine: Vec<&serde_json::Value> = self.rows.iter().filter(|r| r["session"].as_str() == Some(session.as_str()) && r["t"].as_u64().is_some_and(|t| t > 0)).collect();
+                    let marks: Vec<fastpilot_core::Mark> = mine
+                        .iter()
+                        .map(|r| fastpilot_core::Mark {
+                            at: at(r),
+                            flow: r["flow"].as_u64().unwrap_or(0) as usize,
+                            ok: r["ok"].as_bool() == Some(true),
+                            label: r["label"].as_str().unwrap_or("").to_owned(),
+                        })
+                        .collect();
+                    let mut spans: Vec<fastpilot_core::Span> = Vec::new();
+                    for r in &mine {
+                        let flow = r["flow"].as_u64().unwrap_or(0) as usize;
+                        let (from, to) = (at(r), at(r) + r["ms"].as_u64().unwrap_or(0) as f64 / 1000.0);
+                        let ok = r["ok"].as_bool() == Some(true);
+                        match spans.iter_mut().find(|s| s.flow == flow) {
+                            Some(s) => {
+                                s.from = s.from.min(from);
+                                s.to = s.to.max(to);
+                                s.ok &= ok;
+                            }
+                            None => spans.push(fastpilot_core::Span { flow, from, to, ok }),
+                        }
+                    }
+                    for s in &mut spans {
+                        // A little before and after, so the step itself is in view.
+                        s.from = (s.from - 0.5).max(0.0);
+                        s.to += 1.0;
+                    }
+                    b.push_str(&fastpilot_core::timeline(session, rec, &marks, &spans));
+                }
+                None => b.push_str(&rec.embed(session)),
+            }
         }
         format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>{} — {status}</title><style>

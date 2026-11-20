@@ -532,6 +532,9 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
 - `--record` merekam layar tiap sesi (web: screencast CDP jadi filmstrip HTML; Android: `screenrecord`;
   iOS: `simctl io recordVideo`). `--html` menghasilkan satu file HTML mandiri yang memuat laporan tiap
   run (langkah, durasi, diff, screenshot, rekaman); `--junit` untuk dashboard CI.
+  Di laporan tiap run, rekaman punya penanda tiap langkah (merah di langkah yang gagal; klik untuk lompat)
+  dan satu tombol per flow yang memutar bagian flow itu saja. Flow yang lolos menyertakan screenshot
+  layar akhirnya.
 - `--reset` membuat tiap test mulai dari keadaan bersih: sesi Android/iOS me-reset app-nya sebelum dibuka
   (Android: `pm clear` untuk data dan izin runtime, layar tegak; simulator iOS: data dan semua izin privasi,
   orientasi tidak bisa diatur lewat simctl; iPhone fisik tidak didukung). Sesi web memang selalu mulai dengan
