@@ -96,7 +96,7 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     // Outside a terminal without --yes: the plan only.
     let (code, out) = b.init(&[], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("hanya rencana, tidak ada yang diubah") && out.contains("claude mcp add fastpilot --scope project -- fastpilot mcp"), "{out}");
+    assert!(out.contains("plan only, nothing is changed") && out.contains("claude mcp add fastpilot --scope project -- fastpilot mcp"), "{out}");
     assert!(files(&b.project()).is_empty() && files(&b.home()).is_empty(), "nothing written without a terminal");
     assert!(b.adds().is_empty(), "claude mcp add not run");
 
@@ -105,19 +105,19 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     assert_eq!(code, Some(0), "{out}");
     for line in [
         "fastpilot 0.",
-        "1/5 Cek mesin",
+        "1/5 Check this computer",
         "✓ web",
-        "2/5 Daftarkan fastpilot ke Claude Code (proyek ini)",
-        "✓ terdaftar (.mcp.json)",
-        "3/5 Pasang Skill fastpilot",
-        "✓ terpasang (versi",
-        "4/5 Contoh test",
-        "✓ dibuat (ubah target ke URL aplikasimu)",
-        "5/5 Batasan aman",
-        "ubah di: fastpilot ui → Pengaturan › Batasan & izin",
-        "Siap. Langkah berikutnya:",
-        "\"Pakai fastpilot, jalankan tests/contoh.md\"",
-        "Mau coba demo dulu? fastpilot demo",
+        "2/5 Register fastpilot with Claude Code (this project)",
+        "✓ registered (.mcp.json)",
+        "3/5 Install the fastpilot Skill",
+        "✓ installed (version",
+        "4/5 Example test",
+        "✓ created (change its target to your app's URL)",
+        "5/5 Safe limits",
+        "change them in: fastpilot ui → Settings › Limits & permissions",
+        "Ready. Next:",
+        "\"Use fastpilot to run tests/example.md\"",
+        "Want to try the demo first? fastpilot demo",
     ] {
         assert!(out.contains(line), "missing {line:?}:\n{out}");
     }
@@ -125,29 +125,44 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     let mcp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.project().join(".mcp.json")).expect(".mcp.json")).expect("json");
     assert_eq!(mcp["mcpServers"]["fastpilot"]["command"], "fastpilot");
     assert_eq!(std::fs::read_to_string(b.project().join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
-    let example = std::fs::read_to_string(b.project().join("tests/contoh.md")).expect("example");
-    assert!(example.contains("platform: web") && example.contains("target: https://contoh.com"), "{example}");
+    let example = std::fs::read_to_string(b.project().join("tests/example.md")).expect("example");
+    assert!(example.contains("platform: web") && example.contains("target: https://example.com"), "{example}");
+    assert!(!b.project().join("tests/contoh.md").exists(), "only the English example");
     assert!(!b.home().join(".fastpilot/config.toml").exists(), "no settings written");
 
     // Again: nothing changes, every step ✓, no second registration.
     let before = files(&b.project());
     let (code, out) = b.init(&["--yes"], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("✓ sudah terdaftar (.mcp.json)") && out.contains("✓ sudah terpasang (versi") && out.contains("✓ tests/contoh.md sudah ada (tidak diubah)"), "{out}");
+    assert!(out.contains("✓ already registered (.mcp.json)") && out.contains("✓ already installed (version") && out.contains("✓ tests/example.md already exists (not changed)"), "{out}");
     assert!(!out.contains("[y/N]"), "nothing left to ask: {out}");
     assert_eq!(files(&b.project()), before, "a second run changes nothing");
     assert_eq!(b.adds().len(), 1);
 
     // A different Skill and my own example: kept without agreement, the Skill updated with --yes.
     std::fs::write(b.project().join(".claude/skills/fastpilot/SKILL.md"), "old skill").expect("old");
-    std::fs::write(b.project().join("tests/contoh.md"), "my test").expect("mine");
+    std::fs::write(b.project().join("tests/example.md"), "my test").expect("mine");
     let (_, out) = b.init(&[], FAKE);
-    assert!(out.contains("berbeda dari Skill di fastpilot") && out.contains("Perbarui ke"), "{out}");
+    assert!(out.contains("differs from the Skill in fastpilot") && out.contains("Update it to"), "{out}");
     assert_eq!(std::fs::read_to_string(b.project().join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), "old skill");
     let (_, out) = b.init(&["--yes"], FAKE);
-    assert!(out.contains("✓ diperbarui"), "{out}");
+    assert!(out.contains("✓ updated"), "{out}");
     assert_eq!(std::fs::read_to_string(b.project().join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
-    assert_eq!(std::fs::read_to_string(b.project().join("tests/contoh.md")).expect("mine"), "my test", "an existing test is never replaced");
+    assert_eq!(std::fs::read_to_string(b.project().join("tests/example.md")).expect("mine"), "my test", "an existing test is never replaced");
+}
+
+/// E1 (v0.4): the example is tests/example.md in English; a project that already has the
+/// tests/contoh.md of an older fastpilot gets no second example, and is pointed at its own.
+#[test]
+fn init_keeps_an_older_contoh_example() {
+    let b = Box_::new("contoh");
+    std::fs::create_dir_all(b.project().join("tests")).expect("tests");
+    std::fs::write(b.project().join("tests/contoh.md"), "my older example").expect("contoh");
+    let (code, out) = b.init(&["--yes"], FAKE);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("✓ tests/contoh.md already exists (not changed)") && out.contains("\"Use fastpilot to run tests/contoh.md\""), "{out}");
+    assert!(!b.project().join("tests/example.md").exists(), "no second example");
+    assert_eq!(std::fs::read_to_string(b.project().join("tests/contoh.md")).expect("contoh"), "my older example");
 }
 
 #[test]
@@ -155,17 +170,17 @@ fn init_without_claude_code_prints_the_command_and_global_uses_the_user_scope() 
     let b = Box_::new("noclaude");
     let (code, out) = b.init(&["--yes"], "/nonexistent/claude");
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("Claude Code tidak ditemukan") && out.contains("claude mcp add fastpilot --scope project -- fastpilot mcp"), "{out}");
-    assert!(b.project().join(".claude/skills/fastpilot/SKILL.md").exists() && b.project().join("tests/contoh.md").exists(), "the other steps still run");
+    assert!(out.contains("Claude Code not found") && out.contains("claude mcp add fastpilot --scope project -- fastpilot mcp"), "{out}");
+    assert!(b.project().join(".claude/skills/fastpilot/SKILL.md").exists() && b.project().join("tests/example.md").exists(), "the other steps still run");
 
     let g = Box_::new("global");
     let (code, out) = g.init(&["--yes", "--global"], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("(semua folder)"), "{out}");
+    assert!(out.contains("(every folder)"), "{out}");
     assert_eq!(g.adds()[0][..5], ["mcp", "add", "fastpilot", "--scope", "user"]);
     assert!(g.home().join(".claude/skills/fastpilot/SKILL.md").exists() && !g.project().join(".claude").exists(), "Skill for every folder");
     let (_, out) = g.init(&["--yes", "--global"], FAKE);
-    assert!(out.contains("✓ sudah terdaftar") && g.adds().len() == 1, "{out}");
+    assert!(out.contains("✓ already registered") && g.adds().len() == 1, "{out}");
 }
 
 /// Security Low 1: a project whose `tests/` or `.claude/` is a symlink: init writes nothing through it.
@@ -179,7 +194,7 @@ fn init_never_writes_through_a_symlink() {
     std::os::unix::fs::symlink(&outside, b.project().join(".claude")).expect("link");
     let (code, out) = b.init(&["--yes"], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.matches("symlink; fastpilot tidak menulis lewat symlink").count() >= 2, "{out}");
+    assert!(out.matches("symlink; fastpilot does not write through symlinks").count() >= 2, "{out}");
     assert_eq!(std::fs::read_dir(&outside).expect("outside").count(), 0, "nothing written outside the project");
 }
 

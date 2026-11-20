@@ -93,7 +93,7 @@ fn login_through_shell_commands() {
     assert_eq!(sh.ok(&["get", "text", &email]).trim(), "a@b.com");
     // check/uncheck are idempotent.
     assert!(sh.ok(&["check", &remember]).contains("tapOn"));
-    assert!(sh.ok(&["check", &remember]).contains("sudah tercentang"));
+    assert!(sh.ok(&["check", &remember]).contains("already checked"));
     assert!(sh.ok(&["uncheck", &remember]).contains("tapOn"));
 
     assert!(sh.ok(&["click", &login]).contains("tapOn e"));
@@ -151,7 +151,7 @@ fn daemon_exits_when_idle_and_bad_input_is_explained() {
     let mut sh = Shell::new("idle");
     sh.idle = Some("2");
     let (ok, out) = sh.run(&["click"]);
-    assert!(!ok && out.contains("kurang selector"), "{out}");
+    assert!(!ok && out.contains("missing a selector"), "{out}");
     let (ok, out) = sh.run(&["frobnicate"]);
     assert!(!ok, "{out}");
     let (ok, out) = sh.run(&["snapshot"]);

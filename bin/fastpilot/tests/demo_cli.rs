@@ -81,16 +81,16 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     let (code, out) = demo(&tmp, &[], false);
     assert_eq!(code, Some(0), "{out}");
     for line in [
-        "Membuat folder demo: ./fastpilot-demo",
+        "Creating the demo folder: ./fastpilot-demo",
         "tests/login.md",
         "tests/login-android.md",
         "tests/login-cross-platform.md",
         "fastpilot + DEMO_PASS",
-        "Android (dilewati: tidak ada device)",
+        "Android (skipped: no device)",
         "fastpilot demo --android",
         "cd fastpilot-demo && claude",
-        "\"Pakai fastpilot, jalankan tests/login.md lalu report\"",
-        "Password demo (bukan rahasia): rahasia123",
+        "\"Use fastpilot to run tests/login.md, then report\"",
+        "Demo password (not a secret): rahasia123",
     ] {
         assert!(out.contains(line), "missing {line:?}:\n{out}");
     }
@@ -111,17 +111,17 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     std::fs::write(folder.join("tests/login.md"), "mine").expect("edit");
     let edited = snapshot(&folder);
     let (code, out) = demo(&tmp, &[], false);
-    assert!(code != Some(0) && out.contains("sudah ada"), "{code:?} {out}");
+    assert!(code != Some(0) && out.contains("already exists"), "{code:?} {out}");
     assert_eq!(snapshot(&folder), edited, "nothing overwritten");
     let (code, _) = demo(&tmp, &["--force"], false);
     assert_eq!(code, Some(0));
     assert_eq!(snapshot(&folder), before, "--force writes the demo again");
     // --android without a device: skipped, exit 0.
     let (code, out) = demo(&tmp, &["--android"], false);
-    assert!(code == Some(0) && out.contains("dilewati: tidak ada device"), "{code:?} {out}");
+    assert!(code == Some(0) && out.contains("skipped: no device"), "{code:?} {out}");
     // QA Low 5: run from inside the demo folder: warned that the new one is nested.
     let (code, out) = demo(&folder, &[], false);
-    assert!(code == Some(0) && out.contains("di dalam folder demo") && out.contains("cd .."), "{code:?} {out}");
+    assert!(code == Some(0) && out.contains("inside a demo folder") && out.contains("cd .."), "{code:?} {out}");
     let _ = std::fs::remove_dir_all(folder.join("fastpilot-demo"));
     let (_, out) = demo(&tmp, &["elsewhere"], false);
     assert!(!out.contains("di dalam folder demo"), "no warning outside a demo folder: {out}");
@@ -130,7 +130,7 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     let mine = "{\n  \"mcpServers\": {\n    \"other\": { \"command\": \"other-mcp\" }\n  }\n}\n";
     std::fs::write(folder.join(".mcp.json"), mine).expect("mine");
     let (code, out) = demo(&tmp, &["--force"], false);
-    assert!(code == Some(0) && out.contains("disimpan di .mcp.json.bak"), "{code:?} {out}");
+    assert!(code == Some(0) && out.contains("was saved as .mcp.json.bak"), "{code:?} {out}");
     assert_eq!(std::fs::read_to_string(folder.join(".mcp.json.bak")).expect("backup"), mine);
     let merged: Value = serde_json::from_str(&std::fs::read_to_string(folder.join(".mcp.json")).expect("merged")).expect("json");
     assert_eq!(merged["mcpServers"]["other"]["command"], "other-mcp", "the other server stays");
@@ -212,7 +212,7 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     }
     let (code, out) = demo(&tmp, &["--android", "--device", &serial], true);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains(&format!("✓ {serial} · com.fastpilot.demo terpasang")) && out.contains("tests/login-android.md"), "{out}");
+    assert!(out.contains(&format!("✓ {serial} · com.fastpilot.demo installed")) && out.contains("tests/login-android.md"), "{out}");
     let listed = std::process::Command::new(&adb).args(["-s", &serial, "shell", "pm", "list", "packages", "com.fastpilot.demo"]).output().expect("adb");
     assert!(String::from_utf8_lossy(&listed.stdout).contains("com.fastpilot.demo"), "installed");
 
