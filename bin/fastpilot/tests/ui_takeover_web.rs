@@ -121,6 +121,23 @@ async fn take_over_a_web_session_and_give_it_back() {
     }
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Ambil alih\"");
+
+    // Taken over, the banner follows to other pages; Escape on the large screen gives it back.
+    eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').click(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Kembalikan & tutup\", timeout: 5000 }\n", "session": "viewer" })).await;
+    assert!(ok, "the close button says it gives the session back: {out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- pressKey: Escape\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').textContent").await, "\"Ambil alih\"", "closing returned it");
+    eval(&client, "viewer", "document.querySelector('[data-fk^=\"take:\"]').click(), 'ok'").await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    eval(&client, "viewer", "document.querySelector('dialog.zoom') && document.querySelector('dialog.zoom').close(), location.hash = '#/settings/limits', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Kamu sedang mengambil alih\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "banner on Batasan: {out}");
+    eval(&client, "viewer", "[...document.querySelectorAll('#take-banner button')].find(b => b.textContent.includes('Kembalikan')).click(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertNotVisible: { text: \"Kamu sedang mengambil alih\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }

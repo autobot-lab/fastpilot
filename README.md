@@ -243,8 +243,22 @@ tap/teks); dengan `test_id` catatan ini juga masuk `steps.jsonl` dan laporan run
 untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak diperiksa Batasan.
 
 - Input hanya diterima dari halaman `fastpilot ui` (cookie sesi, Origin, JSON). Halaman meneruskannya ke
-  proses fastpilot pemilik sesi lewat socket `~/.fastpilot/live/<pid>.sock`, yang hanya bisa dibuka
-  pemiliknya.
+  proses fastpilot pemilik sesi lewat socket `~/.fastpilot/live/<pid>.sock` (folder 0700, socket 0600).
+- Socket itu hanya melayani proses `fastpilot ui`: pid di ujung lain dicek tiap koneksi, jadi skrip atau
+  agent yang membuka socket sendiri ditolak (juga untuk frame). Tiap ambil alih memberi token acak yang
+  hanya ada di memori proses fastpilot dan `fastpilot ui` yang memulainya (tidak di file, tidak dikirim ke
+  browser). Tap, ketik, dan Kembalikan wajib membawa token itu, jadi halaman lain tidak bisa ikut
+  mengendalikan atau menutup ambil alih orang lain.
+- Ambil alih berakhir sendiri bila halaman berhenti mengirim tanda hidup selama ±45 detik (tab ditutup,
+  laptop tidur) atau setelah 30 menit. Menutup layar besar (Tutup / Escape) juga mengembalikan sesi. Selama
+  diambil alih, penanda kuning tampil di semua halaman `fastpilot ui` dengan tombol *Kembalikan ke AI*.
+- **Sisa risiko, jujur saja:** pemeriksaan di atas membedakan `fastpilot ui` dari proses lain milik user
+  yang sama, tetapi bukan batas keamanan terhadap kode yang sudah berjalan sebagai kamu. Agent yang punya
+  akses shell (Bash) bisa menjalankan `fastpilot ui` sendiri, membaca link sekali pakainya, lalu mengambil
+  alih tanpa klik manusia; input ambil alih memang tidak diperiksa Batasan. Agent seperti itu juga bisa
+  melewati Batasan dengan cara lain (menjalankan Chrome atau `adb` langsung). Batasan fastpilot melindungi
+  dari AI yang hanya memegang tool fastpilot; untuk agent dengan shell, batasi akses shell-nya di aplikasi
+  agent itu.
 - Waktu selama diambil alih tetap dihitung ke batas waktu flow (`FASTPILOT_FLOW_TIMEOUT`).
 - macOS dan Linux saja (Unix socket).
 

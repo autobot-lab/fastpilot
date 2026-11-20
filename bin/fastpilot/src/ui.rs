@@ -148,6 +148,7 @@ pub async fn ui(args: &[String]) -> Res<()> {
         println!("fastpilot ui: open the link above once, within 10 minutes (only this computer can).");
     }
     println!("Ctrl-C stops it.");
+    tokio::spawn(keep_takeovers());
     axum::serve(listener, router(state)).await?;
     Ok(())
 }
@@ -520,9 +521,40 @@ fn device_frames(pid: u32, session: String, fps: u64) -> Response {
 
 /// `{pid, session, op, ...}`: Ambil alih / Kembalikan, and the user's taps, swipes, text and keys
 /// while the session is taken over. Only from this page (cookie, Origin, JSON: see `guard`).
+/// Takeovers started from this page: `(pid, session)` -> token. Only in this process' memory: the
+/// token is never written to a file or sent to the browser.
+static TAKEOVERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u32, String), String>>> = std::sync::LazyLock::new(Default::default);
+/// When the page last asked for the Live state (it does every second on Live, every few on others).
+static PAGE_SEEN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+fn takeovers() -> std::sync::MutexGuard<'static, std::collections::HashMap<(u32, String), String>> {
+    TAKEOVERS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Keep this page's takeovers alive while the page is open; when it closes, the fastpilot process
+/// ends them by itself (`live::IDLE`).
+async fn keep_takeovers() {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let open = PAGE_SEEN.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(20));
+        if !open {
+            continue;
+        }
+        let list: Vec<((u32, String), String)> = takeovers().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for ((pid, session), token) in list {
+            if control(pid, &json!({ "op": "keep", "session": session, "token": token })).await.is_err() {
+                takeovers().remove(&(pid, session));
+            }
+        }
+    }
+}
+
 async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
     let Some(pid) = req["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else {
         return refuse(StatusCode::BAD_REQUEST, "pid wajib diisi");
+    };
+    let Some(session) = req["session"].as_str().map(str::to_owned) else {
+        return refuse(StatusCode::BAD_REQUEST, "session wajib diisi");
     };
     let op = req["op"].as_str().unwrap_or("");
     if !matches!(op, "takeover" | "release" | "tap" | "swipe" | "type" | "key" | "back") {
@@ -531,15 +563,37 @@ async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
     if !fastpilot_core::live::read_all().iter().any(|p| p.pid == pid) {
         return refuse(StatusCode::NOT_FOUND, "proses fastpilot itu sudah berhenti");
     }
-    let mut fwd = json!({ "op": op, "session": req["session"] });
+    let key = (pid, session.clone());
+    let mut fwd = json!({ "op": op, "session": session });
+    if op != "takeover" {
+        let Some(token) = takeovers().get(&key).cloned() else {
+            return refuse(StatusCode::CONFLICT, "ambil alih sesi ini dulu (dari halaman ini)");
+        };
+        fwd["token"] = json!(token);
+    }
     for k in ["x", "y", "x2", "y2", "text", "key"] {
         if !req[k].is_null() {
             fwd[k] = req[k].clone();
         }
     }
     match control(pid, &fwd).await {
-        Ok(_) => axum::Json(json!({ "ok": true })).into_response(),
-        Err(e) => refuse(StatusCode::CONFLICT, &e),
+        Ok(v) => {
+            if op == "takeover" {
+                if let Some(t) = v["token"].as_str() {
+                    takeovers().insert(key, t.to_owned());
+                }
+            } else if op == "release" {
+                takeovers().remove(&key);
+            }
+            axum::Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => {
+            // Ended meanwhile (time limit, or the session closed): forget the token.
+            if op != "takeover" && (e.contains("ambil alih sesi ini dulu") || e.contains("tidak ada lagi") || e.contains("bukan pengambil")) {
+                takeovers().remove(&key);
+            }
+            refuse(StatusCode::CONFLICT, &e)
+        }
     }
 }
 
@@ -815,21 +869,26 @@ async fn doctor_api(Query(q): Query<std::collections::HashMap<String, String>>) 
 /// Running sessions of every fastpilot process, with the steps of their flows. The DevTools
 /// address of the browser is not part of it: frames come from `/api/live/frames`.
 async fn live_api() -> Response {
+    *PAGE_SEEN.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now());
+    let mine: Vec<(u32, String)> = takeovers().keys().cloned().collect();
     let sessions: Vec<Value> = fastpilot_core::live::read_all()
         .into_iter()
         .flat_map(|p| {
             let flows = p.flows.clone();
+            let mine = mine.clone();
             p.sessions.into_iter().map(move |s| {
                 let flow = s.flow.and_then(|id| flows.iter().find(|f| f.id == id)).map(|f| {
                     json!({ "started_ms": f.started_ms, "finished": f.finished, "steps": f.steps })
                 });
                 let controllable = can_control(p.pid);
+                let by_me = mine.contains(&(p.pid, s.id.clone())) && s.taken_over_ms.is_some();
                 let device = matches!(s.platform.as_str(), "android" | "ios");
                 json!({
                     "pid": p.pid, "kind": p.kind, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
                     "watchable": s.screen.is_some() || (device && controllable),
                     "controllable": controllable && (s.screen.is_some() || device),
                     "taken_over_ms": s.taken_over_ms,
+                    "taken_over_here": by_me,
                     "flow": flow,
                 })
             })
