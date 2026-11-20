@@ -78,7 +78,7 @@ fn env_for(cmd: &mut std::process::Command, home: &Path, entries: &Path, github:
         .env("GITHUB_TOKEN", "ghp_test_token")
         .env("FASTPILOT_CLAUDE", FAKE_CLAUDE)
         .env("FAKE_CLAUDE_FAIL", "1")
-        .env("FAKE_CLAUDE_LOG", home.join("claude-log"))
+        .env("FAKE_CLAUDE_LOG", { let _ = std::fs::create_dir_all(home.join("claude-log")); home.join("claude-log") })
         .env("FASTPILOT_RETRY_BUDGET", "0")
         .env_remove("ANTHROPIC_API_KEY");
 }
@@ -155,7 +155,7 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
 
     // Tes notifikasi: Slack-style text to the webhook, an issue with the token.
     let (st, body) = post(r#"{"action":"test","id":"login-harian"}"#);
-    assert!(st == 200 && body.contains("Webhook: terkirim") && body.contains("issues/7"), "{st} {body}");
+    assert!(st == 200 && body.contains("Webhook: sent") && body.contains("issues/7"), "{st} {body}");
     let first = hook.lock().expect("hook")[0].clone();
     assert!(first.starts_with("POST /services/T000/B000/rahasia") && first.contains("\"text\"") && first.contains("tes notifikasi"), "{first}");
     let issue = gh.lock().expect("gh")[0].clone();
@@ -169,13 +169,13 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(1), "{text}");
     let failed = hook.lock().expect("hook").last().cloned().unwrap_or_default();
-    assert!(failed.contains("gagal") && failed.contains("Login harian") && failed.contains("login-ok"), "{failed}");
+    assert!(failed.contains("failed") && failed.contains("Login harian") && failed.contains("login-ok"), "{failed}");
     assert_eq!(gh.lock().expect("gh").len(), 2, "an issue for the failure");
     let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
     let v: serde_json::Value = serde_json::from_str(&list).expect("json");
     let last = &v["schedules"][0]["last"];
     assert_eq!(last["passed"], false, "{v}");
-    assert!(last["summary"].as_str().is_some_and(|s| s.contains("0 dari 1 test lolos, 1 gagal") && s.contains("login-ok")), "{last}");
+    assert!(last["summary"].as_str().is_some_and(|s| s.contains("0 of 1 test passed, 1 failed — login-ok: ") && s.contains("login-ok")), "{last}");
     assert!(last["notified"].as_array().is_some_and(|n| n.len() == 3), "{last}");
 
     // D5: every 2 hours inside 08:00–20:00. Bad N or an inverted window is refused for people.
@@ -223,7 +223,10 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     }
     assert_eq!(last["passed"], false, "Run now finished: {last}");
     assert_eq!((last["ok"].as_u64(), last["total"].as_u64()), (Some(0), Some(1)), "{last}");
-    assert!(last["notified"].as_array().is_some_and(|n| n.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Notifikasi")))), "OS notification on failure: {last}");
+    // QA B7: the reason is in the row; and it is the test's failure, not a crashed stand-in.
+    let summary = last["summary"].as_str().unwrap_or("");
+    assert!(summary.starts_with("0 of 1 test passed, 1 failed — login-ok: ") && !summary.contains("Traceback"), "{summary}");
+    assert!(last["notified"].as_array().is_some_and(|n| n.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Notification")))), "OS notification on failure: {last}");
     let (st, report) = request(ui.port, "GET", "/api/schedules/report?id=checkout-every-2-hours", &ui.cookie, "", false);
     assert_eq!(st, 200, "the Last link opens the run's report");
     assert!(report.contains("<html") || report.contains("<!doctype") || report.contains("<!DOCTYPE"), "{}", &report[..report.len().min(200)]);

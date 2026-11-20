@@ -88,7 +88,7 @@ fn headless_run_drives_claude_code() {
         assert!(results[1].contains("ok 4/4 steps") && !results[1].contains("rahasia123"), "{results:?}");
     }
     let xml = std::fs::read_to_string(&junit).expect("junit");
-    assert!(xml.contains("tests=\"1\" failures=\"0\"") && xml.contains("name=\"login-ok: Login berhasil\""), "{xml}");
+    assert!(xml.contains("tests=\"1\" failures=\"0\"") && xml.contains("name=\"login-ok: Login works\""), "{xml}");
     let page = std::fs::read_to_string(&html).expect("html");
     assert!(page.contains("checked Budi on the dashboard") && page.contains("iframe class=\"run\"") && page.contains("sandbox=\"allow-scripts\" srcdoc="), "suite html (run report sandboxed)");
     // --record: the session's screencast is in the run directory and inlined in its report.
@@ -286,7 +286,7 @@ fn report_github_keeps_one_comment_on_the_pr() {
     let all = comments.lock().expect("comments").clone();
     assert_eq!(all.len(), 1, "one comment: {all:?}");
     let body = all[0]["body"].as_str().unwrap_or("");
-    assert!(body.contains("<!-- fastpilot-report -->") && body.contains("✅ 1 passed · 0 failed") && body.contains("login-ok — Login berhasil"), "{body}");
+    assert!(body.contains("<!-- fastpilot-report -->") && body.contains("✅ 1 passed · 0 failed") && body.contains("login-ok — Login works"), "{body}");
     assert!(!body.contains("rahasia123"), "{body}");
 
     // Dry run outside Actions: the comment is printed, nothing is sent.

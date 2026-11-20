@@ -152,7 +152,7 @@ pub async fn android() -> Vec<Check> {
     let emulator = fastpilot_android::sdk_tool("emulator/emulator", "emulator");
     let avds: Vec<String> = output(&emulator, &["-list-avds"]).await.map(|s| s.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty() && !l.starts_with("INFO")).collect()).unwrap_or_default();
     if !ready.is_empty() {
-        let names: Vec<String> = ready.iter().map(|d| format!("{} ({})", d.id, d.name)).collect();
+        let names: Vec<String> = ready.iter().map(|d| format!("{}: {} ({})", d.kind.label(), d.name, d.id)).collect();
         out.push(check("android", "device", Status::Ok, names.join(", ")));
     } else if let Some(avd) = avds.first() {
         out.push(
@@ -226,8 +226,8 @@ pub async fn ios() -> Vec<Check> {
             out.push(match (phones.is_empty(), booted.is_empty()) {
                 (true, _) => check("ios", "simulator", Status::Fail, "no iPhone simulator installed")
                     .hint("Xcode > Settings > Components: install an iOS simulator runtime"),
-                (false, true) => check("ios", "simulator", Status::Ok, format!("{} available (booted on first use)", phones.len())),
-                (false, false) => check("ios", "simulator", Status::Ok, format!("booted: {}", booted.join(", "))),
+                (false, true) => check("ios", "simulator", Status::Ok, format!("{} iPhone simulators available (started on first use)", phones.len())),
+                (false, false) => check("ios", "simulator", Status::Ok, booted.iter().map(|n| format!("iPhone simulator: {n} (running)")).collect::<Vec<_>>().join(", ")),
             });
         }
         Err(e) => out.push(check("ios", "simulator", Status::Fail, format!("simctl failed: {e}")).hint("open Xcode once to finish its setup")),

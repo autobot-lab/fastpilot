@@ -1,6 +1,6 @@
-# Login berhasil
+# Login works
 id: login-ok
 platform: web
 target: examples/demo/login.html
-- Buka halaman login, isi a@b.com / ${DEMO_PASS}, klik Masuk
-- Pastikan halaman Dashboard tampil dan nama "Budi" terlihat
+- Open the login page, sign in with a@b.com / ${DEMO_PASS} and tap "Masuk"
+- Check that the Dashboard shows and the name "Budi" is visible

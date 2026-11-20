@@ -986,6 +986,37 @@ function rich(text) {
   return String(text || "").split(/`([^`\n]+)`/).map((part, i) => (i % 2 ? code(part) : part));
 }
 
+// `**bold**` inside one line of the bot's text, around `code`.
+function inline(text) {
+  return String(text || "").split(/`([^`\n]+)`/).flatMap((part, i) =>
+    i % 2 ? [code(part)] : part.split(/\*\*([^*\n]+)\*\*/).map((x, j) => (j % 2 ? h("b", {}, x) : x)));
+}
+
+// The bot's answer (QA B6): fenced blocks as monospace blocks (also one Claude did not close),
+// "# headings" as bold lines, **bold**, `code`; everything else as plain text. Built as DOM text
+// nodes, never as HTML.
+function markdown(text) {
+  const out = [];
+  const parts = String(text || "").split(/^```[^\n]*$/m);
+  parts.forEach((part, i) => {
+    // The line break right after a fence and right before the next one belong to the fence.
+    let body = part;
+    if (i > 0 && body.startsWith("\n")) body = body.slice(1);
+    if (i < parts.length - 1 && body.endsWith("\n")) body = body.slice(0, -1);
+    if (i % 2) {
+      out.push(h("pre", { class: "md-pre" }, body));
+      return;
+    }
+    if (!body) return;
+    body.split("\n").forEach((line, k) => {
+      if (k) out.push("\n");
+      const head = line.match(/^#{1,6}\s+(.*)$/);
+      out.push(...(head ? [h("b", { class: "md-h" }, inline(head[1]))] : inline(line)));
+    });
+  });
+  return out;
+}
+
 async function chatRun(id) {
   try {
     const r = await api("/api/chat/run", { id, agent: chatAgent });
@@ -1173,7 +1204,8 @@ function proposalCard(p) {
 function botText(text) {
   const parts = String(text || "").split(/```[a-z]*\n?/);
   return parts.map((part, i) => {
-    if (i % 2 === 0) return part.trim() ? h("div", { class: "bubble" }, rich(part.trim())) : null;
+    // QA B6: headings, **bold** and `code` of Claude's text, as DOM text.
+    if (i % 2 === 0) return part.trim() ? h("div", { class: "bubble" }, markdown(part.trim())) : null;
     const lines = part.replace(/\s+$/, "").split("\n");
     if ((lines[0] || "").trim() !== "Techniques used") return h("pre", { class: "bubble code-block" }, part.trim());
     const blocks = [];
@@ -1205,7 +1237,7 @@ function chatMsg(m) {
     m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "Yang dikerjakan bot" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
     // M3: next to a card that loosens a limit, the bot's own words are folded away.
     m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
-      ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, rich(m.text)))
+      ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, markdown(m.text)))
       : m.text ? botText(m.text) : null,
     working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Sedang bekerja…" : " Sedang berpikir…") : null,
     m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
@@ -1377,7 +1409,7 @@ function schedRow(x) {
     h("td", {}, h("div", { class: "acts" },
       h("button", { class: "btn sm", disabled: x.running, onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" is running now. The result shows under Last.`, true)).then(() => setTimeout(loadSchedules, 1500)) }, icon("play", "sm"), "Run now"),
       h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); document.querySelector(".sched-form input, .sched-form select")?.focus(); } }, "Edit"),
-      s.notify && (s.notify.webhook || s.notify.os || s.notify.github) ? h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Test notification: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("gagal")))) }, "Test notification") : null,
+      s.notify && (s.notify.webhook || s.notify.os || s.notify.github) ? h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Test notification: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("failed")))) }, "Test notification") : null,
       h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Delete the schedule "${s.name}"? Its entry in the system scheduler is removed too.`)) schedAction({ action: "delete", id: s.id }); } }, "Delete"))));
 }
 

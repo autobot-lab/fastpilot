@@ -757,11 +757,11 @@ pub async fn run(id: &str) -> Res<bool> {
     let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None };
     if !passed {
         let msg = format!(
-            "fastpilot: jadwal \"{}\" gagal — {summary}{}",
+            "fastpilot: schedule \"{}\" failed — {summary}{}",
             s.name,
-            report.as_deref().map(|r| format!("\nLaporan: {r}")).unwrap_or_default()
+            report.as_deref().map(|r| format!("\nReport: {r}")).unwrap_or_default()
         );
-        last.notified = notify(&s, &format!("Jadwal \"{}\" gagal", s.name), &msg).await;
+        last.notified = notify(&s, &format!("Schedule \"{}\" failed", s.name), &msg).await;
     }
     set_last(id, last)?;
     Ok(passed)
@@ -799,30 +799,47 @@ pub fn agent_env(agent: Option<&str>) -> Vec<(String, String)> {
     env
 }
 
-/// The suite's own summary line (`3 tests: 2 passed, 1 failed, ...`) and the failed tests.
+/// The suite's own summary line (`3 tests: 2 passed, 1 failed, ...`) and why each failed test
+/// failed (QA B7: the schedules table showed only "0 of 1 passed"; the reason was in the report).
 pub fn summarize(output: &str, passed: bool) -> String {
-    // `3 tests: 2 passed, 1 failed, 0 quarantined failures, in …` -> `2 dari 3 test lolos, 1 gagal`.
+    // `3 tests: 2 passed, 1 failed, 0 quarantined failures, in …` -> `2 of 3 tests passed, 1 failed`.
     let line = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed")).map(|l| {
         let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok()).unwrap_or(0);
         let (total, ok, bad, quarantined) = (num(" tests:"), num(" passed"), num(" failed"), num(" quarantined failures"));
-        let mut t = format!("{ok} dari {total} test lolos");
+        let mut t = format!("{ok} of {total} {} passed", if total == 1 { "test" } else { "tests" });
         if bad > 0 {
-            t.push_str(&format!(", {bad} gagal"));
+            t.push_str(&format!(", {bad} failed"));
         }
         if quarantined > 0 {
-            t.push_str(&format!(", {quarantined} gagal di karantina"));
+            t.push_str(&format!(", {quarantined} set aside failed"));
         }
         t
     });
-    let failed: Vec<&str> = output.lines().filter_map(|l| l.strip_prefix("✗ ")).filter_map(|l| l.split_whitespace().next()).collect();
+    // `✗ checkout 9.0s, 7 turns, haiku [product]: no Pay button` -> `checkout: no Pay button`.
+    let failed: Vec<String> = output
+        .lines()
+        .filter_map(|l| l.strip_prefix("✗ "))
+        .map(|l| {
+            let id = l.split_whitespace().next().unwrap_or("");
+            match l.split_once(": ").map(|(_, why)| why.trim()).filter(|w| !w.is_empty()) {
+                Some(why) => format!("{id}: {}", clip(why, 160)),
+                None => id.to_owned(),
+            }
+        })
+        .collect();
     let mut text = line.unwrap_or_else(|| {
         let err = output.lines().rev().find(|l| l.contains("error") || l.contains("Error")).unwrap_or("").trim();
-        if passed { "lolos".to_owned() } else if err.is_empty() { "tidak jalan".to_owned() } else { format!("tidak jalan: {}", err.chars().take(300).collect::<String>()) }
+        if passed { "passed".to_owned() } else if err.is_empty() { "did not run".to_owned() } else { format!("did not run: {}", clip(err, 300)) }
     });
     if !failed.is_empty() {
-        text.push_str(&format!(" (gagal: {})", failed.join(", ")));
+        let more = failed.len().saturating_sub(3);
+        text.push_str(&format!(" — {}{}", failed.iter().take(3).cloned().collect::<Vec<_>>().join("; "), if more > 0 { format!("; and {more} more") } else { String::new() }));
     }
     text
+}
+
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_owned() }
 }
 
 // ---- notifications ------------------------------------------------------------------------
@@ -833,22 +850,22 @@ pub async fn notify(s: &Schedule, title: &str, msg: &str) -> Vec<String> {
     if s.notify.webhook {
         done.push(match std::fs::read_to_string(secret_path(&s.id)) {
             Ok(url) => match webhook(url.trim(), msg).await {
-                Ok(()) => "Webhook: terkirim".to_owned(),
-                Err(e) => format!("Webhook: gagal ({e})"),
+                Ok(()) => "Webhook: sent".to_owned(),
+                Err(e) => format!("Webhook: failed ({e})"),
             },
-            Err(_) => "Webhook: URL belum diisi".to_owned(),
+            Err(_) => "Webhook: no URL yet".to_owned(),
         });
     }
     if s.notify.os {
         done.push(match os_notification(title, msg) {
-            Ok(()) => "Notifikasi: terkirim".to_owned(),
-            Err(e) => format!("Notifikasi: gagal ({e})"),
+            Ok(()) => "Notification: sent".to_owned(),
+            Err(e) => format!("Notification: failed ({e})"),
         });
     }
     if let Some(repo) = &s.notify.github {
         done.push(match github_issue(repo, title, msg).await {
-            Ok(url) => format!("Issue GitHub: {url}"),
-            Err(e) => format!("Issue GitHub: gagal ({e})"),
+            Ok(url) => format!("GitHub issue: {url}"),
+            Err(e) => format!("GitHub issue: failed ({e})"),
         });
     }
     done
@@ -1081,10 +1098,15 @@ mod tests {
     #[test]
     fn summary_of_a_run() {
         let out = "3 tests, 1 workers, web\n✓ login 3.1s, 4 turns, haiku: ok\n✗ checkout 9.0s, 7 turns, haiku: no Bayar button\n\n3 tests: 2 passed, 1 failed, 0 quarantined failures, in 20.0s; tokens in 1 out 2\nhtml: /x.html\n";
-        assert_eq!(summarize(out, false), "2 dari 3 test lolos, 1 gagal (gagal: checkout)");
-        assert_eq!(summarize("\n1 tests: 1 passed, 0 failed, 0 quarantined failures, in 2.0s\n", true), "1 dari 1 test lolos");
-        assert_eq!(summarize("\n2 tests: 1 passed, 0 failed, 1 quarantined failures, in 2.0s\n", true), "1 dari 2 test lolos, 1 gagal di karantina");
-        assert_eq!(summarize("error: fastpilot run needs Claude Code installed\n", false), "tidak jalan: error: fastpilot run needs Claude Code installed");
+        assert_eq!(summarize(out, false), "2 of 3 tests passed, 1 failed — checkout: no Bayar button");
+        assert_eq!(summarize("\n1 tests: 1 passed, 0 failed, 0 quarantined failures, in 2.0s\n", true), "1 of 1 test passed");
+        assert_eq!(summarize("\n2 tests: 1 passed, 0 failed, 1 quarantined failures, in 2.0s\n", true), "1 of 2 tests passed, 1 set aside failed");
+        assert_eq!(summarize("error: fastpilot run needs Claude Code installed\n", false), "did not run: error: fastpilot run needs Claude Code installed");
+        // QA B7: the reason is in the table, not only in the report.
+        let qa = "✗ demo-login-shows-budi 0.4s, 2 turns, claude-opus-5-5 [product]: variable `EMAIL` is not allowed; list it in FASTPILOT_VARS\n\n1 tests: 0 passed, 1 failed, 0 quarantined failures, in 3.0s\n";
+        assert_eq!(summarize(qa, false), "0 of 1 test passed, 1 failed — demo-login-shows-budi: variable `EMAIL` is not allowed; list it in FASTPILOT_VARS");
+        let many: String = (1..=5).map(|i| format!("✗ t{i} 1.0s, 1 turns, m: broke {i}\n")).collect::<String>() + "5 tests: 0 passed, 5 failed, 0 quarantined failures, in 1s\n";
+        assert!(summarize(&many, false).ends_with("t3: broke 3; and 2 more"));
     }
 
     /// D10b: an agent's scheduled run uses its provider and model, its extra words, its id.

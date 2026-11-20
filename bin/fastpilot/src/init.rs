@@ -164,7 +164,17 @@ fn gap(c: &Check) -> String {
 /// Every ready Android device, by serial (doctor's line is "serial (model), serial (model)"); it
 /// showed only the first one, clipped (T1-T3).
 fn devices(detail: &str) -> String {
-    let serials: Vec<&str> = detail.split(", ").filter_map(|d| d.split(" (").next()).map(str::trim).filter(|s| !s.is_empty()).collect();
+    // doctor's line: "Android emulator: sdk gphone64 arm64 (emulator-5556), …" -> "Android emulator (emulator-5556)".
+    let serials: Vec<String> = detail
+        .split(", ")
+        .filter_map(|d| {
+            let id = d.rsplit_once('(').map(|(_, r)| r.trim_end_matches(')').trim()).filter(|s| !s.is_empty())?;
+            Some(match d.split_once(": ") {
+                Some((kind, _)) => format!("{kind} ({id})"),
+                None => id.to_owned(),
+            })
+        })
+        .collect();
     match serials.as_slice() {
         [] => "device ready".to_owned(),
         [one] => format!("device: {one}"),
@@ -415,8 +425,12 @@ mod tests {
     /// T1-T3: step 1/5 listed only the first device.
     #[test]
     fn every_ready_android_device_is_listed() {
-        assert_eq!(devices("emulator-5554 (Android SDK built for arm64), emulator-5556 (sdk gphone64 arm64)"), "2 devices: emulator-5554, emulator-5556");
-        assert_eq!(devices("R58M12ABCDE (SM-A515F)"), "device: R58M12ABCDE");
+        assert_eq!(
+            devices("Android emulator: Android SDK built for arm64 (emulator-5554), Android emulator: sdk gphone64 arm64 (emulator-5556)"),
+            "2 devices: Android emulator (emulator-5554), Android emulator (emulator-5556)"
+        );
+        // QA B9: the kind is named, a phone included.
+        assert_eq!(devices("Android phone (physical): SM-A515F (R58M12ABCDE)"), "device: Android phone (physical) (R58M12ABCDE)");
     }
 
 }
