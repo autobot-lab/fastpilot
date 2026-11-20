@@ -923,3 +923,39 @@ fn chat_and_the_page_start_a_release_watch() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// S8 (v0.4): a release-check report and a bug report from the bot become read-only cards whose
+/// fields fastpilot reads; the raw report is not shown twice, and "Not checked" is kept.
+#[test]
+fn chat_shows_the_release_verdict_and_the_bug_report_as_cards() {
+    let home = std::env::temp_dir().join(format!("fp-chat-s8-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let project = home.join("shop");
+    std::fs::create_dir_all(&project).expect("project");
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let say = |text: &str| {
+        let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": text }).to_string(), true);
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)
+    };
+    let v = say("Can we release the staging build today?");
+    let bot = &v["messages"][1];
+    let card = &bot["verdict"];
+    assert_eq!((card["verdict"].as_str(), card["title"].as_str()), (Some("SHIP WITH FIXES"), Some("Shop staging 2.4 · 20 Nov 2026")), "{bot}");
+    let states: Vec<&str> = card["evidence"].as_array().expect("evidence").iter().filter_map(|e| e["state"].as_str()).collect();
+    assert_eq!(states, ["checked", "checked", "checked", "not checked"], "{card}");
+    assert_eq!(card["fixes"].as_array().map(Vec::len), Some(2));
+    assert_eq!(card["not_checked"], json!(["payment (blocked by limits)", "iPhone (no simulator available)"]));
+    assert_eq!(bot["text"], "I ran the regression and a smoke check of the main journeys. Here is my recommendation.", "the report is the card, not text");
+
+    let v = say("Write a bug report for the voucher failure");
+    let bot = &v["messages"][3];
+    let bug = &bot["bug"];
+    assert_eq!(bug["title"], "Total does not change after applying voucher SAVE10 (cart, web staging)", "{bot}");
+    assert_eq!(bug["steps"].as_array().map(Vec::len), Some(3));
+    assert_eq!(bug["reproduced"], "yes, 2 of 2 runs");
+    assert!(bot.get("verdict").is_none());
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

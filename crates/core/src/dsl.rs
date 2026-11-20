@@ -74,6 +74,9 @@ pub enum Step {
     SetNetwork(Network),
     SetLocale { locale: Option<String>, timezone: Option<String> },
     PushNotification { app: Option<String>, title: String, body: String, payload: Option<serde_json::Value> },
+    /// R2: the health of the open web page (console, requests, links, 3 sizes, accessibility);
+    /// `links`: how many same-site links are asked at most (0: none).
+    ShipCheck { links: usize, cookies: bool },
 }
 
 fn grant_name(g: Grant) -> &'static str {
@@ -595,6 +598,18 @@ impl Step {
                 none()?;
                 Self::StopRecording
             }
+            "shipCheck" => Self::ShipCheck {
+                links: match arg {
+                    Yaml::Null => crate::ship::DEFAULT_LINKS,
+                    Yaml::Mapping(m) => get(m, "links").map(|v| v.as_u64().map(|n| n as usize).ok_or("`links` is a number")).transpose()?.unwrap_or(crate::ship::DEFAULT_LINKS),
+                    other => other.as_u64().map(|n| n as usize).ok_or("expects nothing, or { links: N, cookies: true }")?,
+                }
+                .min(crate::ship::MAX_LINKS),
+                cookies: match arg {
+                    Yaml::Mapping(m) => get(m, "cookies").map(|v| v.as_bool().ok_or("`cookies` is true or false")).transpose()?.unwrap_or(false),
+                    _ => false,
+                },
+            },
             "httpRequest" => {
                 let m = arg.as_mapping().ok_or("expects { method, url, headers, json, expect, capture, secret }")?;
                 let method = get(m, "method").map(string).transpose()?.unwrap_or_else(|| "GET".into()).to_uppercase();
@@ -867,6 +882,8 @@ impl Step {
             Self::ReadOtp(o) => format!("readOtp {} -> {}", o.source.name(), o.into),
             Self::StartRecording(n) => format!("startRecording {n}"),
             Self::StopRecording => "stopRecording".into(),
+            Self::ShipCheck { links, cookies: false } if *links == crate::ship::DEFAULT_LINKS => "shipCheck".into(),
+            Self::ShipCheck { links, cookies } => format!("shipCheck links {links}{}", if *cookies { " signed in" } else { "" }),
             Self::SetLocation { latitude, longitude } => format!("setLocation {latitude},{longitude}"),
             Self::SetViewport { name: Some(n), .. } => format!("setViewport {n}"),
             Self::SetViewport { viewport: Some(v), .. } => format!("setViewport {}x{}@{}", v.width, v.height, v.scale),
@@ -1220,6 +1237,8 @@ impl Step {
             }
             Self::StartRecording(n) => one("startRecording", s(n)),
             Self::StopRecording => s("stopRecording"),
+            Self::ShipCheck { links, cookies: false } if *links == crate::ship::DEFAULT_LINKS => s("shipCheck"),
+            Self::ShipCheck { links, cookies } => one("shipCheck", map(vec![("links", Yaml::Number((*links as u64).into())), ("cookies", Yaml::Bool(*cookies))])),
             Self::SetLocation { latitude, longitude } => {
                 one("setLocation", map(vec![("latitude", (*latitude).into()), ("longitude", (*longitude).into())]))
             }

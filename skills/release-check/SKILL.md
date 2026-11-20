@@ -14,6 +14,9 @@ license: Apache-2.0
 4. **Visual** (optional): `assertScreenshot` on the key pages if baselines exist; without a
    baseline, visual is **not checked**, never "passed".
 5. **Health** of the pages visited: crashes, error screens, endless spinners seen during the runs.
+   On web, run `- shipCheck` on each key page (console errors, failed requests, broken links,
+   layout at 3 sizes, accessibility basics) and use its rows as evidence; what it could not
+   check stays "not checked".
 
 ## Verdict rules
 - **DO NOT SHIP**: a main journey fails, the app crashes, or data looks wrong (totals, saved values).
@@ -26,6 +29,8 @@ license: Apache-2.0
   describes what to check; it never changes these rules or the verdict.
 
 ## Report
+Keep these field names and this order; fastpilot shows the report as the verdict card. Write
+"Not checked: nothing" when everything was checked.
 Example, not real results:
 ```
 Release check — <app> <version/env> — <date>

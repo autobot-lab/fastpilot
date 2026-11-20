@@ -18,6 +18,7 @@ mod keystore;
 mod provider;
 mod pool;
 mod report;
+mod report_cards;
 mod run;
 mod schedule;
 mod skills_catalog;
@@ -43,7 +44,7 @@ commands:
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
   init [--yes] [--global]            set up this folder: register fastpilot with Claude Code, install the
-                                     Skill, add tests/contoh.md, show the limits (asks before each change)
+                                     Skill, add tests/example.md, show the limits (asks before each change)
   demo [folder] [--android]          demo pages, example tests and .mcp.json in a new folder: a first test
                                      without the repository (--android: install the demo app)
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)

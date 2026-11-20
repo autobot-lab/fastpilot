@@ -26,12 +26,12 @@ a demo page, a sample test, `.mcp.json` (fastpilot + the public demo password), 
 **3. Use it in your project** (about 5 minutes)
 
 ```bash
-cd ~/proyek-kamu && fastpilot init
+cd ~/my-project && fastpilot init
 ```
 
-`init` checks your computer, registers fastpilot with Claude Code, installs the Skill, creates `tests/contoh.md`,
+`init` checks your computer, registers fastpilot with Claude Code, installs the Skill, creates `tests/example.md`,
 and shows the Limits. It asks before each change (`--yes` approves all of them). Change `target` in
-`tests/contoh.md` to your app's URL, then ask Claude to run it.
+`tests/example.md` to your app's URL, then ask Claude to run it.
 
 ### If you get stuck
 
@@ -239,7 +239,7 @@ makes fastpilot stop with an error message; it is not silently ignored.
 
 ```bash
 fastpilot config list                              # every key, its value, and where it comes from
-fastpilot config set allowed_domains "staging.contoh.com,*.contoh.com"
+fastpilot config set allowed_domains "staging.example.com,*.example.com"
 fastpilot config get flow_timeout
 fastpilot config unset allowed_domains
 fastpilot config path
@@ -247,7 +247,7 @@ fastpilot config path
 
 ```toml
 # ~/.fastpilot/config.toml
-allowed_domains = ["staging.contoh.com", "*.contoh.com"]
+allowed_domains = ["staging.example.com", "*.example.com"]
 headful = true
 flow_timeout = 600
 ```
@@ -465,7 +465,7 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_IOS_RUNNER` | the iOS runner build folder (default `ios-runner/build`) |
 | `FASTPILOT_DIR` | location of `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), or `off` |
-| `FASTPILOT_ALLOWED_DOMAINS` | a comma-separated list of hosts (`*.contoh.com` for subdomains) that web sessions may open: `openUrl`, links, redirects, and popups to other hosts are blocked (`blocked`). Other resources (CDN, API) still load |
+| `FASTPILOT_ALLOWED_DOMAINS` | a comma-separated list of hosts (`*.example.com` for subdomains) that web sessions may open: `openUrl`, links, redirects, and popups to other hosts are blocked (`blocked`). Other resources (CDN, API) still load |
 | `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) or your own word list: a tap on an element with a name like that is refused (`blocked`) unless the step has `confirm: true` (CLI: `--confirm`). Not set: hapus, delete, remove. An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set confirm_actions ""` or the Clear button on the Limits page |
 | `FASTPILOT_BLOCK_ACTIONS` | a list of words that are always blocked. Not set: the built-in list (payments and deleting an account). An empty env does not turn off the built-in list; you can clear it only with `fastpilot config set block_actions ""` or the Clear button on the Limits page |
 | `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | AES-256 key (64 hex) to encrypt saved logins / their maximum age (default 30 days) |
@@ -537,8 +537,8 @@ Opening the app against a staging server or in debug mode without rebuilding it 
 
 ```yaml
 - launchApp:
-    appId: com.contoh.app
-    arguments: { server: "https://staging.contoh.id", debug: true, retries: 3, fitur: [baru, beta] }
+    appId: com.example.app
+    arguments: { server: "https://staging.example.com", debug: true, retries: 3, features: [new, beta] }
     env: { API_TOKEN: "${STAGING_TOKEN}" }   # iOS only
 ```
 
@@ -596,24 +596,77 @@ fastpilot fill @e2 a@b.com
 fastpilot fill "Password" '${DEMO_PASS}'
 fastpilot click @e5
 fastpilot wait Budi && fastpilot get title
-fastpilot screenshot hasil.jpg --annotate
+fastpilot screenshot result.jpg --annotate
 fastpilot close
 ```
 
-- Selectors: `@e7` (a ref from a snapshot), `"Masuk"` (text), `#email` (id), `role=button:Masuk`, `120,340` (a point).
+- Selectors: `@e7` (a ref from a snapshot), `"Sign in"` (text), `#email` (id), `role=button:Sign in`, `120,340` (a point).
 - Commands: `open`, `attach`, `close [--all]`, `sessions`, `devices`, `snapshot [-i] [--json] [--full]
   [--coords] [--filter T]`, `click`/`tap`, `dblclick`, `longpress`, `fill`, `type`, `clear`, `press`,
   `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
   `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
   `screenshot`, `record start|stop`, `set viewport|locale|geo|network|permission`, `launch`, `stop-app`,
   `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`,
-  `diff screenshot <name> [--update] [--ignore sel]`, `errors`,
+  `diff screenshot <name> [--update] [--ignore sel]`, `errors`, `ship-check [url]... [--links N]`,
   `docs`, `daemon status|stop`.
   `fastpilot help` shows them all.
 - Web, Android and iOS work the same way: `fastpilot open com.app/.MainActivity --platform android`.
-- Several sessions at once: `--session NAMA` (or `FASTPILOT_SESSION`); `--json` for raw output.
+- Several sessions at once: `--session NAME` (or `FASTPILOT_SESSION`); `--json` for raw output.
 - Exit code ≠ 0 if a step fails; the output is the reason, the candidates, and the current screen, the same as MCP.
 - macOS and Linux (Unix socket). Secrets in `FASTPILOT_VARS` are still masked as `***`.
+
+## Ship check: one verdict for the pages before a release
+
+```bash
+fastpilot ship-check https://staging.shop.example https://staging.shop.example/cart [--links N] [--cookies]
+```
+
+For each page, fastpilot opens it in Chrome and checks five things:
+
+- **Console errors**: exceptions and `console.error`. An uncaught error means the page's own script crashed.
+- **Failed requests**: HTTP errors, requests that did not finish, and the page's own status.
+- **Broken links**: up to 20 links to the same site (`--links N`, 0 for none), asked with `HEAD`.
+  - Five at a time, and without your cookies, so they are asked signed out. A link that needs sign-in
+    is "not checked", not broken.
+  - Many servers treat `HEAD` like `GET`, so `--cookies` (`{ cookies: true }`) asks signed in only on
+    request. It then also skips links with a query string or a word for a change (clear, archive,
+    accept, ban, reset, ...).
+  - Redirects are not followed.
+  - Links to other sites are counted, not opened.
+  - Links whose text or address names a risky action are never requested: the block and confirm
+    lists, sign out, delete, unsubscribe.
+  - The page only lists its links; fastpilot decides which ones are asked.
+  - Text from the page (names, errors, addresses) is shown on one line and shortened.
+- **Layout at 3 sizes**: phone 390, tablet 768 and desktop 1280 px. It looks for content wider than the
+  screen, or a page without a mobile viewport. The size is put back afterwards.
+- **Accessibility basics**: page language and title, images without `alt`, fields, buttons and links
+  without a name, and repeated ids.
+
+It never clicks, types or submits.
+
+The verdict follows the `release-check` skill:
+
+| Verdict | When |
+|---|---|
+| DO NOT SHIP | The page did not load, or its own script crashed |
+| SHIP WITH FIXES | Only other problems |
+| INCONCLUSIVE | A check could not run, or was not asked |
+| SHIP | Nothing missing and nothing wrong |
+
+Missing evidence is never a pass. The report always names what was not checked: colour contrast,
+keyboard use, the look of pages, anything behind sign-in. It also names the regression and the main
+journeys, which this command does not run.
+
+Exit codes: 0 for SHIP or SHIP WITH FIXES, 1 for DO NOT SHIP, 2 for INCONCLUSIVE.
+
+In a test or from an AI, the same check is the `shipCheck` step: `- shipCheck` or `- shipCheck: { links: 5, cookies: true }`.
+
+In the dashboard, ask the Chat bot "Can we release?". It runs the regression, the main journeys and
+`shipCheck`, then shows a **release verdict card**. The card has the verdict, why, the evidence with
+checked / problem / could not run / not checked, what to fix, and an always-visible "Not checked" box.
+A bug report it writes shows as a **preview card**: it is not sent anywhere, and you can copy it as
+text or Markdown (page and bot text stays plain text when pasted). The verdict card is labelled "the bot's
+summary": the bot wrote it from the checks it ran, and fastpilot did not verify it.
 
 ## Without opening Claude Code: `fastpilot run`
 
@@ -732,7 +785,7 @@ network.
 **Android.** On the device computer: start the emulator/phone as usual (`adb devices` lists it). On your laptop:
 
 ```bash
-ssh -N -L 15037:127.0.0.1:5037 user@mesin-device
+ssh -N -L 15037:127.0.0.1:5037 user@device-computer
 ```
 
 ```bash
@@ -754,7 +807,7 @@ google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir=/tmp/f
 On your laptop:
 
 ```bash
-ssh -N -L 19222:127.0.0.1:9222 user@mesin-device
+ssh -N -L 19222:127.0.0.1:9222 user@device-computer
 ```
 
 ```bash

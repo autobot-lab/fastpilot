@@ -29,7 +29,7 @@ fastpilot doctor                     # everything you plan to use must be ✓
 command -v fastpilot                 # note its full path
 ```
 
-- Log in to SSH with a **key**, not a password (`ssh-copy-id user@mesin`), so Claude Code does not
+- Log in to SSH with a **key**, not a password (`ssh-copy-id user@other-computer`), so Claude Code does not
   get stuck at a password prompt.
 - Non-interactive SSH often does not load `PATH` from `.zshrc`/`.bashrc`, so use the **full path** to
   `fastpilot` from the step above. **(not tested yet)**
@@ -39,7 +39,7 @@ command -v fastpilot                 # note its full path
 ### 2. Register it with Claude Code on the laptop **(not tested yet)**
 
 ```bash
-claude mcp add fastpilot -- ssh -T user@mesin /opt/homebrew/bin/fastpilot mcp
+claude mcp add fastpilot -- ssh -T user@other-computer /opt/homebrew/bin/fastpilot mcp
 ```
 
 - `-T`: no terminal, so stdin/stdout stay clean for MCP.
@@ -57,7 +57,7 @@ claude mcp add fastpilot -- ssh -T user@mesin /opt/homebrew/bin/fastpilot mcp
 
   ```bash
   # on the laptop
-  claude mcp add fastpilot -- ssh -T user@mesin bin/fastpilot-mcp
+  claude mcp add fastpilot -- ssh -T user@other-computer bin/fastpilot-mcp
   ```
 - `fastpilot mcp` stops when the client disconnects, and at that moment it closes its Chrome, agents, and runners.
   If SSH drops, Claude Code starts the server again on the next call; sessions that already existed must be
@@ -76,7 +76,7 @@ fastpilot ui --no-open --port 7777        # prints the link http://127.0.0.1:777
 
 ```bash
 # on the laptop
-ssh -N -L 7777:127.0.0.1:7777 user@mesin
+ssh -N -L 7777:127.0.0.1:7777 user@other-computer
 ```
 
 Open the printed link (with `?code=`) in the laptop's browser. The code works once and is valid for 10 minutes;

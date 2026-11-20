@@ -1270,6 +1270,68 @@ function botText(text) {
   });
 }
 
+// S8: the release verdict (read-only; the person decides). Fields come from fastpilot, text only.
+const VERDICT_LOOK = {
+  "SHIP": ["ok", "✓", "Main journeys and the regression pass."],
+  "SHIP WITH FIXES": ["warn", "!", "Only minor problems; they are listed below."],
+  "DO NOT SHIP": ["bad", "✗", "A main journey or the page itself fails."],
+  "INCONCLUSIVE": ["unknown", "?", "Important evidence is missing. This is not a pass."],
+};
+// Copied text never carries control characters (Security, PR #100).
+const plainText = (t) => String(t || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ");
+// Markdown: text stays text in a tracker (no images, links or HTML from the page or the bot).
+const mdText = (t) => plainText(t).replace(/[\\`*_[\]()<>!#|~]/g, (c) => "\\" + c).replace(/\n/g, " ");
+async function copyText(text, what) {
+  try { await navigator.clipboard.writeText(plainText(text)); toast(what + " copied", true); } catch (e) { toast("Could not copy: " + e.message); }
+}
+function verdictCard(v) {
+  const [cls, mark, fallback] = VERDICT_LOOK[v.verdict] || VERDICT_LOOK.INCONCLUSIVE;
+  const rows = (v.evidence || []).map((e) => h("div", { class: "vrow" },
+    h("span", { class: "vname" }, e.name), h("span", { class: "vdetail" }, e.detail || ""),
+    h("span", { class: "vstate " + e.state.replace(/ /g, "-") }, e.state)));
+  const fixes = (v.fixes || []).length
+    ? h("div", { class: "vfix" }, h("b", {}, "Fix before, or soon after, release"), h("ol", {}, v.fixes.map((f) => h("li", {}, f))))
+    : null;
+  const missing = (v.not_checked || []).length ? v.not_checked.join(" · ") : "nothing";
+  const n = (v.fixes || []).length;
+  return h("section", { class: "grp verdict " + cls, "aria-label": "Release check" },
+    h("div", { class: "gh" }, icon("chat"), "Release check · the bot's summary"),
+    h("div", { class: "prop-body" },
+    v.title ? h("p", { class: "s vtitle" }, v.title) : null,
+    // The card shows what the bot wrote; fastpilot did not check it (Security, PR #100).
+    h("p", { class: "s muted" }, "Written by the bot from the checks it ran. fastpilot shows it as a card; it did not verify it."),
+    h("div", { class: "vbanner", role: "status" }, h("span", { class: "vmark", "aria-hidden": "true" }, mark),
+      h("div", {}, h("div", { class: "vword" }, v.verdict), h("div", { class: "vwhy" }, v.why || fallback))),
+    rows.length ? h("div", { class: "vrows" }, rows) : null,
+    fixes,
+    h("div", { class: "vmissing" }, h("b", {}, "Not checked: "), missing),
+    h("p", { class: "s" }, "This is a recommendation. You decide whether to release."),
+    h("div", { class: "btns" },
+      n ? h("button", { class: "btn p", onclick: () => chatSend(`Write bug reports for the ${n} problem${n > 1 ? "s" : ""} in this release check.`) }, `Write bug reports for the ${n} problem${n > 1 ? "s" : ""}`) : null,
+      h("button", { class: "btn", onclick: () => copyText(v.text || "", "Report") }, "Copy as text"))));
+}
+
+// S8: a bug report preview. Not sent anywhere; Jira comes later.
+function bugMarkdown(b) {
+  const steps = (b.steps || []).map((s, i) => `${i + 1}. ${mdText(s)}`).join("\n");
+  return `## ${mdText(b.title)}\n\n**Steps**\n${steps}\n\n**Expected:** ${mdText(b.expected)}\n\n**Actual:** ${mdText(b.actual)}\n\n**Reproduced:** ${mdText(b.reproduced || "not said")}\n\n**Environment:** ${mdText(b.environment || "not said")}\n\n**Evidence:** ${mdText(b.evidence || "none")}\n\n**Impact (estimate):** ${mdText(b.impact || "not measured")}\n`;
+}
+function bugCard(b) {
+  const row = (k, v) => v ? [h("dt", {}, k), h("dd", {}, v)] : null;
+  return h("section", { class: "grp bugcard", "aria-label": "Bug report preview" },
+    h("div", { class: "gh" }, icon("alert"), "Bug report · preview", h("span", { class: "tag" }, "Not sent anywhere")),
+    h("div", { class: "prop-body" }, h("dl", { class: "prop-rows" },
+      row("Title", b.title),
+      (b.steps || []).length ? [h("dt", {}, "Steps"), h("dd", {}, h("ol", {}, b.steps.map((s) => h("li", {}, s))))] : null,
+      row("Expected", b.expected), row("Actual", b.actual), row("Reproduced", b.reproduced), row("Environment", b.environment),
+      row("Evidence", b.evidence), row("Impact (estimate)", b.impact)),
+    h("div", { class: "btns" },
+      h("button", { class: "btn p", onclick: () => copyText(b.text || "", "Bug report") }, "Copy report"),
+      h("button", { class: "btn", onclick: () => copyText(bugMarkdown(b), "Markdown") }, "Copy as Markdown"),
+      h("button", { class: "btn", disabled: true, title: "Jira is not connected" }, "Send to Jira"),
+      h("span", { class: "s" }, "Jira is not connected"))));
+}
+
 function chatMsg(m) {
   if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "bubble" }, m.text));
   const working = !m.done;
@@ -1282,6 +1344,8 @@ function chatMsg(m) {
       : m.text ? botText(m.text) : null,
     working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Working…" : " Thinking…") : null,
     m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
+    m.verdict ? verdictCard(m.verdict) : null,
+    m.bug ? bugCard(m.bug) : null,
     (m.proposals || []).map(proposalCard),
     m.page_attempts && m.page_attempts.length ? pageAttempts(m.page_attempts) : null);
 }
