@@ -1,6 +1,6 @@
 {
   "name": "fastpilot",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "AI-driven QA for web, Android and iOS: an MCP server and shell CLI (prebuilt binary).",
   "license": "Apache-2.0",
   "homepage": "https://github.com/autobot-lab/fastpilot",
