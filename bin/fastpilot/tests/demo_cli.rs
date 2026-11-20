@@ -104,7 +104,10 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     // QA Low 4: the Skill is in the demo folder, so Claude knows the steps.
     let skill = std::fs::read(format!("{ROOT}/skills/fastpilot/SKILL.md")).expect("repo skill");
     assert_eq!(std::fs::read(folder.join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
-    assert!(out.contains(".claude/skills/fastpilot/SKILL.md"), "{out}");
+    assert!(out.contains("18 skills"), "{out}");
+    // S5 (v0.4): the whole skill library is in the demo folder too.
+    let regression = std::fs::read(format!("{ROOT}/skills/regression/SKILL.md")).expect("repo regression");
+    assert_eq!(std::fs::read(folder.join(".claude/skills/regression/SKILL.md")).expect("regression"), regression);
 
     // Already there: nothing changes, exit ≠ 0; --force writes it again.
     let before = snapshot(&folder);
@@ -155,6 +158,20 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
         let (code, out) = demo(&tmp, &["linked-demo", "--force"], false);
         assert!(code != Some(0) && out.contains("symlink"), "{code:?} {out}");
         assert_eq!(std::fs::read_dir(&outside).expect("outside").count(), 0);
+        // T1-T3 (Security Low 3): a symlinked .mcp.json is refused before it is read, so its
+        // target (here a "private" file) is never copied into .mcp.json.bak.
+        let private = tmp.join("private.txt");
+        std::fs::write(&private, "PRIVATE-CONTENT").expect("private");
+        std::fs::remove_file(folder.join(".mcp.json")).expect("rm mcp");
+        std::os::unix::fs::symlink(&private, folder.join(".mcp.json")).expect("link mcp");
+        let (code, out) = demo(&tmp, &["--force"], false);
+        assert!(code != Some(0) && out.contains(".mcp.json is a symlink"), "{code:?} {out}");
+        let copied = std::fs::read_dir(&folder).expect("folder").flatten().any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("PRIVATE-CONTENT")) && e.file_name() != ".mcp.json");
+        assert!(!copied, "the link's target was copied into the demo folder");
+        assert_eq!(std::fs::read_to_string(&private).expect("private"), "PRIVATE-CONTENT", "the target is untouched");
+        std::fs::remove_file(folder.join(".mcp.json")).expect("unlink mcp");
+        let (code, out) = demo(&tmp, &["--force"], false);
+        assert_eq!(code, Some(0), "the demo folder is whole again: {out}");
     }
 
     // Another folder name.

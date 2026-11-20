@@ -18,8 +18,6 @@ use crate::doctor::{Check, Status};
 
 type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-/// The fastpilot Skill, as in `skills/fastpilot/SKILL.md`.
-pub const SKILL: &str = include_str!("../../../skills/fastpilot/SKILL.md");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `tests/example.md`: a test case to start from (its target is to be changed).
@@ -101,9 +99,9 @@ pub async fn init(args: &[String]) -> Res<()> {
     register(mode, scope);
 
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let skill_dir = if global { home.join(".claude/skills/fastpilot") } else { PathBuf::from(".claude/skills/fastpilot") };
-    println!("\n3/5 Install the fastpilot Skill (teaches Claude how to use fastpilot)");
-    skill(mode, &skill_dir.join("SKILL.md"), global);
+    let skills_dir = if global { home.join(".claude/skills") } else { PathBuf::from(".claude/skills") };
+    println!("\n3/5 Install the fastpilot Skills (teach Claude how to use fastpilot and how to test)");
+    skills(mode, &skills_dir, global);
 
     println!("\n4/5 Example test");
     example(mode);
@@ -139,7 +137,7 @@ fn ready(area: &str, checks: &[&Check]) -> String {
     let detail = |name: &str| checks.iter().find(|c| c.name == name).map(|c| c.detail.clone()).unwrap_or_default();
     match area {
         "web" => "Chrome starts headless".into(),
-        "android" => format!("device: {}", clip(&detail("device"), 40)),
+        "android" => devices(&detail("device")),
         "ios" => clip(&format!("{} · {}", detail("Xcode"), detail("simulator")), 50),
         _ => format!("Claude Code {}", detail("Claude Code").replace(" (Claude Code)", "")),
     }
@@ -157,6 +155,17 @@ fn gap(c: &Check) -> String {
         "runner" => "test runner not built yet".into(),
         "Claude Code" => "Claude Code is not installed".into(),
         _ => clip(&c.detail, 45),
+    }
+}
+
+/// Every ready Android device, by serial (doctor's line is "serial (model), serial (model)"); it
+/// showed only the first one, clipped (T1-T3).
+fn devices(detail: &str) -> String {
+    let serials: Vec<&str> = detail.split(", ").filter_map(|d| d.split(" (").next()).map(str::trim).filter(|s| !s.is_empty()).collect();
+    match serials.as_slice() {
+        [] => "device ready".to_owned(),
+        [one] => format!("device: {one}"),
+        many => format!("{} devices: {}", many.len(), many.join(", ")),
     }
 }
 
@@ -179,7 +188,7 @@ fn registered(scope: &str, claude: &str) -> bool {
         return std::fs::read_to_string(".mcp.json")
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|v| v["mcpServers"]["fastpilot"].is_object());
+            .is_some_and(|v| runs_fastpilot(&v["mcpServers"]["fastpilot"]));
     }
     std::process::Command::new(claude)
         .args(["mcp", "get", "fastpilot"])
@@ -190,12 +199,42 @@ fn registered(scope: &str, claude: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// A `.mcp.json` server entry that really starts fastpilot's MCP server (`fastpilot mcp`, or
+/// `npx -y fastpilot mcp`), not just any entry named "fastpilot" (T1-T3).
+fn runs_fastpilot(entry: &serde_json::Value) -> bool {
+    let command = entry["command"].as_str().unwrap_or("");
+    let args: Vec<&str> = entry["args"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+    let name = Path::new(command).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let is_fastpilot = |s: &str| s == "fastpilot" || s.starts_with("fastpilot@");
+    let mcp_last = args.last() == Some(&"mcp");
+    match name {
+        n if is_fastpilot(n) => mcp_last,
+        "npx" | "npx.cmd" => mcp_last && args.iter().any(|a| is_fastpilot(a)),
+        _ => false,
+    }
+}
+
 fn register(mode: Mode, scope: &str) {
     let claude = crate::run::claude_bin();
     let args = add_args(scope);
     let shown = format!("claude {}", args.join(" "));
     if registered(scope, &claude) {
         println!("  ✓ already registered{}", if scope == "project" { " (.mcp.json)" } else { "" });
+        return;
+    }
+    // A "fastpilot" entry that runs something else: say so; never replace it without the user.
+    let other = (scope == "project")
+        .then(|| std::fs::read_to_string(".mcp.json").ok())
+        .flatten()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v["mcpServers"]["fastpilot"].is_object());
+    if let Some(v) = other {
+        let e = &v["mcpServers"]["fastpilot"];
+        println!(
+            "  ! .mcp.json has a \"fastpilot\" entry that does not start fastpilot (command: {} {}).\n    Fix or remove that entry, then run fastpilot init again.",
+            e["command"].as_str().unwrap_or("?"),
+            e["args"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+        );
         return;
     }
     let installed = std::process::Command::new(&claude).arg("--version").stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
@@ -217,22 +256,48 @@ fn register(mode: Mode, scope: &str) {
     }
 }
 
-fn skill(mode: Mode, path: &Path, global: bool) {
-    let shown = if global { format!("~/{}", path.strip_prefix(std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()).unwrap_or(path).display()) } else { path.display().to_string() };
-    match std::fs::read_to_string(path) {
-        Ok(text) if text == SKILL => println!("  ✓ already installed (version {VERSION}) · {shown}"),
-        Ok(_) => {
-            println!("  → {shown} differs from the Skill in fastpilot {VERSION}");
-            if ask(mode, &format!("Update it to {VERSION}?")) {
-                write(path, SKILL, "updated");
-            }
+/// Every skill of the library (`fastpilot` plus the testing skills) in `dir/<name>/SKILL.md`: one
+/// question for the missing ones, one for those that differ (never replaced without asking).
+fn skills(mode: Mode, dir: &Path, global: bool) {
+    let shown = if global { format!("~/{}", dir.strip_prefix(std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()).unwrap_or(dir).display()) } else { dir.display().to_string() };
+    let all = fastpilot_mcp::skills::SKILLS;
+    let (mut missing, mut differ) = (Vec::new(), Vec::new());
+    for (name, text) in all {
+        match std::fs::read_to_string(dir.join(name).join("SKILL.md")) {
+            Ok(t) if t == *text => {}
+            Ok(_) => differ.push((*name, *text)),
+            Err(_) => missing.push((*name, *text)),
         }
-        Err(_) => {
-            println!("  → {shown}");
-            if ask(mode, "Install it?") {
-                write(path, SKILL, &format!("installed (version {VERSION}, built into fastpilot)"));
-            }
+    }
+    if missing.is_empty() && differ.is_empty() {
+        println!("  ✓ already installed ({} skills, version {VERSION}) · {shown}", all.len());
+        return;
+    }
+    let names = |l: &[(&str, &str)]| l.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ");
+    if !differ.is_empty() {
+        println!("  → {shown}: {} skill(s) differ from fastpilot {VERSION}: {}", differ.len(), names(&differ));
+        if ask(mode, &format!("Update them to {VERSION}?")) {
+            write_skills(dir, &differ, "updated");
         }
+    }
+    if !missing.is_empty() {
+        println!("  → {shown}: {} skills ({})", missing.len(), names(&missing));
+        if ask(mode, "Install them?") {
+            write_skills(dir, &missing, &format!("installed (version {VERSION}, built into fastpilot)"));
+        }
+    }
+}
+
+fn write_skills(dir: &Path, list: &[(&str, &str)], done: &str) {
+    let mut failed = false;
+    for (name, text) in list {
+        if let Err(e) = write_file(&dir.join(name).join("SKILL.md"), text) {
+            println!("  ✗ {e}");
+            failed = true;
+        }
+    }
+    if !failed {
+        println!("  ✓ {done}: {} skills", list.len());
     }
 }
 
@@ -258,17 +323,20 @@ fn example(mode: Mode) {
 /// checkout cannot point `tests/` at another place); with `--global` only the file itself, so a
 /// symlinked ~/.claude of the user's dotfiles keeps working.
 fn write(path: &Path, text: &str, done: &str) {
-    let made = if path.is_absolute() {
+    match write_file(path, text) {
+        Ok(()) => println!("  ✓ {done}"),
+        Err(e) => println!("  ✗ {e}"),
+    }
+}
+
+fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    if path.is_absolute() {
         let parent = path.parent().unwrap_or(Path::new("/"));
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))
             .and_then(|()| crate::demo::write_safe(parent, Path::new(path.file_name().unwrap_or_default()), text.as_bytes(), false))
     } else {
         crate::demo::write_safe(Path::new("."), path, text.as_bytes(), false)
-    };
-    match made {
-        Ok(()) => println!("  ✓ {done}"),
-        Err(e) => println!("  ✗ {e}"),
     }
 }
 
@@ -307,10 +375,45 @@ mod tests {
     #[test]
     fn the_skill_is_the_repository_skill_and_the_command_is_claudes() {
         let repo = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../skills/fastpilot/SKILL.md")).expect("skill");
-        assert_eq!(SKILL, repo);
+        assert_eq!(fastpilot_mcp::skills::get("fastpilot"), Some(repo.as_str()));
         let args = add_args("project");
         assert_eq!(args[..6], ["mcp", "add", "fastpilot", "--scope", "project", "--"]);
         assert_eq!(args.last().map(String::as_str), Some("mcp"));
         assert!(EXAMPLE.contains("platform: web") && EXAMPLE.contains("target: https://example.com") && EXAMPLE.contains("id: example"));
     }
+
+    /// T1-T3: any entry named "fastpilot" counted as registered.
+    #[test]
+    fn only_an_entry_that_starts_fastpilot_counts_as_registered() {
+        use serde_json::json;
+        for ok in [
+            json!({ "command": "fastpilot", "args": ["mcp"] }),
+            json!({ "command": "/usr/local/bin/fastpilot", "args": ["mcp"] }),
+            json!({ "command": "npx", "args": ["-y", "fastpilot", "mcp"] }),
+            json!({ "command": "npx", "args": ["-y", "fastpilot@0.4.0", "mcp"] }),
+        ] {
+            assert!(runs_fastpilot(&ok), "{ok}");
+        }
+        // What init and demo write themselves always counts.
+        let (command, args) = crate::demo::mcp_command();
+        assert!(runs_fastpilot(&json!({ "command": command, "args": args })));
+        for bad in [
+            json!({ "command": "node", "args": ["evil.js"] }),
+            json!({ "command": "fastpilot", "args": ["ui"] }),
+            json!({ "command": "npx", "args": ["-y", "other", "mcp"] }),
+            json!({ "command": "sh", "args": ["-c", "fastpilot mcp"] }),
+            json!({}),
+        ] {
+            assert!(!runs_fastpilot(&bad), "{bad}");
+        }
+    }
+
+
+    /// T1-T3: step 1/5 listed only the first device.
+    #[test]
+    fn every_ready_android_device_is_listed() {
+        assert_eq!(devices("emulator-5554 (Android SDK built for arm64), emulator-5556 (sdk gphone64 arm64)"), "2 devices: emulator-5554, emulator-5556");
+        assert_eq!(devices("R58M12ABCDE (SM-A515F)"), "device: R58M12ABCDE");
+    }
+
 }

@@ -85,7 +85,8 @@ pub fn files() -> Vec<(PathBuf, Vec<u8>)> {
     let mut out: Vec<(PathBuf, Vec<u8>)> = PAGES.iter().map(|(n, t)| (Path::new("demo").join(n), t.as_bytes().to_vec())).collect();
     out.extend(TESTS.iter().map(|(n, t, _)| (Path::new("tests").join(n), test_case(t).into_bytes())));
     // The Skill, so Claude Code in the demo folder knows fastpilot's steps instead of guessing them.
-    out.push((PathBuf::from(".claude/skills/fastpilot/SKILL.md"), crate::init::SKILL.as_bytes().to_vec()));
+    // The whole skill library (testing techniques, regression, reports) next to it, as `init` does.
+    out.extend(fastpilot_mcp::skills::SKILLS.iter().map(|(n, t)| (Path::new(".claude/skills").join(n).join("SKILL.md"), t.as_bytes().to_vec())));
     out
 }
 
@@ -134,6 +135,11 @@ pub fn write_safe(base: &Path, rel: &Path, bytes: &[u8], check_base: bool) -> Re
 fn write_mcp_json(dir: &Path) -> Result<Option<String>, String> {
     let path = dir.join(".mcp.json");
     let ours = mcp_json();
+    // A symlinked .mcp.json is refused before it is read: the backup would otherwise copy the
+    // link's target (any file of the user's) into the demo folder (Security Low 3).
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} is a symlink; fastpilot does not write through symlinks", path.display()));
+    }
     let Ok(old) = std::fs::read_to_string(&path) else {
         write_safe(dir, Path::new(".mcp.json"), ours.as_bytes(), true)?;
         return Ok(None);
@@ -257,9 +263,15 @@ fn write_folder(dir: &Path, shown: &str) -> Res<()> {
     if let Some(b) = backup {
         println!("    the existing .mcp.json was saved as {b}; the other servers in it are kept");
     }
-    println!("  ✓ {:<42} Skill: how to write fastpilot steps", ".claude/skills/fastpilot/SKILL.md");
+    println!("  ✓ {:<42} {} skills: fastpilot steps, test techniques, regression, reports", ".claude/skills/…", fastpilot_mcp::skills::SKILLS.len());
     println!("  ✓ {:<42} {} practice pages, one hidden bug each", format!("demo/{}, …", PRACTICE[0].0), PRACTICE.len());
     Ok(())
+}
+
+/// Whether the demo app may go on `serial`: an emulator always, a physical phone only with
+/// `allow_physical_devices` (as for a session; emulators are named `emulator-<port>` by adb).
+fn physical_allowed(serial: &str) -> bool {
+    serial.starts_with("emulator-") || fastpilot_core::config::flag("allow_physical_devices")
 }
 
 /// The Android part. `None`: nothing to do (skipped); `Some(true)`: installed; `Some(false)`: failed.
@@ -301,6 +313,11 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
     }
     if !fastpilot_core::config::flag("allow_app_install") {
         println!("\nAndroid: installing apps is turned off in your limits (allow_app_install = false).\n  change it in: fastpilot ui → Settings › Limits & permissions");
+        return Some(false);
+    }
+    // The same rule as a session: real phones only when the user allows them (T1-T3).
+    if !physical_allowed(&serial) {
+        println!("\nAndroid: {serial} is a physical phone, and phones are turned off in your limits (allow_physical_devices = false).\n  use an emulator, or change it in: fastpilot ui → Settings › Limits & permissions");
         return Some(false);
     }
     let done = match fastpilot_android::Adb::new().await {
@@ -389,4 +406,18 @@ mod tests {
         assert_eq!(s["env"]["DEMO_PASS"], DEMO_PASS);
         assert!(s["args"].as_array().is_some_and(|a| a.last().is_some_and(|x| x == "mcp")));
     }
+
+    /// T1-T3: `demo --android` followed the session rule for physical phones only after this.
+    #[test]
+    fn the_demo_app_goes_on_a_phone_only_when_phones_are_allowed() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("FASTPILOT_ALLOW_PHYSICAL_DEVICES", "false") };
+        assert!(physical_allowed("emulator-5556"));
+        assert!(!physical_allowed("R58M12ABCDE"), "a phone while phones are off");
+        unsafe { std::env::set_var("FASTPILOT_ALLOW_PHYSICAL_DEVICES", "true") };
+        assert!(physical_allowed("R58M12ABCDE"));
+        unsafe { std::env::remove_var("FASTPILOT_ALLOW_PHYSICAL_DEVICES") };
+    }
+
 }

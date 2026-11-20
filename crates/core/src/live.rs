@@ -630,12 +630,19 @@ mod control {
 
     async fn serve(stream: tokio::net::UnixStream) {
         if !from_ui(&stream).await {
-            let (_, mut w) = stream.into_split();
+            let (r, mut w) = stream.into_split();
             let why = format!(
                 "only fastpilot ui may use this socket: start `fastpilot ui` from the same installation as this fastpilot ({})",
                 std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
             );
+            // Wait (briefly) for the request before answering, and close the writing side cleanly.
+            // Answering and closing at once raced a client that had not written yet: its write then
+            // failed (broken pipe), and `fastpilot ui` showed "that fastpilot process does not take
+            // control" instead of this reason (T1).
+            let mut first = String::new();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), BufReader::new(r.take(64 * 1024)).read_line(&mut first)).await;
             let _ = w.write_all(format!("{}\n", serde_json::json!({ "ok": false, "error": why })).as_bytes()).await;
+            let _ = w.shutdown().await;
             return;
         }
         let (r, mut w) = stream.into_split();
@@ -649,6 +656,45 @@ mod control {
             if w.write_all(format!("{answer}\n").as_bytes()).await.is_err() {
                 break;
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// T1 (v0.3.1 finding): a refused client that wrote its request a moment after connecting
+        /// (a busy machine) found the connection already closed, so its write failed and the page
+        /// showed a misleading "that process does not take control". Every refused client, quick
+        /// or slow, now writes its request and reads the refusal line.
+        #[test]
+        fn a_refused_client_always_reads_the_reason() {
+            let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+            unsafe { std::env::remove_var("FASTPILOT_LIVE_ANY_PEER") };
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
+            rt.block_on(async {
+                let path = std::env::temp_dir().join(format!("fp-ctl-{}.sock", std::process::id()));
+                let _ = std::fs::remove_file(&path);
+                let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+                tokio::spawn(async move {
+                    while let Ok((stream, _)) = listener.accept().await {
+                        tokio::spawn(serve(stream));
+                    }
+                });
+                for i in 0..20 {
+                    let mut s = tokio::net::UnixStream::connect(&path).await.expect("connect");
+                    // Every other client is slow to write, as on a loaded machine.
+                    if i % 2 == 1 {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    }
+                    let wrote = s.write_all(b"{\"op\":\"sessions\"}\n").await;
+                    let mut line = String::new();
+                    let read = BufReader::new(s).read_line(&mut line).await;
+                    assert!(wrote.is_ok() && read.is_ok() && line.contains("only fastpilot ui may use this socket"), "try {i}: wrote {wrote:?}, read {read:?}, line {line:?}");
+                }
+                let _ = std::fs::remove_file(&path);
+            });
         }
     }
 }

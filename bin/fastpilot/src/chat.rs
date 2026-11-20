@@ -232,7 +232,8 @@ async fn turn(text: &str, bot: u64, resume: Option<String>) -> Res<()> {
     let mcp = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp"] } } });
     let mut cmd = tokio::process::Command::new(crate::run::claude_bin());
     cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &crate::run::model_explore()])
-        .args(["--append-system-prompt", &format!("{SYSTEM}{}", context())])
+        // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
+        .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}", fastpilot_mcp::skills::index(), context())])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
         // fastpilot only, and not its `config` tool: changes go through the cards.
         .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--disallowedTools", "mcp__fastpilot__config", "--permission-mode", "dontAsk"]);

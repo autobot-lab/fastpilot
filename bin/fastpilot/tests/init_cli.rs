@@ -109,8 +109,9 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
         "✓ web",
         "2/5 Register fastpilot with Claude Code (this project)",
         "✓ registered (.mcp.json)",
-        "3/5 Install the fastpilot Skill",
+        "3/5 Install the fastpilot Skills",
         "✓ installed (version",
+        "built into fastpilot): 18 skills",
         "4/5 Example test",
         "✓ created (change its target to your app's URL)",
         "5/5 Safe limits",
@@ -125,6 +126,13 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     let mcp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.project().join(".mcp.json")).expect(".mcp.json")).expect("json");
     assert_eq!(mcp["mcpServers"]["fastpilot"]["command"], "fastpilot");
     assert_eq!(std::fs::read_to_string(b.project().join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
+    // S5 (v0.4): the whole skill library, each the repository's text.
+    for dir in std::fs::read_dir(format!("{ROOT}/skills")).expect("skills").flatten() {
+        let name = dir.file_name();
+        let repo = std::fs::read_to_string(dir.path().join("SKILL.md")).expect("repo skill");
+        let got = std::fs::read_to_string(b.project().join(".claude/skills").join(&name).join("SKILL.md")).unwrap_or_default();
+        assert_eq!(got, repo, "{name:?} installed");
+    }
     let example = std::fs::read_to_string(b.project().join("tests/example.md")).expect("example");
     assert!(example.contains("platform: web") && example.contains("target: https://example.com"), "{example}");
     assert!(!b.project().join("tests/contoh.md").exists(), "only the English example");
@@ -134,7 +142,7 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     let before = files(&b.project());
     let (code, out) = b.init(&["--yes"], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("✓ already registered (.mcp.json)") && out.contains("✓ already installed (version") && out.contains("✓ tests/example.md already exists (not changed)"), "{out}");
+    assert!(out.contains("✓ already registered (.mcp.json)") && out.contains("✓ already installed (18 skills, version") && out.contains("✓ tests/example.md already exists (not changed)"), "{out}");
     assert!(!out.contains("[y/N]"), "nothing left to ask: {out}");
     assert_eq!(files(&b.project()), before, "a second run changes nothing");
     assert_eq!(b.adds().len(), 1);
@@ -143,7 +151,7 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     std::fs::write(b.project().join(".claude/skills/fastpilot/SKILL.md"), "old skill").expect("old");
     std::fs::write(b.project().join("tests/example.md"), "my test").expect("mine");
     let (_, out) = b.init(&[], FAKE);
-    assert!(out.contains("differs from the Skill in fastpilot") && out.contains("Update it to"), "{out}");
+    assert!(out.contains("1 skill(s) differ from fastpilot") && out.contains(": fastpilot\n") && out.contains("Update them to"), "{out}");
     assert_eq!(std::fs::read_to_string(b.project().join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), "old skill");
     let (_, out) = b.init(&["--yes"], FAKE);
     assert!(out.contains("✓ updated"), "{out}");
