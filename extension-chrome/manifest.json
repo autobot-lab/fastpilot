@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fastpilot attach",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lets fastpilot (running on this machine) drive the current tab through chrome.debugger.",
   "permissions": [
     "debugger",
