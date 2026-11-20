@@ -310,7 +310,8 @@ Lewat chat, agent memakai tool `config` dengan aturan:
   hanya user. fastpilot yang sedang jalan memakai nilai saat ia mulai; perubahan file berlaku setelah restart.
 - **Lainnya** (`headful`, `model*`, `flow_timeout`, `action_timeout`, `retry_budget`, `breaker`, device default,
   `memory`, `daemon_idle`): bebas. `action_timeout` (detik, bawaan 5) adalah batas satu aksi (tap, ketik,
-  pilih, scroll); `inputText` di Android/iOS mendapat 3× nilai itu karena keyboard bisa lambat muncul.
+  pilih, scroll); `inputText` di Android/iOS mendapat 3× nilai itu karena keyboard bisa lambat muncul. Bisa juga lewat env
+  `FASTPILOT_ACTION_TIMEOUT` (env menang atas file).
 - Secret (`FASTPILOT_STATE_KEY`, token relay) tidak pernah dibaca dari file, hanya dari env. Token relay
   extension dibuat acak untuk tiap sesi; `FASTPILOT_RELAY_TOKEN` hanya untuk browser tanpa native messaging.
 - Saat `fastpilot run` (tanpa orang di depan layar), tool `config` tidak tersedia.
