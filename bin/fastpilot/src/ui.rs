@@ -1040,8 +1040,9 @@ async fn doctor_api(Query(q): Query<std::collections::HashMap<String, String>>) 
                 "area": c.area,
                 "name": c.name,
                 "status": match c.status { doctor::Status::Ok => "ok", doctor::Status::Warn => "warn", doctor::Status::Fail => "fail" },
-                "detail": c.detail,
-                "hint": c.hint,
+                // The page shows no file paths or device ids (FastTest M3); the terminal does.
+                "detail": c.screen.clone().unwrap_or_else(|| c.detail.clone()),
+                "hint": c.screen_hint.clone().or_else(|| c.hint.clone()),
                 "setup": (!c.fixes.is_empty()).then(|| format!("fastpilot setup {}", c.area)),
             })
         })

@@ -512,6 +512,7 @@ impl FastPilot {
         passed: bool,
         notes: &str,
         passed_on_retry: bool,
+        could_not_run: bool,
     ) -> Result<fastpilot_memory::Finished, String> {
         let run = self.state.runs.lock().await.remove(test_id);
         let mut run = match run {
@@ -520,6 +521,9 @@ impl FastPilot {
         };
         if passed_on_retry {
             run.passed_on_retry();
+        }
+        if could_not_run {
+            run.could_not_run();
         }
         self.collect_evidence(&mut run).await;
         run.finish(&self.state.memory, passed, notes).map_err(|e| e.to_string())
