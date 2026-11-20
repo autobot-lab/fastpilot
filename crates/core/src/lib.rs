@@ -28,7 +28,7 @@ pub use dsl::{
     Branch, Condition, Flow, FlowError, FlowStep, HttpRequest, OtpSource, Random, ReadOtp, Step, check_flow, check_flow_file, flow_to_yaml, parse_flow,
     parse_flow_file, redact, to_vars,
 };
-pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, run_flow, sessions_used};
+pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, reset_app, run_flow, sessions_used};
 pub use device::{DeviceInfo, DeviceKind, DeviceSpec, SelectError, select};
 pub use error::{Error, Result};
 pub use recording::{escape_html, filmstrip};
@@ -275,6 +275,11 @@ pub trait Driver: Send + Sync {
     /// Wipe the app's data (web: cookies and storage of the session's origin).
     async fn clear_state(&self, _app: Option<&str>) -> Result<()> {
         Err(Error::Unsupported("clearState is not supported by this driver".into()))
+    }
+    /// `--reset`: the app as if freshly installed (data, permissions) and the screen upright.
+    /// Returns what was reset, for the session's report. Mobile only.
+    async fn reset_app(&self, _app: &str) -> Result<String> {
+        Err(Error::Unsupported("--reset is for android and ios sessions".into()))
     }
     /// Visible area in snapshot coordinates, when the snapshot includes off-screen nodes (web).
     async fn viewport(&self) -> Option<Rect> {

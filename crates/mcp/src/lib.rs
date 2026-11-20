@@ -28,6 +28,8 @@ pub struct PlatformLauncher {
     web: LaunchOptions,
     browser: Mutex<Option<Arc<Browser>>>,
     devices: Devices,
+    /// `--reset`: mobile sessions reset their app before opening it.
+    fresh: std::sync::atomic::AtomicBool,
 }
 
 /// Devices this server's sessions use when a start names none (suite runner: the leased
@@ -54,7 +56,7 @@ impl PlatformLauncher {
     }
 
     pub fn with_devices(web: LaunchOptions, devices: Devices) -> Self {
-        Self { web, browser: Mutex::new(None), devices }
+        Self { web, browser: Mutex::new(None), devices, fresh: std::sync::atomic::AtomicBool::new(false) }
     }
 
     async fn browser(&self) -> fastpilot_core::Result<Arc<Browser>> {
@@ -83,6 +85,10 @@ impl Launcher for PlatformLauncher {
             Platform::Android => Ok(Box::new(fastpilot_android::AndroidDriver::start(pick(self.devices.android()).as_deref()).await?)),
             Platform::Ios => Ok(Box::new(fastpilot_ios::IosDriver::start(pick(self.devices.ios()).as_deref()).await?)),
         }
+    }
+
+    fn fresh_apps(&self) -> bool {
+        self.fresh.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -329,6 +335,11 @@ impl FastPilot {
         };
         let mut text = format!("session {id} started ({platform})");
         if let Some(target) = &args.target {
+            if self.state.launcher.fresh_apps()
+                && let Some(done) = fastpilot_core::reset_app(&*driver, platform, target).await?
+            {
+                text = format!("{text}\n{done}");
+            }
             driver.open(target).await?;
             let _ = driver.wait_idle(Duration::from_secs(3)).await;
         }
@@ -419,6 +430,12 @@ impl FastPilot {
                 tracing::warn!(error = %e, "session cleanup failed");
             }
         }
+    }
+
+    /// `--reset`: every mobile session resets its app (data, permissions, orientation) before
+    /// opening it.
+    pub fn set_reset(&self, on: bool) {
+        self.state.launcher.fresh.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Record every session from its start (headless `run --record`).
@@ -927,8 +944,9 @@ impl ServerHandler for FastPilot {
 
 /// Serve MCP over stdin/stdout until the client disconnects or SIGINT/SIGTERM arrives; either
 /// way sessions are dropped, so Chrome, agents and runners are shut down cleanly.
-pub async fn serve_stdio(web: LaunchOptions) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn serve_stdio(web: LaunchOptions, reset: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = FastPilot::new(web);
+    server.set_reset(reset);
     let service = server.clone().serve(rmcp::transport::stdio()).await?;
     tokio::select! {
         r = service.waiting() => { r?; }

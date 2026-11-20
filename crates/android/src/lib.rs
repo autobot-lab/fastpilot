@@ -237,6 +237,9 @@ pub struct AndroidDriver {
     recording: tokio::sync::Mutex<Option<TcpStream>>,
     /// close() ran: Drop must not restore or quit again.
     closed: std::sync::atomic::AtomicBool,
+    /// `--reset`: keep the screen upright. Starting an activity through the agent brings back the
+    /// rotation that was locked when UiAutomation connected, so it is set again after every open.
+    upright: std::sync::atomic::AtomicBool,
 }
 
 /// Screen on and keyguard dismissed before the agent starts; a PIN/pattern lock stays the
@@ -332,6 +335,7 @@ impl AndroidDriver {
             refs: Mutex::default(),
             web: tokio::sync::Mutex::new(None),
             settled: std::sync::atomic::AtomicBool::new(false),
+            upright: std::sync::atomic::AtomicBool::new(false),
             app: Mutex::new(None),
             check_crash: std::sync::atomic::AtomicBool::new(false),
             policy: Policy::from_env(),
@@ -524,6 +528,19 @@ impl AndroidDriver {
         let pkg = target.split('/').next().unwrap_or(target).to_owned();
         let _ = self.shell("logcat -b crash -c").await;
         *lock(&self.app) = Some(pkg);
+    }
+
+    /// Portrait with auto-rotate off, when `--reset` asked for it (fixed command, no flow input).
+    /// UiAutomation puts the user's rotation back when the session ends.
+    async fn keep_upright(&self) -> Result<()> {
+        if !self.upright.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.adb
+            .shell(&self.serial, "cmd window user-rotation lock 0 || { settings put system accelerometer_rotation 0; settings put system user_rotation 0; }")
+            .await
+            .map(|_| ())
+            .map_err(|e| CoreError::Driver(e.to_string()))
     }
 
     async fn shell(&self, cmd: &str) -> Result<String> {
@@ -739,7 +756,7 @@ impl Driver for AndroidDriver {
             return Err(CoreError::Driver(out.trim().to_owned()));
         }
         self.track(target).await;
-        Ok(())
+        self.keep_upright().await
     }
 
     async fn snapshot(&self) -> Result<Snapshot> {
@@ -1045,6 +1062,16 @@ impl Driver for AndroidDriver {
         Ok(())
     }
 
+    /// `--reset`: `pm clear` (data, caches, runtime permissions) and the screen upright with
+    /// auto-rotate off (fixed values, nothing from the flow reaches the shell but the checked id).
+    async fn reset_app(&self, app: &str) -> Result<String> {
+        let pkg = shell_safe(app)?.to_owned();
+        self.clear_state(Some(&pkg)).await?;
+        self.upright.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.keep_upright().await?;
+        Ok("data and permissions cleared (pm clear), screen upright".into())
+    }
+
     /// `pm clear`: data, caches and runtime permissions; the app is stopped too.
     async fn clear_state(&self, app: Option<&str>) -> Result<()> {
         let pkg = self.app_or(app)?;
@@ -1104,7 +1131,7 @@ impl Driver for AndroidDriver {
             return Err(CoreError::Driver(out.trim().to_owned()));
         }
         self.track(app).await;
-        Ok(())
+        self.keep_upright().await
     }
 }
 

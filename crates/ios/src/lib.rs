@@ -1312,6 +1312,19 @@ impl Driver for IosDriver {
         Ok(())
     }
 
+    /// `--reset` on a simulator: the data container wiped and every privacy permission reset.
+    /// simctl has no orientation command, so the orientation stays as it is.
+    async fn reset_app(&self, app: &str) -> Result<String> {
+        if self.device {
+            return Err(CoreError::Unsupported(
+                "--reset needs a simulator: a device has no simctl to wipe app data and permissions".into(),
+            ));
+        }
+        self.clear_state(Some(app)).await?;
+        simctl(&["privacy", &self.udid, "reset", "all", app]).await?;
+        Ok("data and permissions cleared (simctl); orientation left as it is (simctl cannot rotate)".into())
+    }
+
     async fn clear_keychain(&self) -> Result<()> {
         if self.device {
             return Err(CoreError::Unsupported(

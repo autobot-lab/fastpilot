@@ -23,7 +23,7 @@ commands:
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1 + token)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
-  mcp     serve MCP over stdio (what MCP clients run)
+  mcp     serve MCP over stdio (what MCP clients run); --reset: mobile sessions reset their app first
   bench [web|android|ios]   print snapshot and tap->diff latency against the demo login
           [--iterations N]      (android: booted device with examples/demo-android installed)
   bench tokens [web|android|ios]   tokens per snapshot, per 1-step diff and per login run_flow
@@ -32,7 +32,7 @@ commands:
                                      95% upper bound of the failure rate
   ios doctor [udid]   why a physical iPhone can or cannot run tests yet (Xcode, signing,
                       Developer Mode, pairing, profile expiry), each with the fix
-  run <tests dir|file.md> [--workers N] [--record] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+  run <tests dir|file.md> [--workers N] [--record] [--reset] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless: your Claude Code (`claude -p`, your login, no API key) drives each
           natural-language test case over the same tools; exits non-zero when a test
           outside quarantine fails (FASTPILOT_CLAUDE: path to the claude CLI)
@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let web = LaunchOptions { headless: !headful, executable: None };
 
     match args.first().map(String::as_str) {
-        Some("mcp") => live(|| fastpilot_mcp::serve_stdio(web), "mcp").await,
+        Some("mcp") => live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await,
         Some("config") => config_cmd(&args[1..]),
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,
@@ -194,6 +194,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 junit: value("--junit").map(Into::into),
                 html: value("--html").map(Into::into),
                 record: flag("--record"),
+                reset: flag("--reset"),
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 web,
             };
