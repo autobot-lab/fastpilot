@@ -386,6 +386,11 @@ pub fn main(argv: &[String]) -> Res<()> {
             "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" | "--update" => {
                 flags.push(a.as_str());
             }
+            // Help, not a step: `open --help` used to open https://--help.
+            "--help" | "-h" => {
+                println!("{HELP}");
+                return Ok(());
+            }
             _ => args.push(a.clone()),
         }
     }
@@ -400,7 +405,11 @@ pub fn main(argv: &[String]) -> Res<()> {
     match cmd {
         "help" => println!("{HELP}"),
         "open" => {
-            let target = abs_if_file(arg(1, "a URL, path or app")?);
+            let given = arg(1, "a URL, path or app")?;
+            if given.starts_with("--") {
+                return Err(format!("unknown option `{given}` for open (see `fastpilot help`)").into());
+            }
+            let target = abs_if_file(given);
             if ctx.has_session()? {
                 let looks_url = target.contains("://") || target.contains('/') || target.ends_with(".html");
                 step(if looks_url { format!("- openUrl: {}\n", q(&target)) } else { format!("- launchApp: {}\n", q(&target)) })?;

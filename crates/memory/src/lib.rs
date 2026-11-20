@@ -265,6 +265,17 @@ pub struct Run {
 }
 
 impl Run {
+    /// A pass with failed flows on the way is not a clean pass: the history counts it as not clean
+    /// (QA: the title said "pass" while the history said `pass 0/1`). Says so next to the verdict.
+    fn not_clean(&self, passed: bool) -> Option<String> {
+        (passed && self.failures > 0).then(|| {
+            format!(
+                "passed after {} failed flow(s): not a clean pass, so the history below does not count it as one",
+                self.failures
+            )
+        })
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -416,6 +427,9 @@ impl Run {
 
         let status = if passed { "pass" } else { "fail" };
         let mut md = format!("# {} — {status}\n\n", self.test_id);
+        if let Some(note) = self.not_clean(passed) {
+            md.push_str(&format!("> {note}\n\n"));
+        }
         if let Some(q) = &quarantine {
             md.push_str(&format!("> **QUARANTINED** since {}: {} (its result does not fail the suite)\n\n", q.since, q.reason));
         }
@@ -504,6 +518,9 @@ impl Run {
         let mut b = String::new();
         let status = if passed { "pass" } else { "fail" };
         b.push_str(&format!("<h1>{} <span class=\"badge {status}\">{status}</span></h1>", e(&self.test_id)));
+        if let Some(note) = self.not_clean(passed) {
+            b.push_str(&format!("<p class=\"warn\">{}</p>", e(&note)));
+        }
         if let Some(q) = q {
             b.push_str(&format!("<p class=\"warn\">QUARANTINED since {}: {}</p>", e(&q.since), e(&q.reason)));
         }
@@ -731,4 +748,22 @@ mod tests {
         assert!(mem.begin_run("../evil").is_err());
         let _ = fs::remove_dir_all(dir);
     }
+
+    /// QA (Low): a run that passed after failed flows said "pass" while the history said
+    /// `pass 0/1`. The report now says why next to the verdict.
+    #[test]
+    fn a_pass_after_failed_flows_says_it_is_not_clean() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-mem-clean-{}", std::process::id()));
+        let mem = Memory::new(&dir, Mode::ReadWrite);
+        let mut run = mem.begin_run("login-ok").expect("run");
+        run.failures = 1;
+        assert!(run.not_clean(false).is_none() && run.not_clean(true).is_some());
+        let report = run.finish(&mem, true, "recovered").expect("finish");
+        let md = std::fs::read_to_string(&report.report).expect("report.md");
+        assert!(md.contains("passed after 1 failed flow(s): not a clean pass"), "{md}");
+        let clean = mem.begin_run("login-ok").expect("run");
+        assert!(clean.not_clean(true).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 }

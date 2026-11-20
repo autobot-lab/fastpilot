@@ -2127,8 +2127,16 @@ mod tests {
         assert_eq!(reg.active(), Some("web1"));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn stops_early_with_reason_and_candidates() {
+    /// Its text has the action limit in it ("timeout 5000ms"): FASTPILOT_ACTION_TIMEOUT, which
+    /// another test sets, must not change under it (ENV_LOCK).
+    #[test]
+    fn stops_early_with_reason_and_candidates() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().expect("runtime");
+        rt.block_on(stops_early_cases());
+    }
+
+    async fn stops_early_cases() {
         let mut reg = SessionRegistry::default();
         let report = run(&mut reg, "- session: { start: web1 }\n- tapOn: Login\n- tapOn: Masuk\n").await;
         let out = report.to_string();
