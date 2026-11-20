@@ -66,7 +66,10 @@ fn request(port: u16, method: &str, path: &str, cookie: &str, body: &str, origin
 }
 
 fn env_for(cmd: &mut std::process::Command, home: &Path, entries: &Path, github: u16) {
+    // Project files (.fastpilot: states, memory, snapshots) stay in the temp folder too,
+    // never in the working directory of `cargo test`.
     cmd.env("HOME", home)
+        .env("FASTPILOT_DIR", home.join("project-fastpilot"))
         .env_remove("FASTPILOT_CONFIG")
         .env("FASTPILOT_SCHEDULER", "launchd")
         .env("FASTPILOT_SCHEDULER_DIR", entries)

@@ -89,11 +89,20 @@ fn no_limits() -> std::path::PathBuf {
     file
 }
 
+/// Live-session files of the servers these tests start: a temp folder, never the user's
+/// `~/.fastpilot/live` (a test that ends mid-run must leave nothing there).
+fn live_dir() -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("fastpilot-android-live-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("live dir");
+    d
+}
+
 fn server() -> TokioChildProcess {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
         c.arg("mcp")
             .current_dir(root)
+            .env("FASTPILOT_LIVE_DIR", live_dir())
             .env("FASTPILOT_CONFIG", no_limits())
             .env("DEMO_PASS", "rahasia123")
             .env("FASTPILOT_VARS", "DEMO_PASS")
@@ -292,6 +301,8 @@ async fn android_reads_otp_from_sms() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
     assert!(ok && out.contains("code from sms in ${SMS_OTP}"), "{out}");
+    let published = std::fs::read_dir(live_dir()).expect("live dir").flatten().any(|e| e.path().extension().is_some_and(|x| x == "json"));
+    assert!(published, "the server publishes its live session in the test's own folder");
     assert!(!out.contains(&code) && out.contains("copyTextFrom \"Email\"") && out.contains("= ***"), "{out}");
     client.cancel().await.expect("shutdown");
 }
@@ -392,6 +403,7 @@ async fn android_through_a_configured_adb_server() {
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
         c.arg("mcp")
             .current_dir(root)
+            .env("FASTPILOT_LIVE_DIR", live_dir())
             .env("DEMO_PASS", "rahasia123")
             .env("FASTPILOT_VARS", "DEMO_PASS")
             .env("FASTPILOT_ADB_SERVER", format!("127.0.0.1:{port}"))
@@ -418,7 +430,7 @@ async fn android_through_a_configured_adb_server() {
 
     // Nothing listening there: a clear error, and no local adb server is started in its place.
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(root).env("FASTPILOT_ADB_SERVER", "127.0.0.1:1");
+        c.arg("mcp").current_dir(root).env("FASTPILOT_LIVE_DIR", live_dir()).env("FASTPILOT_ADB_SERVER", "127.0.0.1:1");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: x, platform: android }\n" })).await;

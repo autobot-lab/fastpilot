@@ -137,7 +137,7 @@ fn ready(area: &str, checks: &[&Check]) -> String {
     let detail = |name: &str| checks.iter().find(|c| c.name == name).map(|c| c.detail.clone()).unwrap_or_default();
     match area {
         "web" => "Chrome starts headless".into(),
-        "android" => format!("device: {}", clip(&detail("device"), 40)),
+        "android" => devices(&detail("device")),
         "ios" => clip(&format!("{} · {}", detail("Xcode"), detail("simulator")), 50),
         _ => format!("Claude Code {}", detail("Claude Code").replace(" (Claude Code)", "")),
     }
@@ -155,6 +155,17 @@ fn gap(c: &Check) -> String {
         "runner" => "test runner not built yet".into(),
         "Claude Code" => "Claude Code is not installed".into(),
         _ => clip(&c.detail, 45),
+    }
+}
+
+/// Every ready Android device, by serial (doctor's line is "serial (model), serial (model)"); it
+/// showed only the first one, clipped (T1-T3).
+fn devices(detail: &str) -> String {
+    let serials: Vec<&str> = detail.split(", ").filter_map(|d| d.split(" (").next()).map(str::trim).filter(|s| !s.is_empty()).collect();
+    match serials.as_slice() {
+        [] => "device ready".to_owned(),
+        [one] => format!("device: {one}"),
+        many => format!("{} devices: {}", many.len(), many.join(", ")),
     }
 }
 
@@ -177,7 +188,7 @@ fn registered(scope: &str, claude: &str) -> bool {
         return std::fs::read_to_string(".mcp.json")
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|v| v["mcpServers"]["fastpilot"].is_object());
+            .is_some_and(|v| runs_fastpilot(&v["mcpServers"]["fastpilot"]));
     }
     std::process::Command::new(claude)
         .args(["mcp", "get", "fastpilot"])
@@ -188,12 +199,42 @@ fn registered(scope: &str, claude: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// A `.mcp.json` server entry that really starts fastpilot's MCP server (`fastpilot mcp`, or
+/// `npx -y fastpilot mcp`), not just any entry named "fastpilot" (T1-T3).
+fn runs_fastpilot(entry: &serde_json::Value) -> bool {
+    let command = entry["command"].as_str().unwrap_or("");
+    let args: Vec<&str> = entry["args"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+    let name = Path::new(command).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let is_fastpilot = |s: &str| s == "fastpilot" || s.starts_with("fastpilot@");
+    let mcp_last = args.last() == Some(&"mcp");
+    match name {
+        n if is_fastpilot(n) => mcp_last,
+        "npx" | "npx.cmd" => mcp_last && args.iter().any(|a| is_fastpilot(a)),
+        _ => false,
+    }
+}
+
 fn register(mode: Mode, scope: &str) {
     let claude = crate::run::claude_bin();
     let args = add_args(scope);
     let shown = format!("claude {}", args.join(" "));
     if registered(scope, &claude) {
         println!("  ✓ already registered{}", if scope == "project" { " (.mcp.json)" } else { "" });
+        return;
+    }
+    // A "fastpilot" entry that runs something else: say so; never replace it without the user.
+    let other = (scope == "project")
+        .then(|| std::fs::read_to_string(".mcp.json").ok())
+        .flatten()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v["mcpServers"]["fastpilot"].is_object());
+    if let Some(v) = other {
+        let e = &v["mcpServers"]["fastpilot"];
+        println!(
+            "  ! .mcp.json has a \"fastpilot\" entry that does not start fastpilot (command: {} {}).\n    Fix or remove that entry, then run fastpilot init again.",
+            e["command"].as_str().unwrap_or("?"),
+            e["args"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+        );
         return;
     }
     let installed = std::process::Command::new(&claude).arg("--version").stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
@@ -340,4 +381,39 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("mcp"));
         assert!(EXAMPLE.contains("platform: web") && EXAMPLE.contains("target: https://example.com") && EXAMPLE.contains("id: example"));
     }
+
+    /// T1-T3: any entry named "fastpilot" counted as registered.
+    #[test]
+    fn only_an_entry_that_starts_fastpilot_counts_as_registered() {
+        use serde_json::json;
+        for ok in [
+            json!({ "command": "fastpilot", "args": ["mcp"] }),
+            json!({ "command": "/usr/local/bin/fastpilot", "args": ["mcp"] }),
+            json!({ "command": "npx", "args": ["-y", "fastpilot", "mcp"] }),
+            json!({ "command": "npx", "args": ["-y", "fastpilot@0.4.0", "mcp"] }),
+        ] {
+            assert!(runs_fastpilot(&ok), "{ok}");
+        }
+        // What init and demo write themselves always counts.
+        let (command, args) = crate::demo::mcp_command();
+        assert!(runs_fastpilot(&json!({ "command": command, "args": args })));
+        for bad in [
+            json!({ "command": "node", "args": ["evil.js"] }),
+            json!({ "command": "fastpilot", "args": ["ui"] }),
+            json!({ "command": "npx", "args": ["-y", "other", "mcp"] }),
+            json!({ "command": "sh", "args": ["-c", "fastpilot mcp"] }),
+            json!({}),
+        ] {
+            assert!(!runs_fastpilot(&bad), "{bad}");
+        }
+    }
+
+
+    /// T1-T3: step 1/5 listed only the first device.
+    #[test]
+    fn every_ready_android_device_is_listed() {
+        assert_eq!(devices("emulator-5554 (Android SDK built for arm64), emulator-5556 (sdk gphone64 arm64)"), "2 devices: emulator-5554, emulator-5556");
+        assert_eq!(devices("R58M12ABCDE (SM-A515F)"), "device: R58M12ABCDE");
+    }
+
 }

@@ -2235,8 +2235,11 @@ mod tests {
             assert!(e.to_string().contains("allow_eval_script true") && e.to_string().contains("Jalankan JavaScript bebas"), "{e}");
             assert!(!crate::policy::eval_unlocked());
             // Security Low 3: an empty variable (an MCP entry an agent wrote) does not empty the list.
-            unsafe { std::env::set_var("FASTPILOT_BLOCK_ACTIONS", "") };
-            assert_eq!(crate::policy::blocked_words().len(), crate::policy::DEFAULT_BLOCKED.len());
+            // T1-T3 (Security Low 1): nor does a value with no item in it, like "," or " , ".
+            for empty in ["", ",", " , ", ",,"] {
+                unsafe { std::env::set_var("FASTPILOT_BLOCK_ACTIONS", empty) };
+                assert_eq!(crate::policy::blocked_words().len(), crate::policy::DEFAULT_BLOCKED.len(), "{empty:?}");
+            }
             unsafe { std::env::remove_var("FASTPILOT_BLOCK_ACTIONS") };
             // Option C: the user's `allow_eval_script = true` unlocks scripts.
             unsafe { std::env::set_var("FASTPILOT_ALLOW_EVAL_SCRIPT", "true") };
