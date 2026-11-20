@@ -1543,6 +1543,7 @@ fn save_file(dir: &str, file: &str, bytes: &[u8]) -> Result<String> {
     std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&path, bytes))
         .map_err(|e| Error::Flow(format!("cannot write {}: {e}", path.display())))?;
+    crate::config::keep_out_of_git();
     Ok(path.display().to_string())
 }
 

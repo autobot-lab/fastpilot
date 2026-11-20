@@ -197,6 +197,7 @@ fn read_secret(prompt: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
 
 #[tokio::main]
 async fn main() {
+    fastpilot_core::config::keep_out_of_git();
     // An error for people in the terminal: one plain line, not Rust's `Error: "…"`.
     if let Err(e) = run_main().await {
         eprintln!("fastpilot: {e}");

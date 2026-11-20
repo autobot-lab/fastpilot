@@ -251,6 +251,7 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
         {
             tracing::warn!(error = %e, "the conversation is not saved in History");
         }
+        fastpilot_core::config::keep_out_of_git();
     });
     Ok(())
 }
@@ -1609,8 +1610,11 @@ fn decide_setting(id: &str, data: &Value, apply: bool, confirm: Option<&str>) ->
     {
         return Err(format!("Type {word} to confirm."));
     }
-    config::write(&c.key, after).map_err(|e| format!("The settings file could not be written, so nothing changed: {e}"))?;
-    change::audit(&c.key, before, after, "dashboard", "applied");
+    change::audit_or_refuse(&c.key, before, after, "dashboard", "applied")?;
+    if let Err(e) = config::write(&c.key, after) {
+        change::audit(&c.key, before, after, "dashboard", "failed");
+        return Err(format!("The settings file could not be written, so nothing changed: {e}"));
+    }
     let note = if shown.level == change::Level::Loosen {
         // M6: the conversation that may have read a page does not go on with the looser limit.
         if let Some(agent) = card_agent(id) {
@@ -1646,8 +1650,12 @@ pub fn undo(id: &str) -> Res<String> {
     if change::raw(&c.key)? != c.after {
         return Err("This setting changed again since, so nothing was undone.".into());
     }
-    config::write(&c.key, c.before.as_deref()).map_err(|e| format!("The settings file could not be written: {e}"))?;
-    change::audit(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "applied");
+    // Undo puts back the earlier, maybe looser value: logged first, like a confirmed loosening.
+    change::audit_or_refuse(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "applied")?;
+    if let Err(e) = config::write(&c.key, c.before.as_deref()) {
+        change::audit(&c.key, c.after.as_deref(), c.before.as_deref(), "dashboard", "failed");
+        return Err(format!("The settings file could not be written: {e}"));
+    }
     let note = "Undone: back to how it was.";
     set_card(id, |p| {
         p.status = "undone".into();
@@ -1967,6 +1975,42 @@ mod tests {
         for r in ["applied", "expired"] {
             assert!(audit.contains(&format!("\"result\":\"{r}\"")), "{audit}");
         }
+        *chat_of("default") = Chat::default();
+    }
+
+    /// Security Lows 6 and 8: "don't allow Pay" never makes a card; a loosening whose activity
+    /// log line cannot be written is not made, and the person is told why.
+    #[test]
+    fn no_card_for_a_no_and_no_change_without_its_log_line() {
+        let cfg = Cfg::new("lows");
+        let pay = settings(json!([{ "setting": "block_actions", "remove": ["pay"] }]));
+        for user in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "jangan izinkan Pay"] {
+            let (_, cards, _) = proposals_in(&pay, &mut turn(user));
+            assert!(cards.iter().all(|c| c.status != "pending"), "{user}: {cards:?}");
+        }
+        let (_, cards, _) = proposals_in(&pay, &mut turn("allow Pay please"));
+        let id = cards[0].id.clone();
+        open_cards(cards);
+        // The log cannot be written: a folder where the file should be.
+        let _ = std::fs::remove_file(cfg.0.join("audit.jsonl"));
+        std::fs::create_dir_all(cfg.0.join("audit.jsonl")).expect("block the log");
+        let e = decide(&id, true, None, None, Some("Pay")).unwrap_err();
+        assert!(e.contains("activity log") && e.contains("nothing changed"), "{e}");
+        assert!(!cfg.text().contains("!pay"), "{}", cfg.text());
+        let _ = std::fs::remove_dir_all(cfg.0.join("audit.jsonl"));
+        // Re-check B: Undo puts a looser value back, so it is logged first too.
+        let block = settings(json!([{ "setting": "block_actions", "add": ["refund"] }]));
+        let (_, cards, _) = proposals_in(&block, &mut turn("block refund"));
+        assert_eq!(cards[0].status, "applied", "{cards:?}");
+        let id = cards[0].id.clone();
+        open_cards(cards);
+        assert!(cfg.text().contains("refund"));
+        let _ = std::fs::remove_file(cfg.0.join("audit.jsonl"));
+        std::fs::create_dir_all(cfg.0.join("audit.jsonl")).expect("block the log");
+        let e = undo(&id).unwrap_err();
+        assert!(e.contains("activity log"), "{e}");
+        assert!(cfg.text().contains("refund"), "not undone: {}", cfg.text());
+        let _ = std::fs::remove_dir_all(cfg.0.join("audit.jsonl"));
         *chat_of("default") = Chat::default();
     }
 

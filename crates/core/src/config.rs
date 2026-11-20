@@ -104,6 +104,38 @@ pub const PROVIDERS: &[(&str, Option<&str>)] = &[
     ("custom", None),
 ];
 
+/// The project's fastpilot folder: `FASTPILOT_DIR`, else `.fastpilot` in the current folder.
+pub fn project_dir() -> PathBuf {
+    var_os("FASTPILOT_DIR").map(PathBuf::from).unwrap_or_else(|| ".fastpilot".into())
+}
+
+/// Security (Low 9): chat transcripts, runs and saved logins live in the project's `.fastpilot`,
+/// and git does not keep their 0600 permissions. Once that folder exists, it gets a `.gitignore`
+/// with `*`, never over a file or a link someone put there, and only in a folder named
+/// `.fastpilot` (a custom `FASTPILOT_DIR` may be a folder the user keeps in git on purpose).
+pub fn keep_out_of_git() {
+    ignore_in(&project_dir());
+}
+
+/// Everything is private by default (new kinds of files too); visual baselines are made to be
+/// shared, so they stay, without a run's actual and diff images (Security re-check F).
+const IGNORE: &str = "# fastpilot: test runs, chats and saved logins of this computer; not for git.\n*\n!.gitignore\n# Visual baselines are shared with the team (not this computer's actual and diff images).\n!baselines/\n!baselines/*.png\nbaselines/*.actual.png\nbaselines/*.diff.png\n";
+
+fn ignore_in(d: &std::path::Path) {
+    // A real folder, not a link a cloned repo planted (Security re-check F).
+    if d.file_name().is_none_or(|n| n != ".fastpilot") || !d.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        return;
+    }
+    let p = d.join(".gitignore");
+    if p.symlink_metadata().is_ok() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+        use std::io::Write;
+        let _ = f.write_all(IGNORE.as_bytes());
+    }
+}
+
 pub fn path() -> PathBuf {
     if let Some(p) = std::env::var_os("FASTPILOT_CONFIG").filter(|p| !p.is_empty()) {
         return p.into();
@@ -593,6 +625,49 @@ pub fn describe() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_project_folder_stays_out_of_git() {
+        let root = std::env::temp_dir().join(format!("fastpilot-ignore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let d = root.join(".fastpilot");
+        ignore_in(&d);
+        assert!(!d.exists(), "a missing folder is not made");
+        std::fs::create_dir_all(&d).expect("dir");
+        ignore_in(&d);
+        assert!(std::fs::read_to_string(d.join(".gitignore")).expect("written").lines().any(|l| l == "*"));
+        // What git makes of it: private files ignored, baselines kept (when git is here).
+        if std::process::Command::new("git").arg("init").arg("-q").arg(&root).status().is_ok_and(|s| s.success()) {
+            for (f, ignored) in [("history/chats/c.json", true), ("states/login.json", true), ("baselines/home.png", false), ("baselines/home.diff.png", true), (".gitignore", false)] {
+                let st = std::process::Command::new("git").arg("-C").arg(&root).args(["check-ignore", "-q", "--no-index"]).arg(format!(".fastpilot/{f}")).status().expect("git");
+                assert_eq!(st.success(), ignored, "{f}");
+            }
+        }
+        // Never over the user's own file, and never in a folder with another name.
+        std::fs::write(d.join(".gitignore"), "mine\n").expect("own");
+        ignore_in(&d);
+        assert_eq!(std::fs::read_to_string(d.join(".gitignore")).expect("kept"), "mine\n");
+        let other = root.join("tests");
+        std::fs::create_dir_all(&other).expect("dir");
+        ignore_in(&other);
+        assert!(!other.join(".gitignore").exists());
+        #[cfg(unix)]
+        {
+            let linked = root.join("l/.fastpilot");
+            std::fs::create_dir_all(&linked).expect("dir");
+            std::os::unix::fs::symlink(root.join("victim"), linked.join(".gitignore")).expect("link");
+            ignore_in(&linked);
+            assert!(!root.join("victim").exists(), "a link is not followed");
+            // A `.fastpilot` that is itself a link: nothing is written in its target.
+            std::fs::create_dir_all(root.join("target")).expect("dir");
+            let planted = root.join("p");
+            std::fs::create_dir_all(&planted).expect("dir");
+            std::os::unix::fs::symlink(root.join("target"), planted.join(".fastpilot")).expect("link");
+            ignore_in(&planted.join(".fastpilot"));
+            assert!(!root.join("target/.gitignore").exists(), "a linked .fastpilot is left alone");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn env_wins_file_fills_in_secrets_never_from_file() {
