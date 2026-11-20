@@ -4,7 +4,7 @@ Ada dua cara memakai mesin lain:
 
 | Cara | fastpilot jalan di | Device/Chrome di | Kapan dipakai |
 |---|---|---|---|
-| A. Hanya device di mesin lain | laptop | mesin lain | Emulator Android atau Chrome di PC Linux; lihat README › [Device di mesin lain](../README.md#device-di-mesin-lain) |
+| A. Hanya device di mesin lain | laptop | mesin lain | Emulator Android atau Chrome di PC Linux; lihat Guide › [Device di mesin lain](guide.md#device-di-mesin-lain) |
 | B. fastpilot di mesin lain | mesin lain | mesin lain | iOS (butuh Mac) dari laptop non-Mac, atau semua device di satu mesin kuat |
 
 Halaman ini membahas cara B, lalu [simslim](#simulator-ios-lebih-ringan-simslim) untuk menghemat memori simulator iOS.
