@@ -175,6 +175,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/schedules/report", get(schedule_report))
         .route("/api/chat", get(chat_api).post(chat_send))
         .route("/api/chat/decide", post(chat_decide))
+        .route("/api/chat/run", post(chat_run))
         .route("/api/provider", get(provider_api).post(provider_change))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -422,7 +423,16 @@ async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
 /// `{id, apply}`: the user's click on a proposal card.
 async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_u64() else { return refuse(StatusCode::BAD_REQUEST, "id wajib diisi") };
-    match crate::chat::decide(id, body["apply"] == true) {
+    match crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), body.get("edit").filter(|e| e.is_object())) {
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
+/// `{id}`: Run now on a saved test's card.
+async fn chat_run(axum::Json(body): axum::Json<Value>) -> Response {
+    let Some(id) = body["id"].as_u64() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
+    match crate::chat::run_saved(id) {
         Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state() })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }

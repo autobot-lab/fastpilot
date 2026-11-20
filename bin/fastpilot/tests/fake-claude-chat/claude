@@ -2,7 +2,8 @@
 """A stand-in for Claude Code's `claude -p --output-format stream-json` in the `fastpilot ui` chat
 tests. It starts the MCP server named in --mcp-config (`fastpilot mcp`) and, when the message asks
 for a test, opens the demo login page and checks it over real MCP. It then answers with proposal
-blocks depending on the message: "jadwal" -> a schedule, "every 2 hours" -> every 2 hours
+blocks depending on the message: "save it" -> a test (+ "every 2 hours": with its schedule),
+"../" -> tests with dangerous file names, "jadwal" -> a schedule, "every 2 hours" -> every 2 hours
 08:00-20:00 ("every 30 hours" -> refused), "blokir" -> stricter limits,
 "longgar" -> looser limits (which fastpilot must refuse). Each call is logged as JSON in
 $FAKE_CLAUDE_LOG. Env: FAKE_CHAT_TESTS (tests path for the schedule), FAKE_CHAT_DELAY_MS.
@@ -16,6 +17,12 @@ if argv == ["--version"]:
 
 def opt(name):
     return argv[argv.index(name) + 1] if name in argv else None
+
+# Not the dashboard chat (a scheduled `fastpilot run` started from a chat card): the run stand-in.
+if "fastpilot bot" not in (opt("--append-system-prompt") or ""):
+    here = os.path.dirname(os.path.abspath(__file__))
+    run = os.path.join(here, "..", "fake-claude", "claude")
+    os.execv(sys.executable, [sys.executable, run, *argv])
 
 prompt = sys.stdin.read()
 log_dir = os.environ.get("FAKE_CLAUDE_LOG")
@@ -71,7 +78,7 @@ if "jadwal" in low:
     text.append("Ini jadwalnya, cek dulu ya:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Login harian", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "day", "time": "09:00", "notify": {"webhook": True, "os": True}}) + "\n```")
-if "every 2 hours" in low:
+if "every 2 hours" in low and "save it" not in low:
     text.append("Here it is:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Checkout every 2 hours", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}) + "\n```")
@@ -79,6 +86,18 @@ if "every 30 hours" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Too slow", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "hours", "hours": 30}) + "\n```")
+if "save it" in low:
+    # D1: a test as structured data, with or without its schedule; FAKE_CHAT_TEST_ID sets its id.
+    test = {"kind": "test", "title": "Login with the demo account", "platform": "web", "target": "examples/demo/login.html",
+            "steps": ["Open the login page and sign in as a@b.com with ${DEMO_PASS}", "Check that the Dashboard shows Budi"]}
+    if os.environ.get("FAKE_CHAT_TEST_ID"):
+        test["id"] = os.environ["FAKE_CHAT_TEST_ID"]
+    if "every 2 hours" in low:
+        test["schedule"] = {"every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}
+    text.append("I wrote the test from your request:\n```fastpilot-proposal\n" + json.dumps(test) + "\n```")
+if "../" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "../../outside", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "/tmp/fastpilot-evil", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
 if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
 if "javascript" in low:

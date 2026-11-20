@@ -46,11 +46,15 @@ fn start_ui(home: &Path) -> Ui {
 }
 
 fn start_ui_with(home: &Path, env: &[(&str, &str)]) -> Ui {
+    start_ui_in(home, Path::new(ROOT), env)
+}
+
+fn start_ui_in(home: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ui {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
     cmd.envs(env.iter().copied());
     let mut child = cmd
         .args(["ui", "--no-open"])
-        .current_dir(ROOT)
+        .current_dir(cwd)
         .env("HOME", home)
         .env_remove("FASTPILOT_CONFIG")
         .env_remove("FASTPILOT_BLOCK_ACTIONS")
@@ -215,6 +219,137 @@ fn chat_schedules_every_n_hours_after_a_click() {
     let text = std::fs::read_to_string(&plist).expect("OS entry");
     assert_eq!(text.matches("<key>Hour</key>").count(), 7, "{text}");
     assert!(text.contains("<key>Hour</key><integer>8</integer>") && text.contains("<key>Hour</key><integer>20</integer>"), "{text}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// D1: one sentence in Chat -> a "Save test & schedule" card -> nothing written until Save &
+/// schedule -> the file (in the project's tests folder, written by the server from the card's data),
+/// the schedule and its OS entry, and a first run that passes and shows in Live. The same name is not
+/// overwritten; dangerous file names are refused and nothing lands outside the tests folder.
+#[test]
+fn chat_saves_a_test_and_its_schedule_only_after_a_click() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-d1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::create_dir_all(project.join("examples/demo")).expect("project");
+    for f in std::fs::read_dir(format!("{ROOT}/examples/demo")).expect("demo").flatten() {
+        if f.path().is_file() {
+            std::fs::copy(f.path(), project.join("examples/demo").join(f.file_name())).expect("copy");
+        }
+    }
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CLAUDE_DELAY_MS", "600"), ("DEMO_PASS", "rahasia123"), ("FASTPILOT_VARS", "DEMO_PASS"), ("FASTPILOT_RETRY_BUDGET", "0"), ("FASTPILOT_NOTIFY_DRY", "1")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+
+    let (st, body) = post("/api/chat", json!({ "message": "write a test for the demo login, save it and run it every 2 hours" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let card = v["messages"][1]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["schedules"].as_bool()), (Some("test"), Some("pending"), Some(true)), "{card}");
+    assert_eq!(card["title"], "Login with the demo account", "the title, not a path: {card}");
+    assert_eq!(card["steps"].as_array().map(Vec::len), Some(2), "{card}");
+    assert!(card["rows"].to_string().contains("every 2 hours, 08:00–20:00") && card["rows"].to_string().contains("notify on this computer"), "{card}");
+    assert!(card["detail"].as_str().is_some_and(|d| d.contains("tests/login-with-the-demo-account.md")), "the path only in the details: {card}");
+    // Nothing is written before the click, whatever the bot said.
+    assert!(!project.join("tests").exists() && !home.join(".fastpilot/schedules.json").exists());
+
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "schedule" }));
+    assert_eq!(st, 200, "{body}");
+    assert!(body.contains("Saved and scheduled") && body.contains("first run has started"), "{body}");
+    let file = project.join("tests/login-with-the-demo-account.md");
+    let text = std::fs::read_to_string(&file).expect("test file");
+    assert_eq!(text, "# Login with the demo account\nid: login-with-the-demo-account\nplatform: web\ntarget: examples/demo/login.html\n- Open the login page and sign in as a@b.com with ${DEMO_PASS}\n- Check that the Dashboard shows Budi\n");
+    assert!(!text.contains("rahasia123"));
+    let stored = std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("schedule");
+    assert!(stored.contains(&file.to_string_lossy().into_owned()) && stored.contains("\"hours\": 2"), "{stored}");
+    let plist = std::fs::read_to_string(home.join("LaunchAgents/dev.fastpilot.schedule.login-with-the-demo-account.plist")).expect("OS entry");
+    assert_eq!(plist.matches("<key>Hour</key>").count(), 7, "{plist}");
+
+    // The first run: seen in Live while it runs, then passed.
+    let (mut in_live, mut last) = (false, Value::Null);
+    let until = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < until {
+        let live = get("/api/live");
+        in_live |= live["sessions"].as_array().is_some_and(|s| !s.is_empty());
+        let sched = get("/api/schedules");
+        let row = &sched["schedules"][0];
+        if row["running"] == false && row["last"]["passed"].is_boolean() {
+            last = row["last"].clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(last["passed"], true, "first run: {last}");
+    assert_eq!((last["ok"].as_u64(), last["total"].as_u64()), (Some(1), Some(1)), "{last}");
+    assert!(in_live, "the run's session showed in Live");
+    // Run now from the saved card.
+    let v = get("/api/chat");
+    assert_eq!(v["messages"][1]["proposals"][0]["status"], "applied");
+    let (st, body) = post("/api/chat/run", json!({ "id": card["id"] }));
+    assert!(st == 200 && body.contains("Running now"), "{st} {body}");
+
+    // The same test again: not overwritten.
+    let (st, _) = post("/api/chat", json!({ "message": "save it again" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let again = v["messages"][3]["proposals"][0].clone();
+    assert!(again["note"].as_str().is_some_and(|n| n.contains("already saved")), "{again}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "test" }));
+    assert!(st == 422 && body.contains("already saved"), "{st} {body}");
+    assert_eq!(std::fs::read_to_string(&file).expect("file"), text, "unchanged");
+    // ... saved under another name with Edit; a dangerous name typed there is refused too.
+    let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "test", "edit": { "id": "../escape" } }));
+    assert!(st == 422 && body.contains("file name"), "{st} {body}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "test", "edit": { "title": "Login, second account", "id": "" } }));
+    assert_eq!(st, 200, "{body}");
+    assert!(project.join("tests/login-second-account.md").exists());
+
+    // Dangerous file names from the bot: refused cards; nothing outside the tests folder.
+    let (st, _) = post("/api/chat", json!({ "message": "save tests named ../ and /tmp" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let bad = v["messages"][5]["proposals"].as_array().cloned().unwrap_or_default();
+    assert_eq!(bad.len(), 2, "{v}");
+    for b in &bad {
+        assert_eq!(b["status"], "refused", "{b}");
+        let (st, _) = post("/api/chat/decide", json!({ "id": b["id"], "apply": true, "mode": "test" }));
+        assert_eq!(st, 422);
+    }
+    assert!(!home.join("outside.md").exists() && !Path::new("/tmp/fastpilot-evil.md").exists());
+    let names: Vec<String> = std::fs::read_dir(project.join("tests")).expect("tests").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+
+    // The bot never had a file-writing tool: only fastpilot's MCP tools, without `config`.
+    let call = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).find(|t| t.contains("fastpilot bot")).expect("chat call");
+    let call: Value = serde_json::from_str(&call).expect("json");
+    let argv: Vec<&str> = call["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
+    let at = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]);
+    assert_eq!((at("--tools"), at("--allowedTools"), at("--disallowedTools")), (Some(""), Some("mcp__fastpilot"), Some("mcp__fastpilot__config")), "{argv:?}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// D1: `fastpilot ui` started in the home folder (not a project): the card says where the test
+/// would be saved before anything is written.
+#[test]
+fn chat_says_where_a_test_goes_outside_a_project() {
+    let home = std::env::temp_dir().join(format!("fp-chat-d1-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_in(&home, &home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "write a test for the demo login and save it" }).to_string(), true);
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let card = &v["messages"][1]["proposals"][0];
+    assert_eq!((card["status"].as_str(), card["schedules"].as_bool()), (Some("pending"), None), "{card}");
+    let note = card["note"].as_str().unwrap_or("");
+    assert!(note.contains("not a project folder") && note.contains(&home.join("tests").to_string_lossy().into_owned()), "{note}");
+    assert!(!home.join("tests").exists(), "nothing before the click");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
