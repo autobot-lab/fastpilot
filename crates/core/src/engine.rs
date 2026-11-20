@@ -1090,8 +1090,8 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 d.launch_app_with(&subst(app)?, &l).await?
             }
             Step::Swipe { from, to } => d.swipe(*from, *to).await?,
-            Step::ShipCheck { links } => {
-                let r = crate::ship::run(d, *links).await?;
+            Step::ShipCheck { links, cookies } => {
+                let r = crate::ship::run(d, *links, *cookies).await?;
                 return Ok(Some(r.text()));
             }
             Step::EvalScript(js) => {

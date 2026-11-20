@@ -59,9 +59,10 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   diff screenshot <name> [--update] [--threshold 0.1] [--max-diff 0.002] [--ignore sel]...
                                compare with the stored baseline (stored on first use)
   errors                       recent console errors, failed requests, crashes
-  ship-check [url]... [--links N]   one verdict for the pages: console errors, failed requests,
-                               broken links, layout at 3 sizes, accessibility basics (exit 0: SHIP
-                               or SHIP WITH FIXES, 1: DO NOT SHIP, 2: INCONCLUSIVE)
+  ship-check [url]... [--links N] [--cookies]   one verdict for the pages: console errors, failed
+                               requests, broken links (HEAD, no cookies unless --cookies; servers treat
+                               HEAD like GET), layout at 3 sizes, accessibility basics (exit 0: SHIP or
+                               SHIP WITH FIXES, 1: DO NOT SHIP, 2: INCONCLUSIVE)
   docs [dsl|selectors|errors|...]
   daemon <status|stop>
 
@@ -381,12 +382,12 @@ fn flow_source(arg: &str) -> Res<String> {
 /// R2: `fastpilot ship-check [url]...`: the Ship check of each page (the open one without urls),
 /// then one verdict for all of them, in the S8 terminal layout. The verdict covers these pages;
 /// the regression and the main journeys are named as not checked here.
-fn ship_check(ctx: &Ctx, urls: &[String], links: Option<&str>) -> Res<()> {
+fn ship_check(ctx: &Ctx, urls: &[String], links: Option<&str>, cookies: bool) -> Res<()> {
     let links = match links {
         Some(n) => n.parse::<usize>().map_err(|_| "--links needs a number (0: do not ask links)")?,
         None => 20,
     };
-    let step = if links == 20 { "- shipCheck\n".to_owned() } else { format!("- shipCheck: {{ links: {links} }}\n") };
+    let step = if links == 20 && !cookies { "- shipCheck\n".to_owned() } else { format!("- shipCheck: {{ links: {links}, cookies: {cookies} }}\n") };
     let urls: Vec<String> = urls.iter().map(|u| abs_if_file(u)).collect();
     if urls.is_empty() && !ctx.has_session()? {
         return Err("give the pages to check: fastpilot ship-check https://staging.example.com [more pages], or `fastpilot open <url>` first".into());
@@ -440,17 +441,13 @@ fn ship_check(ctx: &Ctx, urls: &[String], links: Option<&str>) -> Res<()> {
     });
 }
 
-/// The Ship check report inside a `run_flow` answer: from "Ship check ·" to its "Not checked:" line.
+/// The Ship check report inside a `run_flow` answer: from "Ship check ·" to fastpilot's own
+/// closing "Not checked: colour contrast, …" line (page text in it is one line, never at the start).
 fn ship_report(text: &str) -> Option<String> {
     let at = text.find("Ship check · ")?;
-    let mut out = Vec::new();
-    for line in text[at..].lines() {
-        out.push(line);
-        if line.starts_with("Not checked:") {
-            break;
-        }
-    }
-    Some(out.join("\n"))
+    let lines: Vec<&str> = text[at..].lines().collect();
+    let end = lines.iter().rposition(|l| l.starts_with("Not checked: colour contrast"))?;
+    Some(lines[..=end].join("\n"))
 }
 
 /// One shell command. `argv` starts at the command name.
@@ -473,7 +470,7 @@ pub fn main(argv: &[String]) -> Res<()> {
                 let key = a.as_str();
                 opts.insert(key, it.next().cloned().ok_or_else(|| format!("{key} needs a value"))?);
             }
-            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" | "--update" => {
+            "-i" | "--interactive" | "--full" | "--coords" | "--all" | "--gone" | "--annotate" | "--keep-going" | "-c" | "--compact" | "--confirm" | "--update" | "--cookies" => {
                 flags.push(a.as_str());
             }
             // Help, not a step: `open --help` used to open https://--help.
@@ -781,7 +778,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             let v = ctx.tool("run_flow", json!({ "flow": src, "session": session, "stop_on_fail": !flag("--keep-going") }))?;
             finish(&ctx, &v)?;
         }
-        "ship-check" => return ship_check(&ctx, &args[1..], opts.get("--links").map(String::as_str)),
+        "ship-check" => return ship_check(&ctx, &args[1..], opts.get("--links").map(String::as_str), flag("--cookies")),
         "check-flow" => {
             let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
             finish(&ctx, &ctx.tool("check_flow", json!({ "flow": src }))?)?;

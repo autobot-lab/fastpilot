@@ -1272,8 +1272,12 @@ const VERDICT_LOOK = {
   "DO NOT SHIP": ["bad", "✗", "A main journey or the page itself fails."],
   "INCONCLUSIVE": ["unknown", "?", "Important evidence is missing. This is not a pass."],
 };
+// Copied text never carries control characters (Security, PR #100).
+const plainText = (t) => String(t || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ");
+// Markdown: text stays text in a tracker (no images, links or HTML from the page or the bot).
+const mdText = (t) => plainText(t).replace(/[\\`*_[\]()<>!#|~]/g, (c) => "\\" + c).replace(/\n/g, " ");
 async function copyText(text, what) {
-  try { await navigator.clipboard.writeText(text); toast(what + " copied", true); } catch (e) { toast("Could not copy: " + e.message); }
+  try { await navigator.clipboard.writeText(plainText(text)); toast(what + " copied", true); } catch (e) { toast("Could not copy: " + e.message); }
 }
 function verdictCard(v) {
   const [cls, mark, fallback] = VERDICT_LOOK[v.verdict] || VERDICT_LOOK.INCONCLUSIVE;
@@ -1286,9 +1290,11 @@ function verdictCard(v) {
   const missing = (v.not_checked || []).length ? v.not_checked.join(" · ") : "nothing";
   const n = (v.fixes || []).length;
   return h("section", { class: "grp verdict " + cls, "aria-label": "Release check" },
-    h("div", { class: "gh" }, icon("shield"), "Release check"),
+    h("div", { class: "gh" }, icon("chat"), "Release check · the bot's summary"),
     h("div", { class: "prop-body" },
     v.title ? h("p", { class: "s vtitle" }, v.title) : null,
+    // The card shows what the bot wrote; fastpilot did not check it (Security, PR #100).
+    h("p", { class: "s muted" }, "Written by the bot from the checks it ran. fastpilot shows it as a card; it did not verify it."),
     h("div", { class: "vbanner", role: "status" }, h("span", { class: "vmark", "aria-hidden": "true" }, mark),
       h("div", {}, h("div", { class: "vword" }, v.verdict), h("div", { class: "vwhy" }, v.why || fallback))),
     rows.length ? h("div", { class: "vrows" }, rows) : null,
@@ -1302,8 +1308,8 @@ function verdictCard(v) {
 
 // S8: a bug report preview. Not sent anywhere; Jira comes later.
 function bugMarkdown(b) {
-  const steps = (b.steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n");
-  return `## ${b.title}\n\n**Steps**\n${steps}\n\n**Expected:** ${b.expected}\n\n**Actual:** ${b.actual}\n\n**Reproduced:** ${b.reproduced || "not said"}\n\n**Environment:** ${b.environment || "not said"}\n\n**Evidence:** ${b.evidence || "none"}\n\n**Impact (estimate):** ${b.impact || "not measured"}\n`;
+  const steps = (b.steps || []).map((s, i) => `${i + 1}. ${mdText(s)}`).join("\n");
+  return `## ${mdText(b.title)}\n\n**Steps**\n${steps}\n\n**Expected:** ${mdText(b.expected)}\n\n**Actual:** ${mdText(b.actual)}\n\n**Reproduced:** ${mdText(b.reproduced || "not said")}\n\n**Environment:** ${mdText(b.environment || "not said")}\n\n**Evidence:** ${mdText(b.evidence || "none")}\n\n**Impact (estimate):** ${mdText(b.impact || "not measured")}\n`;
 }
 function bugCard(b) {
   const row = (k, v) => v ? [h("dt", {}, k), h("dd", {}, v)] : null;

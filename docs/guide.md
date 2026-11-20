@@ -618,7 +618,7 @@ fastpilot close
 ## Ship check: one verdict for the pages before a release
 
 ```bash
-fastpilot ship-check https://staging.shop.example https://staging.shop.example/cart
+fastpilot ship-check https://staging.shop.example https://staging.shop.example/cart [--links N] [--cookies]
 ```
 
 For each page, fastpilot opens it in Chrome and checks five things:
@@ -626,10 +626,17 @@ For each page, fastpilot opens it in Chrome and checks five things:
 - **Console errors**: exceptions and `console.error`. An uncaught error means the page's own script crashed.
 - **Failed requests**: HTTP errors, requests that did not finish, and the page's own status.
 - **Broken links**: up to 20 links to the same site (`--links N`, 0 for none), asked with `HEAD`.
+  - Five at a time, and without your cookies, so they are asked signed out. A link that needs sign-in
+    is "not checked", not broken.
+  - Many servers treat `HEAD` like `GET`, so `--cookies` (`{ cookies: true }`) asks signed in only on
+    request. It then also skips links with a query string or a word for a change (clear, archive,
+    accept, ban, reset, ...).
   - Redirects are not followed.
   - Links to other sites are counted, not opened.
   - Links whose text or address names a risky action are never requested: the block and confirm
     lists, sign out, delete, unsubscribe.
+  - The page only lists its links; fastpilot decides which ones are asked.
+  - Text from the page (names, errors, addresses) is shown on one line and shortened.
 - **Layout at 3 sizes**: phone 390, tablet 768 and desktop 1280 px. It looks for content wider than the
   screen, or a page without a mobile viewport. The size is put back afterwards.
 - **Accessibility basics**: page language and title, images without `alt`, fields, buttons and links
@@ -652,13 +659,14 @@ journeys, which this command does not run.
 
 Exit codes: 0 for SHIP or SHIP WITH FIXES, 1 for DO NOT SHIP, 2 for INCONCLUSIVE.
 
-In a test or from an AI, the same check is the `shipCheck` step: `- shipCheck` or `- shipCheck: { links: 5 }`.
+In a test or from an AI, the same check is the `shipCheck` step: `- shipCheck` or `- shipCheck: { links: 5, cookies: true }`.
 
 In the dashboard, ask the Chat bot "Can we release?". It runs the regression, the main journeys and
 `shipCheck`, then shows a **release verdict card**. The card has the verdict, why, the evidence with
 checked / problem / could not run / not checked, what to fix, and an always-visible "Not checked" box.
 A bug report it writes shows as a **preview card**: it is not sent anywhere, and you can copy it as
-text or Markdown.
+text or Markdown (page and bot text stays plain text when pasted). The verdict card is labelled "the bot's
+summary": the bot wrote it from the checks it ran, and fastpilot did not verify it.
 
 ## Without opening Claude Code: `fastpilot run`
 
