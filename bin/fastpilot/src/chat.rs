@@ -786,7 +786,14 @@ fn plain(s: &str) -> String {
 /// (upper/lower case, spacing and a final full stop aside).
 pub(crate) fn asked_to_note(user: &str, text: &str) -> bool {
     let said = format!(" {} ", plain(user).replace(|c: char| !c.is_alphanumeric() && c != '\'', " ").split_whitespace().collect::<Vec<_>>().join(" "));
-    let asks = REMEMBER.iter().any(|w| said.contains(&format!(" {w} ")));
+    // "don't remember that…", "never save…": a word that asks, not right after a "no" (Security
+    // re-review finding 6 for D9).
+    let asks = REMEMBER.iter().any(|w| {
+        said.match_indices(&format!(" {w} ")).any(|(at, _)| {
+            let before = said[..at].split_whitespace().last().unwrap_or("");
+            !["not", "don't", "dont", "never", "no"].contains(&before) && !said[..at].ends_with(" do not")
+        })
+    });
     let text = plain(text);
     asks && text.chars().count() >= 3 && plain(user).contains(&text)
 }
@@ -1580,6 +1587,11 @@ mod tests {
         // Named, but nothing asked: a question or a plain request to test.
         assert!(!asked_to_note("Does login use a code? login uses a code", "login uses a code"));
         assert!(!asked_to_note("Test that login uses a code", "login uses a code"));
+        // Asked not to.
+        assert!(!asked_to_note("Don't remember that login uses a code", "login uses a code"));
+        assert!(!asked_to_note("please do not save: login uses a code", "login uses a code"));
+        assert!(!asked_to_note("never note that login uses a code", "login uses a code"));
+        assert!(asked_to_note("Remember that we never touch the demo orders", "We never touch the demo orders"));
         // Too short to mean anything.
         assert!(!asked_to_note("remember ok", "ok"));
     }
