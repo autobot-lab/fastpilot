@@ -88,6 +88,7 @@ const KEYS: &[&str] = &[
     "allow_physical_devices",
     "allow_device_settings",
     "allow_eval_script",
+    "allow_takeover",
     "upload_dirs",
     "state_expire_days",
     "max_steps",
@@ -908,6 +909,7 @@ async fn live_api() -> Response {
                     "controllable": controllable && (s.screen.is_some() || device),
                     "taken_over_ms": s.taken_over_ms,
                     "taken_over_here": by_me,
+                    "takeover_allowed": p.takeover,
                     "flow": flow,
                 })
             })

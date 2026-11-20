@@ -15,8 +15,10 @@
 //! leaves a note ([`take_notes`]) for the AI's next result and the run record. Guard rails are not
 //! applied to the user's own input; they still apply to every automatic step.
 //!
-//! Who may use the socket: only a `fastpilot ui` process (the peer's pid, checked on every
-//! connection); a script or an agent that opens the socket itself is turned away. A takeover hands
+//! Who may use the socket: only a `fastpilot ui` process running the same program file as this
+//! process (the peer's pid and executable path, checked on every connection); a script, an agent, or
+//! another program merely named `fastpilot` is turned away. `allow_takeover = false` (a limit, pinned
+//! at start) switches takeover off altogether. A takeover hands
 //! out a random token, kept only in the memory of this process and of that `fastpilot ui`; input
 //! and Kembalikan need it. A takeover ends by itself when the page stops sending keep-alives
 //! ([`IDLE`], e.g. the tab was closed) or after [`MAX_TAKEOVER`], so an AI step never waits forever.
@@ -91,6 +93,9 @@ pub struct LiveSession {
 pub struct LiveProcess {
     pub pid: u32,
     pub kind: String,
+    /// `allow_takeover` as this process pinned it at start (false: no Ambil alih here).
+    #[serde(default = "takeover_default")]
+    pub takeover: bool,
     pub updated_ms: u64,
     pub sessions: Vec<LiveSession>,
     pub flows: Vec<LiveFlow>,
@@ -123,7 +128,7 @@ pub fn enable(kind: &str) {
     control::listen(path.with_extension("sock"));
     *lock() = Some(State {
         path,
-        proc: LiveProcess { pid: std::process::id(), kind: kind.to_owned(), ..Default::default() },
+        proc: LiveProcess { pid: std::process::id(), kind: kind.to_owned(), takeover: crate::config::flag("allow_takeover"), ..Default::default() },
         next_flow: 1,
     });
     write();
@@ -374,8 +379,16 @@ pub async fn hold(session: &str) {
     }
 }
 
+fn takeover_default() -> bool {
+    true
+}
+
 /// Start a takeover; its token is the only way to steer or end it.
 fn take_over(id: &str) -> Result<String, String> {
+    // A limit like the others: pinned at start, so turning it on later needs a restart.
+    if !crate::config::flag("allow_takeover") {
+        return Err("Ambil alih dimatikan di Batasan (allow_takeover = false)".into());
+    }
     if driver(id).is_none() {
         return Err(format!("sesi `{id}` tidak ada lagi"));
     }
@@ -572,15 +585,57 @@ mod control {
             return true;
         }
         let Some(pid) = stream.peer_cred().ok().and_then(|c| c.pid()) else { return false };
+        // The same program file as this process (not just one named `fastpilot`) ...
+        let same = match (exe_of(pid), std::env::current_exe()) {
+            (Some(peer), Ok(me)) => same_file(&peer, &me),
+            _ => false,
+        };
+        if !same {
+            return false;
+        }
+        // ... started as `fastpilot ui`.
         let out = tokio::process::Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().await;
         let Ok(out) = out else { return false };
         super::is_ui_command(&String::from_utf8_lossy(&out.stdout))
     }
 
+    fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The program file a process runs.
+    #[cfg(target_os = "linux")]
+    fn exe_of(pid: i32) -> Option<std::path::PathBuf> {
+        std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn exe_of(pid: i32) -> Option<std::path::PathBuf> {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: the buffer is PROC_PIDPATHINFO_MAXSIZE bytes, as proc_pidpath requires.
+        let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        (n > 0).then(|| {
+            buf.truncate(n as usize);
+            std::path::PathBuf::from(String::from_utf8_lossy(&buf).into_owned())
+        })
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn exe_of(_pid: i32) -> Option<std::path::PathBuf> {
+        None
+    }
+
     async fn serve(stream: tokio::net::UnixStream) {
         if !from_ui(&stream).await {
             let (_, mut w) = stream.into_split();
-            let _ = w.write_all(b"{\"ok\":false,\"error\":\"only fastpilot ui may use this socket\"}\n").await;
+            let why = format!(
+                "only fastpilot ui may use this socket: start `fastpilot ui` from the same installation as this fastpilot ({})",
+                std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
+            );
+            let _ = w.write_all(format!("{}\n", serde_json::json!({ "ok": false, "error": why })).as_bytes()).await;
             return;
         }
         let (r, mut w) = stream.into_split();

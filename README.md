@@ -244,8 +244,10 @@ untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak dipe
 
 - Input hanya diterima dari halaman `fastpilot ui` (cookie sesi, Origin, JSON). Halaman meneruskannya ke
   proses fastpilot pemilik sesi lewat socket `~/.fastpilot/live/<pid>.sock` (folder 0700, socket 0600).
-- Socket itu hanya melayani proses `fastpilot ui`: pid di ujung lain dicek tiap koneksi, jadi skrip atau
-  agent yang membuka socket sendiri ditolak (juga untuk frame). Tiap ambil alih memberi token acak yang
+- Socket itu hanya melayani proses `fastpilot ui` dari **file program yang sama** dengan proses fastpilot
+  pemilik sesi: pid dan path program di ujung lain dicek tiap koneksi, jadi skrip, agent, atau program lain
+  yang sekadar bernama `fastpilot` ditolak (juga untuk frame). Akibatnya `fastpilot ui` dan server MCP harus
+  dari instalasi yang sama (mis. keduanya dari npm), dan binary yang di-rename tidak bisa memakai Ambil alih. Tiap ambil alih memberi token acak yang
   hanya ada di memori proses fastpilot dan `fastpilot ui` yang memulainya (tidak di file, tidak dikirim ke
   browser). Tap, ketik, dan Kembalikan wajib membawa token itu, jadi halaman lain tidak bisa ikut
   mengendalikan atau menutup ambil alih orang lain.
@@ -258,7 +260,9 @@ untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak dipe
   alih tanpa klik manusia; input ambil alih memang tidak diperiksa Batasan. Agent seperti itu juga bisa
   melewati Batasan dengan cara lain (menjalankan Chrome atau `adb` langsung). Batasan fastpilot melindungi
   dari AI yang hanya memegang tool fastpilot; untuk agent dengan shell, batasi akses shell-nya di aplikasi
-  agent itu.
+  agent itu, dan matikan Ambil alih: `fastpilot config set allow_takeover false` (atau Pengaturan › Batasan ›
+  *Boleh ambil alih sesi*). Seperti batasan lain, nilai ini dikunci saat proses fastpilot mulai, jadi
+  menyalakannya lagi baru berlaku setelah restart.
 - Waktu selama diambil alih tetap dihitung ke batas waktu flow (`FASTPILOT_FLOW_TIMEOUT`).
 - macOS dan Linux saja (Unix socket).
 
@@ -311,6 +315,7 @@ Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 | `allow_physical_devices` | sesi boleh memakai HP fisik; `false` = hanya emulator/simulator (bawaan: boleh) |
 | `allow_device_settings` | `setNetwork`, `setLocation`, `setPermissions`, `setLocale` di Android/iOS (bawaan: boleh) |
 | `allow_eval_script` | langkah `evalScript` (bawaan: boleh) |
+| `allow_takeover` | user boleh mengambil alih sesi di `fastpilot ui` (bawaan: boleh; matikan untuk agent yang punya shell) |
 | `upload_dirs` | `uploadFile` hanya mengambil file di folder ini (kosong = mana saja) |
 | `state_expire_days` | umur maksimal login tersimpan (bawaan 30 hari) |
 | `max_steps` / `test_timeout` | `fastpilot run`: maksimal panggilan tool AI per test (bawaan 30) / menit per test (bawaan 30) |

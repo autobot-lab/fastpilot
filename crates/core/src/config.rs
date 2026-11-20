@@ -49,6 +49,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "allow_physical_devices", help: "sessions may use real phones; false = emulators and simulators only (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_device_settings", help: "android/ios steps may change device settings: setNetwork, setLocation, setPermissions, setLocale (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages (default true)", rule: Rule::TightenOnly },
+    Setting { key: "allow_takeover", help: "the user may take sessions over in `fastpilot ui` (Ambil alih); off for agents with a shell (default true)", rule: Rule::TightenOnly },
     Setting { key: "upload_dirs", help: "uploadFile only takes files inside these folders; empty = any", rule: Rule::TightenOnly },
     Setting { key: "max_steps", help: "`fastpilot run`: tool calls the AI may make per test (default 30)", rule: Rule::TightenOnly },
     Setting { key: "test_timeout", help: "`fastpilot run`: minutes one test may take before it is stopped and failed (default: no limit)", rule: Rule::TightenOnly },
@@ -294,7 +295,7 @@ const NUMBERS: &[&str] = &["state_expire_days", "flow_timeout", "action_timeout"
 
 /// Settings whose value is true / false.
 pub const FLAGS: &[&str] =
-    &["headful", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script"];
+    &["headful", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script", "allow_takeover"];
 
 /// A true/false setting (`allow_*` default to true, the others to false).
 pub fn flag(key: &str) -> bool {
