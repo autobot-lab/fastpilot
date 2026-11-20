@@ -849,12 +849,12 @@ function liveExtras(data) {
   const sig = JSON.stringify([q, u]);
   if (box.dataset.sig === sig) return box;
   box.dataset.sig = sig;
-  box.replaceChildren(
+  box.replaceChildren(...[
     q.length ? h("section", { class: "grp" }, h("div", { class: "gh" }, `queue · ${q.length} waiting`),
       h("ul", { class: "ag-rows q-rows" }, q.map((e) => h("li", {}, h("b", {}, e.agent || "—", h("span", { class: "s" }, ` · ${e.platform}${e.device && e.device !== "default" ? " · " + e.device : ""}${e.session !== "default" ? " · " + e.session : ""}`)),
         h("span", { class: "s" }, `waiting ${Math.max(1, Math.round((Date.now() - e.since_ms) / 60000))} min`), h("span", {}, e.reason))))) : null,
     u.length ? h("section", { class: "grp" }, h("div", { class: "gh" }, "used today, per agent"),
-      h("ul", { class: "ag-rows" }, u.map((x) => h("li", {}, h("b", {}, x.agent), h("span", {}, `${x.turns} ${x.turns === 1 ? "answer or run" : "answers and runs"}`), h("span", { class: "s" }, `${x.tokens.toLocaleString("en")} tokens`))))) : null);
+      h("ul", { class: "ag-rows" }, u.map((x) => h("li", {}, h("b", {}, x.agent), h("span", {}, `${x.turns} ${x.turns === 1 ? "answer or run" : "answers and runs"}`), h("span", { class: "s" }, `${x.tokens.toLocaleString("en")} tokens`))))) : null].filter(Boolean));
   return box;
 }
 
