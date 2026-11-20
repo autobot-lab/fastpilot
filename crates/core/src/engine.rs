@@ -16,7 +16,7 @@ use crate::{Driver, Error, Flow, FlowStep, Intent, Platform, Rect, Result, Selec
 /// How long one action (tap, type, select, scroll ...) may take: `action_timeout` seconds
 /// (default 5).
 fn action_timeout() -> Duration {
-    let secs = crate::config::var("FASTPILOT_action_timeout()").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(5);
+    let secs = crate::config::var("FASTPILOT_ACTION_TIMEOUT").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(5);
     Duration::from_secs(secs)
 }
 
@@ -1920,20 +1920,33 @@ mod tests {
 
     async fn slow_keyboard_cases() {
         // SAFETY: test-only env mutation, serialized by ENV_LOCK.
-        unsafe { std::env::set_var("FASTPILOT_action_timeout()", "1") };
+        unsafe {
+            std::env::remove_var("FASTPILOT_ACTION_TIMEOUT");
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
         let typing = Duration::from_millis(1500);
         let step = Step::InputText { into: Selector::Text("Email".into()), text: "a@b.c".into() };
         let android = SlowKeyboard { platform: Platform::Android, typing };
         let web = SlowKeyboard { platform: Platform::Web, typing };
+        // The environment variable people set: FASTPILOT_ACTION_TIMEOUT.
+        unsafe { std::env::set_var("FASTPILOT_ACTION_TIMEOUT", "1") };
+        assert_eq!(action_timeout(), Duration::from_secs(1), "FASTPILOT_ACTION_TIMEOUT");
         // A phone: 1.5 s of keyboard fits in 3 × 1 s.
         assert!(type_with_timeout(&android, &step).await.is_ok(), "android keyboard");
         // A web page has no keyboard to wait for: the action limit applies as it is.
         let e = type_with_timeout(&web, &step).await.expect_err("web 1 s limit");
         assert!(matches!(e, Error::Timeout(_)), "{e}");
-        // Raised by the user: fits.
-        unsafe { std::env::set_var("FASTPILOT_action_timeout()", "2") };
-        assert!(type_with_timeout(&web, &step).await.is_ok(), "action_timeout 2");
-        unsafe { std::env::remove_var("FASTPILOT_action_timeout()") };
+        unsafe { std::env::remove_var("FASTPILOT_ACTION_TIMEOUT") };
+        // The setting in the config file (`fastpilot config set action_timeout 2`, the UI).
+        let dir = std::env::temp_dir().join(format!("fastpilot-action-timeout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("config.toml");
+        std::fs::write(&file, "action_timeout = 2\n").expect("write");
+        unsafe { std::env::set_var("FASTPILOT_CONFIG", &file) };
+        assert_eq!(action_timeout(), Duration::from_secs(2), "action_timeout from the file");
+        assert!(type_with_timeout(&web, &step).await.is_ok(), "action_timeout 2 fits 1.5 s");
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(dir);
         assert_eq!(action_timeout(), Duration::from_secs(5), "default");
     }
 
