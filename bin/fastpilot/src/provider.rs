@@ -27,6 +27,8 @@ impl std::fmt::Debug for Provider {
     }
 }
 
+use crate::keystore::KeyFrom;
+
 impl Provider {
     /// The `provider` setting, when it is not Claude Code: `None` for claude (or unset).
     pub fn configured() -> Option<Result<Self, String>> {
@@ -35,8 +37,8 @@ impl Provider {
         Some(Self::resolve(&name, var("FASTPILOT_PROVIDER_BASE_URL"), var("FASTPILOT_PROVIDER_MODEL"), crate::keystore::get_bound(&name)))
     }
 
-    /// `key`: the key and the origin it was saved for (`None` for FASTPILOT_PROVIDER_API_KEY).
-    fn resolve(name: &str, base_url: Option<String>, model: Option<String>, key: Option<(String, Option<String>)>) -> Result<Self, String> {
+    /// `key`: the key and where it comes from.
+    fn resolve(name: &str, base_url: Option<String>, model: Option<String>, key: Option<(String, KeyFrom)>) -> Result<Self, String> {
         use fastpilot_core::config::{origin, preset_base};
         if !fastpilot_core::config::PROVIDERS.iter().any(|(p, _)| *p == name) {
             return Err(format!("unknown provider `{name}`"));
@@ -55,14 +57,24 @@ impl Provider {
         }
         .ok_or_else(|| format!("provider `{name}` needs a base URL: `fastpilot config set provider_base_url https://…/v1`"))?;
         let model = model.ok_or_else(|| format!("provider `{name}` needs a model: `fastpilot config set provider_model <model id>`"))?;
-        // A stored key goes only to the server it was saved for.
-        if let Some((_, Some(saved_for))) = &key
-            && origin(&base_url).as_deref() != Some(saved_for.as_str())
-        {
-            return Err(format!(
-                "the `{name}` API key was saved for {saved_for}, not for {}: it is not sent there; run `fastpilot config set-key {name}` again for this server, or set provider_base_url back",
-                origin(&base_url).unwrap_or(base_url.clone())
-            ));
+        // A stored key goes only to the server it was saved for. One saved before keys were bound
+        // (no origin) goes only to its hosted preset's server; for any other server it must be
+        // saved again.
+        if let Some((_, KeyFrom::Store(saved))) = &key {
+            let Some(saved_for) = saved.clone().or_else(|| match name {
+                "openai" | "openrouter" | "groq" => preset.and_then(origin),
+                _ => None,
+            }) else {
+                return Err(format!(
+                    "the `{name}` API key was saved by an older fastpilot without the server it is for, so it is not sent anywhere: run `fastpilot config set-key {name}` again"
+                ));
+            };
+            if origin(&base_url).as_deref() != Some(saved_for.as_str()) {
+                return Err(format!(
+                    "the `{name}` API key was saved for {saved_for}, not for {}: it is not sent there; run `fastpilot config set-key {name}` again for this server, or set provider_base_url back",
+                    origin(&base_url).unwrap_or(base_url.clone())
+                ));
+            }
         }
         let key = key.map(|(k, _)| k);
         // A local Ollama needs no key; every hosted API does.
@@ -72,8 +84,10 @@ impl Provider {
         Ok(Self { name: name.to_owned(), base_url: base_url.trim_end_matches('/').to_owned(), model, key })
     }
 
+    /// Redirects are not followed (Security Low 3): the request body (screen contents) would go
+    /// to wherever the bound server points.
     fn client() -> Result<reqwest::Client, String> {
-        reqwest::Client::builder().timeout(Duration::from_secs(180)).build().map_err(|e| e.to_string())
+        reqwest::Client::builder().timeout(Duration::from_secs(180)).redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())
     }
 
     /// One chat-completions call. Errors never contain the key.
@@ -95,6 +109,15 @@ impl Provider {
             mask(format!("{}: {e}", self.name))
         })?;
         let status = resp.status();
+        if status.is_redirection() {
+            let to = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("?").chars().take(200).collect::<String>();
+            return Err(mask(format!(
+                "{} at {} answered with a redirect (HTTP {}) to {to}: fastpilot does not follow it; set provider_base_url to the final server if you trust it",
+                self.name,
+                self.base_url,
+                status.as_u16()
+            )));
+        }
         let text = resp.text().await.map_err(|e| mask(format!("{}: {e}", self.name)))?;
         if !status.is_success() {
             let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"]["message"].as_str().map(str::to_owned)).unwrap_or_else(|| text.chars().take(300).collect());
@@ -260,7 +283,7 @@ mod tests {
 
     #[test]
     fn presets_and_missing_pieces() {
-        let key = |k: &str| Some((k.to_owned(), None));
+        let key = |k: &str| Some((k.to_owned(), KeyFrom::Env));
         let p = Provider::resolve("openai", None, Some("m".into()), key("sk-x")).expect("openai");
         assert_eq!((p.base_url.as_str(), p.model.as_str()), ("https://api.openai.com/v1", "m"));
         assert!(!format!("{p:?}").contains("sk-x"), "Debug never shows the key");
@@ -278,7 +301,7 @@ mod tests {
     /// only talks to its own server, and a stored key only goes to the origin it was saved for.
     #[test]
     fn a_key_goes_only_to_the_server_it_was_saved_for() {
-        let saved = |k: &str, o: &str| Some((k.to_owned(), Some(o.to_owned())));
+        let saved = |k: &str, o: &str| Some((k.to_owned(), KeyFrom::Store(Some(o.to_owned()))));
         let m = || Some("m".to_owned());
         // openai with a leftover custom URL: refused, nothing is sent.
         let e = Provider::resolve("openai", Some("http://127.0.0.1:18767/v1".into()), m(), saved("sk-o", "https://api.openai.com")).expect_err("leftover URL");
@@ -289,8 +312,15 @@ mod tests {
         let e = Provider::resolve("custom", Some("https://other.example/v1".into()), m(), saved("sk-c", "https://mine.example")).expect_err("other server");
         assert!(e.contains("saved for https://mine.example, not for https://other.example") && !e.contains("sk-c"), "{e}");
         assert!(Provider::resolve("custom", Some("https://mine.example/v2".into()), m(), saved("sk-c", "https://mine.example")).is_ok());
+        // Security Low 2 / QA: a key saved before keys were bound (no origin) went to any
+        // provider_base_url. Now only to its hosted preset; a custom server needs `set-key` again.
+        let old = |k: &str| Some((k.to_owned(), KeyFrom::Store(None)));
+        let e = Provider::resolve("custom", Some("https://any.example/v1".into()), m(), old("sk-old")).expect_err("unbound custom key");
+        assert!(e.contains("saved by an older fastpilot") && e.contains("config set-key custom") && !e.contains("sk-old"), "{e}");
+        assert!(Provider::resolve("ollama", Some("https://ollama.example/v1".into()), m(), old("sk-old")).is_err(), "remote ollama");
+        assert!(Provider::resolve("openai", None, m(), old("sk-old")).is_ok(), "hosted preset: its own server");
         // An env key (no origin) is the person's choice for this run.
-        assert!(Provider::resolve("custom", Some("https://other.example/v1".into()), m(), Some(("sk-e".into(), None))).is_ok());
+        assert!(Provider::resolve("custom", Some("https://other.example/v1".into()), m(), Some(("sk-e".into(), KeyFrom::Env))).is_ok());
     }
 
     #[test]
@@ -310,6 +340,44 @@ mod tests {
         let p = Provider::resolve("ollama", Some(format!("http://127.0.0.1:{port}/v1")), Some("llama3".into()), None).expect("ollama");
         let e = p.complete(&Provider::client().expect("client"), &json!({ "model": "llama3", "messages": [] })).await.expect_err("nobody listens");
         assert!(e.contains(&format!("cannot reach ollama at http://127.0.0.1:{port}/v1")) && e.contains("ollama serve"), "{e}");
+    }
+
+
+    /// Security Low 3: the provider client followed redirects, so a 307/308 from the bound server
+    /// sent the request body (screen contents) on to another host. Now it stops with a message.
+    #[tokio::test]
+    async fn a_redirect_is_not_followed() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let elsewhere = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let to = format!("http://127.0.0.1:{}/v1/chat/completions", elsewhere.local_addr().expect("addr").port());
+        elsewhere.set_nonblocking(true).expect("nonblocking");
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = server.local_addr().expect("addr").port();
+        let location = to.clone();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = server.accept() {
+                let mut r = BufReader::new(stream.try_clone().expect("clone"));
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = r.read_exact(&mut body);
+                let mut s = stream;
+                let _ = write!(s, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let p = Provider::resolve("custom", Some(format!("http://127.0.0.1:{port}/v1")), Some("m".into()), Some(("sk-redirect-123".into(), KeyFrom::Env))).expect("custom");
+        let e = p.complete(&Provider::client().expect("client"), &json!({ "model": "m", "messages": [{ "role": "user", "content": "screen" }] })).await.expect_err("redirect");
+        assert!(e.contains("redirect (HTTP 307)") && e.contains(&to) && !e.contains("sk-redirect-123"), "{e}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(elsewhere.accept().is_err(), "the redirect target got a request");
     }
 
 }

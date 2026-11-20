@@ -110,16 +110,25 @@ pub fn origin(provider: &str) -> Option<String> {
     load(&format!("{provider}.origin"))
 }
 
-/// The key and the origin it was saved for; a key from FASTPILOT_PROVIDER_API_KEY has no origin
-/// (the person running fastpilot chose it for this run).
-pub fn get_bound(provider: &str) -> Option<(String, Option<String>)> {
+/// Where a key comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyFrom {
+    /// FASTPILOT_PROVIDER_API_KEY: the person running fastpilot chose it for this run.
+    Env,
+    /// The key store, with the origin it was saved for; `None`: saved by an older fastpilot,
+    /// before keys were bound to a server.
+    Store(Option<String>),
+}
+
+/// The key and where it comes from.
+pub fn get_bound(provider: &str) -> Option<(String, KeyFrom)> {
     if let Ok(k) = std::env::var("FASTPILOT_PROVIDER_API_KEY")
         && !k.trim().is_empty()
     {
-        return Some((k.trim().to_owned(), None));
+        return Some((k.trim().to_owned(), KeyFrom::Env));
     }
     let key = get(provider)?;
-    Some((key, origin(provider)))
+    Some((key, KeyFrom::Store(origin(provider))))
 }
 
 /// One secret under `account` (a provider, or `<provider>.origin`) in the store.
@@ -237,7 +246,7 @@ mod tests {
         assert_eq!(get("openai").as_deref(), Some("sk-test-abc123"));
         // Tied to the server it may go to: the preset's, or the custom base URL.
         assert_eq!(origin("openai").as_deref(), Some("https://api.openai.com"));
-        assert_eq!(get_bound("openai"), Some(("sk-test-abc123".into(), Some("https://api.openai.com".into()))));
+        assert_eq!(get_bound("openai"), Some(("sk-test-abc123".into(), KeyFrom::Store(Some("https://api.openai.com".into())))));
         assert!(set("custom", "sk-c").expect_err("custom without its server").contains("provider_base_url"));
         unsafe {
             std::env::set_var("FASTPILOT_PROVIDER", "custom");

@@ -153,6 +153,13 @@ pub async fn publish(target: &Target, token: &str, body: &str) -> Result<String,
     };
     let base = format!("{}/repos/{}/issues", target.api, target.repo);
     let fail = |what: &str, e: String| format!("{what}: {}", e.replace(token, "***"));
+    // Who comments with this token: a person's token answers /user; the Actions token does not
+    // (403) and comments as github-actions[bot].
+    let me = match send(client.get(format!("{}/user", target.api))).send().await {
+        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok().and_then(|v| v["login"].as_str().map(str::to_owned)),
+        _ => None,
+    }
+    .unwrap_or_else(|| "github-actions[bot]".to_owned());
     let mut existing = None;
     for page in 1..=10 {
         let resp = send(client.get(format!("{base}/{}/comments?per_page=100&page={page}", target.pr))).send().await.map_err(|e| fail("listing PR comments", e.to_string()))?;
@@ -160,10 +167,12 @@ pub async fn publish(target: &Target, token: &str, body: &str) -> Result<String,
             return Err(fail("listing PR comments", format!("HTTP {}", resp.status())));
         }
         let items: Vec<Value> = resp.json().await.map_err(|e| fail("listing PR comments", e.to_string()))?;
-        // The marker can be copied by anyone who comments: prefer a bot's comment (the Actions
-        // token comments as github-actions[bot]); one fastpilot cannot edit gets a new comment below.
-        let marked: Vec<&Value> = items.iter().filter(|c| c["body"].as_str().is_some_and(|b| b.contains(MARKER))).collect();
-        existing = marked.iter().find(|c| c["user"]["type"] == "Bot").or(marked.first()).and_then(|c| c["id"].as_u64());
+        // The marker can be copied by anyone who comments: only a marked comment written with this
+        // token's account is edited; otherwise fastpilot posts its own.
+        existing = items
+            .iter()
+            .find(|c| c["body"].as_str().is_some_and(|b| b.contains(MARKER)) && c["user"]["login"].as_str() == Some(me.as_str()))
+            .and_then(|c| c["id"].as_u64());
         if existing.is_some() || items.len() < 100 {
             break;
         }
@@ -291,7 +300,13 @@ mod tests {
             Self::with(vec![json!({ "id": 1, "body": "LGTM" })])
         }
 
+        /// The Actions token: no /user (403), comments as github-actions[bot].
         fn with(seed: Vec<Value>) -> Self {
+            Self::as_user(seed, None)
+        }
+
+        /// `me`: a person's token, answered by /user.
+        fn as_user(seed: Vec<Value>, me: Option<&'static str>) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let port = listener.local_addr().expect("addr").port();
             let log = Arc::new(Mutex::new(Vec::new()));
@@ -328,11 +343,17 @@ mod tests {
                     log2.lock().expect("log").push((method.clone(), path.clone(), auth.clone()));
                     let (status, reply) = if auth != "authorization: Bearer test-token-123" && auth != "Authorization: Bearer test-token-123" {
                         ("401 Unauthorized", json!({ "message": "Bad credentials" }))
+                    } else if method == "GET" && path == "/user" {
+                        match me {
+                            Some(login) => ("200 OK", json!({ "login": login, "type": "User" })),
+                            None => ("403 Forbidden", json!({ "message": "Resource not accessible by integration" })),
+                        }
                     } else if method == "GET" && path.starts_with("/repos/o/r/issues/5/comments") {
                         ("200 OK", Value::Array(comments2.lock().expect("c").clone()))
                     } else if method == "POST" && path == "/repos/o/r/issues/5/comments" {
                         let text = serde_json::from_str::<Value>(&body).map(|v| v["body"].clone()).unwrap_or_default();
-                        comments2.lock().expect("c").push(json!({ "id": 77, "body": text }));
+                        let user = me.map_or_else(|| json!({ "login": "github-actions[bot]", "type": "Bot" }), |l| json!({ "login": l, "type": "User" }));
+                        comments2.lock().expect("c").push(json!({ "id": 77, "body": text, "user": user }));
                         ("201 Created", json!({ "id": 77, "html_url": "https://github.com/o/r/pull/5#issuecomment-77" }))
                     } else if method == "PATCH" && path == "/repos/o/r/issues/comments/77" {
                         let text = serde_json::from_str::<Value>(&body).map(|v| v["body"].clone()).unwrap_or_default();
@@ -370,21 +391,39 @@ mod tests {
         assert!(first.starts_with("created o/r#5"), "{first}");
         let second = publish(&t, "test-token-123", &format!("{MARKER}\nresults")).await.expect("update");
         assert!(second.starts_with("updated o/r#5"), "{second}");
-        assert_eq!(gh.calls(), ["GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]);
+        assert_eq!(
+            gh.calls(),
+            ["GET /user", "GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /user", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]
+        );
         assert!(gh.log.lock().expect("log").iter().all(|(_, path, auth)| !path.contains("test-token") && auth.ends_with("Bearer test-token-123")));
         // A wrong token: an error that does not repeat the token.
         let e = publish(&t, "wrong-secret-token", "x").await.expect_err("401");
         assert!(e.contains("401") && !e.contains("wrong-secret-token"), "{e}");
     }
 
-    /// Security (Low): anyone can copy the marker into a comment of their own. fastpilot prefers a
-    /// bot's comment, and when the marked comment is not its own (edit refused) posts its own.
+    /// Security (Low 1): anyone can copy the marker into a comment of their own, and a token that may
+    /// edit others' comments (write access) then wrote the report into it. Only a marked comment of
+    /// this token's account is edited: github-actions[bot] for the Actions token, the /user login for
+    /// a person's token. Others, bots included, are left alone and fastpilot posts its own.
     #[tokio::test]
     async fn a_copied_marker_does_not_capture_the_report() {
-        let gh = FakeGitHub::with(vec![json!({ "id": 5, "body": format!("{MARKER}\nfake results"), "user": { "type": "User", "login": "someone" } })]);
-        let done = publish(&gh.target(), "test-token-123", &format!("{MARKER}\nreal results")).await.expect("publish");
+        let fake = |id: u64, login: &str, kind: &str| json!({ "id": id, "body": format!("{MARKER}\nfake results"), "user": { "type": kind, "login": login } });
+        let gh = FakeGitHub::with(vec![fake(5, "someone", "User"), fake(6, "evil-app[bot]", "Bot")]);
+        let t = gh.target();
+        let done = publish(&t, "test-token-123", &format!("{MARKER}\nreal results")).await.expect("publish");
         assert!(done.starts_with("created o/r#5"), "{done}");
-        assert_eq!(gh.calls(), ["GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/5", "POST /repos/o/r/issues/5/comments"]);
+        // The next run edits its own comment, not the copies (no new comment each run).
+        let again = publish(&t, "test-token-123", &format!("{MARKER}\nresults 2")).await.expect("publish");
+        assert!(again.starts_with("updated o/r#5"), "{again}");
+        assert_eq!(
+            gh.calls(),
+            ["GET /user", "GET /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/comments", "GET /user", "GET /repos/o/r/issues/5/comments", "PATCH /repos/o/r/issues/comments/77"]
+        );
+        // A person's token: its own marked comment, found by login.
+        let gh = FakeGitHub::as_user(vec![fake(5, "github-actions[bot]", "Bot")], Some("yogi"));
+        let t = gh.target();
+        assert!(publish(&t, "test-token-123", &format!("{MARKER}\na")).await.expect("publish").starts_with("created"));
+        assert!(publish(&t, "test-token-123", &format!("{MARKER}\nb")).await.expect("publish").starts_with("updated"));
     }
 
     /// Security (Low): notes come from the model and the page: shown as text, never rendered.
