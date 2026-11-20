@@ -138,16 +138,23 @@ pub async fn ui(args: &[String]) -> Res<()> {
     let port = listener.local_addr()?.port();
     let state = Arc::new(Ui::new(port)?);
     let url = format!("http://127.0.0.1:{port}/?code={}", state.code());
+    // Whoever started us may stop reading stdout after the link (a script, a test): a closed pipe
+    // must not take the server down, so nothing here panics on a failed write.
+    let say = |text: &str| {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{text}").and_then(|()| out.flush());
+    };
     if open {
         match open_browser(&url) {
-            Ok(()) => println!("fastpilot ui: opened in your browser. If it did not open, use this link (once, within 10 minutes):\n{url}"),
-            Err(e) => println!("fastpilot ui: could not open a browser ({e}); open this link (once, within 10 minutes):\n{url}"),
+            Ok(()) => say(&format!("fastpilot ui: opened in your browser. If it did not open, use this link (once, within 10 minutes):\n{url}")),
+            Err(e) => say(&format!("fastpilot ui: could not open a browser ({e}); open this link (once, within 10 minutes):\n{url}")),
         }
     } else {
-        println!("{url}");
-        println!("fastpilot ui: open the link above once, within 10 minutes (only this computer can).");
+        say(&url);
+        say("fastpilot ui: open the link above once, within 10 minutes (only this computer can).");
     }
-    println!("Ctrl-C stops it.");
+    say("Ctrl-C stops it.");
     tokio::spawn(keep_takeovers());
     axum::serve(listener, router(state)).await?;
     Ok(())
