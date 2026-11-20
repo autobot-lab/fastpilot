@@ -14,6 +14,12 @@
 //! and keys. While a session is taken over its automatic steps wait ([`hold`]); giving it back
 //! leaves a note ([`take_notes`]) for the AI's next result and the run record. Guard rails are not
 //! applied to the user's own input; they still apply to every automatic step.
+//!
+//! Who may use the socket: only a `fastpilot ui` process (the peer's pid, checked on every
+//! connection); a script or an agent that opens the socket itself is turned away. A takeover hands
+//! out a random token, kept only in the memory of this process and of that `fastpilot ui`; input
+//! and Kembalikan need it. A takeover ends by itself when the page stops sending keep-alives
+//! ([`IDLE`], e.g. the tab was closed) or after [`MAX_TAKEOVER`], so an AI step never waits forever.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -127,6 +133,7 @@ pub fn enable(kind: &str) {
             if lock().is_none() {
                 break;
             }
+            expire_takeovers();
             write();
         }
     });
@@ -291,7 +298,54 @@ struct Inputs {
 
 struct Takeover {
     since: Instant,
+    /// Last input or keep-alive from the page.
+    seen: Instant,
+    token: String,
     inputs: Inputs,
+}
+
+/// A takeover without input or keep-alive from the page for this long ends by itself
+/// (`FASTPILOT_TAKEOVER_IDLE_SECS`, for tests).
+pub const IDLE: Duration = Duration::from_secs(45);
+/// No takeover lasts longer than this.
+pub const MAX_TAKEOVER: Duration = Duration::from_secs(30 * 60);
+
+fn idle_limit() -> Duration {
+    std::env::var("FASTPILOT_TAKEOVER_IDLE_SECS").ok().and_then(|s| s.parse().ok()).map(Duration::from_secs).unwrap_or(IDLE)
+}
+
+/// 128 random bits, hex.
+fn token() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_err() {
+        // No /dev/urandom: time and address entropy, still unknown to other processes.
+        let seed = format!("{:?}{:p}{}", Instant::now(), &b, std::process::id());
+        for (i, c) in seed.bytes().enumerate() {
+            b[i % 16] ^= c.rotate_left((i % 7) as u32);
+        }
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// End takeovers whose page went quiet or that ran too long.
+pub fn expire_takeovers() {
+    let idle = idle_limit();
+    let stale: Vec<(String, &'static str)> = lock_map(&TAKEN)
+        .iter()
+        .filter_map(|(id, t)| {
+            if t.since.elapsed() > MAX_TAKEOVER {
+                Some((id.clone(), "it ended by itself after 30 minutes"))
+            } else if t.seen.elapsed() > idle {
+                Some((id.clone(), "it ended by itself because the fastpilot ui page stopped answering (closed tab?)"))
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (id, why) in stale {
+        give_back(&id, why);
+    }
 }
 
 fn lock_map<T>(m: &'static LazyLock<Mutex<T>>) -> std::sync::MutexGuard<'static, T> {
@@ -309,6 +363,7 @@ fn driver(id: &str) -> Option<Arc<dyn crate::Driver>> {
 
 /// Whether the user has `session` taken over right now.
 pub fn is_taken_over(session: &str) -> bool {
+    expire_takeovers();
     lock_map(&TAKEN).contains_key(session)
 }
 
@@ -319,18 +374,28 @@ pub async fn hold(session: &str) {
     }
 }
 
-fn take_over(id: &str) -> Result<(), String> {
+/// Start a takeover; its token is the only way to steer or end it.
+fn take_over(id: &str) -> Result<String, String> {
     if driver(id).is_none() {
         return Err(format!("sesi `{id}` tidak ada lagi"));
     }
-    lock_map(&TAKEN).entry(id.to_owned()).or_insert_with(|| Takeover { since: Instant::now(), inputs: Inputs::default() });
+    expire_takeovers();
+    let token = {
+        let mut taken = lock_map(&TAKEN);
+        if taken.contains_key(id) {
+            return Err("sesi ini sedang diambil alih di halaman lain".into());
+        }
+        let token = token();
+        taken.insert(id.to_owned(), Takeover { since: Instant::now(), seen: Instant::now(), token: token.clone(), inputs: Inputs::default() });
+        token
+    };
     let since = now_ms();
     update(|s| {
         if let Some(x) = s.proc.sessions.iter_mut().find(|x| x.id == id) {
             x.taken_over_ms.get_or_insert(since);
         }
     });
-    Ok(())
+    Ok(token)
 }
 
 /// End a takeover (Kembalikan, or the session ended) and leave a note of it.
@@ -384,8 +449,9 @@ async fn screen_size(d: &dyn crate::Driver) -> Option<(f64, f64)> {
 /// Keys the panel may send.
 const KEYS: &[&str] = &["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Space"];
 
-/// One request from `fastpilot ui` (a JSON line): `op` is frame, takeover, release, tap, swipe,
-/// type, key or back; `x`/`y` (and `x2`/`y2`) are fractions (0–1) of the shown screen.
+/// One request from `fastpilot ui` (a JSON line): `op` is frame, takeover, or, with the takeover's
+/// `token`, keep, release, tap, swipe, type, key or back; `x`/`y` (and `x2`/`y2`) are fractions
+/// (0–1) of the shown screen.
 pub async fn command(req: &serde_json::Value) -> serde_json::Value {
     use serde_json::json;
     let op = req["op"].as_str().unwrap_or("");
@@ -399,15 +465,27 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
                 use base64::Engine;
                 return Ok(json!({ "jpeg": base64::engine::general_purpose::STANDARD.encode(jpeg) }));
             }
-            "takeover" => return take_over(id).map(|()| json!({})),
+            "takeover" => return take_over(id).map(|token| json!({ "token": token })),
+            _ => {}
+        }
+        // Everything else belongs to one takeover: its token, while it lasts.
+        expire_takeovers();
+        {
+            let mut taken = lock_map(&TAKEN);
+            let Some(t) = taken.get_mut(id) else { return Err("ambil alih sesi ini dulu".into()) };
+            let given = req["token"].as_str().unwrap_or("");
+            if given.len() != t.token.len() || !given.bytes().zip(t.token.bytes()).fold(true, |ok, (a, b)| ok & (a == b)) {
+                return Err("bukan pengambil alih sesi ini".into());
+            }
+            t.seen = Instant::now();
+        }
+        match op {
             "release" => {
                 give_back(id, "then gave it back");
                 return Ok(json!({}));
             }
+            "keep" => return Ok(json!({})),
             _ => {}
-        }
-        if !is_taken_over(id) {
-            return Err("ambil alih sesi ini dulu".into());
         }
         let count = |f: fn(&mut Inputs)| {
             if let Some(t) = lock_map(&TAKEN).get_mut(id) {
@@ -457,7 +535,7 @@ pub async fn command(req: &serde_json::Value) -> serde_json::Value {
 }
 
 /// The control socket: one JSON request per line, one JSON answer per line. Only this user can
-/// reach it (the folder is 0700, the socket 0600).
+/// reach it (the folder is 0700, the socket 0600), and only a `fastpilot ui` process is served.
 #[cfg(unix)]
 mod control {
     use std::path::PathBuf;
@@ -487,7 +565,24 @@ mod control {
         });
     }
 
+    /// The process at the other end is `fastpilot ui` (its pid from the socket, its command line from
+    /// the system). `FASTPILOT_LIVE_ANY_PEER=1` lifts this for tests of the socket itself.
+    async fn from_ui(stream: &tokio::net::UnixStream) -> bool {
+        if std::env::var_os("FASTPILOT_LIVE_ANY_PEER").is_some_and(|v| v == "1") {
+            return true;
+        }
+        let Some(pid) = stream.peer_cred().ok().and_then(|c| c.pid()) else { return false };
+        let out = tokio::process::Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().await;
+        let Ok(out) = out else { return false };
+        super::is_ui_command(&String::from_utf8_lossy(&out.stdout))
+    }
+
     async fn serve(stream: tokio::net::UnixStream) {
+        if !from_ui(&stream).await {
+            let (_, mut w) = stream.into_split();
+            let _ = w.write_all(b"{\"ok\":false,\"error\":\"only fastpilot ui may use this socket\"}\n").await;
+            return;
+        }
         let (r, mut w) = stream.into_split();
         // Requests are small: a connection reads at most 64 KB.
         let mut lines = BufReader::new(r.take(64 * 1024)).lines();
@@ -501,6 +596,23 @@ mod control {
             }
         }
     }
+}
+
+/// `ps` args of a `fastpilot ui` process: the program is named `fastpilot` and its first argument
+/// is `ui`. (A path with spaces is split by `ps`; the program is then found by its name.)
+fn is_ui_command(args: &str) -> bool {
+    let words: Vec<&str> = args.split_whitespace().collect();
+    for i in 0..words.len() {
+        // The program: the first word, or (a path with spaces) the first words up to `.../fastpilot`.
+        let program = words[..=i].join(" ");
+        if i > 0 && !program.starts_with('/') {
+            return false;
+        }
+        if program.rsplit('/').next() == Some("fastpilot") {
+            return words.get(i + 1) == Some(&"ui");
+        }
+    }
+    false
 }
 
 /// Every live process' state, newest first; stale files are removed.
@@ -565,5 +677,20 @@ mod tests {
         assert!(read_all().iter().all(|p| p.pid != std::process::id()));
         unsafe { std::env::remove_var("FASTPILOT_LIVE_DIR") };
         let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[cfg(test)]
+mod takeover_tests {
+    #[test]
+    fn only_a_fastpilot_ui_command_counts() {
+        assert!(super::is_ui_command("/usr/local/bin/fastpilot ui --no-open --port 7777\n"));
+        assert!(super::is_ui_command("/Users/x/node_modules/fastpilot/vendor/fastpilot ui"));
+        assert!(super::is_ui_command("/Users/my dir/fastpilot ui --no-open"));
+        for no in ["/usr/local/bin/fastpilot mcp", "python3 x.py fastpilot ui", "/bin/sh -c fastpilot", "fastpilot-ui ui", "/opt/notfastpilot ui", ""] {
+            assert!(!super::is_ui_command(no), "{no}");
+        }
+        assert_eq!(super::token().len(), 32);
+        assert_ne!(super::token(), super::token());
     }
 }
