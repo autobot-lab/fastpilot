@@ -65,16 +65,26 @@ async fn live_page_works_with_the_keyboard() {
     BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
     let _ui = Ui(child);
 
-    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("HOME", &home).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_LIVE_DIR").env_remove("FASTPILOT_BLOCK_ACTIONS");
-    });
-    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    // The tested app runs in a fastpilot with block_actions; the page is watched from another one
+    // without it (evalScript is off while block_actions is set). Both publish to the same Live folder.
+    let live = home.join(".fastpilot/live");
+    let viewer_home = home.join("viewer");
+    std::fs::create_dir_all(&viewer_home).expect("viewer home");
+    let mcp = |h: &Path| {
+        let (h, live) = (h.to_owned(), live.clone());
+        let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+            c.arg("mcp").current_dir(ROOT).env("HOME", &h).env("FASTPILOT_LIVE_DIR", &live).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
+        });
+        TokioChildProcess::new(cmd).expect("spawn")
+    };
+    let shop: Client = ().serve(mcp(&home)).await.expect("initialize");
+    let client: Client = ().serve(mcp(&viewer_home)).await.expect("initialize");
     // A test that a guard rail stops.
     let page = format!("file://{ROOT}/examples/demo/login.html");
     let flow = format!(
         "- session: {{ start: shop, platform: web, target: \"{page}\" }}\n- inputText: {{ into: Email, text: a@b.com }}\n- inputText: {{ into: Password, text: x }}\n- tapOn: Masuk\n- tapOn: Keluar\n"
     );
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    let (ok, out) = call(&shop, "run_flow", json!({ "flow": flow })).await;
     assert!(!ok && out.contains("block_actions"), "{out}");
 
     // The user opens the printed link: no `#/live` in it.
@@ -143,5 +153,6 @@ async fn live_page_works_with_the_keyboard() {
     assert!(ok, "{out}");
     assert_eq!(eval(&client, "document.activeElement.tagName + ':' + document.activeElement.textContent").await, "\"H1:Pengaturan\"");
     client.cancel().await.expect("shutdown");
+    shop.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }

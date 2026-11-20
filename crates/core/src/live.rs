@@ -7,10 +7,18 @@
 //! change and every 2 s as a heartbeat; a file not refreshed for [`STALE`] belongs to a process
 //! that is gone. The file holds the DevTools address of fastpilot's own Chrome: only the owner can
 //! read it, and `fastpilot ui` never sends it to the browser, only the frames.
+//!
+//! "Ambil alih" (C7b): each publishing process also listens on `<pid>.sock` in the same 0700 folder
+//! (Unix only). `fastpilot ui` asks it for screen frames of Android and iOS sessions (only while the
+//! panel shows them) and, after the user takes a session over, sends the user's taps, swipes, text
+//! and keys. While a session is taken over its automatic steps wait ([`hold`]); giving it back
+//! leaves a note ([`take_notes`]) for the AI's next result and the run record. Guard rails are not
+//! applied to the user's own input; they still apply to every automatic step.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +76,9 @@ pub struct LiveSession {
     /// The flow that last ran a step in this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<u64>,
+    /// Since when (ms) the user has this session taken over in `fastpilot ui`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_over_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,6 +113,8 @@ pub fn dir() -> PathBuf {
 /// Start publishing for this process (`kind`: mcp, daemon, run).
 pub fn enable(kind: &str) {
     let path = dir().join(format!("{}.json", std::process::id()));
+    #[cfg(unix)]
+    control::listen(path.with_extension("sock"));
     *lock() = Some(State {
         path,
         proc: LiveProcess { pid: std::process::id(), kind: kind.to_owned(), ..Default::default() },
@@ -122,6 +135,7 @@ pub fn enable(kind: &str) {
 /// Stop publishing and remove this process' file.
 pub fn disable() {
     if let Some(s) = lock().take() {
+        let _ = std::fs::remove_file(s.path.with_extension("sock"));
         let _ = std::fs::remove_file(s.path);
     }
 }
@@ -176,11 +190,13 @@ fn update(f: impl FnOnce(&mut State)) {
 pub fn session_started(id: &str, platform: &str, screen: Option<Screen>) {
     update(|s| {
         s.proc.sessions.retain(|x| x.id != id);
-        s.proc.sessions.push(LiveSession { id: id.to_owned(), platform: platform.to_owned(), started_ms: now_ms(), screen, flow: None });
+        s.proc.sessions.push(LiveSession { id: id.to_owned(), platform: platform.to_owned(), started_ms: now_ms(), screen, flow: None, taken_over_ms: None });
     });
 }
 
 pub fn session_ended(id: &str) {
+    lock_map(&DRIVERS).remove(id);
+    give_back(id, "the session ended");
     update(|s| s.proc.sessions.retain(|x| x.id != id));
 }
 
@@ -254,6 +270,237 @@ pub fn flow_finished(flow: Option<u64>) {
             }
         }
     });
+}
+
+// ---- Ambil alih (C7b) ---------------------------------------------------------------------
+
+/// Drivers of this process' sessions, for frames and the user's input.
+static DRIVERS: LazyLock<Mutex<HashMap<String, Weak<dyn crate::Driver>>>> = LazyLock::new(Default::default);
+/// Sessions the user has taken over, with what they did.
+static TAKEN: LazyLock<Mutex<HashMap<String, Takeover>>> = LazyLock::new(Default::default);
+/// Takeovers that ended `(session, note)`, for the next result that uses the session, and its run record.
+static NOTES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Inputs {
+    taps: u32,
+    swipes: u32,
+    texts: u32,
+    keys: u32,
+}
+
+struct Takeover {
+    since: Instant,
+    inputs: Inputs,
+}
+
+fn lock_map<T>(m: &'static LazyLock<Mutex<T>>) -> std::sync::MutexGuard<'static, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The session's driver, so `fastpilot ui` can show and (after a takeover) steer it.
+pub fn attach(id: &str, driver: &Arc<dyn crate::Driver>) {
+    lock_map(&DRIVERS).insert(id.to_owned(), Arc::downgrade(driver));
+}
+
+fn driver(id: &str) -> Option<Arc<dyn crate::Driver>> {
+    lock_map(&DRIVERS).get(id).and_then(Weak::upgrade)
+}
+
+/// Whether the user has `session` taken over right now.
+pub fn is_taken_over(session: &str) -> bool {
+    lock_map(&TAKEN).contains_key(session)
+}
+
+/// Before an automatic step on `session`: wait while the user has it taken over.
+pub async fn hold(session: &str) {
+    while is_taken_over(session) {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+fn take_over(id: &str) -> Result<(), String> {
+    if driver(id).is_none() {
+        return Err(format!("sesi `{id}` tidak ada lagi"));
+    }
+    lock_map(&TAKEN).entry(id.to_owned()).or_insert_with(|| Takeover { since: Instant::now(), inputs: Inputs::default() });
+    let since = now_ms();
+    update(|s| {
+        if let Some(x) = s.proc.sessions.iter_mut().find(|x| x.id == id) {
+            x.taken_over_ms.get_or_insert(since);
+        }
+    });
+    Ok(())
+}
+
+/// End a takeover (Kembalikan, or the session ended) and leave a note of it.
+fn give_back(id: &str, how: &str) {
+    let Some(t) = lock_map(&TAKEN).remove(id) else { return };
+    let i = t.inputs;
+    let mut did: Vec<String> = Vec::new();
+    for (n, what) in [(i.taps, "tap"), (i.swipes, "swipe"), (i.texts, "text input"), (i.keys, "key")] {
+        if n > 0 {
+            did.push(format!("{n} {what}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    let did = if did.is_empty() { "no input".to_owned() } else { did.join(", ") };
+    let note = format!(
+        "the user took over session `{id}` in fastpilot ui for {}s ({did}); {how}. Automatic steps waited meanwhile, and the screen may differ from what the flow expects.",
+        t.since.elapsed().as_secs()
+    );
+    let mut notes = NOTES.lock().unwrap_or_else(|p| p.into_inner());
+    // Notes of sessions nobody runs again are not kept forever.
+    if notes.len() >= 50 {
+        notes.remove(0);
+    }
+    notes.push((id.to_owned(), note));
+    drop(notes);
+    update(|s| {
+        if let Some(x) = s.proc.sessions.iter_mut().find(|x| x.id == id) {
+            x.taken_over_ms = None;
+        }
+    });
+}
+
+/// Takeovers of `sessions` that ended since they were last asked for (oldest first).
+pub fn take_notes(sessions: &[String]) -> Vec<String> {
+    let mut notes = NOTES.lock().unwrap_or_else(|p| p.into_inner());
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *notes).into_iter().partition(|(s, _)| sessions.contains(s));
+    *notes = rest;
+    mine.into_iter().map(|(_, n)| n).collect()
+}
+
+/// The screen size in the coordinates `tap`/`swipe` points use: the visible area (web), or the
+/// extent of the screen's elements (Android pixels, iOS points).
+async fn screen_size(d: &dyn crate::Driver) -> Option<(f64, f64)> {
+    if let Some(v) = d.viewport().await {
+        return Some((v.w, v.h));
+    }
+    let snap = d.snapshot().await.ok()?;
+    let (w, h) = snap.entries.iter().filter_map(|e| e.node.bounds).fold((0.0f64, 0.0f64), |(w, h), b| (w.max(b.x + b.w), h.max(b.y + b.h)));
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// Keys the panel may send.
+const KEYS: &[&str] = &["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Space"];
+
+/// One request from `fastpilot ui` (a JSON line): `op` is frame, takeover, release, tap, swipe,
+/// type, key or back; `x`/`y` (and `x2`/`y2`) are fractions (0–1) of the shown screen.
+pub async fn command(req: &serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    let op = req["op"].as_str().unwrap_or("");
+    let Some(id) = req["session"].as_str() else { return json!({ "ok": false, "error": "session wajib diisi" }) };
+    let Some(d) = driver(id) else { return json!({ "ok": false, "error": format!("sesi `{id}` tidak ada lagi") }) };
+    let frac = |k: &str| req[k].as_f64().filter(|v| (0.0..=1.0).contains(v));
+    let result: Result<serde_json::Value, String> = async {
+        match op {
+            "frame" => {
+                let jpeg = d.screenshot().await.map_err(|e| e.to_string())?;
+                use base64::Engine;
+                return Ok(json!({ "jpeg": base64::engine::general_purpose::STANDARD.encode(jpeg) }));
+            }
+            "takeover" => return take_over(id).map(|()| json!({})),
+            "release" => {
+                give_back(id, "then gave it back");
+                return Ok(json!({}));
+            }
+            _ => {}
+        }
+        if !is_taken_over(id) {
+            return Err("ambil alih sesi ini dulu".into());
+        }
+        let count = |f: fn(&mut Inputs)| {
+            if let Some(t) = lock_map(&TAKEN).get_mut(id) {
+                f(&mut t.inputs);
+            }
+        };
+        match op {
+            "tap" | "swipe" => {
+                let (Some(x), Some(y)) = (frac("x"), frac("y")) else { return Err("x dan y harus 0–1".into()) };
+                let (w, h) = screen_size(&*d).await.ok_or("ukuran layar tidak diketahui")?;
+                let at = crate::Point { x: x * w, y: y * h };
+                if op == "tap" {
+                    d.tap(&crate::Selector::Point(at)).await.map_err(|e| e.to_string())?;
+                    count(|i| i.taps += 1);
+                } else {
+                    let (Some(x2), Some(y2)) = (frac("x2"), frac("y2")) else { return Err("x2 dan y2 harus 0–1".into()) };
+                    d.swipe(at, crate::Point { x: x2 * w, y: y2 * h }).await.map_err(|e| e.to_string())?;
+                    count(|i| i.swipes += 1);
+                }
+            }
+            "type" => {
+                let text = req["text"].as_str().filter(|t| !t.is_empty() && t.chars().count() <= 500).ok_or("teks 1–500 karakter")?;
+                d.type_text(&crate::Selector::Focused, text).await.map_err(|e| e.to_string())?;
+                count(|i| i.texts += 1);
+            }
+            "key" => {
+                let key = req["key"].as_str().filter(|k| KEYS.contains(k)).ok_or("tombol tidak dikenal")?;
+                d.press_key(key).await.map_err(|e| e.to_string())?;
+                count(|i| i.keys += 1);
+            }
+            "back" => {
+                d.back().await.map_err(|e| e.to_string())?;
+                count(|i| i.keys += 1);
+            }
+            other => return Err(format!("perintah `{other}` tidak dikenal")),
+        }
+        Ok(json!({}))
+    }
+    .await;
+    match result {
+        Ok(mut v) => {
+            v["ok"] = json!(true);
+            v
+        }
+        Err(e) => json!({ "ok": false, "error": e }),
+    }
+}
+
+/// The control socket: one JSON request per line, one JSON answer per line. Only this user can
+/// reach it (the folder is 0700, the socket 0600).
+#[cfg(unix)]
+mod control {
+    use std::path::PathBuf;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    pub fn listen(path: PathBuf) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let _ = std::fs::remove_file(&path);
+        let listener = {
+            let _runtime = rt.enter();
+            match tokio::net::UnixListener::bind(&path) {
+                Ok(l) => l,
+                Err(e) => return tracing::debug!(error = %e, "live control socket not available"),
+            }
+        };
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        rt.spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve(stream));
+            }
+        });
+    }
+
+    async fn serve(stream: tokio::net::UnixStream) {
+        let (r, mut w) = stream.into_split();
+        // Requests are small: a connection reads at most 64 KB.
+        let mut lines = BufReader::new(r.take(64 * 1024)).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let answer = match serde_json::from_str::<serde_json::Value>(&line) {
+                Ok(req) => super::command(&req).await,
+                Err(_) => serde_json::json!({ "ok": false, "error": "bukan JSON" }),
+            };
+            if w.write_all(format!("{answer}\n").as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    }
 }
 
 /// Every live process' state, newest first; stale files are removed.

@@ -342,6 +342,7 @@ function stepLine(steps) {
 }
 
 function sessionStatus(s) {
+  if (s.taken_over_ms) return { text: "Diambil alih olehmu · langkah otomatis menunggu", cls: "warn" };
   const f = s.flow;
   if (!f) return { text: "Siap · menunggu langkah", cls: "" };
   if (f.steps.some((x) => x.state === "blocked")) return { text: "Diblokir Batasan", cls: "bad" };
@@ -423,10 +424,11 @@ function screenEl(s, big) {
   if (!s.watchable) {
     return h("div", { class: "screen-box none" }, h("span", {}, s.platform === "web"
       ? "Chrome milikmu (attach) tidak ditampilkan di sini."
-      : `Layar ${s.platform} langsung menyusul. Langkahnya tetap terlihat di bawah.`));
+      : `Layar ${s.platform} tidak bisa ditampilkan: proses fastpilot ini versi lama. Langkahnya tetap terlihat di bawah.`));
   }
-  const fps = big ? 8 : 2, w = big ? 1280 : 480;
-  const img = h("img", { class: "screen", alt: `Layar sesi ${s.id}` });
+  // Android/iOS frames are screenshots from the device (the server caps them at 3 per second).
+  const fps = big ? (s.platform === "web" ? 8 : 3) : (s.platform === "web" ? 2 : 1), w = big ? 1280 : 480;
+  const img = h("img", { class: "screen", alt: `Layar sesi ${s.id}`, draggable: "false" });
   const status = h("div", { class: "screen-state" }, h("div", { class: "spin", role: "status", "aria-label": "Memuat" }), h("span", {}, "Menyambung ke layar…"));
   const box = h("div", { class: "screen-box" }, img, status);
   const start = () => watch(img, `/api/live/frames?pid=${s.pid}&session=${encodeURIComponent(s.id)}&fps=${fps}&w=${w}`, () => status.remove(), (why) => {
@@ -449,9 +451,13 @@ function card(s) {
   const key = `${s.pid}:${s.id}`;
   const line = h("div", { class: "l" });
   const status = h("div", { class: "d" });
-  const more = s.watchable
+  const zoom = s.watchable
     ? h("button", { class: "btn sm", "data-fk": `zoom:${key}`, "aria-label": `Perbesar layar sesi ${s.id}`, onclick: (e) => openZoom(s, e.currentTarget) }, icon("expand", "sm"), "Perbesar")
     : null;
+  const take = s.controllable
+    ? h("button", { class: "btn sm", "data-fk": `take:${key}`, onclick: (e) => toggleTakeover(key, e.currentTarget) })
+    : null;
+  const more = zoom || take ? h("div", { class: "btns tight" }, zoom, take) : null;
   const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Sesi ${s.id}, ${s.platform}. Enter untuk melihat langkahnya.`,
     onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
@@ -461,7 +467,7 @@ function card(s) {
     if (e.target !== el) return;
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSession(key); }
   });
-  return { el, line, status };
+  return { el, line, status, take };
 }
 
 // Only text and classes change on each poll: the buttons stay, so keyboard focus stays.
@@ -473,6 +479,7 @@ function fillCard(c, s, selected) {
   const statusText = st.text + (s.kind ? ` · ${KIND[s.kind] || s.kind}` : "");
   if (c.status.textContent !== statusText) c.status.textContent = statusText;
   c.status.className = "d " + st.cls;
+  if (c.take) setTakeLabel(c.take, s);
   c.el.classList.toggle("sel", selected);
   if (selected) c.el.setAttribute("aria-current", "true"); else c.el.removeAttribute("aria-current");
 }
@@ -503,6 +510,119 @@ function liveEmpty() {
       h("span", {}, "Coba: ", code("fastpilot open https://example.com"))));
 }
 
+// ---- Ambil alih (C7b) ----
+// The user steers a session from here; its automatic steps wait until Kembalikan.
+function liveSession(key) {
+  return (lastLive.sessions || []).find((x) => `${x.pid}:${x.id}` === key);
+}
+
+function setTakeLabel(btn, s) {
+  const taken = !!s.taken_over_ms;
+  const label = taken ? "Kembalikan" : "Ambil alih";
+  if (btn.dataset.label !== label) {
+    btn.dataset.label = label;
+    btn.replaceChildren(icon(taken ? "play" : "cursor", "sm"), label);
+    btn.classList.toggle("p", taken);
+    btn.setAttribute("aria-label", taken ? `Kembalikan sesi ${s.id} ke otomatis` : `Ambil alih sesi ${s.id}: langkah otomatis dijeda`);
+  }
+}
+
+async function control(s, op, extra) {
+  try {
+    await api("/api/live/control", Object.assign({ pid: s.pid, session: s.id, op }, extra || {}));
+    return true;
+  } catch (e) {
+    toast((op === "takeover" ? "Tidak bisa mengambil alih: " : op === "release" ? "Tidak bisa mengembalikan: " : "Input tidak terkirim: ") + e.message);
+    return false;
+  }
+}
+
+async function refreshLive() {
+  try { renderLive(await api("/api/live")); } catch (_) { /* the next poll shows it */ }
+}
+
+async function toggleTakeover(key, opener) {
+  const s = liveSession(key);
+  if (!s) return;
+  if (s.taken_over_ms) {
+    if (await control(s, "release")) await refreshLive();
+    return;
+  }
+  if (!(await control(s, "takeover"))) return;
+  await refreshLive();
+  // Steering is done on the large screen.
+  if (s.watchable) openZoom(liveSession(key) || s, opener);
+}
+
+// Where on the shown picture (object-fit: contain) a pointer is, as 0–1 fractions.
+function fraction(img, e) {
+  const r = img.getBoundingClientRect();
+  const nw = img.naturalWidth || r.width, nh = img.naturalHeight || r.height;
+  const k = Math.min(r.width / nw, r.height / nh);
+  const w = nw * k, hgt = nh * k;
+  const x = (e.clientX - r.left - (r.width - w) / 2) / w, y = (e.clientY - r.top - (r.height - hgt) / 2) / hgt;
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
+}
+
+// Click = tap, drag = swipe, on the large screen while the session is taken over.
+function steerable(box, key) {
+  const img = box.querySelector("img.screen");
+  if (!img) return;
+  let down = null;
+  img.addEventListener("pointerdown", (e) => {
+    const s = liveSession(key);
+    if (!s || !s.taken_over_ms) return;
+    e.preventDefault();
+    down = fraction(img, e);
+  });
+  img.addEventListener("pointerup", async (e) => {
+    const s = liveSession(key);
+    const from = down;
+    down = null;
+    if (!s || !s.taken_over_ms || !from) return;
+    const to = fraction(img, e);
+    if (!to) return;
+    const r = img.getBoundingClientRect();
+    const moved = Math.hypot((to.x - from.x) * r.width, (to.y - from.y) * r.height);
+    if (moved < 12) await control(s, "tap", from);
+    else await control(s, "swipe", { x: from.x, y: from.y, x2: to.x, y2: to.y });
+  });
+}
+
+function steerBar(key) {
+  const s = liveSession(key);
+  const text = h("input", { type: "text", class: "steer-text", maxlength: "500", placeholder: "Ketik ke kolom yang aktif", "aria-label": "Teks untuk diketik di device" });
+  const sendText = async () => {
+    const s2 = liveSession(key);
+    if (s2 && text.value && await control(s2, "type", { text: text.value })) text.value = "";
+  };
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendText(); } });
+  const key_ = (k, label) => h("button", { class: "btn sm", onclick: () => { const s2 = liveSession(key); if (s2) control(s2, "key", { key: k }); } }, label);
+  const back = s && s.platform !== "web"
+    ? h("button", { class: "btn sm", onclick: () => { const s2 = liveSession(key); if (s2) control(s2, "back"); } }, "Kembali")
+    : null;
+  const on = h("div", { class: "steer-on" },
+    h("p", { class: "muted small" }, "Klik layar untuk tap, seret untuk swipe. Langkah otomatis menunggu sampai kamu menekan Kembalikan."),
+    h("div", { class: "steer-row" }, text, h("button", { class: "btn sm", onclick: sendText }, "Ketik"), key_("Enter", "Enter"), key_("Backspace", "Hapus"), back));
+  const take = h("button", { class: "btn sm", "data-fk": `take-zoom:${key}`, onclick: (e) => toggleTakeover(key, e.currentTarget) });
+  const bar = h("div", { class: "steer", "data-key": key }, h("div", { class: "steer-head" }, h("span", { class: "steer-state" }), take), on);
+  updateSteer(bar);
+  return bar;
+}
+
+function updateSteer(bar) {
+  const s = liveSession(bar.dataset.key);
+  if (!s) return;
+  const taken = !!s.taken_over_ms;
+  setTakeLabel(bar.querySelector("[data-fk^='take-zoom:']"), s);
+  const state = bar.querySelector(".steer-state");
+  const t = taken ? "Diambil alih olehmu · langkah otomatis menunggu" : "Otomatis · ambil alih untuk klik dan ketik sendiri";
+  if (state.textContent !== t) state.textContent = t;
+  state.className = "steer-state " + (taken ? "warn" : "muted");
+  bar.querySelector(".steer-on").hidden = !taken;
+  bar.closest("dialog")?.classList.toggle("steering", taken);
+}
+
 // Perbesar: a modal <dialog> (focus stays inside, Escape closes), focus goes back to the button.
 let zoomOpener = null;
 function openZoom(s, opener) {
@@ -511,12 +631,15 @@ function openZoom(s, opener) {
   const dlg = h("dialog", { class: "zoom", "aria-label": `Layar sesi ${s.id}, diperbesar` },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "mono" }, s.id),
       h("button", { class: "btn sm right", onclick: () => closeZoom(true) }, icon("close", "sm"), "Tutup")),
-    screenEl(s, true));
+    screenEl(s, true),
+    s.controllable ? steerBar(`${s.pid}:${s.id}`) : null);
+  if (s.controllable) steerable(dlg.querySelector(".screen-box"), `${s.pid}:${s.id}`);
+  dlg.querySelectorAll(".steer").forEach(updateSteer);
   dlg.addEventListener("cancel", (e) => { e.preventDefault(); closeZoom(true); });
   // Tab and Shift+Tab go round inside the dialog only.
   dlg.addEventListener("keydown", (e) => {
     if (e.key !== "Tab") return;
-    const items = [...dlg.querySelectorAll("button, a[href], [tabindex]:not([tabindex='-1'])")].filter((x) => !x.disabled);
+    const items = [...dlg.querySelectorAll("button, input, a[href], [tabindex]:not([tabindex='-1'])")].filter((x) => !x.disabled && !x.closest("[hidden]"));
     if (!items.length) return;
     const at = items.indexOf(document.activeElement);
     const next = e.shiftKey ? (at <= 0 ? items.length - 1 : at - 1) : (at < 0 || at === items.length - 1 ? 0 : at + 1);
@@ -587,6 +710,7 @@ function renderLive(data) {
     host.replaceChildren(...(sel ? [stepsPanel(sel)] : []));
     if (fk) host.querySelector(`[data-fk="${fk}"]`)?.focus();
   }
+  document.querySelectorAll("dialog.zoom .steer").forEach(updateSteer);
   if (document.querySelector("dialog.zoom") && zoomOpener && !zoomOpener.isConnected) closeZoom(false);
 }
 

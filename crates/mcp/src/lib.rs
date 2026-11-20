@@ -497,7 +497,7 @@ impl FastPilot {
     }
 
     /// Append a `run_flow` to its test's run: durable YAML, steps, failure evidence.
-    async fn record(&self, test_id: &str, flow: &fastpilot_core::Flow, report: &FlowReport, reg: &SessionRegistry) -> String {
+    async fn record(&self, test_id: &str, flow: &fastpilot_core::Flow, report: &FlowReport, reg: &SessionRegistry, takeovers: &[String]) -> String {
         let durable = report.records.iter().filter_map(|r| r.durable.clone().map(|d| (r.index, d))).collect();
         let yaml = flow_to_yaml(flow, &durable);
         let failed_session = report.records.iter().find(|r| r.error.is_some()).and_then(|r| r.session.clone());
@@ -513,6 +513,9 @@ impl FastPilot {
                 Err(e) => return format!("\n(run not recorded: {e})"),
             },
         };
+        for t in takeovers {
+            run.record_takeover(t);
+        }
         for r in &report.records {
             if r.label.starts_with("assertVisible") || r.label.starts_with("assertNotVisible") {
                 run.record_assertion(Assertion {
@@ -621,9 +624,13 @@ impl FastPilot {
         };
         let mut local = before.clone();
         let report = run_flow(&mut local, &self.state.launcher, &flow, &opts).await;
-        let mut text = format!("{note}{report}");
+        // The user took a session over in `fastpilot ui` (Ambil alih) and gave it back.
+        let used: Vec<String> = report.records.iter().filter_map(|r| r.session.clone()).collect();
+        let taken = fastpilot_core::live::take_notes(&used);
+        let taken_text: String = taken.iter().map(|n| format!("note: {n}\n")).collect();
+        let mut text = format!("{note}{taken_text}{report}");
         if let Some(t) = &args.test_id {
-            text.push_str(&self.record(t, &flow, &report, &local).await);
+            text.push_str(&self.record(t, &flow, &report, &local, &taken).await);
         }
         self.state.registry.lock().await.absorb(&before, local);
         if report.passed() { ok(text) } else { fail(text) }

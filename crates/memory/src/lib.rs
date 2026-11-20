@@ -256,6 +256,8 @@ pub struct Run {
     passed_on_retry: bool,
     /// Per-step rows (as in steps.jsonl) and each flow's full response, for report.html.
     rows: Vec<serde_json::Value>,
+    /// Times the user took a session over in `fastpilot ui` (Ambil alih), as notes.
+    takeovers: Vec<String>,
     outputs: Vec<(bool, String)>,
     shots: Vec<(String, Vec<u8>)>,
     recordings: Vec<(String, Recording)>,
@@ -326,6 +328,17 @@ impl Run {
             }
         }
         Ok(())
+    }
+
+    /// The user took a session over in `fastpilot ui` and gave it back: a row in steps.jsonl and a
+    /// line in the report, so a pass is not mistaken for a run without help.
+    pub fn record_takeover(&mut self, note: &str) {
+        let note = fastpilot_core::redact(note);
+        let path = self.dir.join("steps.jsonl");
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{}", serde_json::json!({ "flow": self.flows.len() + self.failures + 1, "takeover": note }));
+        }
+        self.takeovers.push(note);
     }
 
     /// A screenshot for the report (e.g. each session's final screen).
@@ -407,6 +420,13 @@ impl Run {
         if !notes.is_empty() {
             md.push_str(&format!("## Notes\n\n{}\n\n", fastpilot_core::redact(notes)));
         }
+        if !self.takeovers.is_empty() {
+            md.push_str("## Taken over by the user\n\n");
+            for t in &self.takeovers {
+                md.push_str(&format!("- {t}\n"));
+            }
+            md.push('\n');
+        }
         if !self.screens.is_empty() {
             md.push_str("## Screens\n\n");
             for s in &self.screens {
@@ -487,6 +507,13 @@ impl Run {
         }
         if !notes.is_empty() {
             b.push_str(&format!("<p>{}</p>", e(notes)));
+        }
+        if !self.takeovers.is_empty() {
+            b.push_str("<h2>Taken over by the user</h2><ul>");
+            for t in &self.takeovers {
+                b.push_str(&format!("<li>{}</li>", e(t)));
+            }
+            b.push_str("</ul>");
         }
         if !self.rows.is_empty() {
             b.push_str("<h2>Steps</h2><table><tr><th>flow</th><th>#</th><th>session</th><th>step</th><th>ms</th><th>result</th></tr>");
@@ -588,6 +615,27 @@ mod tests {
     fn formats_utc() {
         assert_eq!(utc_stamp(0, false), "1970-01-01 00:00:00");
         assert_eq!(utc_stamp(1_793_752_501, true), "20261104-003501");
+    }
+
+    /// C7b: a takeover in `fastpilot ui` is in steps.jsonl and in report.md / report.html.
+    #[test]
+    fn takeovers_are_in_the_run_record() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-mem-take-{}", std::process::id()));
+        let mem = Memory::new(&dir, Mode::ReadWrite);
+        let report = FlowReport { total: 0, elapsed: Default::default(), records: vec![], candidates: vec![], states: vec![] };
+        let mut run = mem.begin_run("take").expect("run");
+        let note = "the user took over session `and1` in fastpilot ui for 9s (1 tap, 1 text input); then gave it back.";
+        run.record_takeover(note);
+        run.record_flow("- tapOn: Masuk\n".into(), &report, None).expect("record");
+        let run_dir = run.dir().to_owned();
+        let done = run.finish(&mem, true, "").expect("finish");
+        let steps = std::fs::read_to_string(run_dir.join("steps.jsonl")).expect("steps");
+        assert!(steps.lines().any(|l| l.contains("\"takeover\"") && l.contains("1 tap, 1 text input")), "{steps}");
+        let md = std::fs::read_to_string(&done.report).expect("report.md");
+        assert!(md.contains("## Taken over by the user") && md.contains("session `and1`"), "{md}");
+        let html = std::fs::read_to_string(done.report.with_extension("html")).expect("report.html");
+        assert!(html.contains("Taken over by the user"), "html");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
