@@ -140,7 +140,7 @@ fn ready(area: &str, checks: &[&Check]) -> String {
     match area {
         "web" => "Chrome bisa dinyalakan headless".into(),
         "android" => format!("device: {}", clip(&detail("device"), 40)),
-        "ios" => clip(&format!("{} · {}", detail("Xcode"), crate::ui::in_indonesian(&detail("simulator"))), 50),
+        "ios" => clip(&format!("{} · {}", detail("Xcode"), detail("simulator")), 50),
         _ => format!("Claude Code {}", detail("Claude Code").replace(" (Claude Code)", "")),
     }
 }
@@ -156,7 +156,7 @@ fn gap(c: &Check) -> String {
         "simulator" => "belum ada simulator iPhone".into(),
         "runner" => "runner belum ada".into(),
         "Claude Code" => "Claude Code belum terpasang".into(),
-        _ => clip(&crate::ui::in_indonesian(&c.detail), 45),
+        _ => clip(&c.detail, 45),
     }
 }
 

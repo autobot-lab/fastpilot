@@ -13,6 +13,7 @@ mod pool;
 mod report;
 mod run;
 mod schedule;
+mod settings_id;
 mod stability;
 mod ui;
 
@@ -70,48 +71,52 @@ env:
 /// settings (no guard-rail limits: people decide).
 fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
     use fastpilot_core::config;
-    let key = || args.get(1).map(|k| k.to_lowercase()).ok_or("missing setting key; see `fastpilot config list`");
+    let key = || -> Result<String, Box<dyn Error + Send + Sync>> {
+        let k = args.get(1).map(|k| k.to_lowercase()).ok_or("kurang nama pengaturan; lihat `fastpilot config list`")?;
+        config::setting(&k).ok_or(format!("pengaturan `{k}` tidak dikenal; lihat `fastpilot config list`"))?;
+        Ok(k)
+    };
     match args.first().map(String::as_str).unwrap_or("list") {
         "list" => {
-            println!("{}", config::describe());
+            println!("{}", settings_id::describe());
             // The provider's key: whether there is one and where, never the key.
             if let Some(p) = config::var("FASTPILOT_PROVIDER").ok().filter(|p| !p.is_empty() && p != "claude") {
-                let state = if keystore::has(&p) { format!("set ({})", keystore::backend().describe()) } else { "not set: `fastpilot config set-key <provider>`".into() };
+                let state = if keystore::has(&p) { format!("tersimpan ({})", keystore::backend().describe()) } else { "belum ada: `fastpilot config set-key <provider>`".into() };
                 println!("{:<18} {state}", format!("{p} API key"));
             }
         }
         "set-key" => {
-            let p = args.get(1).ok_or("set-key needs a provider: openai, openrouter, groq, ollama or custom")?;
-            let key = read_secret(&format!("API key for {p} (input hidden): "))?;
+            let p = args.get(1).ok_or("set-key butuh nama provider: openai, openrouter, groq, ollama, atau custom")?;
+            let key = read_secret(&format!("API key untuk {p} (ketikan tidak tampil): "))?;
             let place = keystore::set(p, &key)?;
-            println!("{p} API key saved in the {place}; it is never shown again (`fastpilot config test-provider` checks it)");
+            println!("API key {p} disimpan di {place}; tidak akan ditampilkan lagi (`fastpilot config test-provider` mengeceknya)");
         }
         "unset-key" => {
-            let p = args.get(1).ok_or("unset-key needs a provider")?;
+            let p = args.get(1).ok_or("unset-key butuh nama provider")?;
             keystore::delete(p)?;
-            println!("{p} API key removed from the {}", keystore::backend().describe());
+            println!("API key {p} dihapus dari {}", keystore::backend().describe());
         }
         "path" => println!("{}", config::path().display()),
         "get" => {
             let k = key()?;
-            config::setting(&k).ok_or(format!("unknown setting `{k}`"))?;
             match config::effective(&k) {
                 config::Source::Env(v) => println!("{v}  (env FASTPILOT_{})", k.to_uppercase()),
-                config::Source::File(v) if v.is_empty() && config::LISTS.contains(&k.as_str()) => println!("[] (emptied)"),
+                config::Source::File(v) if v.is_empty() && config::LISTS.contains(&k.as_str()) => println!("[] (dikosongkan)"),
                 config::Source::File(v) => println!("{v}"),
                 // A provider's preset base URL is a real value, not "nothing set".
                 config::Source::Default if k == "provider_base_url" => {
                     let p = config::var("FASTPILOT_PROVIDER").unwrap_or_default();
                     match config::preset_base(p.trim()) {
-                        Some(url) => println!("{url}  (preset of {})", p.trim()),
-                        None => println!("(default)"),
+                        Some(url) => println!("{url}  (preset {})", p.trim()),
+                        None => println!("(bawaan)"),
                     }
                 }
                 config::Source::Default => match k.as_str() {
                     // v0.3.2: what "not set" means for the built-in lists.
                     "block_actions" => println!("{} (default (bawaan))", fastpilot_core::policy::DEFAULT_BLOCKED.join(", ")),
                     "confirm_actions" => println!("{} (default (bawaan))", fastpilot_core::policy::DEFAULT_CONFIRM.join(", ")),
-                    _ => println!("(default)"),
+                    "allow_eval_script" => println!("mati selama block_actions aktif, selain itu boleh (default (bawaan))"),
+                    _ => println!("(bawaan)"),
                 },
             }
         }
@@ -123,7 +128,7 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
                 .get(2..)
                 .map(|r| r.join(" "))
                 .filter(|v| emptied || !v.trim().is_empty())
-                .ok_or_else(|| format!("set needs a value; to clear `{k}`, use `fastpilot config unset {k}`"))?;
+                .ok_or_else(|| format!("set butuh nilai; untuk menghapus `{k}`, pakai `fastpilot config unset {k}`"))?;
             let previous = (k == "provider").then(|| config::file_values().remove("provider")).flatten();
             let p = config::write(&k, Some(&v))?;
             println!("{k} = {}  ({})", if v.trim().is_empty() { "[]" } else { v.as_str() }, p.display());
@@ -132,26 +137,26 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             if k == "provider" && previous.as_deref() != Some(v.trim()) && config::file_values().contains_key("provider_base_url") {
                 config::write("provider_base_url", None)?;
                 match config::preset_base(v.trim()) {
-                    Some(url) => println!("note: provider_base_url removed; {v} uses {url}"),
-                    None => println!("note: provider_base_url removed; set the server: `fastpilot config set provider_base_url https://…/v1`"),
+                    Some(url) => println!("catatan: provider_base_url dihapus; {v} memakai {url}"),
+                    None => println!("catatan: provider_base_url dihapus; atur servernya: `fastpilot config set provider_base_url https://…/v1`"),
                 }
             }
             if std::env::var(format!("FASTPILOT_{}", k.to_uppercase())).is_ok() {
-                println!("note: FASTPILOT_{} is set in the environment and wins over the file", k.to_uppercase());
+                println!("catatan: FASTPILOT_{} diatur di environment dan menang atas file", k.to_uppercase());
             }
             if config::setting(&k).is_some_and(|s| s.rule == config::Rule::TightenOnly) {
-                println!("note: a guard rail; a running fastpilot (MCP server, daemon) only takes a stricter value, a looser one after restart");
+                println!("catatan: ini Batasan; fastpilot yang sedang jalan (server MCP, daemon) hanya menerima nilai yang lebih ketat, yang lebih longgar setelah restart");
             }
             if config::setting(&k).is_some_and(|s| s.rule == config::Rule::HumanOnly) {
-                println!("note: a running fastpilot (MCP server, daemon) keeps its value until it restarts");
+                println!("catatan: fastpilot yang sedang jalan (server MCP, daemon) memakai nilai lamanya sampai restart");
             }
         }
         "unset" => {
             let k = key()?;
             let p = config::write(&k, None)?;
-            println!("{k} removed  ({})", p.display());
+            println!("{k} dihapus  ({})", p.display());
         }
-        other => return Err(format!("unknown `config {other}` (list, get, set, unset, path, set-key, unset-key, test-provider)").into()),
+        other => return Err(format!("`config {other}` tidak dikenal (list, get, set, unset, path, set-key, unset-key, test-provider)").into()),
     }
     Ok(())
 }

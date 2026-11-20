@@ -264,17 +264,17 @@ where
 
 /// `fastpilot config test-provider`: one tiny request with the configured provider.
 pub async fn test_provider() -> Result<String, String> {
-    let p = Provider::configured().ok_or("provider is claude (Claude Code): nothing to test here; `fastpilot doctor run` checks Claude Code")??;
+    let p = Provider::configured().ok_or("provider-nya claude (Claude Code): tidak ada yang dites di sini; `fastpilot doctor run` mengecek Claude Code")??;
     let client = Provider::client()?;
     let t0 = Instant::now();
     let body = json!({ "model": p.model, "messages": [{ "role": "user", "content": "Reply with the word OK." }], "max_tokens": 5 });
     let reply = p.complete(&client, &body).await?;
     let said = reply["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().chars().take(40).collect::<String>();
     let key = match (&p.key, p.name.as_str()) {
-        (Some(_), _) => "key from the key store or FASTPILOT_PROVIDER_API_KEY",
-        (None, _) => "no key (local)",
+        (Some(_), _) => "key dari penyimpanan key atau FASTPILOT_PROVIDER_API_KEY",
+        (None, _) => "tanpa key (lokal)",
     };
-    Ok(format!("ok: {} at {} answered as {} in {} ms ({key}): {said:?}", p.name, p.base_url, p.model, t0.elapsed().as_millis()))
+    Ok(format!("ok: {} di {} menjawab sebagai {} dalam {} ms ({key}): {said:?}", p.name, p.base_url, p.model, t0.elapsed().as_millis()))
 }
 
 #[cfg(test)]
