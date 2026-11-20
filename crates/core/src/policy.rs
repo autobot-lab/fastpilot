@@ -9,7 +9,10 @@
 //!   account", ...) fails with `blocked` unless the step says `confirm: true`.
 
 //! - `block_actions`: a tap on an element whose text contains one of these words is always refused,
-//!   `confirm: true` or not ("Bayar" also blocks "Lanjut ke Pembayaran").
+//!   `confirm: true` or not ("Bayar" also blocks "Lanjut ke Pembayaran"). Not set at all (a new
+//!   install): the built-in list [`DEFAULT_BLOCKED`] (payment, account deletion), matched as whole
+//!   words; `default` in the list stands for it too. Emptied on purpose (`block_actions = []`): off.
+//! - `confirm_actions` not set at all: [`DEFAULT_CONFIRM`] (hapus, delete, remove).
 //! - `allow_*` permissions (default on) and `upload_dirs`: see [`crate::config::SETTINGS`].
 
 /// Built-in risky words for `FASTPILOT_CONFIRM_ACTIONS=default` (or `1`).
@@ -17,6 +20,37 @@ const DEFAULT_RISKY: &[&str] = &[
     "delete", "hapus", "remove", "pay", "bayar", "purchase", "buy", "beli", "checkout", "transfer", "place order", "buat pesanan",
     "unsubscribe", "deactivate", "nonaktifkan",
 ];
+
+/// Built-in `block_actions` (v0.3.2): used while the key is not set, or for the word `default` in
+/// it. Matched as whole words ("pay" blocks "Pay now", not "Paypal").
+pub const DEFAULT_BLOCKED: &[&str] =
+    &["bayar", "pay", "beli", "buy", "checkout", "purchase", "transfer", "buat pesanan", "place order", "hapus akun", "delete account"];
+
+/// Built-in `confirm_actions` while the key is not set (v0.3.2): plain deletes need `confirm: true`
+/// ("Hapus filter" is not blocked, only confirmed).
+pub const DEFAULT_CONFIRM: &[&str] = &["hapus", "delete", "remove"];
+
+/// A configured list: `None` when the setting is not set anywhere (env or file), `Some(empty)` when
+/// it was emptied on purpose.
+fn configured(var: &str) -> Option<Vec<String>> {
+    crate::config::var(var).ok().map(|v| v.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+}
+
+/// `block_actions` items as the engine matches them: `default` (or nothing set) becomes the
+/// built-in words, wrapped in spaces (` pay `) = whole words only; the user's own words stay as
+/// they are and match inside text.
+pub fn expand_blocked(items: Option<Vec<String>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in items.unwrap_or_else(|| vec!["default".to_owned()]) {
+        if w == "default" {
+            out.extend(DEFAULT_BLOCKED.iter().map(|d| format!(" {d} ")));
+        } else {
+            out.push(w);
+        }
+    }
+    out.dedup();
+    out
+}
 
 fn list(var: &str) -> Vec<String> {
     crate::config::var(var)
@@ -58,15 +92,29 @@ pub fn url_allowed(url: &str, allowed: &[String]) -> bool {
     })
 }
 
-/// Words that always block a tap (`block_actions`).
+/// Words that always block a tap (`block_actions`; built-in ones wrapped in spaces, see
+/// [`expand_blocked`]).
 pub fn blocked_words() -> Vec<String> {
-    list("FASTPILOT_BLOCK_ACTIONS")
+    expand_blocked(configured("FASTPILOT_BLOCK_ACTIONS"))
 }
 
-/// The blocked word `name` contains (substring, case-insensitive).
-pub fn block_match(name: &str, words: &[String]) -> Option<String> {
-    let name = name.to_lowercase();
-    words.iter().find(|w| name.contains(w.as_str())).cloned()
+/// A blocked word found in an element's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockHit {
+    pub word: String,
+    /// From the built-in list (not set, or `default`).
+    pub builtin: bool,
+}
+
+/// The blocked word `name` contains, case-insensitive: the user's words anywhere in the text, the
+/// built-in ones as whole words.
+pub fn block_match(name: &str, words: &[String]) -> Option<BlockHit> {
+    let lower = name.to_lowercase();
+    words.iter().find_map(|w| {
+        let whole = w.len() > 2 && w.starts_with(' ') && w.ends_with(' ');
+        let hit = if whole { risky_match(name, &[w.trim().to_owned()]).is_some() } else { lower.contains(w.as_str()) };
+        hit.then(|| BlockHit { word: w.trim().to_owned(), builtin: whole })
+    })
 }
 
 /// Folders `uploadFile` may take files from (`upload_dirs`); empty = any. `~/` is the home folder.
@@ -92,9 +140,16 @@ pub fn upload_allowed(file: &std::path::Path, dirs: &[std::path::PathBuf]) -> bo
     dirs.iter().filter_map(|d| d.canonicalize().ok()).any(|d| f.starts_with(d))
 }
 
-/// Risky words / phrases; empty = no confirmation needed.
+/// Risky words / phrases; empty = no confirmation needed; not set = [`DEFAULT_CONFIRM`].
 pub fn risky_words() -> Vec<String> {
-    let words = list("FASTPILOT_CONFIRM_ACTIONS");
+    expand_risky(configured("FASTPILOT_CONFIRM_ACTIONS"))
+}
+
+/// `confirm_actions` items as the engine matches them (`None`: not set).
+pub fn expand_risky(words: Option<Vec<String>>) -> Vec<String> {
+    let Some(words) = words else {
+        return DEFAULT_CONFIRM.iter().map(|w| (*w).to_owned()).collect();
+    };
     if words.iter().any(|w| w == "default" || w == "1" || w == "true") {
         let mut all: Vec<String> = DEFAULT_RISKY.iter().map(|w| (*w).to_owned()).collect();
         all.extend(words.into_iter().filter(|w| !matches!(w.as_str(), "default" | "1" | "true")));
@@ -188,9 +243,35 @@ mod tests {
     #[test]
     fn blocked_words_match_inside_text() {
         let w: Vec<String> = vec!["bayar".into()];
-        assert_eq!(block_match("Lanjut ke Pembayaran", &w).as_deref(), Some("bayar"));
-        assert_eq!(block_match("BAYAR", &w).as_deref(), Some("bayar"));
-        assert_eq!(block_match("Batal", &w), None);
+        let word = |n: &str, w: &[String]| block_match(n, w).map(|h| h.word);
+        assert_eq!(word("Lanjut ke Pembayaran", &w).as_deref(), Some("bayar"));
+        assert_eq!(word("BAYAR", &w).as_deref(), Some("bayar"));
+        assert_eq!(word("Batal", &w), None);
+    }
+
+    /// F5 (v0.3.2): built-in words match whole words only, and say they are built in; the user's
+    /// own words still match inside text.
+    #[test]
+    fn built_in_block_words_match_whole_words() {
+        let all = expand_blocked(None);
+        assert_eq!(all.len(), DEFAULT_BLOCKED.len());
+        let hit = block_match("Bayar sekarang", &all).expect("bayar");
+        assert_eq!(hit, BlockHit { word: "bayar".into(), builtin: true });
+        for (name, word) in [("Pay now", "pay"), ("CHECKOUT", "checkout"), ("Buat Pesanan", "buat pesanan"), ("Hapus akun saya", "hapus akun"), ("Delete account", "delete account")] {
+            assert_eq!(block_match(name, &all).map(|h| h.word).as_deref(), Some(word), "{name}");
+        }
+        for name in ["Paypal", "Lanjut ke Pembayaran", "Hapus filter", "Remove from cart", "Transferan", "Masuk"] {
+            assert_eq!(block_match(name, &all), None, "{name}");
+        }
+        // `default` next to the user's own words: both kinds.
+        let mixed = expand_blocked(Some(vec!["default".into(), "keluar".into()]));
+        assert_eq!(block_match("Keluarkan", &mixed), Some(BlockHit { word: "keluar".into(), builtin: false }));
+        assert!(block_match("Pay now", &mixed).is_some_and(|h| h.builtin));
+        // Emptied on purpose: nothing is blocked.
+        assert!(expand_blocked(Some(vec![])).is_empty());
+        assert_eq!(expand_risky(None), ["hapus", "delete", "remove"]);
+        assert!(expand_risky(Some(vec![])).is_empty());
+        assert!(risky_match("Hapus filter", &expand_risky(None)).is_some());
     }
 
     #[test]

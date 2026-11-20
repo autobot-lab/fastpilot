@@ -765,8 +765,9 @@ fn will_block(step: &Step) -> Option<String> {
     match inner {
         Step::TapOn(sel) | Step::LongPressOn(sel) | Step::DoubleTapOn(sel) => {
             let (Selector::Text(name) | Selector::Role { name: Some(name), .. }) = sel else { return None };
-            if let Some(w) = crate::policy::block_match(name, &crate::policy::blocked_words()) {
-                return Some(format!("akan diblokir: teks berisi \"{w}\" (block_actions)"));
+            if let Some(hit) = crate::policy::block_match(name, &crate::policy::blocked_words()) {
+                let list = if hit.builtin { ", daftar bawaan" } else { "" };
+                return Some(format!("akan diblokir: teks berisi \"{}\" (block_actions{list})", hit.word));
             }
             match crate::policy::risky_match(name, &crate::policy::risky_words()) {
                 Some(w) if !confirmed => Some(format!("akan berhenti: butuh confirm: true (\"{w}\", confirm_actions)")),
@@ -860,11 +861,8 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
 /// `block_actions` (always), then `confirm_actions` (unless confirmed), against `names`.
 fn judge_tap(sel: &Selector, names: &[String], confirmed: bool, words: &[String], blocked: &[String]) -> Result<()> {
     for name in names {
-        if let Some(w) = crate::policy::block_match(name, blocked) {
-            return Err(Error::Blocked(format!(
-                "{} is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it, only the user can change it in fastpilot settings",
-                labelled(sel, name)
-            )));
+        if let Some(hit) = crate::policy::block_match(name, blocked) {
+            return Err(Error::Blocked(format!("{} contains \"{}\" ({}). {BLOCKED_HOW}", labelled(sel, name), hit.word, block_source(&hit))));
         }
     }
     if confirmed {
@@ -941,10 +939,8 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
     };
     let what = if on_button { "presses" } else { "may submit the form to" };
     for name in &candidates {
-        if let Some(w) = crate::policy::block_match(name, blocked) {
-            return Err(Error::Blocked(format!(
-                "pressKey {key} {what} \"{name}\", which is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it"
-            )));
+        if let Some(hit) = crate::policy::block_match(name, blocked) {
+            return Err(Error::Blocked(format!("pressKey {key} {what} \"{name}\", which contains \"{}\" ({}). {BLOCKED_HOW}", hit.word, block_source(&hit))));
         }
     }
     if confirmed {
@@ -960,13 +956,21 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
     Ok(())
 }
 
+/// What the agent (and the report) is told after a block_actions refusal.
+const BLOCKED_HOW: &str =
+    "Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Pengaturan › Batasan & izin.";
+
+fn block_source(hit: &crate::policy::BlockHit) -> &'static str {
+    if hit.builtin { "block_actions, built-in list" } else { "block_actions" }
+}
+
 /// A script can click anything, which block_actions cannot see: no evalScript while it is set.
 fn guard_script(blocked: &[String]) -> Result<()> {
     if blocked.is_empty() {
         return Ok(());
     }
     Err(Error::Blocked(
-        "evalScript is turned off while block_actions is set (a script could press a blocked button); only the user can change it in fastpilot settings".into(),
+        "evalScript is turned off while block_actions is set, the built-in list included (a script could press a blocked button). The user can change it in fastpilot ui › Pengaturan › Batasan & izin (empty the list).".into(),
     ))
 }
 
@@ -2181,8 +2185,66 @@ mod tests {
         run_flow(reg, &FakeLauncher, &flow, &RunOptions::default()).await
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn login_flow_passes_and_returns_state() {
+    /// The flow runs evalScript, which the built-in block_actions list turns off (F5): this test
+    /// empties the list for itself, under ENV_LOCK.
+    #[test]
+    fn login_flow_passes_and_returns_state() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("FASTPILOT_BLOCK_ACTIONS", "") };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().expect("runtime");
+        rt.block_on(login_flow_cases());
+        unsafe { std::env::remove_var("FASTPILOT_BLOCK_ACTIONS") };
+    }
+
+    /// F5 (v0.3.2): with nothing set (a new install), "Bayar sekarang" is refused by the built-in
+    /// list with the message the agent and the Live panel read; "Hapus filter" only needs
+    /// `confirm: true`; emptied on purpose, both go through.
+    #[test]
+    fn built_in_limits_on_a_new_install() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-f5-{}", std::process::id()));
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", dir.join("none.toml"));
+            std::env::remove_var("FASTPILOT_BLOCK_ACTIONS");
+            std::env::remove_var("FASTPILOT_CONFIRM_ACTIONS");
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().expect("runtime");
+        rt.block_on(async {
+            let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
+            let pay = Selector::Text("Bayar sekarang".into());
+            let e = guard_risky(&page, &pay, true).await.expect_err("built-in block");
+            assert_eq!(
+                e.to_string(),
+                "\"Bayar sekarang\" contains \"bayar\" (block_actions, built-in list). Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Pengaturan › Batasan & izin."
+            );
+            assert_eq!(e.reason(), "blocked");
+            assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("akan diblokir: teks berisi \"bayar\" (block_actions, daftar bawaan)"));
+            // A plain delete: confirm only.
+            let e = guard_tap(&page, &Selector::Text("Hapus filter".into()), false, &crate::policy::risky_words(), &crate::policy::blocked_words()).await.expect_err("confirm");
+            assert!(matches!(&e, Error::Blocked(m) if m.contains("confirm_actions") && m.contains("confirm: true")), "{e}");
+            let hapus = Selector::Text("Hapus filter".into());
+            assert!(judge_tap(&hapus, &["Hapus filter".into()], true, &crate::policy::risky_words(), &crate::policy::blocked_words()).is_ok(), "confirmed");
+            assert!(guard_script(&crate::policy::blocked_words()).is_err(), "evalScript off while the built-in list is on");
+        });
+        // Emptying the file under a running process loosens: ignored until it restarts.
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("none.toml"), "block_actions = []\nconfirm_actions = []\n").expect("write");
+        assert_eq!(crate::policy::blocked_words().len(), crate::policy::DEFAULT_BLOCKED.len(), "pinned at start");
+        // Emptied on purpose, from the start (a restarted process): nothing is refused.
+        std::fs::write(dir.join("empty.toml"), "block_actions = []\nconfirm_actions = []\n").expect("write");
+        unsafe { std::env::set_var("FASTPILOT_CONFIG", dir.join("empty.toml")) };
+        assert!(crate::policy::blocked_words().is_empty() && crate::policy::risky_words().is_empty());
+        rt.block_on(async {
+            let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
+            assert!(guard_risky(&page, &Selector::Text("Bayar sekarang".into()), false).await.is_ok());
+        });
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    async fn login_flow_cases() {
         let mut reg = SessionRegistry::default();
         let report = run(
             &mut reg,

@@ -132,6 +132,13 @@ fn ui_server_only_answers_its_own_page() {
         assert!(!r.text().contains("[package]") && !r.text().contains("fn guard"), "{bad} leaked a file");
     }
 
+    // F5 (v0.3.2): nothing set = the built-in lists, sent with the settings for the page.
+    let st: serde_json::Value = serde_json::from_str(&http(p, "GET", "/api/settings", &[cookie()], "").text()).expect("settings json");
+    let block = st["settings"].as_array().and_then(|l| l.iter().find(|s| s["key"] == "block_actions")).expect("block_actions").clone();
+    assert_eq!((block["source"].as_str(), block["value"].is_null()), (Some("default"), true), "{block}");
+    assert_eq!(st["defaults"]["block_actions"][0], "bayar", "{st}");
+    assert_eq!(st["defaults"]["confirm_actions"], serde_json::json!(["hapus", "delete", "remove"]), "{st}");
+
     // Changes: only JSON from our own Origin.
     let body = r#"{"key":"block_actions","value":["Bayar"]}"#;
     assert_eq!(http(p, "POST", "/api/settings", &[cookie(), json()], body).status, 403, "no Origin");
@@ -148,6 +155,24 @@ fn ui_server_only_answers_its_own_page() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&file).expect("meta").permissions().mode() & 0o777, 0o600);
     }
+    // F5: "Kosongkan" (an empty list) is kept as emptied on purpose; "Kembalikan ke bawaan" (null)
+    // removes the key, so the built-in list is back; adding to the built-in list keeps `default`.
+    for (b, want) in [
+        (r#"{"key":"block_actions","value":[]}"#, "block_actions = []"),
+        (r#"{"key":"confirm_actions","value":[]}"#, "confirm_actions = []"),
+        (r#"{"key":"block_actions","value":["default","Keluar"]}"#, r#"block_actions = ["default", "Keluar"]"#),
+    ] {
+        let r = http(p, "POST", "/api/settings", &[cookie(), origin(), json()], b);
+        assert_eq!(r.status, 200, "{b}: {}", r.text());
+        let saved = std::fs::read_to_string(&file).expect("config file");
+        assert!(saved.contains(want), "{b}: {saved}");
+    }
+    for k in ["block_actions", "confirm_actions"] {
+        let r = http(p, "POST", "/api/settings", &[cookie(), origin(), json()], &format!(r#"{{"key":"{k}","value":null}}"#));
+        assert_eq!(r.status, 200, "{}", r.text());
+    }
+    let saved = std::fs::read_to_string(&file).expect("config file");
+    assert!(!saved.contains("block_actions") && !saved.contains("confirm_actions"), "back to the built-in lists: {saved}");
     // The user loosens here (unlike an agent's `config` tool), and switches permissions.
     for b in [r#"{"key":"allowed_domains","value":["toko.com"]}"#, r#"{"key":"allowed_domains","value":null}"#, r#"{"key":"allow_eval_script","value":false}"#] {
         let r = http(p, "POST", "/api/settings", &[cookie(), origin(), json()], b);

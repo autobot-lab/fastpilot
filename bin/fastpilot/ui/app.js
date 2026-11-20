@@ -104,9 +104,37 @@ function toggle(key, label) {
     onclick: () => save(key, !on),
   });
 }
+// Built-in list of a setting (v0.3.2: block_actions, confirm_actions), in force while it is not set.
+const builtinOf = (key) => (S && S.defaults && Array.isArray(S.defaults[key]) ? S.defaults[key] : null);
+
+// A list with a built-in part: the words shown (built-in ones flagged) and what to save after an
+// add or a removal. block_actions keeps `default` in the file (built-in words match whole words);
+// confirm_actions writes its words out.
+function withBuiltin(key, s) {
+  const builtin = builtinOf(key);
+  const value = Array.isArray(s.value) ? s.value : [];
+  if (!builtin) return null;
+  const unset = s.source === "default" || s.value === null;
+  const own = unset ? [] : value.filter((w) => w.toLowerCase() !== "default");
+  const hasDefault = unset || value.some((w) => w.toLowerCase() === "default");
+  const shownBuiltin = hasDefault ? (key === "block_actions" || unset ? builtin : []) : [];
+  const words = [...shownBuiltin.map((w) => ({ w, builtin: true })), ...own.map((w) => ({ w, builtin: false }))];
+  const base = key === "block_actions" ? (hasDefault ? ["default", ...own] : own) : (unset ? [...builtin] : value);
+  return {
+    unset,
+    words,
+    add: (v) => [...base, v],
+    // Removing a built-in word writes the others out (they then match inside text, like the user's own).
+    remove: (it) => it.builtin
+      ? [...shownBuiltin.filter((w) => w !== it.w), ...own]
+      : (key === "block_actions" && hasDefault ? ["default", ...own.filter((w) => w !== it.w)] : value.filter((w) => w !== it.w)),
+  };
+}
+
 function chips(key, opts) {
   const s = get(key);
-  const items = Array.isArray(s.value) ? s.value : [];
+  const bi = withBuiltin(key, s);
+  const items = bi ? bi.words.map((x) => x.w) : (Array.isArray(s.value) ? s.value : []);
   const locked = s.source === "env";
   const input = h("input", { type: "text", placeholder: opts.placeholder, "aria-label": opts.addLabel, disabled: locked });
   const empty = !items.length && opts.empty ? h("span", { class: "chip none" }, opts.empty) : null;
@@ -120,18 +148,22 @@ function chips(key, opts) {
     if (!v) return;
     if (v.includes(",")) return toast("Satu item per kali, tanpa koma.");
     if (items.some((x) => x.toLowerCase() === v.toLowerCase())) return toast(`"${v}" sudah ada di daftar.`);
-    save(key, [...items, v], v);
+    save(key, bi ? bi.add(v) : [...items, v], v);
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
   // A message about the last attempt goes away as soon as the user changes the text.
   input.addEventListener("input", () => { delete typed[key]; clearToast(); });
+  const list = bi ? bi.words : items.map((w) => ({ w, builtin: false }));
   return h("div", { class: "chips" },
     empty,
-    items.map((it) =>
-      h("span", { class: "chip" + (opts.red ? " x" : "") }, opts.show ? opts.show(it) : it,
-        locked ? null : h("button", { class: "rm", "aria-label": `Hapus ${it}`, onclick: () => save(key, items.filter((x) => x !== it)) }, icon("close", "sm")))),
+    list.map((it) =>
+      h("span", { class: "chip" + (opts.red ? " x" : "") + (it.builtin ? " dflt" : ""), title: it.builtin ? "kata bawaan" : null }, opts.show ? opts.show(it.w) : it.w,
+        locked ? null : h("button", { class: "rm", "aria-label": `Hapus ${it.w}`, onclick: () => save(key, bi ? bi.remove(it) : items.filter((x) => x !== it.w)) }, icon("close", "sm")))),
     preset,
-    locked ? null : h("span", { class: "add" }, input, h("button", { onclick: add, "aria-label": opts.addLabel }, icon("plus", "sm"), "Tambah")));
+    locked ? null : h("span", { class: "add" }, input, h("button", { onclick: add, "aria-label": opts.addLabel }, icon("plus", "sm"), "Tambah")),
+    bi && !locked ? h("span", { class: "acts" },
+      h("button", { class: "btn sm", disabled: !bi.unset && !items.length, onclick: () => save(key, []) }, "Kosongkan"),
+      h("button", { class: "btn sm", disabled: bi.unset, onclick: () => save(key, null) }, "Kembalikan ke bawaan")) : null);
 }
 function select(key, choices, label) {
   const s = get(key);
@@ -264,11 +296,19 @@ function pageModel() {
     providerGroup());
 }
 
+const NEW_032 = "fp-new-0.3.2-limits";
 function pageLimits() {
   const confirmShow = (w) => (w === "default" ? "default (hapus, bayar, beli, …)" : w);
+  const emptied = (key) => { const s = get(key); return s && s.source !== "default" && Array.isArray(s.value) && !s.value.length; };
+  let seen = false;
+  try { seen = localStorage.getItem(NEW_032) === "1"; } catch (e) { /* private mode: show it */ }
+  const news = seen ? null : h("div", { class: "banner info new" }, icon("info"),
+    h("span", {}, h("b", {}, "Baru di 0.3.2: "), "tombol pembayaran dan hapus akun sekarang diblokir secara bawaan. Kalau memang mau mengetes checkout, hapus katanya di bawah atau klik ", h("b", {}, "Kosongkan"), "."),
+    h("button", { class: "rm", "aria-label": "Tutup pemberitahuan", onclick: () => { try { localStorage.setItem(NEW_032, "1"); } catch (e) { /* ignore */ } render(); } }, icon("close", "sm")));
   return h("section", { class: "panel" },
     h("h2", {}, "Batasan & izin", savedNote()),
     h("p", { class: "sub" }, "Aturan ini berlaku untuk semua test: dari Claude Code, Cursor, CLI, maupun ", code("fastpilot run"), "."),
+    news,
     h("div", { class: "banner" }, icon("info"), h("span", {}, "Perubahan berlaku mulai run berikutnya. Sesi yang sedang berjalan tetap memakai aturan saat ia dimulai. AI lewat chat hanya bisa memperketat aturan, tidak melonggarkan. Disimpan di ", code(S.path), ".")),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("globe"), "domain yang boleh dibuka"),
@@ -276,11 +316,11 @@ function pageLimits() {
         chips("allowed_domains", { placeholder: "mis. toko.com", addLabel: "Tambah domain", empty: "Semua domain boleh" }), get("allowed_domains"))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("risk"), "aksi berisiko"),
-      opt("Tombol yang butuh konfirmasi", "AI berhenti dan harus menyatakan sengaja menekan (confirm: true). Cocok per kata. Bawaan: kosong.",
-        chips("confirm_actions", { placeholder: "mis. Hapus", addLabel: "Tambah kata konfirmasi", show: confirmShow, empty: "Belum ada", preset: ["default", "Daftar bawaan (hapus, bayar, beli, …)"] }), get("confirm_actions")),
-      opt("Tombol yang selalu diblokir", null,
-        chips("block_actions", { placeholder: "mis. Bayar", addLabel: "Tambah kata yang diblokir", red: true, empty: "Belum ada" }), get("block_actions"),
-        h("div", { class: "d" }, "Diblokir kalau teks tombol ", h("b", {}, "berisi"), " kata ini (huruf besar/kecil diabaikan), juga dengan confirm: true. Contoh: \"Bayar\" juga memblokir \"Lanjut ke Pembayaran\"."))),
+      opt("Tombol yang selalu diblokir", "Juga dengan confirm: true. Garis putus-putus = kata bawaan.",
+        chips("block_actions", { placeholder: "mis. Keluar", addLabel: "Tambah kata yang diblokir", red: true, empty: emptied("block_actions") ? "Dikosongkan: tidak ada yang diblokir" : "Belum ada" }), get("block_actions"),
+        h("div", { class: "d" }, "Kata bawaan cocok per kata utuh (\"pay\" kena \"Pay now\", tidak kena \"Paypal\"). Kata tambahanmu cocok kalau teks tombol ", h("b", {}, "berisi"), " kata itu: \"Keluar\" juga memblokir \"Keluarkan\". Selama ada kata di sini, JavaScript bebas (evalScript) ikut mati.")),
+      opt("Tombol yang butuh konfirmasi", "AI harus menulis confirm: true. Cocok per kata. Bawaan: hapus, delete, remove.",
+        chips("confirm_actions", { placeholder: "mis. Arsipkan", addLabel: "Tambah kata konfirmasi", show: confirmShow, empty: emptied("confirm_actions") ? "Dikosongkan: tanpa konfirmasi" : "Belum ada" }), get("confirm_actions"))),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("device"), "device & aplikasi"),
       opt("Boleh install / uninstall aplikasi", "Memasang atau menghapus aplikasi di HP, emulator, atau simulator", toggle("allow_app_install", "Boleh install / uninstall aplikasi"), get("allow_app_install")),
@@ -441,16 +481,17 @@ function sessionStatus(s) {
   return { text: `Selesai · ${f.steps.filter((x) => x.state === "done").length}/${f.steps.length} lolos`, cls: "ok" };
 }
 
+// The engine compares in lower case; show the word as the user wrote it in Batasan.
+function asWritten(key, w) {
+  const list = (get(key) && Array.isArray(get(key).value)) ? get(key).value : [];
+  return list.find((x) => x.toLowerCase() === w.toLowerCase()) || w;
+}
+
 // Why a guard rail stopped a step, in a few words, from the engine's message.
 function blockReason(note) {
   const n = note || "";
-  // The engine compares in lower case; show the word as the user wrote it in Batasan.
-  const asWritten = (key, w) => {
-    const list = (get(key) && Array.isArray(get(key).value)) ? get(key).value : [];
-    return list.find((x) => x.toLowerCase() === w.toLowerCase()) || w;
-  };
-  let m = /contains "([^"]+)" \(block_actions\)/.exec(n);
-  if (m) return `teks berisi "${asWritten("block_actions", m[1])}"`;
+  let m = /contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(n);
+  if (m) return `teks berisi "${asWritten("block_actions", m[1])}"${m[2] ? " (daftar bawaan)" : ""}`;
   m = /risky action \("([^"]+)"/.exec(n);
   if (m) return `butuh confirm: true ("${asWritten("confirm_actions", m[1])}")`;
   if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain di luar daftar";
@@ -576,14 +617,20 @@ function fillCard(c, s, selected) {
 
 function stepsPanel(s) {
   const steps = s.flow ? s.flow.steps : [];
-  const limits = (i) => h("a", { class: "lk bad", href: "#/settings/limits", "data-fk": `limits:${i}` }, "Lihat Batasan");
+  const limits = (i, change) => h("a", { class: "lk bad", href: "#/settings/limits", "data-fk": `limits:${i}` }, change ? "Ubah di Batasan →" : "Lihat Batasan");
   const items = steps.map((x, i) => {
     const n = `${i + 1} · `;
     if (x.state === "running") return h("li", { class: "now" }, h("span", { class: "i" }, icon("play", "sm")), h("span", {}, n, x.label), h("span", { class: "r" }, "sedang berjalan"));
     if (x.state === "done") return h("li", {}, h("span", { class: "i ok", "aria-label": "selesai" }, "✓"), h("span", {}, n, x.label));
     if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "gagal" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "gagal"));
-    if (x.state === "blocked") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "diblokir" }, icon("lock", "sm")), h("span", {}, n, x.label),
-      h("span", { class: "r" }, `diblokir: ${blockReason(x.note)} · `, limits(i)));
+    if (x.state === "blocked") {
+      // block_actions: the button, the word and where it comes from (v0.3.2 design).
+      const b = /"([^"]*)"[^"]* contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(x.note || "");
+      const why = b
+        ? h("span", { class: "r" }, h("b", {}, "Diblokir Batasan. "), `Teks tombol "${b[1]}" berisi `, code(b[3] ? b[2] : asWritten("block_actions", b[2])), b[3] ? " (daftar bawaan)" : "", ". Halaman tidak ditekan. ", limits(i, true))
+        : h("span", { class: "r" }, `diblokir: ${blockReason(x.note)} · `, limits(i));
+      return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "diblokir" }, icon("lock", "sm")), h("span", {}, n, x.label), why);
+    }
     if (x.state === "skipped") return h("li", { class: "muted" }, h("span", { class: "i" }, "–"), h("span", {}, n, x.label, " · dilewati"));
     return h("li", { class: x.will_block ? "warnline" : "" }, h("span", { class: "i" }, x.will_block ? icon("lock", "sm") : "○"), h("span", {}, n, x.label),
       x.will_block ? h("span", { class: "r" }, x.will_block, " · ", limits(i)) : null);

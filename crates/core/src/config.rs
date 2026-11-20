@@ -40,10 +40,10 @@ pub enum Rule {
 
 pub const SETTINGS: &[Setting] = &[
     Setting { key: "allowed_domains", help: "web sessions only load pages from these hosts (`*.example.com` for subdomains); empty = any", rule: Rule::TightenOnly },
-    Setting { key: "confirm_actions", help: "taps on elements named like these need `confirm: true` (`default` = delete, pay, buy, transfer, ...)", rule: Rule::TightenOnly },
+    Setting { key: "confirm_actions", help: "taps on elements named like these need `confirm: true`; not set: hapus, delete, remove (built-in); `default` = delete, pay, buy, transfer, ...; [] = none", rule: Rule::TightenOnly },
     Setting { key: "vars", help: "environment variables flows may read as ${NAME}; their values are masked as ***", rule: Rule::TightenOnly },
     Setting { key: "state_expire_days", help: "saved login state is refused after this many days (default 30)", rule: Rule::TightenOnly },
-    Setting { key: "block_actions", help: "taps on elements whose text contains one of these words are always refused, even with `confirm: true` (case-insensitive)", rule: Rule::TightenOnly },
+    Setting { key: "block_actions", help: "taps on elements whose text contains one of these words are always refused, even with `confirm: true` (case-insensitive); not set: the built-in list (bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan, place order, hapus akun, delete account; whole words), also `default` in the list; [] = none", rule: Rule::TightenOnly },
     Setting { key: "allow_app_install", help: "installApp / uninstallApp steps may run (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_app_reset", help: "clearState / clearKeychain may wipe app data (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_physical_devices", help: "sessions may use real phones; false = emulators and simulators only (default true)", rule: Rule::TightenOnly },
@@ -404,21 +404,29 @@ fn invalid(key: &str, value: &str) -> Option<String> {
 
 /// Whether `new` is at least as strict as `old` for a guard-rail setting (`None` = unset).
 pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
+    // Not set = the built-in lists (v0.3.2), so going from them to an empty list loosens.
+    if key == "block_actions" {
+        let words = |v: Option<&str>| crate::policy::expand_blocked(v.map(|v| items_of(key, v)));
+        let n = words(new);
+        // A built-in word (whole words) is covered by the same word of the user's (inside text).
+        return words(old).iter().all(|w| n.contains(w) || n.iter().any(|x| x == w.trim()));
+    }
+    if key == "confirm_actions" {
+        let words = |v: Option<&str>| crate::policy::expand_risky(v.map(|v| items_of(key, v)));
+        let n = words(new);
+        return words(old).iter().all(|w| n.contains(w));
+    }
     let items = |v: &str| items_of(key, v);
     let (o, n) = (old.map(items).unwrap_or_default(), new.map(items).unwrap_or_default());
     match key {
         // Empty means "any host": any list is stricter than none, and a list may only shrink.
         "allowed_domains" => !n.is_empty() && (o.is_empty() || n.iter().all(|d| o.contains(d))),
-        // More words to confirm, never fewer.
-        "confirm_actions" => o.iter().all(|w| n.contains(w)),
         // Fewer readable variables, never more.
         "vars" => n.iter().all(|v| o.contains(v)),
         "state_expire_days" => {
             let days = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok());
             matches!((days(old).or(Some(30)), days(new)), (Some(a), Some(b)) if b <= a)
         }
-        // More words always blocked, never fewer.
-        "block_actions" => o.iter().all(|w| n.contains(w)),
         // Like allowed_domains: a list, and it may only shrink.
         "upload_dirs" => !n.is_empty() && (o.is_empty() || n.iter().all(|d| o.contains(d))),
         // A permission may be taken away, not given back.
@@ -515,7 +523,11 @@ pub fn describe() -> String {
         let value = match effective(s.key) {
             Source::Env(v) => format!("{} (env FASTPILOT_{})", shown(&v), s.key.to_uppercase()),
             Source::File(v) => format!("{} (file)", shown(&v)),
-            Source::Default => "— (default)".to_owned(),
+            Source::Default => match s.key {
+                "block_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_BLOCKED.join(", ")),
+                "confirm_actions" => format!("{} (default (bawaan))", crate::policy::DEFAULT_CONFIRM.join(", ")),
+                _ => "— (default)".to_owned(),
+            },
         };
         let who = match s.rule {
             Rule::Free => "",
@@ -855,9 +867,21 @@ mod tests {
     /// C2: the new guard rails only get stricter through the agent's `config` tool.
     #[test]
     fn new_guard_rails_tighten_only() {
-        assert!(tightens("block_actions", None, Some("Bayar")));
+        assert!(tightens("block_actions", Some(""), Some("Bayar")));
         assert!(tightens("block_actions", Some("bayar"), Some("Bayar,Hapus")), "case does not matter");
-        assert!(!tightens("block_actions", Some("bayar"), None));
+        assert!(!tightens("block_actions", Some("bayar"), None), "the built-in `bayar` is whole words only");
+        // F5 (v0.3.2): not set = the built-in list. The agent may add to it, never empty it or
+        // replace it with fewer words; restoring it after the user emptied the list is stricter.
+        assert!(!tightens("block_actions", None, Some("")), "built-in → empty loosens");
+        assert!(!tightens("block_actions", None, Some("Bayar")), "built-in → fewer words loosens");
+        assert!(tightens("block_actions", None, Some("default,Keluar")));
+        assert!(tightens("block_actions", None, Some(&crate::policy::DEFAULT_BLOCKED.join(","))), "the same words, written out");
+        assert!(tightens("block_actions", Some(""), None), "back to the built-in list");
+        assert!(!tightens("block_actions", Some("default,keluar"), None), "drops the user's word");
+        assert!(!tightens("confirm_actions", None, Some("")));
+        assert!(tightens("confirm_actions", None, Some("hapus,delete,remove,keluar")));
+        assert!(tightens("confirm_actions", Some(""), None));
+        assert!(!tightens("confirm_actions", None, Some("hapus")));
         for k in ["allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script"] {
             assert!(tightens(k, None, Some("false")), "{k}: switch off");
             assert!(!tightens(k, Some("false"), Some("true")), "{k}: switch back on");
