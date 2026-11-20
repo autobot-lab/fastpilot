@@ -29,8 +29,10 @@ fn image() -> String {
     format!("system-images;android-35;google_apis;{}", abi())
 }
 
+/// `program` in a PATH folder. Only absolute folders count: `.` or an empty entry would run a
+/// `brew` or `sdkmanager` that a cloned project put in its own folder (Security re-review, Low).
 fn on_path(program: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(program)).find(|f| f.is_file()))
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).filter(|d| d.is_absolute()).map(|d| d.join(program)).find(|f| f.is_file()))
 }
 
 /// A tool of the Android SDK, or `None` when it is not installed.
@@ -542,6 +544,28 @@ pub async fn api_change(axum::Json(body): axum::Json<serde_json::Value>) -> axum
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Security re-review (Low): `.` or an empty PATH entry never finds a program (the tests run
+    /// in the crate folder, which has a `Cargo.toml`).
+    #[test]
+    fn only_absolute_path_folders_count() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(Path::new("Cargo.toml").is_file(), "run from the crate folder");
+        let here = std::env::current_dir().expect("cwd");
+        let old = std::env::var_os("PATH");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("PATH", ".:") };
+        let relative = on_path("Cargo.toml");
+        unsafe { std::env::set_var("PATH", format!(".::{}", here.display())) };
+        let absolute = on_path("Cargo.toml");
+        match old {
+            Some(p) => unsafe { std::env::set_var("PATH", p) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        assert_eq!(relative, None, "relative and empty entries do not count");
+        assert_eq!(absolute, Some(here.join("Cargo.toml")), "an absolute folder does");
+    }
     #[test]
     fn the_test_phone_never_uses_port_5554() {
         assert!((5556..=5584u16).step_by(2).all(|p| p != 5554 && p.is_multiple_of(2)));
