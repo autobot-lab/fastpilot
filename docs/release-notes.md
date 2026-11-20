@@ -1,67 +1,89 @@
-## What's new in 0.3.2
+## What's new in 0.4.0
 
-Easier to start, safe by default.
+Talk to it, in plain words. Several QA agents, each with its own model and skills, that test like a
+certified tester and show what they covered.
 
-### New
-- **`fastpilot demo`**: writes a demo folder (demo pages, three example tests, `.mcp.json` with the
-  public demo password, and the fastpilot Skill) from the binary alone, so a first test runs without
-  the repository: `fastpilot demo && cd fastpilot-demo && claude`, then type
-  "Pakai fastpilot, jalankan tests/login.md lalu report". `--android` installs the demo app (built
-  into the binary) on the attached device or emulator. An existing folder is never overwritten
-  (`--force` writes it again and keeps your own `.mcp.json`, saving the old one as `.mcp.json.bak`).
-- **`fastpilot init`**: sets up a project folder in one command: checks the machine, registers
-  fastpilot with Claude Code (`claude mcp add`), installs the Skill, adds `tests/contoh.md`, and shows
-  the limits in force. Every change asks first (`--yes` agrees to all); outside a terminal it only
-  prints the plan; a second run changes nothing. `--global` uses the user scope.
-- **Safe by default**: on a new install, buttons for payment and account deletion are always blocked
-  (`block_actions`: bayar, pay, beli, buy, checkout, purchase, transfer, buat pesanan, place order,
-  hapus akun, delete account; matched as whole words, also through spacing, full-width and zero-width
-  tricks, e.g. "Pay now", "Delete my account", "Place your order"), and plain deletes need
-  `confirm: true` (`confirm_actions`: hapus, delete, remove), so "Hapus filter" still works.
-  Pengaturan › Batasan & izin shows the built-in list with **Kosongkan** and **Kembalikan ke bawaan**.
-  The AI can only add to these lists, never empty or replace them.
-- **README in English, simpler**: three steps (install → demo → init); the full guide moved to
-  `docs/guide.md` (still Indonesian for now). Messages in the terminal for people (`doctor`, `setup`,
-  `init`, `demo`, `config list`, `help`) are in Indonesian; what the AI reads (tool results, Skill)
-  stays English.
+### Agents
+- **Several agents, like a team.** Each agent has its own Chat, Live view, Schedules, Instructions
+  (with suggestions you can click), Skills, History and settings. Create one with a short form, or
+  describe it in one sentence in Chat and click **Create**. Existing projects get one default agent
+  that keeps your chat, schedules and history.
+- **Provider, then model, per agent.** Claude Code, OpenAI, OpenRouter, Groq, Ollama (local) or another
+  OpenAI-compatible service. API keys are stored once per provider in Settings. Dashboard Chat now
+  works with any provider. Models other than Claude are labelled **"not tested yet"**.
+- **Agents run in parallel.** Web tests run side by side. A phone or emulator runs one test at a time;
+  other agents wait in a queue for it. "Tests at once" limits how many run together (default 3).
 
-### Upgrading from 0.3.1: what changes for existing tests
-- **Flows that tap Bayar / Pay / Buy / Checkout / Purchase / Transfer / Place order / Hapus akun /
-  Delete account are now blocked**, also with `confirm: true`, until you change the list. Steps that
-  tap "Hapus" / "Delete" / "Remove" need `confirm: true`.
-- **`evalScript` is off while a block list is active** (the built-in list counts), because a script
-  could press a blocked button. To allow it: `fastpilot config set allow_eval_script true` (only you
-  can; the AI cannot), or the "Jalankan JavaScript bebas" switch on the Batasan page.
-- **To go back to no blocking, in one line:** `fastpilot config set block_actions ""` (or the
-  Kosongkan button), then restart the MCP server. `fastpilot config unset block_actions` restores the
-  built-in list. An empty environment variable does not switch the built-in list off.
-- Words are matched whole: "Pembayaran" (or "Paypal") is **not** blocked by "bayar"/"pay". Add your
-  own words if your app needs them (`default,<word>` keeps the built-in list).
+### Tests that think like a certified tester
+- **21 built-in skills**, grouped by ISTQB® test design technique (fastpilot is not affiliated with
+  ISTQB): Choose technique, Equivalence partitioning, Boundary value analysis, Decision table, State
+  transition, Pairwise, Use case scenarios, Error guessing, Exploratory testing, Checklist-based (with
+  checklists for login and OTP, forms, safe checkout, accessibility and mobile), Acceptance tests,
+  Regression, Bug report, Test report and Release check. `fastpilot init` and `fastpilot demo` install
+  them.
+- **"Techniques used"**: results say which technique was used, which values were tried, what was
+  assumed, and what was covered (for example "Boundary value analysis · Age — 6 of 6 values").
+- **Regression** puts what is **newly failing since the last run** first, then still failing, flaky,
+  blocked and passed.
+- **Practice pages** in `fastpilot demo`: a ticket field with limits, shipping rules and an order
+  status flow, each with one planted bug.
 
-### Known limitations
-- The built-in list is a list, not a guarantee: text written with invisible marks inside a word
-  (left-to-right marks, combining characters), look-alike letters or math letters can slip past it.
-- An environment value such as `FASTPILOT_BLOCK_ACTIONS=","` still empties the list; environment
-  and `.mcp.json` are trusted (whoever can write them can also run other programs).
-- `demo --force` on a `.mcp.json` that is a symlink copies its target into `.mcp.json.bak` before the
-  write is refused; `demo --android` does not check `allow_physical_devices`; `init` counts any
-  `fastpilot` entry in `.mcp.json` as registered.
-- `demo --android` from a source build needs the demo app built first (release builds include it).
-- `config set` validation errors are still in English; `setup --help` and `doctor --help` run the
-  command instead of showing help; `config list` shows a mixed "(default (bawaan))" label.
-- Carried over: a refused takeover from another installation sometimes shows a misleading message;
-  Android WebView and system-dialog tests can be flaky on a heavily loaded machine.
-- Not tested: real Claude Code answering `y/N` in a terminal, `npx` detection from the npm registry,
-  Linux, physical phones, real hosted providers and GitHub posting, the real Keychain, iOS demo
-  (comes with `fastpilot setup ios`, next release).
+### Everything through chat
+- **Chat creates a test** from a sentence. One card shows the steps; **Save & schedule** or **Save test
+  only**. Nothing is written before you click, and variables the test needs are checked first.
+- **All settings through chat**, in the dashboard and in Claude Code:
+  - making limits stricter applies at once, with **Undo**;
+  - other changes need your click;
+  - **loosening a limit** only appears when you asked for it in your own words, as a red card that
+    quotes you; allowing **Pay** also needs you to type "Pay" and expires after 10 minutes;
+  - text on a tested page can never ask for a change;
+  - in the terminal, the AI can only file a request; you approve it yourself with
+    `fastpilot config approve`;
+  - every change is written to an activity log.
+- **"Remember this as a note"**: a card in Chat saves a project note from your own words.
 
-Install (macOS arm64/x86_64, Linux x86_64):
+### Schedules and releases
+- **Every N hours** (1–24) with an active window (for example 08:00–20:00), **Run now**, and Next / Last
+  columns.
+- **Release watch**: after a release, re-runs your tests every 5–60 minutes for 1–24 hours and tells you
+  only about problems that are new since the start. It removes itself when the time is up.
+  `fastpilot schedule watch tests/ --every 10 --for 2`.
+- **Ship check**: `fastpilot ship-check <url>` (or a `shipCheck` step) looks for console errors,
+  failed requests, broken links, layout at phone, tablet and desktop width, and basic accessibility,
+  then gives one verdict: SHIP, SHIP WITH FIXES, DO NOT SHIP or INCONCLUSIVE, always with what was not
+  checked. Links are checked without your cookies unless you ask (`--cookies`); sign-out, delete and
+  one-time links are never opened.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
-npm install -g fastpilot
-```
+### Dashboard
+- **History**: runs and saved Chat conversations; delete one, several or all; optional auto-delete
+  after 7, 30 or 90 days.
+- **Memory**: one line per test (Reliable, Unstable, Failing, Set aside, New), with **Set aside** and
+  **Forget**, plus **project notes** (staging address, test account names, "login uses a code") that
+  agents read. Notes that look like a password or hide invisible text are refused. Notes are kept in
+  your own fastpilot folder, not in the project.
+- **Device: Fix buttons** for "Install Chrome" and "Set up an emulator" (you confirm the size and time;
+  only a person can start them). Devices are named by type ("Android emulator", "iPhone simulator").
+- After `fastpilot init` and `fastpilot demo`: "Open the dashboard now? [Y/n]".
+- **Everything is in English**: dashboard, terminal messages and the guide.
 
-Every archive has a `.sha256` next to it; the install script and the npm package check it.
+### Setup
+- **`fastpilot setup ios` works without the source code**: it builds the iPhone test runner once with
+  your Xcode into `~/.fastpilot/ios-runner`.
+- **Android tests fail clearly** when no emulator is there, instead of being skipped. They are also
+  more stable on a busy machine.
+- fastpilot checks your **Claude Code version** and says when it is too old for Chat.
+- `fastpilot setup --help` and `fastpilot doctor --help` show help instead of running.
 
-Earlier releases: https://github.com/autobot-lab/fastpilot/releases (0.3.1: takeover only from the same installation and `allow_takeover`, provider key and redirect fixes; 0.3.0: Live Android/iOS + Ambil alih, Jadwal, Chat, OpenAI-compatible providers).
+### Upgrading from 0.3.2
+- Messages are now in English. New projects get `tests/example.md`; an existing `tests/contoh.md` is
+  kept.
+- Block words that start with `!`, the word `default`, and words with a comma are refused from chat
+  and from agents. Only you can switch the built-in list off, in Settings.
+- fastpilot writes `.fastpilot/.gitignore` in your project. It ignores everything except visual
+  baselines, and never overwrites a file you already have.
+- Project notes live in your own fastpilot folder (`~/.fastpilot/projects/`), not in the project, so a
+  downloaded project cannot bring notes of its own.
+
+### Not in this release
+- Jira and the Apps page (planned for 0.5).
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
