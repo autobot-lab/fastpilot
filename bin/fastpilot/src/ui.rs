@@ -168,6 +168,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/assets/{*path}", get(asset))
         .route("/api/settings", get(settings).post(change))
         .route("/api/doctor", get(doctor_api))
+        .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
@@ -766,6 +767,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
+        "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
         "fonts/bricolage-grotesque-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-700.woff2")),

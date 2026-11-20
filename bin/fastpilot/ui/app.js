@@ -425,17 +425,17 @@ function pageDevice() {
   if (doctorCache && !doctorCache.error) {
     const ok = doctorCache.checks.filter((c) => c.status === "ok").length;
     const bad = doctorCache.checks.length - ok;
-    top.push(h("span", { class: "pill" + (bad ? " grey" : "") }, `● ${ok} siap · ${bad} perlu perhatian`));
+    top.push(h("span", { class: "pill" + (bad ? " grey" : "") }, `● ${ok} ready · ${bad} need attention`));
   }
   $top().replaceChildren(...top);
-  const header = h("div", { class: "gh" }, icon("device"), "device · hasil doctor",
-    h("button", { class: "btn sm", onclick: () => loadDoctor(), disabled: doctorBusy }, icon("refresh", "sm"), doctorBusy ? "Mengecek…" : "Cek ulang (doctor)"));
+  const header = h("div", { class: "gh" }, icon("device"), "device · check results",
+    h("button", { class: "btn sm", onclick: () => loadDoctor(), disabled: doctorBusy }, icon("refresh", "sm"), doctorBusy ? "Checking…" : "Check again"));
   let content;
   if (doctorBusy || !doctorCache) {
-    content = h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Mengecek" }), h("b", {}, "Mengecek device…"),
-      h("span", {}, "Chrome, adb, Xcode, dan Claude Code. Biasanya beberapa detik, paling lama sekitar 30 detik."));
+    content = h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Checking" }), h("b", {}, "Checking devices…"),
+      h("span", {}, "Chrome, Android, Xcode and Claude Code. Usually a few seconds, at most about 30 seconds."));
   } else if (doctorCache.error) {
-    content = h("div", { class: "err", role: "alert" }, "Gagal menjalankan doctor: " + doctorCache.error);
+    content = h("div", { class: "err", role: "alert" }, "Could not check the devices: " + doctorCache.error);
   } else {
     const phys = get("allow_physical_devices");
     const physOff = phys && phys.value === false;
@@ -447,15 +447,16 @@ function pageDevice() {
             h("div", { class: "t" }, h("span", { class: "dot " + c.status }), c.name),
             h("div", { class: "s" }, c.detail),
             c.hint ? h("div", { class: "hint" }, "→ ", c.hint) : null,
-            c.setup ? h("div", { class: "s" }, "Bisa diperbaiki otomatis (bertanya dulu): ", code(c.setup)) : null),
-          h("span", { class: "tag" + (c.status === "ok" ? "" : " " + c.status) }, c.status === "ok" ? "Siap" : c.status === "warn" ? "Perhatian" : "Gagal"))),
-      a === "android" && physOff ? h("div", { class: "row" }, h("div", { class: "s" }, "HP fisik dimatikan di Batasan, jadi hanya emulator yang dipakai. ", h("a", { class: "lk", href: "#/settings/limits" }, "Ubah di Batasan"))) : null,
+            null),
+          h("span", { class: "tag" + (c.status === "ok" ? "" : " " + c.status) }, c.status === "ok" ? "Ready" : c.status === "warn" ? "Attention" : "Not ready"))),
+      a === "android" && physOff ? h("div", { class: "row" }, h("div", { class: "s" }, "Phones plugged in stay off until you allow them in Limits, so only emulators are used. ", h("a", { class: "lk", href: "#/settings/limits" }, "Change it in Limits"))) : null,
     ]);
   }
   $body().replaceChildren(h("div", { class: "dev" },
+    PAGES.deviceFix ? PAGES.deviceFix() : null,
     h("div", { class: "grp" }, header, content),
-    h("p", { class: "muted" }, "Sama dengan ", code("fastpilot doctor"), " di terminal. Perbaikan otomatis dijalankan dari terminal dengan ", code("fastpilot setup"), ", yang selalu bertanya dulu."),
-    h("p", { class: "muted" }, "Model AI dan Secret ada di Pengaturan: ", h("a", { class: "lk", href: "#/settings/model" }, "Model AI"), " · ", h("a", { class: "lk", href: "#/settings/secret" }, "Secret"), ".")));
+    h("p", { class: "muted" }, "The same checks as ", code("fastpilot doctor"), " in Terminal."),
+    h("p", { class: "muted" }, "The AI model and secrets are in Settings: ", h("a", { class: "lk", href: "#/settings/model" }, "AI model"), " · ", h("a", { class: "lk", href: "#/settings/secret" }, "Secrets"), ".")));
 }
 
 // ---- live (C7a) ----

@@ -350,3 +350,15 @@ dialog.hist-dlg p{margin:0 0 18px;line-height:1.5}
 .note-warn{background:var(--warn-soft);border-left:3px solid var(--warn);border-radius:var(--r-sm);padding:10px 12px;font-size:13.5px}
 .note-row.off .row-name,.note-row.off .s{text-decoration:line-through;color:var(--muted)}
 .note-off{font:600 12.5px var(--sans);color:var(--bad);margin-top:4px}
+/* Fix buttons (D2) */
+.fix-row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.fix-job{padding:14px 16px;border-top:1px solid var(--line)}
+.fix-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.fix-bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:10px}
+.fix-bar i{display:block;height:100%;background:var(--acc)}
+.fix-steps{list-style:none;padding:0;margin:0 0 10px;font-size:13.5px;display:flex;flex-direction:column;gap:6px}
+.fix-steps li.waiting{color:var(--muted)}.fix-steps li.done span{color:var(--acc-ink)}.fix-steps li.running span{color:var(--blue)}.fix-steps li.failed,.fix-steps li.stopped{color:var(--bad)}
+.fix-acts{justify-content:flex-start}
+.fix-log{max-height:260px;overflow:auto;background:var(--soft);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px;font:400 12px var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0 0}
+.fix-plan{margin:0 0 16px;padding-left:20px;font-size:13.5px}
+.fix-lock{padding:8px 16px 12px;margin:0;display:flex;align-items:center;gap:6px}
