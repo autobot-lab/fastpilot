@@ -100,6 +100,9 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     assert!(files(&b.project()).is_empty() && files(&b.home()).is_empty(), "nothing written without a terminal");
     assert!(b.adds().is_empty(), "claude mcp add not run");
 
+    // D3: no question outside a terminal, one line instead.
+    assert!(out.contains("Dashboard: run `fastpilot ui` and keep this window open.") && !out.contains("[Y/n]"), "{out}");
+
     // --yes: every step.
     let (code, out) = b.init(&["--yes"], FAKE);
     assert_eq!(code, Some(0), "{out}");

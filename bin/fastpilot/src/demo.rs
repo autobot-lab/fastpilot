@@ -240,6 +240,11 @@ pub async fn demo(args: &[String]) -> Res<()> {
     if installed == Some(false) {
         std::process::exit(1);
     }
+    if write {
+        // D3: the dashboard for the demo folder (its Chat saves tests there).
+        let cd = if shown.contains(char::is_whitespace) { format!("cd \"{shown}\"") } else { format!("cd {shown}") };
+        crate::offer::dashboard(&dir, true, Some(&cd));
+    }
     Ok(())
 }
 
