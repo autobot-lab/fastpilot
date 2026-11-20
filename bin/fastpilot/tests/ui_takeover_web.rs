@@ -72,7 +72,7 @@ async fn take_over_a_web_session_and_give_it_back() {
     let _ui = Ui(child);
 
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("HOME", &home).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_LIVE_DIR").env_remove("FASTPILOT_BLOCK_ACTIONS");
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("HOME", &home).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_LIVE_DIR").env_remove("FASTPILOT_BLOCK_ACTIONS");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let page = format!("file://{ROOT}/examples/demo/login.html");

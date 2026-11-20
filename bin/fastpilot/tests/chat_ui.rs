@@ -138,7 +138,8 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let (st, body) = post("/api/chat/decide", json!({ "id": limits["id"], "apply": true }));
     assert_eq!(st, 200, "{body}");
     let cfg = config(&home);
-    assert!(cfg.contains("block_actions = [\"Bayar\"]") && cfg.contains("max_steps = 20"), "{cfg}");
+    // Added to the built-in list (v0.3.2), not in place of it.
+    assert!(cfg.contains("block_actions = [\"default\", \"Bayar\"]") && cfg.contains("max_steps = 20"), "{cfg}");
     let (st, body) = post("/api/chat/decide", json!({ "id": sched["id"], "apply": true }));
     assert!(st == 200 && body.contains("Isi URL webhook"), "{st} {body}");
     let stored = std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("saved");

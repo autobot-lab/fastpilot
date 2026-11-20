@@ -310,13 +310,13 @@ Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 | Kunci | Arti |
 |---|---|
 | `allowed_domains` | sesi web hanya membuka host ini |
-| `confirm_actions` | tap pada elemen bernama begini butuh `confirm: true` (cocok per kata) |
-| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran"). Tap koordinat (`point`) dicek terhadap elemen di titik itu; bila elemennya tidak bisa dipastikan, tap ditolak selama `block_actions`/`confirm_actions` aktif. Juga `pressKey Enter`/`Space` yang bisa menekan tombol itu (dari kolom isian: selama ada tombol terblokir di layar), dan `evalScript` dimatikan selama `block_actions` aktif |
+| `confirm_actions` | tap pada elemen bernama begini butuh `confirm: true` (cocok per kata). **Bawaan (sejak 0.3.2, selama belum diisi):** `hapus`, `delete`, `remove`. `[]` = tanpa konfirmasi |
+| `block_actions` | tap pada elemen yang teksnya **berisi** kata ini selalu ditolak, juga dengan `confirm: true` ("Bayar" juga memblokir "Lanjut ke Pembayaran"). **Bawaan (sejak 0.3.2, selama belum diisi):** `bayar`, `pay`, `beli`, `buy`, `checkout`, `purchase`, `transfer`, `buat pesanan`, `place order`, `hapus akun`, `delete account`, dicocokkan per kata utuh ("pay" kena "Pay now", tidak kena "Paypal"); `default` di daftar = kata bawaan itu. Mengosongkan: `fastpilot config set block_actions ""` atau tombol **Kosongkan** di `fastpilot ui` (berlaku setelah server MCP di-restart; variabel env kosong tidak mengosongkannya); kembali ke bawaan: `fastpilot config unset block_actions`. Teks dinormalkan dulu (karakter tak terlihat, huruf fullwidth, spasi aneh), dan frasa bawaan boleh disela satu kata ("Delete my account"). Tap koordinat (`point`) dicek terhadap elemen di titik itu; bila elemennya tidak bisa dipastikan, tap ditolak selama `block_actions`/`confirm_actions` aktif. Juga `pressKey Enter`/`Space` yang bisa menekan tombol itu (dari kolom isian: selama ada tombol terblokir di layar), dan `evalScript` dimatikan selama `block_actions` aktif |
 | `allow_app_install` | langkah `installApp` / `uninstallApp` (bawaan: boleh) |
 | `allow_app_reset` | `clearState` / `clearKeychain` (bawaan: boleh) |
 | `allow_physical_devices` | sesi boleh memakai HP fisik; `false` = hanya emulator/simulator (bawaan: boleh) |
 | `allow_device_settings` | `setNetwork`, `setLocation`, `setPermissions`, `setLocale` di Android/iOS (bawaan: boleh) |
-| `allow_eval_script` | langkah `evalScript` (bawaan: boleh) |
+| `allow_eval_script` | langkah `evalScript`. Bawaan (sejak 0.3.2): **mati selama `block_actions` aktif** (termasuk daftar bawaan), karena script bisa menekan tombol yang diblokir; boleh kalau daftar blokir dikosongkan. `true` = selalu boleh (hanya user: `fastpilot config set allow_eval_script true` atau toggle "Jalankan JavaScript bebas"; AI tidak bisa menyalakannya) |
 | `allow_takeover` | user boleh mengambil alih sesi di `fastpilot ui` (bawaan: boleh; matikan untuk agent yang punya shell) |
 | `upload_dirs` | `uploadFile` hanya mengambil file di folder ini (kosong = mana saja) |
 | `state_expire_days` | umur maksimal login tersimpan (bawaan 30 hari) |
@@ -413,7 +413,8 @@ Semua env di bawah (kecuali `FASTPILOT_STATE_KEY` dan `FASTPILOT_LOG`) juga bisa
 | `FASTPILOT_DIR` | lokasi `.fastpilot/` (runs + memory) |
 | `FASTPILOT_MEMORY` | `rw` (default), `readonly` (CI), atau `off` |
 | `FASTPILOT_ALLOWED_DOMAINS` | daftar host (dipisah koma, `*.contoh.com` untuk subdomain) yang boleh dibuka sesi web: `openUrl`, link, redirect, dan popup ke host lain diblokir (`blocked`). Resource lain (CDN, API) tetap jalan |
-| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`) |
+| `FASTPILOT_CONFIRM_ACTIONS` | `default` (hapus, delete, bayar, pay, beli, checkout, transfer, ...) atau daftar kata sendiri: tap pada elemen bernama begitu ditolak (`blocked`) kecuali langkahnya `confirm: true` (CLI: `--confirm`). Tidak diisi: hapus, delete, remove; kosong (`""`): tanpa konfirmasi |
+| `FASTPILOT_BLOCK_ACTIONS` | daftar kata yang selalu diblokir. Tidak diisi: daftar bawaan (pembayaran dan hapus akun); kosong (`""`): tidak ada yang diblokir |
 | `FASTPILOT_STATE_KEY` / `FASTPILOT_STATE_EXPIRE_DAYS` | kunci AES-256 (64 hex) untuk mengenkripsi login tersimpan / umur maksimalnya (default 30 hari) |
 | `FASTPILOT_FLOW_TIMEOUT` | batas waktu satu `run_flow` dalam detik (default 300) |
 | `FASTPILOT_MODEL` / `FASTPILOT_MODEL_REPLAY` / `FASTPILOT_MODEL_EXPLORE` | model untuk `fastpilot run` (lihat di bawah) |

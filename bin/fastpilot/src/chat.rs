@@ -170,13 +170,24 @@ const ADDS: &[&str] = &["confirm_actions", "block_actions"];
 fn current(key: &str) -> Option<String> {
     match config::current(key) {
         Source::Env(v) | Source::File(v) => Some(v),
+        // Not set = the built-in lists (v0.3.2): a proposal adds to them, never replaces them.
+        Source::Default if key == "block_actions" => Some("default".into()),
+        Source::Default if key == "confirm_actions" => Some(fastpilot_core::policy::DEFAULT_CONFIRM.join(",")),
         Source::Default => None,
     }
 }
 
 /// What the bot should know: today's limits, schedules and test files.
 fn context() -> String {
-    let limits: Vec<String> = LIMITS.iter().map(|k| format!("{k} = {}", current(k).unwrap_or_else(|| "(default)".into()))).collect();
+    let limits: Vec<String> = LIMITS
+        .iter()
+        .map(|k| match current(k) {
+            Some(v) if *k == "block_actions" && v.split(',').any(|w| w.trim() == "default") => {
+                format!("{k} = {v} (default = built-in, whole words: {})", fastpilot_core::policy::DEFAULT_BLOCKED.join(", "))
+            }
+            v => format!("{k} = {}", v.unwrap_or_else(|| "(default)".into())),
+        })
+        .collect();
     let store = schedule::load();
     let scheds: Vec<String> = store.schedules.iter().map(|s| format!("- {} ({}): {} · {}", s.name, if s.enabled { "on" } else { "off" }, schedule::describe(&s.when), s.tests)).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -610,4 +621,28 @@ mod tests {
         assert!(claude_failure("Not logged in · Please run /login").starts_with("Claude Code belum login"));
         assert_eq!(tool_line("mcp__fastpilot__session", &json!({ "action": "start", "id": "web1", "platform": "web" })), "session · start web1 web");
     }
+
+    /// F5 (v0.3.2): with nothing set, the built-in lists are in force. A chat proposal adds to them
+    /// and can neither empty nor replace them (that loosens: only the user, in Pengaturan).
+    #[test]
+    fn chat_adds_to_the_built_in_lists_and_cannot_empty_them() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fastpilot-chat-f5-{}", std::process::id()));
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("FASTPILOT_CONFIG", dir.join("config.toml"));
+            std::env::remove_var("FASTPILOT_BLOCK_ACTIONS");
+            std::env::remove_var("FASTPILOT_CONFIRM_ACTIONS");
+        }
+        let add = limit_changes(&json!({ "kind": "limits", "add": { "block_actions": ["Keluar"], "confirm_actions": ["Arsipkan"] } })).expect("add");
+        assert_eq!(add[0], ("block_actions".into(), Some("default".into()), "default,Keluar".into()));
+        assert_eq!(add[1], ("confirm_actions".into(), Some("hapus,delete,remove".into()), "hapus,delete,remove,Arsipkan".into()));
+        for set in [json!({ "block_actions": [] }), json!({ "block_actions": ["Keluar"] }), json!({ "confirm_actions": [] }), json!({ "confirm_actions": ["hapus"] })] {
+            let e = limit_changes(&json!({ "kind": "limits", "set": set })).expect_err("loosens");
+            assert!(e.contains("lebih longgar") && e.contains("Pengaturan"), "{set}: {e}");
+        }
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 }

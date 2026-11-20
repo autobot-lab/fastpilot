@@ -26,7 +26,7 @@ async fn maestro_steps_on_web() {
     let sub = dir.join("visit.yaml");
     std::fs::write(&sub, "appId: web\n---\n- openUrl: examples/demo/maestro.html\n").expect("sub-flow");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("FASTPILOT_DIR", dir.join(".fastpilot"));
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("FASTPILOT_DIR", dir.join(".fastpilot"));
     });
     let Ok(client) = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await else {
         return eprintln!("skipping: server did not start");

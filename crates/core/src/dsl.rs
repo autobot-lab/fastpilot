@@ -717,7 +717,15 @@ impl Step {
                     _ => None,
                 },
             },
-            "pressKey" => Self::PressKey(string(arg)?),
+            // `{ key: Enter, confirm: true }`: Enter or Space that may press a confirm_actions button,
+            // meant (the refusal says to write it; v0.3.2 lists hapus/delete/remove by default).
+            "pressKey" => match arg.as_mapping() {
+                Some(m) => {
+                    let key = string(get(m, "key").ok_or("expects pressKey: Enter or { key: Enter, confirm: true }")?)?;
+                    confirmable(arg, Self::PressKey(key))?
+                }
+                None => Self::PressKey(string(arg)?),
+            },
             "selectOption" => {
                 let m = arg.as_mapping().ok_or("expects { from: <selector>, option: \"...\" }")?;
                 Self::SelectOption {
@@ -1073,9 +1081,10 @@ impl Step {
                 let pairs: Vec<(Yaml, Yaml)> = m
                     .into_iter()
                     .map(|(k, v)| {
+                        let field = if k.as_str() == Some("pressKey") { "key" } else { "text" };
                         let mut v = match v {
                             Yaml::Mapping(v) => v,
-                            other => [(Yaml::String("text".into()), other)].into_iter().collect(),
+                            other => [(Yaml::String(field.into()), other)].into_iter().collect(),
                         };
                         v.insert(Yaml::String("confirm".into()), Yaml::Bool(true));
                         (k, Yaml::Mapping(v))

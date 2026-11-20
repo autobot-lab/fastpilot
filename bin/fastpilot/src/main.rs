@@ -91,6 +91,7 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
             config::setting(&k).ok_or(format!("unknown setting `{k}`"))?;
             match config::effective(&k) {
                 config::Source::Env(v) => println!("{v}  (env FASTPILOT_{})", k.to_uppercase()),
+                config::Source::File(v) if v.is_empty() && config::LISTS.contains(&k.as_str()) => println!("[] (emptied)"),
                 config::Source::File(v) => println!("{v}"),
                 // A provider's preset base URL is a real value, not "nothing set".
                 config::Source::Default if k == "provider_base_url" => {
@@ -100,19 +101,26 @@ fn config_cmd(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>> {
                         None => println!("(default)"),
                     }
                 }
-                config::Source::Default => println!("(default)"),
+                config::Source::Default => match k.as_str() {
+                    // v0.3.2: what "not set" means for the built-in lists.
+                    "block_actions" => println!("{} (default (bawaan))", fastpilot_core::policy::DEFAULT_BLOCKED.join(", ")),
+                    "confirm_actions" => println!("{} (default (bawaan))", fastpilot_core::policy::DEFAULT_CONFIRM.join(", ")),
+                    _ => println!("(default)"),
+                },
             }
         }
         "set" => {
             let k = key()?;
+            // `""` empties a built-in list on purpose (v0.3.2); `unset` brings the built-in list back.
+            let emptied = matches!(k.as_str(), "block_actions" | "confirm_actions") && args.get(2..).is_some_and(|r| r.len() == 1 && r[0].trim().is_empty());
             let v = args
                 .get(2..)
                 .map(|r| r.join(" "))
-                .filter(|v| !v.trim().is_empty())
+                .filter(|v| emptied || !v.trim().is_empty())
                 .ok_or_else(|| format!("set needs a value; to clear `{k}`, use `fastpilot config unset {k}`"))?;
             let previous = (k == "provider").then(|| config::file_values().remove("provider")).flatten();
             let p = config::write(&k, Some(&v))?;
-            println!("{k} = {v}  ({})", p.display());
+            println!("{k} = {}  ({})", if v.trim().is_empty() { "[]" } else { v.as_str() }, p.display());
             // Another provider starts from its own preset: the previous one's base URL would get
             // the new provider's key.
             if k == "provider" && previous.as_deref() != Some(v.trim()) && config::file_values().contains_key("provider_base_url") {

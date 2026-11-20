@@ -738,7 +738,15 @@ async fn settings() -> Response {
             json!({ "key": s.key, "help": s.help, "kind": kind(s.key), "value": value, "source": source, "env": format!("FASTPILOT_{}", s.key.to_uppercase()) })
         })
         .collect();
-    let defaults = json!({ "model_replay": crate::run::DEFAULT_REPLAY, "model_explore": crate::run::DEFAULT_EXPLORE, "max_steps": 30, "state_expire_days": 30 });
+    let defaults = json!({
+        "model_replay": crate::run::DEFAULT_REPLAY,
+        "model_explore": crate::run::DEFAULT_EXPLORE,
+        "max_steps": 30,
+        "state_expire_days": 30,
+        // v0.3.2: the lists in force while the key is not set (`default` in block_actions too).
+        "block_actions": fastpilot_core::policy::DEFAULT_BLOCKED,
+        "confirm_actions": fastpilot_core::policy::DEFAULT_CONFIRM,
+    });
     axum::Json(json!({ "path": config::path().display().to_string(), "settings": list, "defaults": defaults })).into_response()
 }
 
@@ -788,6 +796,9 @@ async fn change(axum::Json(body): axum::Json<Value>) -> Response {
         Value::Number(n) => Some(n.to_string()),
         Value::String(s) if s.trim().is_empty() => None,
         Value::String(s) => Some(s.trim().to_owned()),
+        // Emptied on purpose ("Kosongkan"): the built-in lists are off. `null` ("Kembalikan ke
+        // bawaan") removes the key, which brings them back.
+        Value::Array(items) if items.is_empty() && matches!(key, "block_actions" | "confirm_actions") => Some(String::new()),
         Value::Array(items) if items.is_empty() => None,
         Value::Array(items) => {
             let items: Vec<&str> = items.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).collect();

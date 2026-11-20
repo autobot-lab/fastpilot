@@ -68,7 +68,7 @@ async fn http_requests_and_one_time_codes_over_mcp() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let port = serve(seen.clone()).await;
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT).env("ADMIN_TOKEN", "admin").env("FASTPILOT_VARS", "ADMIN_TOKEN");
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("ADMIN_TOKEN", "admin").env("FASTPILOT_VARS", "ADMIN_TOKEN");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let api = format!("http://127.0.0.1:{port}");
@@ -121,7 +121,7 @@ async fn http_requests_and_one_time_codes_over_mcp() {
 async fn device_control_on_web() {
     let port = serve(Arc::new(Mutex::new(Vec::new()))).await;
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(ROOT);
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT);
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let flow = format!(

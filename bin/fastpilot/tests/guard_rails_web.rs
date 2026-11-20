@@ -106,7 +106,8 @@ fn daemon_keeps_confirm_actions_from_its_start() {
     let port = serve();
     let dir = temp("cli");
     let file = dir.join("config.toml");
-    std::fs::write(&file, "confirm_actions = \"default\"\n").expect("write");
+    // The built-in block list (v0.3.2) would refuse "Hapus akun" outright; this test is about confirm.
+    std::fs::write(&file, "confirm_actions = \"default\"\nblock_actions = []\n").expect("write");
     let run = |args: &[&str]| {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
             .args(args)

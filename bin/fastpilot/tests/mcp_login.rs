@@ -49,7 +49,7 @@ const PARALLEL: &str = r#"
 async fn login_and_parallel_sessions_over_mcp() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(root).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS");
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(root).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
 
@@ -70,10 +70,11 @@ async fn login_and_parallel_sessions_over_mcp() {
     assert!(!out.contains("rahasia123"), "secret leaked: {out}");
 
     // Stop early with reason, candidates and the session's snapshot.
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Hapus Akun\"\n" })).await;
+    // (Not "Hapus Akun": since v0.3.2 the built-in limits refuse that text before looking for it.)
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Ubah Profil\"\n" })).await;
     println!("{out}");
     assert!(!ok);
-    assert!(out.starts_with("fail step 1/1 [web1] tapOn \"Hapus Akun\": not_found"), "{out}");
+    assert!(out.starts_with("fail step 1/1 [web1] tapOn \"Ubah Profil\": not_found"), "{out}");
     assert!(out.contains("candidates: e") && out.contains("button \"Keluar\""), "{out}");
 
     let (ok, out) = call(&client, "run_flow", json!({ "flow": PARALLEL })).await;
@@ -107,11 +108,11 @@ const WIDGETS: &str = r#"
 - assertVisible: "Dipilih: my"
 - tapOn: "Buka detail"
 - assertVisible: "Detail terbuka"
-- tapOn: "Hapus"
+- tapOn: { text: "Hapus", confirm: true }
 - assertVisible: "confirm: Hapus data?"
 - assertVisible: "Data dihapus"
 - inputText: { into: "Cari", text: "sepatu" }
-- pressKey: Enter
+- pressKey: { key: Enter, confirm: true }
 - assertVisible: "Hasil untuk: sepatu"
 - uploadFile: { into: "Lampiran", files: ["examples/demo/login.html"] }
 - assertVisible: "File: login.html"
@@ -127,7 +128,7 @@ const WIDGETS: &str = r#"
 async fn web_widgets_over_mcp() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(root);
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(root);
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": WIDGETS })).await;
@@ -157,7 +158,7 @@ async fn assert_report_and_path_memory_over_mcp() {
     let spawn = || {
         let dir = dir.clone();
         tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
-            c.arg("mcp").current_dir(root).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS").env("FASTPILOT_DIR", &dir);
+            c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(root).env("DEMO_PASS", "rahasia123").env("FASTPILOT_VARS", "DEMO_PASS").env("FASTPILOT_DIR", &dir);
         })
     };
     let client: Client = ().serve(TokioChildProcess::new(spawn()).expect("spawn")).await.expect("initialize");
@@ -242,7 +243,7 @@ async fn attach_to_running_chrome_over_mcp() {
     let endpoint = format!("http://127.0.0.1:{port}");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
-        c.arg("mcp").current_dir(root);
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(root);
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
     let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "mine", "mode": "attach", "endpoint": endpoint, "target": "examples/demo/widgets.html" })).await;

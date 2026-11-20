@@ -68,6 +68,16 @@ options: --session NAME (default: $FASTPILOT_SESSION or default), --json (raw to
 env: FASTPILOT_VARS / ${NAME} values are read by the daemon when it starts; restart it after changing them.
 other commands: mcp, run, bench, stability, ios doctor (`fastpilot` without arguments lists them)";
 
+/// The page's URL from a snapshot (no evalScript: it works under the block lists).
+fn page_url(ctx: &Ctx, sid: &str) -> Res<Option<String>> {
+    let v = ctx.tool("snapshot", json!({ "session": sid, "format": "json" }))?;
+    if v["ok"] == false {
+        return Ok(None);
+    }
+    let snap: Value = serde_json::from_str(&text_of(&v)).map_err(|e| format!("snapshot is not JSON: {e}"))?;
+    Ok(snap["location"].as_str().map(str::to_owned))
+}
+
 /// The shell command in `args`, skipping global options written before it
 /// (`fastpilot --session two open ...`).
 pub fn command_of(args: &[String]) -> Option<&str> {
@@ -529,8 +539,9 @@ pub fn main(argv: &[String]) -> Res<()> {
         "back" => step("- back\n".into())?,
         "forward" => step("- evalScript: \"history.forward()\"\n- waitForAnimationToEnd\n".into())?,
         "reload" => {
-            let v = ctx.flow("- evalScript: \"location.href\"\n", false)?;
-            let url = step_value(&text_of(&v)).ok_or("no page to reload")?;
+            // The URL from the snapshot, not a script: evalScript is off under the built-in
+            // block list (v0.3.2).
+            let url = page_url(&ctx, sid)?.filter(|u| !u.is_empty()).ok_or("no page to reload")?;
             step(format!("- openUrl: {}\n", q(&url)))?;
         }
         "wait" => {
@@ -538,8 +549,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             if let Some(part) = opts.get("--url") {
                 let deadline = Instant::now() + Duration::from_millis(timeout);
                 loop {
-                    let v = ctx.flow("- evalScript: \"location.href\"\n", false)?;
-                    let url = step_value(&text_of(&v)).unwrap_or_default();
+                    let url = page_url(&ctx, sid)?.unwrap_or_default();
                     if url.contains(part.as_str()) {
                         println!("{url}");
                         break;

@@ -149,6 +149,12 @@ a.lk.bad{color:var(--bad)}
 .top h1{font:inherit;letter-spacing:inherit;margin:0}
 h2.gh{margin:0;font-weight:500}
 .chip.none{background:var(--soft);color:var(--muted);border-style:dashed}
+.chip.dflt{border-style:dashed;border-color:#d98c8c}
+.chip.dflt:not(.x){border-color:#8a94a3}
+.chips .acts{display:flex;gap:6px;flex-basis:100%;justify-content:flex-end}
+.banner.new{border-left-color:var(--blue);background:var(--blue-soft);color:#1e3a8a}
+.banner.new .rm{margin-left:auto;display:inline-flex;padding:2px;border-radius:4px;color:inherit}
+.banner.new .rm:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .chip.preset{cursor:pointer;color:var(--ink);border-color:#8a94a3}
 .chip.preset:hover{background:var(--soft)}
 .chip.preset:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
@@ -160,7 +166,7 @@ dialog.zoom .screen-box{aspect-ratio:auto;height:min(78vh,820px)}
 .top h1:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 /* Ambil alih (C7b) */
 .btns.tight{margin:0;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.card-text .d.warn,.steer-state.warn{color:var(--warn);font-weight:600}
+.card-text .d.warn,.steer-state.warn,.opt .d.warn{color:var(--warn);font-weight:600}
 .steer{border-top:1px solid var(--line);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
 .steer-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .steer-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}

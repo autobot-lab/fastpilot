@@ -21,13 +21,13 @@ A flow is a YAML list. Each step has exactly one command. Quote numeric text ("+
 |---|---|---|
 | launchApp | `launchApp: com.example.app` or `pkg/.Activity` (stop + start); `{ appId, arguments: { server: "https://staging", retries: 3, debug: true, tags: [a, b] }, env: { API_TOKEN: "${TOKEN}" } }`. `arguments`: android intent extras (text, whole number, true/false, text list without commas), ios launch arguments `-key value` (read with UserDefaults). `env`: ios only (the app's environment); values always show as `***`, recorded runs keep only `${NAME}` references, and `DYLD_*`, `LD_*`, `FASTPILOT_*`, `MALLOC*`, `OBJC_*`, `XPC_*` names are refused | android, ios |
 | openUrl | `openUrl: https://...` or a local path (`examples/demo/login.html`) | web (android/ios: deep link) |
-| tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action when FASTPILOT_CONFIRM_ACTIONS is set (also longPressOn, doubleTapOn) | all |
+| tapOn | `tapOn: "Login"` / `{ ref: e3 }` / `{ id: btn }` / `{ role: button, name: "Login" }` / `{ point: [x, y] }`; add `confirm: true` for an intended risky action (confirm_actions; built in: hapus, delete, remove) (also longPressOn, doubleTapOn). Payment and account-deletion buttons are blocked by default (block_actions): do not retry or work around a block | all |
 | inputText | `inputText: { into: "Email", text: "a@b.com" }` (replaces content); `inputText: "abc"` types into the focused field | all |
 | assertVisible / assertNotVisible | `assertVisible: "Dashboard"` or `{ text: "Dashboard", timeout: 10000 }` (ms) | all |
 | scroll | `scroll: down` or `{ direction: up, within: "Daftar" }` | all |
 | swipe | `swipe: { from: [x1, y1], to: [x2, y2] }` | android, ios |
 | back | `back` | all |
-| pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown) | all |
+| pressKey | `pressKey: Enter` (Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown); `{ key: Enter, confirm: true }` when Enter/Space may press a confirm_actions button and the test case means it | all |
 | selectOption | `selectOption: { from: "Negara", option: "Indonesia" }` (native `<select>`) | web |
 | uploadFile | `uploadFile: { into: "Lampiran", files: ["a.pdf"] }` | web |
 | evalScript | `evalScript: "document.title"` (value is returned) | web, android WebView, iOS WKWebView |

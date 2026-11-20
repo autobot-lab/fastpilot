@@ -222,6 +222,13 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     let flow = "- session: { start: and1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n- assertVisible: \"Selamat datang, Budi\"\n";
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "{out}");
+    // Its last step (Design M2, F5): "Bayar" is refused by the built-in limits; the app stays put.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: Bayar\n", "session": "and1" })).await;
+    assert!(!ok && out.contains("contains \"bayar\" (block_actions, built-in list)"), "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: \"Selamat datang, Budi\"\n- assertNotVisible: \"Total Rp 150.000\"\n", "session": "and1" })).await;
+    assert!(ok, "still on the dashboard: {out}");
+    let md = std::fs::read_to_string(folder.join("tests/login-android.md")).expect("login-android.md");
+    assert!(md.contains("diblokir") && !md.contains("Bayar sekarang"), "{md}");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(&tmp);
 }
