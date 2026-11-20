@@ -26,7 +26,7 @@ use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use fastpilot_core::config::{self, Source};
 use serde_json::{Value, json};
 
@@ -160,6 +160,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/doctor", get(doctor_api))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
+        .route("/api/live/control", post(control_api))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -280,6 +281,100 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
+// ---- Ambil alih (C7b) ---------------------------------------------------------------------
+
+/// The control socket of a fastpilot process (see `fastpilot_core::live`).
+fn control_socket(pid: u32) -> std::path::PathBuf {
+    fastpilot_core::live::dir().join(format!("{pid}.sock"))
+}
+
+fn can_control(pid: u32) -> bool {
+    cfg!(unix) && control_socket(pid).exists()
+}
+
+/// One request to a fastpilot process' control socket, and its answer.
+#[cfg(unix)]
+async fn control(pid: u32, req: &Value) -> Result<Value, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let gone = "proses fastpilot itu tidak menerima kendali (sudah berhenti, atau versi lama)";
+    let mut s = tokio::net::UnixStream::connect(control_socket(pid)).await.map_err(|_| gone.to_owned())?;
+    s.write_all(format!("{req}\n").as_bytes()).await.map_err(|_| gone.to_owned())?;
+    let mut line = String::new();
+    let mut r = tokio::io::BufReader::new(s);
+    match tokio::time::timeout(std::time::Duration::from_secs(20), r.read_line(&mut line)).await {
+        Ok(Ok(n)) if n > 0 => {}
+        Ok(_) => return Err(gone.to_owned()),
+        Err(_) => return Err("device tidak menjawab dalam 20 detik".to_owned()),
+    }
+    let v: Value = serde_json::from_str(&line).map_err(|_| gone.to_owned())?;
+    if v["ok"].as_bool() == Some(true) { Ok(v) } else { Err(v["error"].as_str().unwrap_or("gagal").to_owned()) }
+}
+
+#[cfg(not(unix))]
+async fn control(_pid: u32, _req: &Value) -> Result<Value, String> {
+    Err("Ambil alih belum tersedia di sistem ini".to_owned())
+}
+
+/// Android / iOS screens: the device's own screenshot, asked from the fastpilot process that holds
+/// the session, at most `fps` per second, only while the page reads this stream.
+fn device_frames(pid: u32, session: String, fps: u64) -> Response {
+    let period = std::time::Duration::from_millis(1000 / fps.max(1));
+    let frames = futures_util::stream::unfold((None::<tokio::time::Instant>, 0u32), move |(last, failures)| {
+        let session = session.clone();
+        async move {
+            if let Some(last) = last {
+                tokio::time::sleep_until(last + period).await;
+            }
+            let started = tokio::time::Instant::now();
+            match control(pid, &json!({ "op": "frame", "session": session })).await {
+                Ok(v) => {
+                    use base64::Engine;
+                    let jpeg = base64::engine::general_purpose::STANDARD.decode(v["jpeg"].as_str().unwrap_or("")).ok()?;
+                    let mut part = format!("Content-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", jpeg.len()).into_bytes();
+                    part.extend_from_slice(&jpeg);
+                    part.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
+                    Some((Ok::<_, std::io::Error>(part), (Some(started), 0)))
+                }
+                // A busy device may miss a frame; three in a row end the stream.
+                Err(_) if failures < 2 => Some((Ok(Vec::new()), (Some(started), failures + 1))),
+                Err(_) => None,
+            }
+        }
+    });
+    let first = futures_util::stream::once(async { Ok::<_, std::io::Error>(format!("--{BOUNDARY}\r\n").into_bytes()) });
+    let stream = futures_util::StreamExt::chain(first, frames);
+    let mut r = Response::new(Body::from_stream(stream));
+    if let Ok(v) = HeaderValue::from_str(&format!("multipart/x-mixed-replace; boundary={BOUNDARY}")) {
+        r.headers_mut().insert(header::CONTENT_TYPE, v);
+    }
+    r
+}
+
+/// `{pid, session, op, ...}`: Ambil alih / Kembalikan, and the user's taps, swipes, text and keys
+/// while the session is taken over. Only from this page (cookie, Origin, JSON: see `guard`).
+async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
+    let Some(pid) = req["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else {
+        return refuse(StatusCode::BAD_REQUEST, "pid wajib diisi");
+    };
+    let op = req["op"].as_str().unwrap_or("");
+    if !matches!(op, "takeover" | "release" | "tap" | "swipe" | "type" | "key" | "back") {
+        return refuse(StatusCode::BAD_REQUEST, "perintah tidak dikenal");
+    }
+    if !fastpilot_core::live::read_all().iter().any(|p| p.pid == pid) {
+        return refuse(StatusCode::NOT_FOUND, "proses fastpilot itu sudah berhenti");
+    }
+    let mut fwd = json!({ "op": op, "session": req["session"] });
+    for k in ["x", "y", "x2", "y2", "text", "key"] {
+        if !req[k].is_null() {
+            fwd[k] = req[k].clone();
+        }
+    }
+    match control(pid, &fwd).await {
+        Ok(_) => axum::Json(json!({ "ok": true })).into_response(),
+        Err(e) => refuse(StatusCode::CONFLICT, &e),
+    }
+}
+
 // ---- static files -------------------------------------------------------------------------
 
 const ICONS: &[(&str, &str)] = &[
@@ -287,6 +382,7 @@ const ICONS: &[(&str, &str)] = &[
     ("chev", include_str!("../ui/icons/chev.svg")),
     ("clock", include_str!("../ui/icons/clock.svg")),
     ("close", include_str!("../ui/icons/close.svg")),
+    ("cursor", include_str!("../ui/icons/cursor.svg")),
     ("device", include_str!("../ui/icons/device.svg")),
     ("expand", include_str!("../ui/icons/expand.svg")),
     ("gauge", include_str!("../ui/icons/gauge.svg")),
@@ -556,7 +652,15 @@ async fn live_api() -> Response {
                 let flow = s.flow.and_then(|id| flows.iter().find(|f| f.id == id)).map(|f| {
                     json!({ "started_ms": f.started_ms, "finished": f.finished, "steps": f.steps })
                 });
-                json!({ "pid": p.pid, "kind": p.kind, "id": s.id, "platform": s.platform, "started_ms": s.started_ms, "watchable": s.screen.is_some(), "flow": flow })
+                let controllable = can_control(p.pid);
+                let device = matches!(s.platform.as_str(), "android" | "ios");
+                json!({
+                    "pid": p.pid, "kind": p.kind, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
+                    "watchable": s.screen.is_some() || (device && controllable),
+                    "controllable": controllable && (s.screen.is_some() || device),
+                    "taken_over_ms": s.taken_over_ms,
+                    "flow": flow,
+                })
             })
         })
         .collect();
@@ -574,14 +678,15 @@ async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> R
     };
     let fps = q.get("fps").and_then(|f| f.parse::<u64>().ok()).unwrap_or(2).clamp(1, 15);
     let width = q.get("w").and_then(|w| w.parse::<u32>().ok()).unwrap_or(480).clamp(160, 1920);
-    let screen = fastpilot_core::live::read_all()
-        .into_iter()
-        .filter(|p| p.pid == pid)
-        .flat_map(|p| p.sessions)
-        .find(|s| &s.id == session)
-        .and_then(|s| s.screen);
-    let Some(screen) = screen else {
-        return refuse(StatusCode::NOT_FOUND, "tidak ada sesi yang bisa ditonton dengan nama itu (hanya sesi web di Chrome milik fastpilot)");
+    let found = fastpilot_core::live::read_all().into_iter().filter(|p| p.pid == pid).flat_map(|p| p.sessions).find(|s| &s.id == session);
+    let Some(found) = found else {
+        return refuse(StatusCode::NOT_FOUND, "tidak ada sesi dengan nama itu");
+    };
+    let Some(screen) = found.screen else {
+        if matches!(found.platform.as_str(), "android" | "ios") && can_control(pid) {
+            return device_frames(pid, session.clone(), fps.min(3));
+        }
+        return refuse(StatusCode::NOT_FOUND, "sesi ini tidak bisa ditonton (Chrome milikmu yang di-attach, atau proses fastpilot versi lama)");
     };
     let cast = match fastpilot_web::Screencast::start(&screen.ws, &screen.target, width, if width > 800 { 70 } else { 55 }).await {
         Ok(c) => c,

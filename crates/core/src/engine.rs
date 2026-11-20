@@ -48,8 +48,10 @@ impl SessionRegistry {
         if self.sessions.contains_key(&id) {
             return Err(Error::Session(format!("session `{id}` already exists")));
         }
+        let driver: Arc<dyn Driver> = Arc::from(driver);
         crate::live::session_started(&id, &driver.platform().to_string(), driver.live_screen());
-        self.sessions.insert(id.clone(), Arc::from(driver));
+        crate::live::attach(&id, &driver);
+        self.sessions.insert(id.clone(), driver);
         self.active = Some(id);
         Ok(())
     }
@@ -602,6 +604,8 @@ fn check_only(step: &Step) -> bool {
 }
 
 async fn run_one(d: &dyn Driver, sid: &str, step: &Step, index: usize, ctx: &Ctx) -> bool {
+    // The user has this session taken over in `fastpilot ui`: wait until it is given back.
+    crate::live::hold(sid).await;
     let t0 = Instant::now();
     crate::live::step_started(ctx.live, index, Some(sid), d.live_screen());
     let stable = match step_ref(step) {

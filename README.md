@@ -227,11 +227,29 @@ ada di dalam binary, jadi halaman ini jalan tanpa internet.
 
 **Panel Live** (`fastpilot ui`, menu Live): sesi yang sedang berjalan dari server MCP (Claude Code),
 CLI, dan `fastpilot run`, masing-masing dengan langkah flow-nya (✓ selesai, ▶ berjalan, 🔒 diblokir
-atau akan diblokir Batasan) dan, untuk sesi web di Chrome milik fastpilot, layarnya secara live. Layar
-hanya ditonton (read-only): koneksi DevTools terpisah yang hanya mengirim screencast, sekitar 2 fps untuk
-thumbnail dan 8 fps saat diperbesar, dan hanya selama panel terbuka. Chrome milikmu (mode attach) dan
-layar Android/iOS belum ditampilkan; langkahnya tetap terlihat. Data sesi ada di `~/.fastpilot/live/`
-(hanya bisa dibaca pemiliknya); alamat DevTools tidak pernah dikirim ke browser.
+atau akan diblokir Batasan) dan layarnya secara live, hanya selama panel terbuka:
+
+- **Web** (Chrome milik fastpilot): screencast lewat koneksi DevTools terpisah, sekitar 2 fps untuk
+  thumbnail dan 8 fps saat diperbesar.
+- **Android dan iOS**: screenshot dari device (agent/runner yang sama dengan langkah `takeScreenshot`),
+  1 fps untuk thumbnail dan 3 fps saat diperbesar. Ini juga berlaku untuk HP fisik dan adb di mesin lain.
+- Chrome milikmu (mode attach) tidak ditampilkan; langkahnya tetap terlihat.
+
+**Ambil alih.** Tombol *Ambil alih* di kartu sesi menjeda langkah otomatis sesi itu dan membuka layar besar:
+klik untuk tap, seret untuk swipe, kolom *Ketik* untuk teks di kolom yang aktif, tombol Enter/Hapus (dan
+*Kembali* di Android/iOS). Langkah AI berikutnya menunggu sampai kamu menekan *Kembalikan*, lalu hasil
+`run_flow` berikutnya untuk sesi itu memberi tahu AI bahwa user sempat mengambil alih (berapa lama, berapa
+tap/teks); dengan `test_id` catatan ini juga masuk `steps.jsonl` dan laporan run. Batasan tetap berlaku
+untuk semua langkah otomatis, sedangkan input yang kamu ketik sendiri tidak diperiksa Batasan.
+
+- Input hanya diterima dari halaman `fastpilot ui` (cookie sesi, Origin, JSON). Halaman meneruskannya ke
+  proses fastpilot pemilik sesi lewat socket `~/.fastpilot/live/<pid>.sock`, yang hanya bisa dibuka
+  pemiliknya.
+- Waktu selama diambil alih tetap dihitung ke batas waktu flow (`FASTPILOT_FLOW_TIMEOUT`).
+- macOS dan Linux saja (Unix socket).
+
+Data sesi ada di `~/.fastpilot/live/` (hanya bisa dibaca pemiliknya); alamat DevTools tidak pernah
+dikirim ke browser.
 
 Batasan dan izin yang bisa diatur (semua juga kunci `fastpilot config`):
 
