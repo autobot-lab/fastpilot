@@ -186,6 +186,63 @@ pub async fn change(Json(body): Json<Value>) -> Response {
     }
 }
 
+// ---- project notes (D6 stage 2) ------------------------------------------------------------
+
+fn notes_state(notes: &fastpilot_memory::notes::Notes) -> Value {
+    use fastpilot_memory::notes::{GROUPS, MAX_CHARS, MAX_NOTES, MAX_TOTAL};
+    json!({
+        "notes": notes.list(),
+        "groups": GROUPS.iter().map(|(k, l)| json!({ "key": k, "label": l })).collect::<Vec<_>>(),
+        "limits": { "notes": MAX_NOTES, "chars": MAX_CHARS, "total": MAX_TOTAL },
+        "used": notes.total(),
+    })
+}
+
+/// `GET /api/notes`.
+pub async fn notes_list() -> Response {
+    Json(notes_state(&fastpilot_memory::notes::Notes::from_env())).into_response()
+}
+
+/// `POST /api/notes`: `{action: add, group, text}`, `{action: edit, id, group, text}`,
+/// `{action: remove, id}`. Only the page's own form sends these: a note is the person's own
+/// context for every agent, so nothing else (the Chat bot, a tested page) can add one.
+pub async fn notes_change(Json(body): Json<Value>) -> Response {
+    let notes = fastpilot_memory::notes::Notes::from_env();
+    let s = |k: &str| body[k].as_str().unwrap_or("").to_owned();
+    // Secrets this process does not have in its environment: the values the project's .mcp.json
+    // gives fastpilot (FASTPILOT_VARS names in its env), as `fastpilot demo` writes them.
+    if matches!(s("action").as_str(), "add" | "edit") && mcp_secret_values().iter().any(|v| s("text").contains(v.as_str())) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "kind": "secret", "error": "This contains the value of a saved secret. Notes are not hidden, so it was not saved. Save it as a secret instead and write only its name." })),
+        )
+            .into_response();
+    }
+    let done = match s("action").as_str() {
+        "add" => notes.add(&s("group"), &s("text")).map(|_| "Note saved. Agents use it from the next run."),
+        "edit" => notes.edit(&s("id"), &s("group"), &s("text")).map(|_| "Note saved. Agents use it from the next run."),
+        "remove" => notes.remove(&s("id")).map(|()| "Note removed. Agents stop using it from the next run."),
+        _ => return refuse(StatusCode::BAD_REQUEST, "Unknown notes action."),
+    };
+    match done {
+        Ok(text) => {
+            let mut v = notes_state(&notes);
+            v["ok"] = json!(text);
+            Json(v).into_response()
+        }
+        // The page shows the matching state (it looks like a password, the limit, …).
+        Err(r) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": r.message, "kind": r.kind }))).into_response(),
+    }
+}
+
+/// Secret values in the project's `.mcp.json` (fastpilot server entry, FASTPILOT_VARS names).
+fn mcp_secret_values() -> Vec<String> {
+    let Some(v) = std::fs::read_to_string(".mcp.json").ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return vec![] };
+    let env = &v["mcpServers"]["fastpilot"]["env"];
+    let names = env["FASTPILOT_VARS"].as_str().unwrap_or("");
+    names.split(',').map(str::trim).filter(|n| !n.is_empty()).filter_map(|n| env[n].as_str()).filter(|v| v.chars().count() >= 3).map(str::to_owned).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

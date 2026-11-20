@@ -422,12 +422,13 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         })
         .collect();
     let intro = format!(
-        "Test case `{}` (file {}):\n\n{}\n\nSession plan: {}.\n\n{}",
+        "Test case `{}` (file {}):\n\n{}\n\nSession plan: {}.\n\n{}{}",
         case.id,
         case.path.display(),
         fastpilot_core::to_vars(case.text.trim()),
         plan.join("; "),
-        hint.as_deref().unwrap_or("No path memory for this test yet: explore.")
+        hint.as_deref().unwrap_or("No path memory for this test yet: explore."),
+        project_notes().map(|n| format!("\n\n{n}")).unwrap_or_default()
     );
     let agent = Arc::new(Agent {
         fp: fp.clone(),
@@ -736,6 +737,12 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
         return Err(format!("{failed} test(s) failed").into());
     }
     Ok(())
+}
+
+/// D6: the project notes, read once when this run starts: every test of the run gets the same.
+fn project_notes() -> Option<&'static str> {
+    static NOTES: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NOTES.get_or_init(|| fastpilot_memory::notes::Notes::from_env().for_agents()).as_deref()
 }
 
 /// D7: this run in the project's History, with its test runs and an HTML report (the one asked
