@@ -436,6 +436,7 @@ fn label(key: &str) -> &'static str {
         "upload_dirs" => "Folder yang boleh diunggah",
         "max_steps" => "Maksimal langkah per test",
         "test_timeout" => "Batas waktu per test (menit)",
+        "vars" => "Nama secret",
         _ => "Pengaturan lain",
     }
 }
@@ -496,7 +497,8 @@ fn limit_changes(v: &Value) -> Res<Vec<(String, Option<String>, String)>> {
     for (kind, map) in [("add", &v["add"]), ("set", &v["set"])] {
         for (key, val) in map.as_object().into_iter().flatten() {
             if !LIMITS.contains(&key.as_str()) || (kind == "add" && !ADDS.contains(&key.as_str())) {
-                return Err(format!("\"{}\" tidak bisa diubah lewat chat", if LIMITS.contains(&key.as_str()) { label(key) } else { key.as_str() }));
+                let name = if label(key) == "Pengaturan lain" { key.as_str() } else { label(key) };
+                return Err(format!("\"{name}\" tidak bisa diubah lewat chat; ubah di Pengaturan."));
             }
             if matches!(config::current(key), Source::Env(_)) {
                 return Err(format!("\"{}\" diatur lewat environment (FASTPILOT_{}); ubah di sana", label(key), key.to_uppercase()));
@@ -603,6 +605,8 @@ mod tests {
         assert_eq!(change_text("block_actions", Some("Keluar"), "Keluar,Bayar"), "+ Bayar");
         assert_eq!(change_text("max_steps", None, "20"), "30 (bawaan) → 20");
         assert_eq!(label("allow_eval_script"), "Boleh jalankan JavaScript (evalScript)");
+        let vars = limit_changes(&json!({ "kind": "limits", "add": { "vars": ["X"] } })).expect_err("vars");
+        assert!(vars.contains("\"Nama secret\"") && !vars.contains("vars"), "{vars}");
         assert!(claude_failure("Not logged in · Please run /login").starts_with("Claude Code belum login"));
         assert_eq!(tool_line("mcp__fastpilot__session", &json!({ "action": "start", "id": "web1", "platform": "web" })), "session · start web1 web");
     }

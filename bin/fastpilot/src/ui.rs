@@ -449,7 +449,7 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
         "save" => match serde_json::from_value::<schedule::Schedule>(body["schedule"].clone()) {
             Ok(s) => schedule::save(s, body["webhook"].as_str()).map(|s| json!({ "id": s.id })),
-            Err(e) => Err(format!("isi jadwal tidak lengkap: {e}")),
+            Err(e) => Err(format!("Isi jadwal tidak lengkap ({e})")),
         },
         "enable" => schedule::set_enabled(&id, true).map(|()| json!({})),
         "disable" => schedule::set_enabled(&id, false).map(|()| json!({})),
@@ -458,11 +458,11 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
         "test" => match schedule::load().schedules.into_iter().find(|s| s.id == id) {
             Some(s) => {
                 let sent = schedule::notify(&s, &format!("Tes notifikasi: {}", s.name), &format!("fastpilot: ini tes notifikasi untuk jadwal \"{}\".", s.name)).await;
-                if sent.is_empty() { Err("jadwal ini belum punya notifikasi".into()) } else { Ok(json!({ "sent": sent })) }
+                if sent.is_empty() { Err("Jadwal ini belum punya notifikasi".into()) } else { Ok(json!({ "sent": sent })) }
             }
-            None => Err("jadwal tidak ditemukan".into()),
+            None => Err("Jadwal tidak ditemukan".into()),
         },
-        _ => Err("perintah tidak dikenal".into()),
+        _ => Err("Perintah tidak dikenal".into()),
     };
     match result {
         Ok(v) => axum::Json(v).into_response(),

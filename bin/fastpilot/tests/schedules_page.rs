@@ -103,6 +103,9 @@ async fn jadwal_form_points_at_fields_and_keeps_focus() {
     see(&client, "path lengkap").await;
     let at = eval(&client, "(() => { const e = [...document.querySelectorAll('.fld-err')].find(x => !x.hidden); const i = e.closest('.fld').querySelector('input'); return e.closest('.fld').querySelector('.l').textContent + ':' + i.getAttribute('aria-invalid') + ':' + (document.activeElement === i); })()").await;
     assert_eq!(at, "\"Test:true:true\"");
+    // Design L2: the error is tied to its field and starts with a capital.
+    let tied = eval(&client, "(() => { const i = document.activeElement; const e = document.getElementById(i.getAttribute('aria-describedby')); return e.textContent.slice(0, 6); })()").await;
+    assert_eq!(tied, "\"Folder\"");
 
     // Fixed and saved: focus on the new schedule; Indonesian summary text in the list.
     eval(&client, &format!("(() => {{ const f = document.querySelector('.sched-form'); f.querySelectorAll('input[type=text]')[1].value = '{ROOT}/tests/login.md'; [...f.querySelectorAll('button')].find(b => b.textContent === 'Simpan jadwal').click(); return 'ok'; }})()")).await;
@@ -110,6 +113,12 @@ async fn jadwal_form_points_at_fields_and_keeps_focus() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(eval(&client, "document.activeElement.className + ':' + document.activeElement.textContent").await, "\"row-name:Login pagi\"");
     assert!(home.join("LaunchAgents/dev.fastpilot.schedule.login-pagi.plist").exists());
+
+    // Design L4: the page says in its own words that fastpilot ui stopped (not "Failed to fetch").
+    drop(_ui);
+    eval(&client, "location.hash = '#/live', 'ok'").await;
+    see(&client, "server fastpilot ui tidak menjawab").await;
+    assert_eq!(eval(&client, "String(document.body.textContent.includes('Failed to fetch'))").await, "\"false\"");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(home);
 }
