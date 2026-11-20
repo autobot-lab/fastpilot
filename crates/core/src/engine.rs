@@ -811,45 +811,55 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
     if (confirmed || words.is_empty()) && blocked.is_empty() {
         return Ok(());
     }
-    let names = if let Selector::Point(p) = sel {
+    if let Selector::Point(p) = sel {
         // A tap by coordinates is checked against every element under it; when that cannot be told,
         // the rules win (fail closed).
-        point_targets(d, *p).await.ok_or_else(|| {
+        let names = point_targets(d, *p).await.ok_or_else(|| {
             Error::Blocked(format!(
                 "{sel}: cannot tell which element is at this point (no snapshot, or no element covers it) while block_actions / confirm_actions are on; tap it by text or ref"
             ))
-        })?
-    } else {
-        // The element the tap will hit, waited for like the tap waits: checked once before it was
-        // on screen, `{ id: pay }` passed and the tap's retry then hit "Bayar" when it appeared.
-        let name = std::sync::Mutex::new(None::<String>);
-        let no_snapshot = std::sync::Mutex::new(false);
-        let found = retry(action_timeout(), || async {
-            let snap = d.snapshot().await;
-            *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) = snap.is_err();
-            let snap = snap?;
-            let e = snap.resolve(sel, Intent::Tap)?;
-            *name.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.node.name.clone());
-            Ok(())
-        })
-        .await;
-        match (found, sel) {
-            (Ok(()), _) => vec![name.into_inner().unwrap_or_else(|p| p.into_inner()).unwrap_or_default()],
-            // No snapshot: a text selector is judged by its text; a ref, id or role cannot be told
-            // apart, so the rules win (fail closed), like a point.
-            (Err(_), Selector::Text(t) | Selector::Role { name: Some(t), .. }) if *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) => {
-                vec![t.clone()]
-            }
-            (Err(_), _) if *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) => {
-                return Err(Error::Blocked(format!(
-                    "{sel}: cannot tell which element this is (no snapshot) while block_actions / confirm_actions are on; tap it by text"
-                )));
-            }
-            // Not on screen (or ambiguous) within the step's time: the tap would fail the same way.
-            (Err(e), _) => return Err(e),
-        }
+        })?;
+        return judge_tap(sel, &names, confirmed, words, blocked);
+    }
+    // The step's own text first: refused at once, without waiting for an element that may never
+    // come (`tapOn: Keluar` with "Keluar" blocked).
+    let own = match sel {
+        Selector::Text(t) | Selector::Role { name: Some(t), .. } => Some(t.clone()),
+        _ => None,
     };
-    for name in &names {
+    if let Some(t) = &own {
+        judge_tap(sel, std::slice::from_ref(t), confirmed, words, blocked)?;
+    }
+    // Then the element the tap will hit, waited for like the tap waits: checked once before it was
+    // on screen, `{ id: pay }` passed and the tap's retry then hit "Bayar" when it appeared.
+    let name = std::sync::Mutex::new(None::<String>);
+    let no_snapshot = std::sync::Mutex::new(false);
+    let found = retry(action_timeout(), || async {
+        let snap = d.snapshot().await;
+        *no_snapshot.lock().unwrap_or_else(|p| p.into_inner()) = snap.is_err();
+        let snap = snap?;
+        let e = snap.resolve(sel, Intent::Tap)?;
+        *name.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.node.name.clone());
+        Ok(())
+    })
+    .await;
+    let no_snapshot = *no_snapshot.lock().unwrap_or_else(|p| p.into_inner());
+    match found {
+        Ok(()) => judge_tap(sel, &[name.into_inner().unwrap_or_else(|p| p.into_inner()).unwrap_or_default()], confirmed, words, blocked),
+        // No snapshot: a text selector was judged by its text above; a ref, id or role cannot be
+        // told apart, so the rules win (fail closed), like a point.
+        Err(_) if no_snapshot && own.is_some() => Ok(()),
+        Err(_) if no_snapshot => Err(Error::Blocked(format!(
+            "{sel}: cannot tell which element this is (no snapshot) while block_actions / confirm_actions are on; tap it by text"
+        ))),
+        // Not on screen (or ambiguous) within the step's time: the tap would fail the same way.
+        Err(e) => Err(e),
+    }
+}
+
+/// `block_actions` (always), then `confirm_actions` (unless confirmed), against `names`.
+fn judge_tap(sel: &Selector, names: &[String], confirmed: bool, words: &[String], blocked: &[String]) -> Result<()> {
+    for name in names {
         if let Some(w) = crate::policy::block_match(name, blocked) {
             return Err(Error::Blocked(format!(
                 "{} is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it, only the user can change it in fastpilot settings",
@@ -860,7 +870,7 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
     if confirmed {
         return Ok(());
     }
-    for name in &names {
+    for name in names {
         if let Some(w) = crate::policy::risky_match(name, words) {
             return Err(Error::Blocked(format!(
                 "{} looks like a risky action (\"{w}\", confirm_actions): if it is intended, \
@@ -1797,6 +1807,13 @@ mod tests {
             let e = guard_tap(&broken, &sel, false, &[], &bayar).await.expect_err("no snapshot");
             assert!(matches!(&e, Error::Blocked(m) if m.contains("cannot tell")), "{sel}: {e}");
         }
+        // A blocked text that never comes on screen is refused at once, by its own text (main after
+        // #58 waited for it and said "not found": ui_live_keyboard, `tapOn: Keluar`).
+        let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
+        let t0 = tokio::time::Instant::now();
+        let e = guard_tap(&page, &Selector::Text("Keluar".into()), false, &[], &["keluar".to_owned()]).await.expect_err("blocked text");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Keluar") && m.contains("block_actions")), "{e}");
+        assert!(t0.elapsed() < Duration::from_millis(50), "refused without waiting");
         // A text selector without a snapshot is judged by its text, as before.
         assert!(guard_tap(&broken, &Selector::Text("Batal".into()), false, &[], &bayar).await.is_ok());
         assert!(guard_tap(&broken, &Selector::Text("Bayar".into()), false, &[], &bayar).await.is_err());
