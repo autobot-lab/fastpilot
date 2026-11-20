@@ -1,6 +1,6 @@
-//! Android end-to-end over MCP (Phase 2 + WebView from Phase 4). Needs a booted device/emulator
-//! (`emulator -avd ...` or `session start_device`) and `agent-android/build.sh` artifacts;
-//! skips otherwise.
+//! Android end-to-end over MCP (Phase 2 + WebView from Phase 4). Needs the emulator named in
+//! FASTPILOT_ANDROID_SERIAL and `agent-android/build.sh` artifacts; fails without them, saying
+//! why (FASTPILOT_SKIP_ANDROID=1 skips on purpose).
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -20,18 +20,14 @@ async fn call(client: &Client, tool: &'static str, args: Value) -> (bool, String
     (res.is_error != Some(true), text)
 }
 
-fn adb() -> String {
-    let home = std::env::var("ANDROID_HOME").unwrap_or_else(|_| format!("{}/Library/Android/sdk", std::env::var("HOME").unwrap_or_default()));
-    format!("{home}/platform-tools/adb")
-}
+#[path = "support/android_device.rs"]
+mod android_device;
+use android_device::adb;
 
-/// The device under test: FASTPILOT_ANDROID_SERIAL / ANDROID_SERIAL, else the first ready one.
+/// The device under test: FASTPILOT_ANDROID_SERIAL / ANDROID_SERIAL, never guessed. Without a
+/// usable one the test fails with the reason; `None` only with FASTPILOT_SKIP_ANDROID=1.
 fn serial() -> Option<String> {
-    if let Some(s) = ["FASTPILOT_ANDROID_SERIAL", "ANDROID_SERIAL"].iter().find_map(|k| std::env::var(k).ok().filter(|s| !s.is_empty())) {
-        return Some(s);
-    }
-    let out = std::process::Command::new(adb()).arg("devices").output().ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().skip(1).find_map(|l| l.strip_suffix("\tdevice").map(str::to_owned))
+    android_device::device()
 }
 
 /// `adb -s <serial> ...`, so a second attached phone never receives the commands.
@@ -52,12 +48,14 @@ fn screen() -> (u32, u32) {
     (w.trim().parse().unwrap_or(720), h.trim().parse().unwrap_or(1280))
 }
 
-/// Installs the demo app; `None` when no device is attached.
+/// Installs the demo app; `None` only when the Android tests are skipped on purpose. No device or
+/// no built demo app fails the test, saying what to do.
 fn prepare() -> Option<()> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     serial()?;
     let apk = format!("{root}/examples/demo-android/out/fastpilot-demo.apk");
-    std::path::Path::new(&apk).exists().then_some(())?;
+    android_device::need_file(&apk, "the demo app");
+    android_device::need_file(&format!("{root}/agent-android/out/fastpilot-agent.apk"), "the fastpilot agent app");
     let install = || adb_s(&["install", "-r", &apk]).output().ok();
     let mut out = install()?;
     // Built on another machine or checkout (another debug keystore): the installed copy has
@@ -111,9 +109,13 @@ fn server() -> TokioChildProcess {
     TokioChildProcess::new(cmd).expect("spawn")
 }
 
+// Every launch of the demo app is followed by a wait for its first screen: a launch on a busy
+// emulator can take longer than the 5 s the next step has (F6); the tests check behaviour, not
+// launch speed.
 const ANDROID_LOGIN: &str = r#"
 - session: { start: and1, platform: android }
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - inputText: { into: "Email", text: "a@b.com" }
 - inputText: { into: "Password", text: "${DEMO_PASS}" }
 - tapOn: "Masuk"
@@ -132,6 +134,7 @@ const CROSS_PLATFORM: &str = r#"
 - session: { start: and1, platform: android }
 - session: and1
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - parallel:
     - session: web1
       steps:
@@ -151,7 +154,7 @@ const CROSS_PLATFORM: &str = r#"
 async fn android_login_webview_and_cross_platform_over_mcp() {
     let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let client: Client = ().serve(server()).await.expect("initialize");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": ANDROID_LOGIN })).await;
@@ -178,6 +181,7 @@ fn adb_shell(cmd: &str) -> String {
 
 const LOGIN_STEPS: &str = r#"
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - inputText: { into: "Email", text: "a@b.com" }
 - inputText: { into: "Password", text: "${DEMO_PASS}" }
 - tapOn: "Masuk"
@@ -190,7 +194,7 @@ const LOGIN_STEPS: &str = r#"
 async fn android_system_dialogs() {
     let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     adb_shell("pm revoke com.fastpilot.demo android.permission.CAMERA; pm clear-permission-flags com.fastpilot.demo android.permission.CAMERA user-set user-fixed");
     let client: Client = ().serve(server()).await.expect("initialize");
@@ -198,7 +202,7 @@ async fn android_system_dialogs() {
     assert!(ok, "{out}");
 
     // Keyboard: "Lupa password?" sits under the IME once the email field is focused.
-    let keyboard = "- launchApp: com.fastpilot.demo/.LoginActivity\n- inputText: { into: \"Email\", text: \"a@b.com\" }\n- tapOn: \"Lupa password?\"\n- assertVisible: \"Cek email Anda\"\n";
+    let keyboard = "- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n- inputText: { into: \"Email\", text: \"a@b.com\" }\n- tapOn: \"Lupa password?\"\n- assertVisible: \"Cek email Anda\"\n";
     let (ok, out) = call(&client, "run_flow", json!({ "flow": keyboard })).await;
     println!("{out}");
     assert!(ok, "{out}");
@@ -223,6 +227,9 @@ async fn android_system_dialogs() {
     println!("{out}");
     assert!(!ok && out.contains("app_not_responding"), "{out}");
     client.cancel().await.expect("shutdown");
+    // The demo app's main thread is still asleep (up to 30 s): stop it, so the next test does not
+    // start on a frozen app (F6: the test after this one failed 1 in 3, alone 0 in 3).
+    adb_shell("am force-stop com.fastpilot.demo");
 }
 
 /// Maestro-compatible steps on a device (the web e2e covers the remaining ones).
@@ -230,13 +237,14 @@ async fn android_system_dialogs() {
 async fn android_maestro_steps() {
     let _device = DEVICE.lock().await; // before prepare: reinstalling under a running test breaks it
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let client: Client = ().serve(server()).await.expect("initialize");
     let flow = r#"
 - session: { start: m1, platform: android }
 - startRecording: android-rec
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - inputText: { into: "Email", text: "a@b.comXY" }
 - eraseText: 2
 - copyTextFrom: "Email"
@@ -266,7 +274,7 @@ async fn android_maestro_steps() {
     assert!(video.len() > 10_000 && &video[4..8] == b"ftyp", "not an mp4: {} bytes", video.len());
 
     // Set-of-Mark on the device: the agent confirms it drew every listed box.
-    let (ok, _) = call(&client, "run_flow", json!({ "flow": "- launchApp: com.fastpilot.demo/.LoginActivity\n" })).await;
+    let (ok, _) = call(&client, "run_flow", json!({ "flow": "- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n" })).await;
     assert!(ok);
     let res: CallToolResult = client
         .call_tool(CallToolRequestParams::new("screenshot").with_arguments(json!({ "annotate": "som" }).as_object().cloned().unwrap_or_default()))
@@ -289,15 +297,15 @@ async fn android_maestro_steps() {
 async fn android_reads_otp_from_sms() {
     let _device = DEVICE.lock().await;
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let code = format!("{}", 100_000 + std::process::id() % 900_000);
     let sent = adb_s(&["emu", "sms", "send", "5551234", &format!("Kode masuk Anda {code}")]).output().expect("adb emu");
     if !String::from_utf8_lossy(&sent.stdout).contains("OK") {
-        return eprintln!("skipping: not an emulator (no console to send an SMS)");
+        return eprintln!("SKIPPED on purpose: {} is a phone; reading an SMS needs an emulator console", serial().unwrap_or_default());
     }
     let client: Client = ().serve(server()).await.expect("initialize");
-    let flow = "- session: { start: sms1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- readOtp: { from: sms, after: \"kode\", into: SMS_OTP, timeout: 10000 }\n- inputText: { into: \"Email\", text: \"${SMS_OTP}\" }\n- copyTextFrom: \"Email\"\n";
+    let flow = "- session: { start: sms1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n- readOtp: { from: sms, after: \"kode\", into: SMS_OTP, timeout: 10000 }\n- inputText: { into: \"Email\", text: \"${SMS_OTP}\" }\n- copyTextFrom: \"Email\"\n";
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     println!("{out}");
     assert!(ok && out.contains("code from sms in ${SMS_OTP}"), "{out}");
@@ -312,13 +320,14 @@ async fn android_reads_otp_from_sms() {
 async fn android_device_control() {
     let _device = DEVICE.lock().await;
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let tz = adb_shell("getprop persist.sys.timezone").trim().to_owned();
     let client: Client = ().serve(server()).await.expect("initialize");
     let flow = r#"
 - session: { start: dc, platform: android }
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - setPermissions: { permissions: { camera: allow } }
 - setLocation: { latitude: -6.2088, longitude: 106.8456 }
 - setLocale: { timezone: Asia/Jakarta }
@@ -347,7 +356,7 @@ async fn android_device_control() {
 async fn android_launch_app_arguments() {
     let _device = DEVICE.lock().await;
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let client: Client = ().serve(server()).await.expect("initialize");
     let flow = r#"
@@ -360,6 +369,7 @@ async fn android_launch_app_arguments() {
 - assertVisible: "extra server=https://staging.contoh.id/api?a=1&b='2'"
 - assertVisible: "extra tags=satu|dua tiga"
 - launchApp: com.fastpilot.demo/.LoginActivity
+- assertVisible: { text: "Masuk ke Akun", timeout: 30000 }
 - assertNotVisible: { text: "extra debug=true", timeout: 3000 }
 "#;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
@@ -396,7 +406,7 @@ async fn tunnel(target: &'static str) -> (u16, std::sync::Arc<std::sync::atomic:
 async fn android_through_a_configured_adb_server() {
     let _device = DEVICE.lock().await;
     if prepare().is_none() {
-        return eprintln!("skipping: no Android device or demo APK");
+        return;
     }
     let (port, connections) = tunnel("127.0.0.1:5037").await;
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -411,14 +421,7 @@ async fn android_through_a_configured_adb_server() {
             .env("FASTPILOT_ANDROID_SERIAL", serial().unwrap_or_default());
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
-    // The login screen first: on a loaded machine the first input right after a slow launch
-    // can miss its 5 s (seen on main too); this test is about the transport.
-    let flow = ANDROID_LOGIN.replacen(
-        "- launchApp: com.fastpilot.demo/.LoginActivity\n",
-        "- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk ke Akun\", timeout: 30000 }\n",
-        1,
-    );
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": ANDROID_LOGIN })).await;
     println!("{out}");
     assert!(ok, "{out}");
     assert!(out.contains("= \"Pembayaran\""), "WebView reached through the server: {out}");
