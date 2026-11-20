@@ -1,8 +1,9 @@
 //! C7b on devices: the Live panel shows Android and iOS screens (screenshots from the device, only
 //! while the stream is read), and "Ambil alih" works there as on the web: the AI's step waits, the
 //! user's tap and text reach the app, and the step runs after Kembalikan. Talks to `fastpilot ui`
-//! over HTTP like the page does. Skips without a device (Android: emulator/phone + agent-android
-//! build; iOS: a Mac with ios-runner/build.sh done).
+//! over HTTP like the page does. Android needs the emulator named in FASTPILOT_ANDROID_SERIAL and the
+//! agent-android build, and fails without them (FASTPILOT_SKIP_ANDROID=1 skips on purpose); iOS
+//! skips without a Mac with ios-runner/build.sh done.
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -166,23 +167,18 @@ fn mcp(live: &std::path::Path, env: &[(&str, String)]) -> TokioChildProcess {
     TokioChildProcess::new(cmd).expect("spawn")
 }
 
-fn adb() -> String {
-    let home = std::env::var("ANDROID_HOME").unwrap_or_else(|_| format!("{}/Library/Android/sdk", std::env::var("HOME").unwrap_or_default()));
-    format!("{home}/platform-tools/adb")
-}
+#[path = "support/android_device.rs"]
+mod android_device;
+use android_device::adb;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn take_over_android() {
     let _device = DEVICE.lock().await;
-    let serial = std::env::var("FASTPILOT_ANDROID_SERIAL").ok().filter(|s| !s.is_empty()).or_else(|| {
-        let out = std::process::Command::new(adb()).arg("devices").output().ok()?;
-        String::from_utf8_lossy(&out.stdout).lines().skip(1).find_map(|l| l.strip_suffix("\tdevice").map(str::to_owned))
-    });
+    // The named emulator only, never the first one attached; no device fails, saying why.
+    let Some(serial) = android_device::device() else { return };
     let apk = format!("{ROOT}/examples/demo-android/out/fastpilot-demo.apk");
-    let agent = format!("{ROOT}/agent-android/out/fastpilot-agent.apk");
-    let Some(serial) = serial.filter(|_| std::path::Path::new(&apk).exists() && std::path::Path::new(&agent).exists()) else {
-        return eprintln!("skipping: no Android device, or agent-android/build.sh not run");
-    };
+    android_device::need_file(&apk, "the demo app");
+    android_device::need_file(&format!("{ROOT}/agent-android/out/fastpilot-agent.apk"), "the fastpilot agent app");
     let install = || std::process::Command::new(adb()).args(["-s", &serial, "install", "-r", &apk]).output().expect("adb");
     let mut out = install();
     // Built in another checkout (another debug key): the installed demo goes first.
@@ -193,7 +189,7 @@ async fn take_over_android() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let live = std::env::temp_dir().join(format!("fp-take-android-{}", std::process::id()));
     let client: Client = ().serve(mcp(&live, &[("FASTPILOT_ANDROID_SERIAL", serial)])).await.expect("initialize");
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: and1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: \"Masuk\"\n" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- session: { start: and1, platform: android }\n- launchApp: com.fastpilot.demo/.LoginActivity\n- assertVisible: { text: \"Masuk\", timeout: 30000 }\n" })).await;
     assert!(ok, "{out}");
     take_over_device(&client, "and1", "android").await;
     client.cancel().await.expect("shutdown");

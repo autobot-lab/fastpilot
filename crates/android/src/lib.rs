@@ -34,6 +34,8 @@ const AGENT_PKG: &str = "com.fastpilot.agent";
 /// Roles that own the keyboard while focused.
 const EDITABLE: &[&str] = &["textfield", "combobox", "spinbutton"];
 const AGENT_PORT: u16 = 7912;
+/// How long a step waits for a just-shown WebView's debug socket before saying there is none.
+const WEBVIEW_ATTACH: Duration = Duration::from_secs(5);
 /// Other UiAutomation holders: only one may exist per device.
 const RIVALS: &[&str] = &["com.github.uiautomator", "com.github.uiautomator.test", "io.appium.uiautomator2.server", "io.appium.uiautomator2.server.test"];
 
@@ -575,8 +577,14 @@ impl AndroidDriver {
     async fn web_page(&self) -> Result<tokio::sync::MappedMutexGuard<'_, WebPage>> {
         let pkg = self.agent.call("snapshot", json!({})).await?["package"].as_str().unwrap_or("").to_owned();
         let mut slot = self.web.lock().await;
-        if self.webview(&pkg, &mut slot).await.is_none() {
-            return Err(CoreError::Unsupported("no debuggable WebView on screen (needs setWebContentsDebuggingEnabled)".into()));
+        // A WebView that was just shown opens its debug socket a moment later (seconds on a busy
+        // emulator): keep trying for a while before saying there is none (F6).
+        let deadline = std::time::Instant::now() + WEBVIEW_ATTACH;
+        while self.webview(&pkg, &mut slot).await.is_none() {
+            if std::time::Instant::now() >= deadline {
+                return Err(CoreError::Unsupported("no debuggable WebView on screen (needs setWebContentsDebuggingEnabled)".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         tokio::sync::MutexGuard::try_map(slot, |s| s.as_mut().map(|w| &mut w.page))
             .map_err(|_| CoreError::Unsupported("no WebView".into()))

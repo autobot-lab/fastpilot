@@ -825,11 +825,17 @@ cargo test
   `opacity:0`, error console/HTTP di laporan gagal, Set-of-Mark, snapshot find/file, dan tool di sesi lain
   yang tidak ikut menunggu flow yang sedang berjalan.
 - `bin/fastpilot/tests/android.rs` menguji login Android, WebView, dan skenario web+Android paralel di
-  device/emulator yang menyala.
+  emulator yang disebut di `FASTPILOT_ANDROID_SERIAL`.
 - `bin/fastpilot/tests/ios.rs` menguji login di iOS simulator.
 - `bin/fastpilot/tests/cli.rs`, `cli_shell.rs`, `config_web.rs`, `state_web.rs`, `policy_web.rs` dan
   lainnya menguji CLI, daemon shell, pengaturan, login tersimpan, dan guard rail di Chrome sungguhan.
-- Test yang butuh Chrome, device, atau simulator otomatis di-skip kalau tidak tersedia.
+- Test Android (`android.rs`, `ui_takeover_device.rs`, demo Android di `demo_cli.rs`) tidak pernah
+  di-skip diam-diam dan tidak pernah memilih device sendiri:
+  - jalankan dengan `FASTPILOT_ANDROID_SERIAL=emulator-5556` (emulator yang boleh dipakai test);
+  - tanpa itu, tanpa device, device belum siap, tanpa adb, atau APK belum di-build
+    (`agent-android/build.sh`): test gagal dan menyebut sebabnya;
+  - `FASTPILOT_SKIP_ANDROID=1` melewatinya dengan sengaja, dan output-nya bilang begitu.
+- Test yang butuh Chrome atau simulator iOS otomatis di-skip kalau tidak tersedia.
 - CI GitHub hanya build (`cargo build --workspace --all-targets --locked`); test dijalankan lokal.
 
 ## Layout

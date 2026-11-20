@@ -191,13 +191,16 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// `--android` on a real device or emulator (FASTPILOT_ANDROID_SERIAL; skipped without one).
+#[path = "support/android_device.rs"]
+mod android_device;
+
+/// `--android` on the emulator named in FASTPILOT_ANDROID_SERIAL. No device fails, saying why
+/// (FASTPILOT_SKIP_ANDROID=1 skips on purpose).
 #[tokio::test(flavor = "multi_thread")]
 async fn demo_android_installs_the_app_and_its_login_runs() {
-    let Some(serial) = std::env::var("FASTPILOT_ANDROID_SERIAL").ok().filter(|s| !s.is_empty()) else {
-        return eprintln!("skipping: set FASTPILOT_ANDROID_SERIAL to an emulator to run the Android demo");
-    };
-    let adb = std::env::var("ANDROID_HOME").map(|h| format!("{h}/platform-tools/adb")).unwrap_or_else(|_| format!("{}/Library/Android/sdk/platform-tools/adb", std::env::var("HOME").unwrap_or_default()));
+    let Some(serial) = android_device::device() else { return };
+    android_device::need_file(&format!("{ROOT}/examples/demo-android/out/fastpilot-demo.apk"), "the demo app");
+    let adb = android_device::adb();
     // Start without the app, so the install is the demo's.
     let _ = std::process::Command::new(&adb).args(["-s", &serial, "uninstall", "com.fastpilot.demo"]).output();
     let tmp = std::env::temp_dir().join(format!("fp-demo-and-{}", std::process::id()));
