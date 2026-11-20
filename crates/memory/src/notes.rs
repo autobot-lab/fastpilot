@@ -6,8 +6,9 @@
 //! - they live in the user's own fastpilot folder, keyed by the project's folder
 //!   (`~/.fastpilot/projects/<sha256 of the folder>/notes.json`, owner-only, written atomically),
 //!   never in the project itself: a checkout cannot bring notes of its own (Security, PR #85);
-//! - only a person adds or changes them, from the dashboard's Memory page (never a tested page, a
-//!   ticket or the Chat bot by itself);
+//! - only a person adds or changes them: on the dashboard's Memory page, or with a click on a Chat
+//!   card whose text the person wrote in their own message (never a tested page, a ticket or the
+//!   Chat bot by itself);
 //! - they are given to the AI marked as the owner's own context, pinned when a run or an MCP
 //!   server starts;
 //! - they never hold secrets or hidden characters: such a note is refused, and one that got into
@@ -326,6 +327,13 @@ impl Notes {
             return Err(refused("limit", format!("All notes together are at most {MAX_TOTAL} characters; this would make {total}. Remove or shorten a note.")));
         }
         Ok(text)
+    }
+
+    /// The text `add` would save, or why it would refuse it; nothing is written. A Chat card is
+    /// checked with this before it is shown, and `add` checks again on the click.
+    pub fn would_add(&self, group: &str, text: &str) -> Result<String, Refused> {
+        let notes = self.editable()?;
+        self.check(&notes, group, text, None)
     }
 
     pub fn add(&self, group: &str, text: &str) -> Result<Note, Refused> {

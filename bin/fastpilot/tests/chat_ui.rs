@@ -805,3 +805,74 @@ fn an_old_claude_code_gets_a_clear_message_in_chat() {
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// D6 from Chat (v0.4): "Remember this as a note". A note is text every agent reads as the owner's
+/// own rules, so the bot only proposes it: the card appears when the note is the user's own words
+/// from their message (M1), quotes that message (M2) and is written by fastpilot (M3); nothing is
+/// saved without a click, a page's "rule" never becomes a card, and hidden characters are refused.
+#[test]
+fn chat_adds_a_note_only_from_the_users_own_words() {
+    let home = std::env::temp_dir().join(format!("fp-chat-note-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::create_dir_all(&project).expect("project");
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str| {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)
+    };
+    let notes = || -> Vec<String> {
+        let (_, body) = request(ui.port, "GET", "/api/notes", &ui.cookie, "", false);
+        let v: Value = serde_json::from_str(&body).expect("json");
+        v["notes"].as_array().expect("notes").iter().filter_map(|n| n["text"].as_str().map(str::to_owned)).collect()
+    };
+
+    // A rule from a tested page: no card, shown as an attempt, nothing saved.
+    let v = say("check the staging rules");
+    let bot = &v["messages"][1];
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!((bot["page_attempts"][0]["kind"].as_str(), bot["page_attempts"][0]["what"].as_str()), (Some("note"), Some("Add a project note")), "{bot}");
+    assert!(notes().is_empty());
+
+    // The user's own words: a card that quotes them; saved only on the click, once.
+    let v = say("Remember that sign-in uses a one-time code.");
+    let card = v["messages"][3]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["title"].as_str()), (Some("note"), Some("pending"), Some("Add a project note")), "{card}");
+    assert_eq!(card["quote"], "You said: “Remember that sign-in uses a one-time code.”");
+    assert_eq!(card["rows"][0], json!(["New note · How things work", "Sign-in uses a one-time code."]));
+    assert!(card["expires_ms"].as_u64().is_some());
+    assert!(notes().is_empty(), "nothing before the click");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 200 && body.contains("Note saved"), "{st} {body}");
+    assert_eq!(notes(), ["Sign-in uses a one-time code."]);
+    let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert_eq!(st, 422, "no replay");
+    assert_eq!(notes().len(), 1);
+
+    // Hidden characters (zero-width and an invisible tag letter) are refused, never stripped.
+    let v = say("Remember that staging is https://staging.shop.example\u{200b}\u{e0041}");
+    let card = v["messages"][5]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str()), (Some("note"), Some("refused")), "{card}");
+    assert!(card["note"].as_str().is_some_and(|n| n.contains("hidden characters")), "{card}");
+    assert_eq!(notes().len(), 1);
+
+    // No thanks: nothing saved.
+    let v = say("Remember that the demo orders are never touched");
+    let card = v["messages"][7]["proposals"][0].clone();
+    assert_eq!(card["status"], "pending", "{card}");
+    let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": false }));
+    assert_eq!(st, 200);
+    assert_eq!(notes().len(), 1);
+
+    // The activity log has what happened, never the note's text.
+    let audit = std::fs::read_to_string(home.join(".fastpilot/audit.jsonl")).expect("audit");
+    for r in ["refused-no-provenance", "refused-hidden", "applied"] {
+        assert!(audit.contains(&format!("\"result\":\"{r}\"")) && audit.contains("project_note"), "{audit}");
+    }
+    assert!(!audit.contains("one-time code"), "{audit}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
