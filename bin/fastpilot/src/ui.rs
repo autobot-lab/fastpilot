@@ -298,7 +298,9 @@ async fn provider_api() -> Response {
     let name = file("provider").unwrap_or_else(|| "claude".into());
     let presets: Vec<Value> = config::PROVIDERS.iter().map(|(p, url)| json!({ "name": p, "base_url": url })).collect();
     let env = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
-    let key = (name != "claude").then(|| json!({ "has": crate::keystore::has(&name), "where": crate::keystore::backend().describe() }));
+    let key = (name != "claude").then(|| {
+        json!({ "has": crate::keystore::has(&name), "where": crate::keystore::backend().describe(), "origin": crate::keystore::origin(&name) })
+    });
     axum::Json(json!({
         "provider": name,
         "base_url": file("provider_base_url"),
@@ -337,6 +339,10 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
                 return Ok(json!({ "message": "Test dijalankan oleh Claude Code lagi." }));
             }
             let (url, model) = (text("base_url"), text("model"));
+            // Hosted presets talk to their own server only; a preset's own URL is stored as "unset",
+            // so switching provider never leaves the previous server behind.
+            let hosted = matches!(name.as_str(), "openai" | "openrouter" | "groq");
+            let url = if hosted || url.as_deref().map(config::origin) == Some(preset.1.and_then(config::origin)) { None } else { url };
             if url.is_none() && preset.1.is_none() {
                 return Err("isi Base URL untuk penyedia custom".into());
             }
@@ -349,6 +355,12 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
             if let Some(key) = text("key") {
                 let place = crate::keystore::set(&name, &key)?;
                 message.push_str(&format!(" API key disimpan di {place}."));
+            } else if crate::keystore::has(&name) {
+                // A key saved for another server is not sent here (the run says so); say it now.
+                let now = url.as_deref().or(preset.1).and_then(config::origin);
+                if let Some(saved) = crate::keystore::origin(&name).filter(|o| Some(o) != now.as_ref()) {
+                    message.push_str(&format!(" API key {name} tersimpan untuk {saved}, bukan server ini: isi API key lagi."));
+                }
             }
             Ok(json!({ "message": message }))
         })(),

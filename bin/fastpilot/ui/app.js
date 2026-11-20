@@ -189,19 +189,33 @@ function providerGroup() {
   const pick = h("select", { class: "sel", "aria-label": "Penyedia model untuk fastpilot run", disabled: provData.env.provider },
     provData.presets.map((p) => h("option", { value: p.name, selected: p.name === provData.provider }, PROV_LABEL[p.name] || p.name)));
   const preset = (n) => provData.presets.find((p) => p.name === n) || {};
-  const url = h("input", { type: "text", class: "mono", value: provData.base_url || "", placeholder: preset(provData.provider).base_url || "https://…/v1", "aria-label": "Base URL" });
+  const hosted = (n) => ["openai", "openrouter", "groq"].includes(n);
+  const url = h("input", { type: "text", class: "mono", value: provData.base_url || preset(provData.provider).base_url || "", placeholder: "https://…/v1", "aria-label": "Base URL" });
+  const urlHint = h("span", { class: "s" });
   const model = h("input", { type: "text", class: "mono", value: provData.model || "", placeholder: "mis. gpt-4.1-mini, llama3.1", "aria-label": "Id model" });
   const k = provData.key || {};
   const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `tersimpan di ${k.where} · isi untuk mengganti` : "sk-…", "aria-label": "API key" });
   const detail = h("div", { class: "prov-fields" },
-    h("label", { class: "fld" }, h("span", { class: "l" }, "Base URL"), url, h("span", { class: "s" }, "Kosong = bawaan penyedia. https wajib, kecuali ke komputer ini (mis. Ollama).")),
+    h("label", { class: "fld" }, h("span", { class: "l" }, "Base URL"), url, urlHint),
     h("label", { class: "fld" }, h("span", { class: "l" }, "Model"), model),
     h("label", { class: "fld" }, h("span", { class: "l" }, "API key"), key,
       h("span", { class: "s" }, provData.env.key ? "FASTPILOT_PROVIDER_API_KEY diatur lewat environment dan dipakai lebih dulu."
-        : k.has ? `Tersimpan di ${k.where}. Tidak pernah ditampilkan lagi.` : `Disimpan di ${k.where || "penyimpan kunci sistem"}, tidak di file pengaturan. Ollama lokal tidak butuh kunci.`)));
+        : k.has ? `Tersimpan di ${k.where}${k.origin ? `, hanya untuk ${k.origin}` : ""}. Tidak pernah ditampilkan lagi; kunci hanya dikirim ke server tempat ia disimpan.`
+        : `Disimpan di ${k.where || "penyimpan kunci sistem"}, tidak di file pengaturan, dan hanya dikirim ke server ini. Ollama lokal tidak butuh kunci.`)));
+  // Changing provider changes the server: the preset's URL replaces the previous one (Design must-fix).
+  let shownFor = provData.provider;
   const sync = () => {
     detail.hidden = pick.value === "claude";
-    url.placeholder = preset(pick.value).base_url || "https://…/v1";
+    const p = preset(pick.value);
+    if (pick.value !== shownFor) {
+      url.value = p.base_url || "";
+      shownFor = pick.value;
+    }
+    url.readOnly = hosted(pick.value);
+    urlHint.textContent = hosted(pick.value)
+      ? `${PROV_LABEL[pick.value]} selalu memakai server ini. Untuk server lain pilih "Lainnya (OpenAI-compatible)".`
+      : pick.value === "custom" ? "Wajib diisi, mis. https://llm.kantor.id/v1. https wajib, kecuali ke komputer ini."
+      : "Bawaan Ollama di komputer ini; ubah bila Ollama ada di port lain.";
   };
   pick.addEventListener("change", sync);
   sync();
