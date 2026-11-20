@@ -413,6 +413,7 @@ dependencies = [
  "futures-util",
  "reqwest",
  "rmcp",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

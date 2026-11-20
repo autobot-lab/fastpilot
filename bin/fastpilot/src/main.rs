@@ -9,6 +9,7 @@ mod provider;
 mod pool;
 mod report;
 mod run;
+mod schedule;
 mod stability;
 mod ui;
 
@@ -30,6 +31,7 @@ commands:
   config set-key|unset-key <provider>        API key of an OpenAI-compatible provider (read from stdin; Keychain)
   config test-provider                       one small request with the configured provider
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1 + token)
+  schedule [list|run ID|remove ID]   scheduled runs (made in `fastpilot ui`, Jadwal; run by launchd/systemd/cron)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
   mcp     serve MCP over stdio (what MCP clients run); --reset: mobile sessions reset their app first
@@ -187,6 +189,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("config") => config_cmd(&args[1..]),
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,
+        Some("schedule") => schedule::cli(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,
         Some("daemon") if args.len() == 1 => live(|| cli::daemon(web), "daemon").await,
         _ if cli::command_of(&args).is_some() => {
