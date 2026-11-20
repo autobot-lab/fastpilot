@@ -272,7 +272,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                             bad(format!("{a} needs a value"));
                         }
                     }
-                    "--record" | "--reset" | "--headful" | "--report-github" | "--report-github=dry" | "--report-github=live" => {}
+                    // Any `--report-github=…`: github::Mode::from_args says which values it takes.
+                    "--record" | "--reset" | "--headful" | "--report-github" => {}
+                    other if other.starts_with("--report-github=") => {}
                     "dry" | "live" if args.iter().any(|x| x == "--report-github") => {}
                     other if other.starts_with("--") && other.contains('=') => {
                         let name = other.split('=').next().unwrap_or(other);

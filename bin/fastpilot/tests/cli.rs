@@ -117,6 +117,8 @@ fn run_options_are_checked_and_help_is_help() {
     assert!(code == Some(2) && out.contains("--reset is a switch and takes no value") && out.contains("[--report-github[=dry]]"), "{code:?} {out}");
     let (code, out) = run(&["run", "tests/login.md", "--bogus"]);
     assert!(code == Some(2) && out.contains("unknown argument `--bogus`") && out.contains("[--record] [--reset]"), "{code:?} {out}");
+    let (code, out) = run(&["run", "tests/login.md", "--report-github=bogus"]);
+    assert!(code == Some(1) && out.contains("--report-github takes `dry` or nothing, not `bogus`"), "{code:?} {out}");
     let (code, out) = run(&["open", "--help"]);
     assert!(code == Some(0) && out.contains("fastpilot shell commands"), "{code:?} {out}");
     assert!(!dir.join("d.sock").exists(), "help must not start the daemon");
