@@ -220,10 +220,9 @@ struct Web {
 pub struct AndroidDriver {
     adb: Adb,
     serial: String,
-    agent: Arc<Agent>,
+    /// The agent and its `am instrument -w` stream; started again when it has stopped.
+    link: tokio::sync::Mutex<Link>,
     size: (f64, f64),
-    /// `am instrument -w` stream: the agent lives as long as this stays open.
-    _instrument: TcpStream,
     refs: Mutex<RefRegistry>,
     web: tokio::sync::Mutex<Option<Web>>,
     /// The screen was seen idle after the last action (tap verification), so the engine's
@@ -293,6 +292,41 @@ async fn install_agent(adb: &Adb, serial: &str) -> std::result::Result<(), Error
 
 const RECORDING: &str = "/data/local/tmp/fastpilot-recording.mp4";
 
+/// The running agent: its connection and the `am instrument -w` stream it lives as long as.
+struct Link {
+    agent: Arc<Agent>,
+    instrument: TcpStream,
+}
+
+/// Whether the `am instrument -w` stream is still open: it ends when the agent process is gone
+/// (another fastpilot started a session on this device and stopped it, or it crashed). Output on
+/// it is read and dropped.
+fn instrument_alive(s: &TcpStream) -> bool {
+    let mut buf = [0u8; 512];
+    loop {
+        match s.try_read(&mut buf) {
+            Ok(0) => return false,
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return true,
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Stop any agent (ours or a rival UiAutomation server), start ours, connect, say hello. Returns
+/// the link and the screen size.
+async fn launch_agent(adb: &Adb, serial: &str) -> std::result::Result<(Link, (f64, f64)), Error> {
+    let stop: Vec<String> = std::iter::once(AGENT_PKG).chain(RIVALS.iter().copied()).map(|p| format!("am force-stop {p}")).collect();
+    adb.shell(serial, &stop.join("; ")).await?;
+    let stream = adb.shell_stream(serial, &format!("am instrument -w -e port {AGENT_PORT} {AGENT_PKG}/.Agent")).await?;
+    let (instrument, _) = adb::wait_line(stream, "FASTPILOT_AGENT_READY", Duration::from_secs(20)).await?;
+    let port = adb.forward(serial, &format!("tcp:{AGENT_PORT}")).await?;
+    let agent = Arc::new(Agent::connect(port).await?);
+    let hello = agent.call("hello", json!({})).await?;
+    let size = (hello["width"].as_f64().unwrap_or(1080.0), hello["height"].as_f64().unwrap_or(1920.0));
+    Ok((Link { agent, instrument }, size))
+}
+
 impl AndroidDriver {
     /// Connect to `serial` (or the only attached device), install/refresh the agent, start it.
     pub async fn start(serial: Option<&str>) -> std::result::Result<Self, Error> {
@@ -315,16 +349,7 @@ impl AndroidDriver {
             install_agent(&adb, &serial).await?;
             adb.shell(&serial, &format!("echo {sum} > {marker}")).await?;
         }
-        let stop: Vec<String> = std::iter::once(AGENT_PKG).chain(RIVALS.iter().copied()).map(|p| format!("am force-stop {p}")).collect();
-        adb.shell(&serial, &stop.join("; ")).await?;
-        let stream = adb
-            .shell_stream(&serial, &format!("am instrument -w -e port {AGENT_PORT} {AGENT_PKG}/.Agent"))
-            .await?;
-        let (instrument, _) = adb::wait_line(stream, "FASTPILOT_AGENT_READY", Duration::from_secs(20)).await?;
-        let port = adb.forward(&serial, &format!("tcp:{AGENT_PORT}")).await?;
-        let agent = Arc::new(Agent::connect(port).await?);
-        let hello = agent.call("hello", json!({})).await?;
-        let size = (hello["width"].as_f64().unwrap_or(1080.0), hello["height"].as_f64().unwrap_or(1920.0));
+        let (link, size) = launch_agent(&adb, &serial).await?;
         // Animations are the main source of idle-wait flakiness (Android testing guide). The
         // user's values are saved first and restored by close().
         if let Err(e) = adb.shell(&serial, &device::prepare_script()).await {
@@ -333,9 +358,8 @@ impl AndroidDriver {
         Ok(Self {
             adb,
             serial,
-            agent,
+            link: tokio::sync::Mutex::new(link),
             size,
-            _instrument: instrument,
             refs: Mutex::default(),
             web: tokio::sync::Mutex::new(None),
             settled: std::sync::atomic::AtomicBool::new(false),
@@ -357,6 +381,29 @@ impl AndroidDriver {
         self.check_crash.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// The agent to talk to. When its process has gone since the last step (its instrumentation
+    /// stream ended), it is started again once, before anything is sent, so no action is ever
+    /// repeated; the step's result then says so. If it cannot be started, the old link is returned
+    /// and the call fails as before.
+    async fn agent(&self) -> Arc<Agent> {
+        let mut link = self.link.lock().await;
+        if instrument_alive(&link.instrument) || self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return link.agent.clone();
+        }
+        tracing::warn!(serial = %self.serial, "the fastpilot agent stopped: starting it again");
+        match launch_agent(&self.adb, &self.serial).await {
+            Ok((fresh, _)) => {
+                *link = fresh;
+                self.note(format!(
+                    "the fastpilot agent on {} had stopped (another fastpilot session on this device, or a crash) and was started again",
+                    self.serial
+                ));
+            }
+            Err(e) => tracing::warn!(serial = %self.serial, error = %e, "the fastpilot agent could not be started again"),
+        }
+        link.agent.clone()
+    }
+
     fn note(&self, text: String) {
         tracing::info!("{text}");
         let mut n = lock(&self.notes);
@@ -368,7 +415,7 @@ impl AndroidDriver {
     /// Raw agent snapshot plus the core snapshot. A crash or ANR of the app under test fails
     /// with `app_crashed` / `app_not_responding` (the dialog is closed so the device recovers).
     async fn screen(&self) -> Result<(Value, Snapshot)> {
-        let v = self.agent.call("snapshot", json!({})).await?;
+        let v = self.agent().await.call("snapshot", json!({})).await?;
         let dialog = system::dialog(&v);
         if let Some(d) = dialog.as_ref().filter(|d| d.kind != Kind::Permission) {
             if let Some(p) = d.dismiss(self.policy) {
@@ -424,7 +471,7 @@ impl AndroidDriver {
                 if let (false, Some(p)) = (ours, d.dismiss(self.policy)) {
                     self.note(format!("permission prompt {:?} dismissed ({:?}) before {sel}", d.text, self.policy));
                     self.tap_at(p).await?;
-                    let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
+                    let _ = self.agent().await.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
                     continue;
                 }
             }
@@ -461,11 +508,11 @@ impl AndroidDriver {
         }
         if snap.entries.iter().any(|e| e.node.focused && EDITABLE.contains(&e.node.role.as_str())) {
             self.acted();
-            self.agent.call("key", json!({ "code": 4 })).await?;
+            self.agent().await.call("key", json!({ "code": 4 })).await?;
         } else {
             tracing::debug!("keyboard without a focused field (closing); waiting instead of Back");
         }
-        let _ = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
+        let _ = self.agent().await.call("idle", json!({ "quietMs": 100, "timeoutMs": 1500 })).await;
         Ok(())
     }
 
@@ -549,7 +596,7 @@ impl AndroidDriver {
     }
 
     async fn shell(&self, cmd: &str) -> Result<String> {
-        let v = self.agent.call("shell", json!({ "command": cmd })).await?;
+        let v = self.agent().await.call("shell", json!({ "command": cmd })).await?;
         Ok(v["out"].as_str().unwrap_or("").to_owned())
     }
 
@@ -575,7 +622,7 @@ impl AndroidDriver {
     }
 
     async fn web_page(&self) -> Result<tokio::sync::MappedMutexGuard<'_, WebPage>> {
-        let pkg = self.agent.call("snapshot", json!({})).await?["package"].as_str().unwrap_or("").to_owned();
+        let pkg = self.agent().await.call("snapshot", json!({})).await?["package"].as_str().unwrap_or("").to_owned();
         let mut slot = self.web.lock().await;
         // A WebView that was just shown opens its debug socket a moment later (seconds on a busy
         // emulator): keep trying for a while before saying there is none (F6).
@@ -596,7 +643,7 @@ impl AndroidDriver {
 
     async fn tap_at(&self, p: Point) -> Result<()> {
         self.acted();
-        self.agent.call("tap", json!({ "x": p.x, "y": p.y })).await?;
+        self.agent().await.call("tap", json!({ "x": p.x, "y": p.y })).await?;
         Ok(())
     }
 
@@ -618,7 +665,9 @@ impl Drop for AndroidDriver {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let (agent, adb, serial) = (self.agent.clone(), self.adb.clone(), self.serial.clone());
+        // Drop has `&mut self`: the link is reached without waiting on the lock.
+        let agent = self.link.get_mut().agent.clone();
+        let (adb, serial) = (self.adb.clone(), self.serial.clone());
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
                 let _ = adb.shell(&serial, &device::restore_script()).await;
@@ -786,7 +835,7 @@ impl Driver for AndroidDriver {
         self.tap_at(p).await?;
         // Tap verification (as Maestro does): a tap that changed nothing on screen was most
         // likely swallowed by an animation or a re-layout; retry it once.
-        let idle = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": 800 })).await;
+        let idle = self.agent().await.call("idle", json!({ "quietMs": 100, "timeoutMs": 800 })).await;
         let before = snap.render(None, usize::MAX);
         let after = match self.screen().await {
             Err(e @ (CoreError::AppCrashed(_) | CoreError::AppNotResponding(_))) => return Err(e),
@@ -828,7 +877,7 @@ impl Driver for AndroidDriver {
             }
         }
         self.acted();
-        self.agent.call("text", json!({ "text": text })).await?;
+        self.agent().await.call("text", json!({ "text": text })).await?;
         Ok(())
     }
 
@@ -851,18 +900,18 @@ impl Driver for AndroidDriver {
 
     async fn swipe(&self, from: Point, to: Point) -> Result<()> {
         self.acted();
-        self.agent.call("swipe", json!({ "x1": from.x, "y1": from.y, "x2": to.x, "y2": to.y, "ms": 300 })).await?;
+        self.agent().await.call("swipe", json!({ "x1": from.x, "y1": from.y, "x2": to.x, "y2": to.y, "ms": 300 })).await?;
         Ok(())
     }
 
     async fn back(&self) -> Result<()> {
         self.acted();
-        self.agent.call("key", json!({ "code": 4 })).await?;
+        self.agent().await.call("key", json!({ "code": 4 })).await?;
         Ok(())
     }
 
     async fn screenshot(&self) -> Result<Vec<u8>> {
-        let v = self.agent.call("screenshot", json!({ "quality": 80 })).await?;
+        let v = self.agent().await.call("screenshot", json!({ "quality": 80 })).await?;
         base64::engine::general_purpose::STANDARD
             .decode(s(&v, "jpeg"))
             .map_err(|e| CoreError::Driver(format!("screenshot decode: {e}")))
@@ -874,7 +923,7 @@ impl Driver for AndroidDriver {
             return Ok(());
         }
         let cap = timeout.min(Duration::from_millis(1500)).as_millis() as u64;
-        let v = self.agent.call("idle", json!({ "quietMs": 100, "timeoutMs": cap })).await?;
+        let v = self.agent().await.call("idle", json!({ "quietMs": 100, "timeoutMs": cap })).await?;
         if v["idle"].as_bool() == Some(true) {
             Ok(())
         } else {
@@ -893,7 +942,7 @@ impl Driver for AndroidDriver {
     /// Set-of-Mark drawn on the device (android): boxes and refs in screen coordinates.
     async fn screenshot_annotated(&self, marks: &[(String, Rect)]) -> Result<Vec<u8>> {
         let list: Vec<Value> = marks.iter().map(|(r, b)| json!({ "r": r, "x": b.x, "y": b.y, "w": b.w, "h": b.h })).collect();
-        let v = self.agent.call("screenshot", json!({ "quality": 80, "marks": list })).await?;
+        let v = self.agent().await.call("screenshot", json!({ "quality": 80, "marks": list })).await?;
         if v["marked"].as_u64() != Some(marks.len() as u64) {
             return Err(CoreError::Driver(format!("agent drew {} of {} marks (rebuild the agent)", v["marked"], marks.len())));
         }
@@ -912,7 +961,8 @@ impl Driver for AndroidDriver {
             return Ok(());
         }
         let restored = self.adb.shell(&self.serial, &device::restore_script()).await;
-        let _ = self.agent.call("quit", json!({})).await;
+        let agent = self.link.lock().await.agent.clone();
+        let _ = agent.call("quit", json!({})).await;
         restored.map(|_| ()).map_err(Into::into)
     }
 
@@ -1036,7 +1086,7 @@ impl Driver for AndroidDriver {
         };
         self.acted();
         // A swipe that does not move is a press held for `ms`.
-        self.agent.call("swipe", json!({ "x1": p.x, "y1": p.y, "x2": p.x, "y2": p.y, "ms": 800 })).await?;
+        self.agent().await.call("swipe", json!({ "x1": p.x, "y1": p.y, "x2": p.x, "y2": p.y, "ms": 800 })).await?;
         Ok(())
     }
 
@@ -1062,7 +1112,7 @@ impl Driver for AndroidDriver {
             None => 0,
         };
         self.acted();
-        self.agent.call("text", json!({ "text": text.chars().take(keep).collect::<String>() })).await?;
+        self.agent().await.call("text", json!({ "text": text.chars().take(keep).collect::<String>() })).await?;
         Ok(())
     }
 
@@ -1102,7 +1152,7 @@ impl Driver for AndroidDriver {
     async fn press_key(&self, key: &str) -> Result<()> {
         self.acted();
         let code = keycode(key).ok_or_else(|| CoreError::Unsupported(format!("unknown key `{key}`")))?;
-        self.agent.call("key", json!({ "code": code })).await?;
+        self.agent().await.call("key", json!({ "code": code })).await?;
         Ok(())
     }
 
