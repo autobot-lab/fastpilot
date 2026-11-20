@@ -1865,9 +1865,14 @@ mod tests {
     /// FastTest (v0.2.0, Android API 35): the keyboard took 1.7–7.8 s to come up and every action
     /// had a fixed 5 s limit, so inputText timed out. The limit is now `action_timeout` (seconds),
     /// and inputText on a phone gets three times that for the keyboard.
-    #[tokio::test]
-    async fn input_text_waits_for_a_slow_keyboard() {
+    #[test]
+    fn input_text_waits_for_a_slow_keyboard() {
         let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+        rt.block_on(slow_keyboard_cases());
+    }
+
+    async fn slow_keyboard_cases() {
         // SAFETY: test-only env mutation, serialized by ENV_LOCK.
         unsafe { std::env::set_var("FASTPILOT_action_timeout()", "1") };
         let typing = Duration::from_millis(1500);
