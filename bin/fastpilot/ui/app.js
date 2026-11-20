@@ -1387,6 +1387,8 @@ function pageSchedules() {
 }
 
 // ---- router ----
+// Pages in their own files (history.js, …) register here: PAGES[name] = (sub) => …
+const PAGES = {};
 function render() {
   if (!S) return;
   const hash = location.hash || "#/live";
@@ -1411,6 +1413,8 @@ function render() {
   } else if (page === "device") {
     if (!doctorCache && !doctorBusy) loadDoctor(false);
     pageDevice();
+  } else if (PAGES[page]) {
+    PAGES[page](sub);
   } else {
     pageSettings(sub);
   }

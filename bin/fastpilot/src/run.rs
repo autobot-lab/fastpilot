@@ -158,6 +158,8 @@ pub struct CaseResult {
     /// Tool calls and their (redacted, clipped) results, for the reports.
     pub transcript: Vec<String>,
     pub report: Option<PathBuf>,
+    /// Reports of the attempts before the last one (retries), for History.
+    pub earlier_reports: Vec<PathBuf>,
     /// Devices of the last attempt.
     pub devices: Vec<String>,
 }
@@ -177,6 +179,7 @@ impl CaseResult {
             attempts: 0,
             transcript: Vec::new(),
             report: None,
+            earlier_reports: Vec::new(),
             devices: Vec::new(),
         }
     }
@@ -563,6 +566,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         attempts: 1,
         transcript,
         report,
+        earlier_reports: Vec::new(),
         devices: devices.iter().map(|d| d.id.clone()).collect(),
     }
 }
@@ -601,6 +605,7 @@ pub async fn run_with_retries(
         again.usage.output += result.usage.output;
         again.usage.cache_read += result.usage.cache_read;
         again.elapsed += result.elapsed;
+        again.earlier_reports = std::mem::take(&mut result.earlier_reports).into_iter().chain(result.report.take()).collect();
         result = again;
     }
     result.attempts = attempts;
@@ -724,10 +729,65 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
         std::fs::write(p, crate::report::html(results, elapsed))?;
         println!("html: {}", p.display());
     }
+    if let Err(e) = record_history(results, elapsed, opts) {
+        eprintln!("fastpilot: the run is not in History ({e})");
+    }
     if failed > 0 {
         return Err(format!("{failed} test(s) failed").into());
     }
     Ok(())
+}
+
+/// D7: this run in the project's History, with its test runs and an HTML report (the one asked
+/// for with `--html`, else one of its own).
+fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> std::io::Result<()> {
+    use fastpilot_memory::history::{History, Suite, now_ms};
+    let history = History::from_env();
+    let id = history.new_suite_id();
+    let not_run = |r: &&CaseResult| !r.passed && r.turns == 0 && r.class == Some(Class::Infra);
+    let title = fastpilot_core::config::var("FASTPILOT_RUN_TITLE").ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| match results {
+        [one] => one.case.title.clone(),
+        _ => {
+            let folder = results.first().and_then(|r| r.case.path.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            format!("{} tests in {folder}", results.len())
+        }
+    });
+    let mut platforms: Vec<String> = results.iter().flat_map(|r| r.case.platforms()).map(|p| p.to_string()).collect();
+    platforms.sort();
+    platforms.dedup();
+    let runs = results
+        .iter()
+        .flat_map(|r| r.earlier_reports.iter().chain(&r.report))
+        .filter_map(|p| p.parent()?.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    // A report fastpilot wrote (a schedule's) goes with the run when it is deleted; one the user
+    // asked for elsewhere stays.
+    let (report, report_owned) = match &opts.html {
+        Some(p) => {
+            let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            let schedules = std::fs::canonicalize(crate::schedule::reports_dir()).ok();
+            (abs.clone(), schedules.is_some_and(|d| abs.starts_with(d)))
+        }
+        None => {
+            let p = history.suite_report_path(&id);
+            std::fs::write(&p, crate::report::html(results, elapsed))?;
+            (std::fs::canonicalize(&p).unwrap_or(p), true)
+        }
+    };
+    let finished = now_ms();
+    history.record_suite(&Suite {
+        id,
+        title,
+        platforms,
+        started_ms: finished.saturating_sub(elapsed.as_millis() as u64),
+        finished_ms: finished,
+        passed: results.iter().filter(|r| r.passed).count() as u32,
+        failed: results.iter().filter(|r| !r.passed && !not_run(r)).count() as u32,
+        not_run: results.iter().filter(not_run).count() as u32,
+        runs,
+        report: Some(report.to_string_lossy().into_owned()),
+        report_owned,
+    })
 }
 
 #[cfg(test)]

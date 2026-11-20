@@ -51,6 +51,9 @@ fn start_ui_with(home: &Path, env: &[(&str, &str)]) -> Ui {
 
 fn start_ui_in(home: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ui {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    // Project files (History keeps the conversations, D7) stay in the temp folder, never in the
+    // working directory of `cargo test`.
+    cmd.env("FASTPILOT_DIR", home.join("project-fastpilot"));
     cmd.envs(env.iter().copied());
     let mut child = cmd
         .args(["ui", "--no-open"])
