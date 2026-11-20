@@ -5,11 +5,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::{Error, Result, Selector};
 
-const INTERACTIVE: &[&str] = &[
+pub(crate) const INTERACTIVE: &[&str] = &[
     "button", "link", "textfield", "checkbox", "radio", "combobox", "listbox", "option",
     "menuitem", "tab", "switch", "slider", "spinbutton", "clickable",
 ];
-const EDITABLE: &[&str] = &["textfield", "combobox", "spinbutton"];
+pub(crate) const EDITABLE: &[&str] = &["textfield", "combobox", "spinbutton"];
 /// Non-interactive roles that survive pruning; every other role is a container and gets folded.
 const CONTENT: &[&str] = &["heading", "text", "image", "dialog", "alertdialog", "alert"];
 const MAX_NAME: usize = 80;

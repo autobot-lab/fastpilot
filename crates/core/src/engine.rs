@@ -726,6 +726,7 @@ fn will_block(step: &Step) -> Option<String> {
             Some("akan diblokir: domain di luar allowed_domains".into())
         }
         Step::EvalScript(_) if flag_off("allow_eval_script") => Some("akan diblokir: evalScript dimatikan (allow_eval_script)".into()),
+        Step::EvalScript(_) if !crate::policy::blocked_words().is_empty() => Some("akan diblokir: evalScript tidak boleh selama block_actions aktif".into()),
         Step::ClearState(_) | Step::ClearKeychain if flag_off("allow_app_reset") => Some("akan diblokir: hapus data app dimatikan (allow_app_reset)".into()),
         Step::InstallApp(_) | Step::UninstallApp(_) if flag_off("allow_app_install") => {
             Some("akan diblokir: install/uninstall app dimatikan (allow_app_install)".into())
@@ -823,6 +824,58 @@ async fn point_on_screen(d: &dyn Driver, sel: &Selector) -> Result<(Selector, Op
     Ok((Selector::Point(on_screen), hit))
 }
 
+/// Enter (and Space on a button) acts like a tap: on the focused button, or, from a form field, on
+/// whichever button submits the form, which the snapshot cannot tell. So with the focus in a field
+/// (or unknown), a key that may submit is refused while any button on screen is blocked
+/// (block_actions) or risky (confirm_actions, unless confirmed). No snapshot while a rule is on:
+/// refused (fail closed). Other keys are not checked.
+async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String], blocked: &[String]) -> Result<()> {
+    let submits = matches!(key.to_ascii_lowercase().as_str(), "enter" | "return" | "space" | " ");
+    if !submits || ((confirmed || words.is_empty()) && blocked.is_empty()) {
+        return Ok(());
+    }
+    let snap = d.snapshot().await.map_err(|_| {
+        Error::Blocked(format!(
+            "pressKey {key}: cannot tell what it would press (no snapshot) while block_actions / confirm_actions are on; tap the button by text or ref"
+        ))
+    })?;
+    let focused = snap.entries.iter().find(|e| e.node.focused);
+    let on_button = focused.is_some_and(|e| !crate::snapshot::EDITABLE.contains(&e.node.role.as_str()));
+    let candidates: Vec<&str> = match focused {
+        Some(e) if on_button => vec![e.node.name.as_str()],
+        _ => snap.entries.iter().filter(|e| crate::snapshot::INTERACTIVE.contains(&e.node.role.as_str())).map(|e| e.node.name.as_str()).collect(),
+    };
+    let what = if on_button { "presses" } else { "may submit the form to" };
+    for name in &candidates {
+        if let Some(w) = crate::policy::block_match(name, blocked) {
+            return Err(Error::Blocked(format!(
+                "pressKey {key} {what} \"{name}\", which is always blocked: its text contains \"{w}\" (block_actions); `confirm: true` does not lift it"
+            )));
+        }
+    }
+    if confirmed {
+        return Ok(());
+    }
+    for name in &candidates {
+        if let Some(w) = crate::policy::risky_match(name, words) {
+            return Err(Error::Blocked(format!(
+                "pressKey {key} {what} \"{name}\", a risky action (\"{w}\", confirm_actions): if it is intended, write the step with `confirm: true`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A script can click anything, which block_actions cannot see: no evalScript while it is set.
+fn guard_script(blocked: &[String]) -> Result<()> {
+    if blocked.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Blocked(
+        "evalScript is turned off while block_actions is set (a script could press a blocked button); only the user can change it in fastpilot settings".into(),
+    ))
+}
+
 /// The `allow_*` permissions and `upload_dirs` (settings, pinned at start like every guard rail).
 fn permitted(d: &dyn Driver, step: &Step) -> Result<()> {
     let refuse = |what: &str, key: &str| Err(Error::Blocked(format!("{what} is turned off ({key} = false); only the user can change it in fastpilot settings")));
@@ -891,7 +944,10 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                     }
                 }
             }
-            Step::PressKey(k) => d.press_key(k).await?,
+            Step::PressKey(k) => {
+                guard_key(d, k, confirmed, &crate::policy::risky_words(), &crate::policy::blocked_words()).await?;
+                d.press_key(k).await?
+            }
             Step::SelectOption { from, option } => retry(ACTION_TIMEOUT, || d.select_option(from, option)).await?,
             Step::UploadFile { into, files } => retry(ACTION_TIMEOUT, || d.upload(into, files)).await?,
             Step::LaunchApp { app, launch } => {
@@ -916,6 +972,7 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
             }
             Step::Swipe { from, to } => d.swipe(*from, *to).await?,
             Step::EvalScript(js) => {
+                guard_script(&crate::policy::blocked_words())?;
                 let v = d.eval_script(&subst(js)?).await?;
                 return Ok(Some(clip(v.to_string())));
             }
@@ -1653,6 +1710,98 @@ mod tests {
         // Other selectors pass through.
         let (same, hit) = point_on_screen(&page, &Selector::Text("Batal".into())).await.expect("text");
         assert!(same == Selector::Text("Batal".into()) && hit.is_none());
+    }
+
+    /// A screen of `nodes` (snapshot fails when `None`); records the keys pressed and scripts run.
+    struct KeyPage {
+        nodes: Option<Vec<Node>>,
+        refs: Mutex<RefRegistry>,
+        done: Mutex<Vec<String>>,
+    }
+
+    impl KeyPage {
+        fn new(nodes: Option<Vec<Node>>) -> Self {
+            Self { nodes, refs: Mutex::default(), done: Mutex::default() }
+        }
+    }
+
+    #[async_trait]
+    impl Driver for KeyPage {
+        async fn open(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn snapshot(&self) -> Result<Snapshot> {
+            let nodes = self.nodes.clone().ok_or_else(|| Error::Driver("snapshot failed".into()))?;
+            let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
+            Ok(Snapshot::build("Form", "fake://", nodes, &mut refs))
+        }
+        async fn tap(&self, _: &Selector) -> Result<()> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &Selector, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn press_key(&self, key: &str) -> Result<()> {
+            self.done.lock().unwrap_or_else(|p| p.into_inner()).push(format!("key {key}"));
+            Ok(())
+        }
+        async fn scroll(&self, _: Direction, _: Option<&Selector>) -> Result<()> {
+            Ok(())
+        }
+        async fn swipe(&self, _: Point, _: Point) -> Result<()> {
+            Ok(())
+        }
+        async fn back(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn wait_idle(&self, _: Duration) -> Result<()> {
+            Ok(())
+        }
+        async fn eval_script(&self, js: &str) -> Result<Value> {
+            self.done.lock().unwrap_or_else(|p| p.into_inner()).push(format!("eval {js}"));
+            Ok(Value::Null)
+        }
+    }
+
+    /// Security Low #5 / P2 1c: Enter in a form field submits it like a tap on its button, and a
+    /// script can click anything: block_actions (and confirm_actions for keys) apply to both.
+    #[tokio::test]
+    async fn enter_and_scripts_obey_block_actions() {
+        let bayar = ["bayar".to_owned()];
+        let focused = |n: Node| Node { focused: true, ..n };
+        let form = |field: Node| vec![field, node("button", "Bayar sekarang"), node("button", "Batal")];
+        // Enter in a field of a form with a blocked button: refused, also with confirm.
+        let page = KeyPage::new(Some(form(focused(node("textfield", "Nomor kartu")))));
+        for confirmed in [false, true] {
+            let e = guard_key(&page, "Enter", confirmed, &[], &bayar).await.expect_err("Enter may submit to Bayar");
+            assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+        }
+        // Enter / Space on the blocked button itself.
+        let on_button = KeyPage::new(Some(vec![focused(node("button", "Bayar sekarang"))]));
+        assert!(guard_key(&on_button, "Enter", true, &[], &bayar).await.is_err());
+        assert!(guard_key(&on_button, "space", true, &[], &bayar).await.is_err());
+        // confirm_actions: lifted by confirm.
+        assert!(guard_key(&page, "Enter", false, &bayar, &[]).await.is_err());
+        assert!(guard_key(&page, "Enter", true, &bayar, &[]).await.is_ok());
+        // Focus on an allowed button: Enter is that button.
+        let on_batal = KeyPage::new(Some(form(focused(node("button", "Batal")))));
+        assert!(guard_key(&on_batal, "Enter", false, &bayar, &bayar).await.is_ok());
+        // No blocked button on screen, other keys, or no rules: allowed.
+        let search = KeyPage::new(Some(vec![focused(node("textfield", "Cari")), node("button", "Cari")]));
+        assert!(guard_key(&search, "Enter", false, &bayar, &bayar).await.is_ok());
+        assert!(guard_key(&page, "Tab", false, &bayar, &bayar).await.is_ok());
+        assert!(guard_key(&page, "Enter", false, &[], &[]).await.is_ok());
+        // No snapshot while a rule is on: refused (fail closed).
+        let blind = KeyPage::new(None);
+        assert!(guard_key(&blind, "Enter", false, &[], &bayar).await.is_err());
+        // evalScript: refused while block_actions is set, allowed otherwise.
+        let e = guard_script(&bayar).expect_err("script while block_actions");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("evalScript") && m.contains("block_actions")), "{e}");
+        assert!(guard_script(&[]).is_ok());
+        assert!(page.done.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "guards never press or run anything");
     }
 
     struct FakeLauncher;
