@@ -606,6 +606,9 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   config, log, laporan, atau argumen proses. `provider` dan `provider_base_url` hanya bisa diubah user (agent
   tidak bisa mengalihkan data test ke server lain). `http://` hanya untuk mesin ini (mis. Ollama); server lain
   wajib `https://`. Kembali ke Claude Code: `fastpilot config unset provider`.
+
+  Sama lewat halaman: `fastpilot ui` › Atur › Model AI › *penggerak test* (penyedia, Base URL, model,
+  API key, **Tes koneksi**). Key dikirim sekali ke penyimpan kunci dan tidak pernah ditampilkan lagi.
 - Exit code ≠ 0 bila ada test di luar karantina yang gagal. Nilai `FASTPILOT_VARS` yang tertulis di
   test case dikirim ke model sebagai `${NAMA}`, tidak pernah sebagai nilainya.
 

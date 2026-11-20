@@ -164,6 +164,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/schedules", get(schedules_api).post(schedules_change))
         .route("/api/chat", get(chat_api).post(chat_send))
         .route("/api/chat/decide", post(chat_decide))
+        .route("/api/provider", get(provider_api).post(provider_change))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -282,6 +283,99 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         let (k, v) = kv.trim().split_once('=')?;
         (k == name).then(|| v.to_owned())
     })
+}
+
+// ---- Model AI: OpenAI-compatible provider (B2) --------------------------------------------
+
+/// The `provider` settings as the file has them now (this process pinned them at start), the
+/// presets, and whether a key is stored; never the key.
+async fn provider_api() -> Response {
+    let file = |k: &str| match config::current(k) {
+        Source::File(v) | Source::Env(v) => Some(v),
+        Source::Default => None,
+    };
+    let name = file("provider").unwrap_or_else(|| "claude".into());
+    let presets: Vec<Value> = config::PROVIDERS.iter().map(|(p, url)| json!({ "name": p, "base_url": url })).collect();
+    let env = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
+    let key = (name != "claude").then(|| json!({ "has": crate::keystore::has(&name), "where": crate::keystore::backend().describe() }));
+    axum::Json(json!({
+        "provider": name,
+        "base_url": file("provider_base_url"),
+        "model": file("provider_model"),
+        "presets": presets,
+        "key": key,
+        "env": { "provider": env("FASTPILOT_PROVIDER") || env("FASTPILOT_PROVIDER_BASE_URL") || env("FASTPILOT_PROVIDER_MODEL"), "key": env("FASTPILOT_PROVIDER_API_KEY") },
+    }))
+    .into_response()
+}
+
+/// `{action: save, provider, base_url, model, key?}`, `{action: delete-key}`, `{action: test}`.
+/// The key arrives only in this POST body and is handed to the key store, never echoed.
+async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
+    let text = |k: &str| body[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+    let current = || match config::current("provider") {
+        Source::File(v) | Source::Env(v) => v,
+        Source::Default => "claude".into(),
+    };
+    let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        "save" => (|| {
+            if let Err(e) = config::check() {
+                return Err(format!("file pengaturan rusak, perbaiki dulu: {e}"));
+            }
+            for k in ["FASTPILOT_PROVIDER", "FASTPILOT_PROVIDER_BASE_URL", "FASTPILOT_PROVIDER_MODEL"] {
+                if std::env::var(k).is_ok_and(|v| !v.is_empty()) {
+                    return Err(format!("{k} diatur lewat environment, yang menang atas file pengaturan: ubah di sana"));
+                }
+            }
+            let name = text("provider").unwrap_or_else(|| "claude".into());
+            let preset = config::PROVIDERS.iter().find(|(p, _)| *p == name).ok_or("penyedia tidak dikenal")?;
+            if name == "claude" {
+                for k in ["provider", "provider_base_url", "provider_model"] {
+                    config::write(k, None)?;
+                }
+                return Ok(json!({ "message": "Test dijalankan oleh Claude Code lagi." }));
+            }
+            let (url, model) = (text("base_url"), text("model"));
+            if url.is_none() && preset.1.is_none() {
+                return Err("isi Base URL untuk penyedia custom".into());
+            }
+            let model = model.ok_or("isi id model, mis. gpt-4.1-mini atau llama3.1")?;
+            // Values are checked by the settings themselves (https, no credentials, model id).
+            config::write("provider_base_url", url.as_deref())?;
+            config::write("provider_model", Some(&model))?;
+            config::write("provider", Some(&name))?;
+            let mut message = format!("Tersimpan: {name} · {model}.");
+            if let Some(key) = text("key") {
+                let place = crate::keystore::set(&name, &key)?;
+                message.push_str(&format!(" API key disimpan di {place}."));
+            }
+            Ok(json!({ "message": message }))
+        })(),
+        "delete-key" => {
+            let name = current();
+            crate::keystore::delete(&name).map(|()| json!({ "message": format!("API key {name} dihapus.") }))
+        }
+        // A new process: it reads the settings as saved now (this one pinned them at start).
+        "test" => match std::env::current_exe() {
+            Ok(exe) => {
+                let out = tokio::process::Command::new(exe).args(["config", "test-provider"]).stdin(std::process::Stdio::null()).kill_on_drop(true).output();
+                match tokio::time::timeout(std::time::Duration::from_secs(90), out).await {
+                    Ok(Ok(o)) => {
+                        let said = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_owned();
+                        if o.status.success() { Ok(json!({ "message": said })) } else { Err(said) }
+                    }
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("penyedia tidak menjawab dalam 90 detik".into()),
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        _ => Err("perintah tidak dikenal".into()),
+    };
+    match result {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
 }
 
 // ---- Chat (C4) ----------------------------------------------------------------------------
@@ -469,6 +563,7 @@ const ICONS: &[(&str, &str)] = &[
     ("mark", include_str!("../ui/icons/mark.svg")),
     ("model", include_str!("../ui/icons/model.svg")),
     ("play", include_str!("../ui/icons/play.svg")),
+    ("plug", include_str!("../ui/icons/plug.svg")),
     ("plus", include_str!("../ui/icons/plus.svg")),
     ("refresh", include_str!("../ui/icons/refresh.svg")),
     ("risk", include_str!("../ui/icons/risk.svg")),
