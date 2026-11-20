@@ -1852,6 +1852,29 @@ mod tests {
     }
 
     /// Security tests 1, 2, 4, 9: a looser limit becomes a card only from the user's own words this
+    /// Security D9 findings 1-2 and D10a finding 1: no card can drop the built-in list or add an
+    /// allow word, even when the user's message seems to ask for it.
+    #[test]
+    fn no_card_drops_the_built_in_list_or_allows_pay_through_a_word() {
+        let cfg = Cfg::new("no-default");
+        for (changes, user) in [
+            (json!([{ "setting": "block_actions", "remove": ["default"] }]), "remove the default block list"),
+            (json!([{ "setting": "block_actions", "add": ["!pay"] }]), "add !pay to the blocked words, allow it"),
+            (json!([{ "setting": "block_actions", "add": ["refund,!pay"] }]), "block refund and allow pay"),
+        ] {
+            // At most a card that says it cannot be done here; never one that can apply it.
+            let (_, cards, _) = proposals_in(&settings(changes.clone()), &mut turn(user));
+            assert!(cards.iter().all(|c| c.status == "refused" && c.setting.is_none()), "{changes}: {cards:?}");
+        }
+        // An agent card that would block "!pay" or "default" is not made either.
+        for word in ["!pay", "default", "x,!pay"] {
+            let text = format!("Here:\n```fastpilot-proposal\n{}\n```", json!({ "kind": "agent", "name": "Shop", "job": "Check the shop", "devices": ["web"], "blocked": [word] }));
+            let (_, cards, _) = proposals_in(&text, &mut turn("make an agent for the shop"));
+            assert!(cards.iter().all(|c| c.kind != "agent" || c.status == "refused"), "{word}: {cards:?}");
+        }
+        assert!(cfg.text().is_empty(), "nothing written");
+    }
+
     /// turn, one change per card, capped; some settings never.
     #[test]
     fn loosening_needs_the_users_own_words() {
