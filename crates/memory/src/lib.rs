@@ -178,6 +178,36 @@ impl Memory {
         self.save_quarantine(&q)
     }
 
+    /// D6: every test with something remembered (`memory/<id>.json`), by id.
+    pub fn remembered(&self) -> Vec<PathMemory> {
+        let Ok(rd) = fs::read_dir(self.root.join("memory")) else { return vec![] };
+        let mut out: Vec<PathMemory> = rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| serde_json::from_str::<PathMemory>(&fs::read_to_string(e.path()).ok()?).ok())
+            .filter(|m| check_id(&m.test_id).is_ok())
+            .collect();
+        out.sort_by(|a, b| a.test_id.cmp(&b.test_id));
+        out
+    }
+
+    /// D6 "Forget": drop what is remembered for a test (its path hint and statistics). The test
+    /// file is not touched; the next run works the steps out again. `false`: nothing was there.
+    pub fn forget(&self, test_id: &str) -> Result<bool> {
+        check_id(test_id)?;
+        let path = self.memory_path(test_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io(&path)(e)),
+        }
+    }
+
+    /// The `.fastpilot` folder (or `FASTPILOT_DIR`) this memory lives in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn load(&self, test_id: &str) -> Option<PathMemory> {
         if self.mode == Mode::Off || check_id(test_id).is_err() {
             return None;
@@ -676,6 +706,28 @@ fn utc_stamp(secs: u64, compact: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D6: the Memory page lists what is remembered and "Forget" drops one test's memory only.
+    #[test]
+    fn remembered_tests_can_be_forgotten_one_by_one() {
+        let dir = std::env::temp_dir().join(format!("fastpilot-mem-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mem = Memory::new(&dir, Mode::ReadWrite);
+        std::fs::create_dir_all(dir.join("memory")).expect("dir");
+        for id in ["login", "cart"] {
+            let m = PathMemory { test_id: id.into(), flow: "- tapOn: Masuk\n".into(), pass_count: 1, ..PathMemory::default() };
+            std::fs::write(dir.join(format!("memory/{id}.json")), serde_json::to_string(&m).expect("json")).expect("write");
+        }
+        std::fs::write(dir.join("memory/broken.json"), "not json").expect("write");
+        let ids: Vec<String> = mem.remembered().into_iter().map(|m| m.test_id).collect();
+        assert_eq!(ids, ["cart", "login"]);
+        assert!(mem.forget("cart").expect("forget"));
+        assert!(!mem.forget("cart").expect("again"), "nothing left to forget");
+        assert!(mem.forget("../login").is_err(), "an id, never a path");
+        assert_eq!(mem.remembered().len(), 1);
+        assert!(mem.load("login").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn formats_utc() {
