@@ -596,24 +596,69 @@ fastpilot fill @e2 a@b.com
 fastpilot fill "Password" '${DEMO_PASS}'
 fastpilot click @e5
 fastpilot wait Budi && fastpilot get title
-fastpilot screenshot hasil.jpg --annotate
+fastpilot screenshot result.jpg --annotate
 fastpilot close
 ```
 
-- Selectors: `@e7` (a ref from a snapshot), `"Masuk"` (text), `#email` (id), `role=button:Masuk`, `120,340` (a point).
+- Selectors: `@e7` (a ref from a snapshot), `"Sign in"` (text), `#email` (id), `role=button:Sign in`, `120,340` (a point).
 - Commands: `open`, `attach`, `close [--all]`, `sessions`, `devices`, `snapshot [-i] [--json] [--full]
   [--coords] [--filter T]`, `click`/`tap`, `dblclick`, `longpress`, `fill`, `type`, `clear`, `press`,
   `select`, `check`/`uncheck`, `upload`, `scroll`, `scrollto`, `swipe`, `back`, `forward`, `reload`,
   `wait <ms|sel> [--gone]`, `wait --url`, `assert`, `is visible|enabled`, `get text|url|title`, `eval`,
   `screenshot`, `record start|stop`, `set viewport|locale|geo|network|permission`, `launch`, `stop-app`,
   `clear-state`, `hide-keyboard`, `flow <file|->`, `check-flow`, `state save|load|list|delete`,
-  `diff screenshot <name> [--update] [--ignore sel]`, `errors`,
+  `diff screenshot <name> [--update] [--ignore sel]`, `errors`, `ship-check [url]... [--links N]`,
   `docs`, `daemon status|stop`.
   `fastpilot help` shows them all.
 - Web, Android and iOS work the same way: `fastpilot open com.app/.MainActivity --platform android`.
-- Several sessions at once: `--session NAMA` (or `FASTPILOT_SESSION`); `--json` for raw output.
+- Several sessions at once: `--session NAME` (or `FASTPILOT_SESSION`); `--json` for raw output.
 - Exit code ≠ 0 if a step fails; the output is the reason, the candidates, and the current screen, the same as MCP.
 - macOS and Linux (Unix socket). Secrets in `FASTPILOT_VARS` are still masked as `***`.
+
+## Ship check: one verdict for the pages before a release
+
+```bash
+fastpilot ship-check https://staging.shop.example https://staging.shop.example/cart
+```
+
+For each page, fastpilot opens it in Chrome and checks five things:
+
+- **Console errors**: exceptions and `console.error`. An uncaught error means the page's own script crashed.
+- **Failed requests**: HTTP errors, requests that did not finish, and the page's own status.
+- **Broken links**: up to 20 links to the same site (`--links N`, 0 for none), asked with `HEAD`.
+  - Redirects are not followed.
+  - Links to other sites are counted, not opened.
+  - Links whose text or address names a risky action are never requested: the block and confirm
+    lists, sign out, delete, unsubscribe.
+- **Layout at 3 sizes**: phone 390, tablet 768 and desktop 1280 px. It looks for content wider than the
+  screen, or a page without a mobile viewport. The size is put back afterwards.
+- **Accessibility basics**: page language and title, images without `alt`, fields, buttons and links
+  without a name, and repeated ids.
+
+It never clicks, types or submits.
+
+The verdict follows the `release-check` skill:
+
+| Verdict | When |
+|---|---|
+| DO NOT SHIP | The page did not load, or its own script crashed |
+| SHIP WITH FIXES | Only other problems |
+| INCONCLUSIVE | A check could not run, or was not asked |
+| SHIP | Nothing missing and nothing wrong |
+
+Missing evidence is never a pass. The report always names what was not checked: colour contrast,
+keyboard use, the look of pages, anything behind sign-in. It also names the regression and the main
+journeys, which this command does not run.
+
+Exit codes: 0 for SHIP or SHIP WITH FIXES, 1 for DO NOT SHIP, 2 for INCONCLUSIVE.
+
+In a test or from an AI, the same check is the `shipCheck` step: `- shipCheck` or `- shipCheck: { links: 5 }`.
+
+In the dashboard, ask the Chat bot "Can we release?". It runs the regression, the main journeys and
+`shipCheck`, then shows a **release verdict card**. The card has the verdict, why, the evidence with
+checked / problem / could not run / not checked, what to fix, and an always-visible "Not checked" box.
+A bug report it writes shows as a **preview card**: it is not sent anywhere, and you can copy it as
+text or Markdown.
 
 ## Without opening Claude Code: `fastpilot run`
 

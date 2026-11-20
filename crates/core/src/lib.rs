@@ -12,6 +12,7 @@ mod error;
 mod recording;
 mod selector;
 pub mod policy;
+pub mod ship;
 mod snapshot;
 pub mod state;
 pub mod visual;

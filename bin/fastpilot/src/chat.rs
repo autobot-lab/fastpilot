@@ -94,6 +94,12 @@ pub struct Msg {
     /// "A page tried to change a limit", `{what, said}` with `said` as untrusted plain text.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub page_attempts: Vec<Value>,
+    /// S8: a release verdict the bot wrote, read by fastpilot into the card's fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Value>,
+    /// S8: a bug report the bot wrote, shown as a preview that is not sent anywhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bug: Option<Value>,
     pub done: bool,
 }
 
@@ -192,8 +198,8 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
         }
         c.next += 2;
         let (u, b) = (c.next - 1, c.next);
-        c.msgs.push(Msg { id: u, role: "user", text: text.to_owned(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], done: true });
-        c.msgs.push(Msg { id: b, role: "bot", text: String::new(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], done: false });
+        c.msgs.push(Msg { id: u, role: "user", text: text.to_owned(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, done: true });
+        c.msgs.push(Msg { id: b, role: "bot", text: String::new(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, done: false });
         (b, c.session.clone())
     };
     let text = text.to_owned();
@@ -221,6 +227,15 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             t.read_app = !m.tools.is_empty();
             let (clean, proposals, attempts) = proposals_in(&m.text, &mut t);
             m.text = clean.trim().to_owned();
+            // S8: the release verdict and a bug report as cards, built from their fields.
+            if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
+                m.verdict = Some(card);
+                m.text = rest.trim().to_owned();
+            }
+            if let Some((card, rest)) = crate::report_cards::bug(&m.text) {
+                m.bug = Some(card);
+                m.text = rest.trim().to_owned();
+            }
             m.proposals = proposals;
             m.page_attempts = attempts;
             m.error = error.or(m.error.take());
@@ -1887,7 +1902,7 @@ mod tests {
         let mut c = chat_of("default");
         *c = Chat::default();
         c.session = Some("old-session".into());
-        c.msgs.push(Msg { id: 1, role: "bot", text: String::new(), tools: vec![], proposals: cards, error: None, page_attempts: vec![], done: true });
+        c.msgs.push(Msg { id: 1, role: "bot", text: String::new(), tools: vec![], proposals: cards, error: None, page_attempts: vec![], verdict: None, bug: None, done: true });
     }
 
     /// Security tests 3 and 5: the server checks everything the card showed; allowing starts a new

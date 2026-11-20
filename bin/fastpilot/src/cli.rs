@@ -21,7 +21,7 @@ pub const COMMANDS: &[&str] = &[
     "open", "attach", "close", "sessions", "devices", "snapshot", "click", "tap", "dblclick", "longpress", "fill", "type", "clear",
     "press", "select", "check", "uncheck", "upload", "scroll", "scrollto", "swipe", "back", "forward", "reload", "wait", "assert",
     "is", "get", "eval", "screenshot", "record", "set", "launch", "stop-app", "clear-state", "hide-keyboard", "flow", "check-flow",
-    "errors", "docs", "daemon", "help", "state", "diff",
+    "errors", "docs", "daemon", "help", "state", "diff", "ship-check",
 ];
 
 const HELP: &str = "fastpilot shell commands (sessions stay open in a background daemon between commands)
@@ -59,10 +59,13 @@ const HELP: &str = "fastpilot shell commands (sessions stay open in a background
   diff screenshot <name> [--update] [--threshold 0.1] [--max-diff 0.002] [--ignore sel]...
                                compare with the stored baseline (stored on first use)
   errors                       recent console errors, failed requests, crashes
+  ship-check [url]... [--links N]   one verdict for the pages: console errors, failed requests,
+                               broken links, layout at 3 sizes, accessibility basics (exit 0: SHIP
+                               or SHIP WITH FIXES, 1: DO NOT SHIP, 2: INCONCLUSIVE)
   docs [dsl|selectors|errors|...]
   daemon <status|stop>
 
-selectors: @e7 (ref from snapshot), \"Masuk\" (text), #email (id), role=button:Masuk, 120,340 (point)
+selectors: @e7 (ref from snapshot), \"Sign in\" (text), #email (id), role=button:Sign in, 120,340 (point)
 options: --session NAME (default: $FASTPILOT_SESSION or default), --json (raw tool output),
          --headed (show the browser; applies when the daemon starts)
 env: FASTPILOT_VARS / ${NAME} values are read by the daemon when it starts; restart it after changing them.
@@ -375,6 +378,81 @@ fn flow_source(arg: &str) -> Res<String> {
     Ok(arg.to_owned())
 }
 
+/// R2: `fastpilot ship-check [url]...`: the Ship check of each page (the open one without urls),
+/// then one verdict for all of them, in the S8 terminal layout. The verdict covers these pages;
+/// the regression and the main journeys are named as not checked here.
+fn ship_check(ctx: &Ctx, urls: &[String], links: Option<&str>) -> Res<()> {
+    let links = match links {
+        Some(n) => n.parse::<usize>().map_err(|_| "--links needs a number (0: do not ask links)")?,
+        None => 20,
+    };
+    let step = if links == 20 { "- shipCheck\n".to_owned() } else { format!("- shipCheck: {{ links: {links} }}\n") };
+    let urls: Vec<String> = urls.iter().map(|u| abs_if_file(u)).collect();
+    if urls.is_empty() && !ctx.has_session()? {
+        return Err("give the pages to check: fastpilot ship-check https://staging.example.com [more pages], or `fastpilot open <url>` first".into());
+    }
+    let mut reports = Vec::new();
+    let pages: Vec<Option<&String>> = if urls.is_empty() { vec![None] } else { urls.iter().map(Some).collect() };
+    for url in pages {
+        if let Some(u) = url
+            && !ctx.has_session()?
+        {
+            let v = ctx.tool("session", json!({ "action": "start", "id": ctx.session, "platform": "web", "target": u }))?;
+            if v["ok"] == false {
+                return finish(ctx, &v);
+            }
+        }
+        let flow = match url {
+            Some(u) => format!("- openUrl: {}\n- waitForAnimationToEnd\n{step}", q(u)),
+            None => step.clone(),
+        };
+        let v = ctx.flow(&flow, false)?;
+        if ctx.json {
+            println!("{v}");
+        }
+        let text = text_of(&v);
+        let Some(report) = ship_report(&text) else {
+            if !ctx.json {
+                println!("{text}");
+            }
+            reports.push((url.cloned().unwrap_or_default(), "INCONCLUSIVE".to_owned()));
+            continue;
+        };
+        if !ctx.json {
+            println!("{report}\n");
+        }
+        let verdict = report.lines().find_map(|l| l.strip_prefix("Verdict: ")).unwrap_or("INCONCLUSIVE").to_owned();
+        reports.push((url.cloned().unwrap_or_default(), verdict));
+    }
+    const ORDER: [&str; 4] = ["DO NOT SHIP", "INCONCLUSIVE", "SHIP WITH FIXES", "SHIP"];
+    let worst = ORDER.iter().find(|w| reports.iter().any(|(_, v)| v == *w)).copied().unwrap_or("INCONCLUSIVE");
+    if !ctx.json {
+        if reports.len() > 1 {
+            println!("Verdict for the {} pages: {worst}", reports.len());
+        }
+        println!("Not checked here: the regression and the main journeys (run your tests, or ask the Chat bot for a release check).");
+        println!("This is a recommendation. You decide.");
+    }
+    std::process::exit(match worst {
+        "SHIP" | "SHIP WITH FIXES" => 0,
+        "DO NOT SHIP" => 1,
+        _ => 2,
+    });
+}
+
+/// The Ship check report inside a `run_flow` answer: from "Ship check ·" to its "Not checked:" line.
+fn ship_report(text: &str) -> Option<String> {
+    let at = text.find("Ship check · ")?;
+    let mut out = Vec::new();
+    for line in text[at..].lines() {
+        out.push(line);
+        if line.starts_with("Not checked:") {
+            break;
+        }
+    }
+    Some(out.join("\n"))
+}
+
 /// One shell command. `argv` starts at the command name.
 pub fn main(argv: &[String]) -> Res<()> {
     // Global options, anywhere on the line.
@@ -391,7 +469,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             "--json" => json = true,
             "--headed" | "--headful" => headed = true,
             "--ignore" => ignores.push(it.next().cloned().ok_or("--ignore needs a selector")?),
-            "--platform" | "--device" | "--timeout" | "--filter" | "--url" | "--threshold" | "--max-diff" => {
+            "--platform" | "--device" | "--timeout" | "--filter" | "--url" | "--threshold" | "--max-diff" | "--links" => {
                 let key = a.as_str();
                 opts.insert(key, it.next().cloned().ok_or_else(|| format!("{key} needs a value"))?);
             }
@@ -703,6 +781,7 @@ pub fn main(argv: &[String]) -> Res<()> {
             let v = ctx.tool("run_flow", json!({ "flow": src, "session": session, "stop_on_fail": !flag("--keep-going") }))?;
             finish(&ctx, &v)?;
         }
+        "ship-check" => return ship_check(&ctx, &args[1..], opts.get("--links").map(String::as_str)),
         "check-flow" => {
             let src = flow_source(arg(1, "a flow file, - or YAML")?)?;
             finish(&ctx, &ctx.tool("check_flow", json!({ "flow": src }))?)?;

@@ -120,6 +120,11 @@ if "watch the release" in low:
     text.append("Here is the release watch:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Shop release", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "minutes", "minutes": 10, "for_hours": 2, "notify": {"os": True}}) + "\n```")
+# S8: a release-check report and a bug report, as the skills write them.
+if "can we release" in low:
+    text.append("I ran the regression and a smoke check of the main journeys. Here is my recommendation.\n```\nRelease check — Shop staging 2.4 — 20 Nov 2026\nVerdict: SHIP WITH FIXES\nWhy: 2 minor problems, main journeys pass (sign in, search, cart → summary)\nEvidence: regression 14 tests (12 passed, 1 flaky, 1 blocked by limits); smoke 4/4; pages no crashes or error screens; visual not checked (no baseline)\nFix before or soon after release: Login with one-time code is unstable; Voucher field accepts a space as a code\nNot checked: payment (blocked by limits); iPhone (no simulator available)\n```")
+if "write a bug report" in low:
+    text.append("I ran the test once more with the same steps. It failed again, so I could reproduce it.\n```\nTitle: Total does not change after applying voucher SAVE10 (cart, web staging)\nSteps\n  1. Open the staging shop and add 1 product to the cart\n  2. Enter voucher SAVE10\n  3. Look at the order summary\nExpected: A \"10% off\" line and a lower total.\nActual: The page said \"Voucher not valid\". The total stayed $40.00.\nReproduced: yes, 2 of 2 runs  |  Environment: web Chrome, staging shop, version not known\nEvidence: screenshot at step 3\nImpact (estimate): people who use a voucher cannot get the discount; number of people not measured\n```")
 # D10c: a reply with the "Techniques used" block (choose-technique format).
 if "tickets page" in low:
     text.append("1 problem found. Everything else behaved as the rules say.\n```\nTechniques used\nBoundary value analysis (3-value) · Tickets\n  Tried: 0 refused ✓ · 1 accepted ✓ · 2 accepted ✓ · 9 accepted ✓ · 10 refused ✗ expected: accepted · 11 refused ✓\n  Coverage: 6 of 6 boundary values\n  Assumption: 10 is allowed (the page says \"1 to 10\")\n```")

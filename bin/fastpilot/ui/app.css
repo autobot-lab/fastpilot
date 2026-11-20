@@ -496,3 +496,27 @@ pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
 .q-rows li{grid-template-columns:minmax(0,1.6fr) minmax(0,.8fr) minmax(0,2fr)}
 .top .pill.warn{background:var(--warn-soft);color:#8a520a}
 .ag-st.queued{background:var(--warn-soft);color:#8a520a}
+
+/* S8 release verdict and bug report preview */
+.verdict,.bugcard{max-width:620px}
+.vbanner{display:flex;gap:12px;align-items:center;border-radius:var(--r-sm);padding:12px 14px;margin:8px 0}
+.vmark{font-size:22px;font-weight:700;width:28px;text-align:center}
+.vword{font-weight:800;font-size:20px;letter-spacing:.02em}
+.vwhy{font-size:13.5px}
+.verdict.ok .vbanner{background:#e3f5ea;color:#0f5a2a}
+.verdict.warn .vbanner{background:#f8ead6;color:#6f4207}
+.verdict.bad .vbanner{background:#fde8e8;color:#8e2323}
+.verdict.unknown .vbanner{background:#eceef2;color:#2f3744}
+.vrows{display:grid;gap:6px;margin:8px 0}
+.vrow{display:grid;grid-template-columns:150px 1fr auto;gap:8px;align-items:baseline;font-size:13.5px}
+.vname{font-weight:600}
+.vstate{font-size:12px;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.vstate.checked{background:#e3f5ea;color:#0f5a2a}
+.vstate.problem{background:#fde8e8;color:#8e2323}
+.vstate.could-not-run{background:#f8ead6;color:#6f4207}
+.vstate.not-checked{background:#fff;color:#2f3744;border:1px dashed #8a93a3}
+.vstate.blocked{background:#e5eefc;color:#1d4a8f}
+.vfix ol{margin:4px 0 0;padding-left:20px}
+.vmissing{border:1px dashed #8a93a3;border-radius:var(--r-sm);padding:8px 10px;margin:8px 0;font-size:13.5px}
+.bugcard dd ol{margin:0;padding-left:18px}
+@media (max-width:520px){.vrow{grid-template-columns:1fr auto}.vdetail{grid-column:1/-1;order:3}}

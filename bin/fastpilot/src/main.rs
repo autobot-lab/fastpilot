@@ -18,6 +18,7 @@ mod keystore;
 mod provider;
 mod pool;
 mod report;
+mod report_cards;
 mod run;
 mod schedule;
 mod skills_catalog;

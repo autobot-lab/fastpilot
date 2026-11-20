@@ -138,6 +138,7 @@ Step names are fastpilot's, not Playwright's or Cypress's. Use these, never `fil
 | check something is gone | `assertNotVisible: "Error"` |
 | press a key | `pressKey: Enter` |
 | choose from a list | `selectOption: { from: "Country", option: "Indonesia" }` |
+| check a page before a release (web) | `shipCheck` (console, requests, links, 3 sizes, accessibility; one verdict) |
 
 In a folder made by `fastpilot demo`, the demo pages are `demo/login.html` and so on.
 
