@@ -116,11 +116,19 @@ pub fn origin_for(site: &str) -> String {
     }
 }
 
+/// Only in debug builds (the tests): a release build never sends a typed token to a local port,
+/// whatever its environment says (Security, Low 8).
+#[cfg(debug_assertions)]
 fn test_base() -> Option<String> {
     let b = std::env::var("FASTPILOT_JIRA_TEST_BASE").ok()?;
     let b = b.trim_end_matches('/');
     let rest = b.strip_prefix("http://127.0.0.1:").or_else(|| b.strip_prefix("http://localhost:"))?;
     rest.parse::<u16>().ok().map(|_| b.to_owned())
+}
+
+#[cfg(not(debug_assertions))]
+fn test_base() -> Option<String> {
+    None
 }
 
 /// The API token in the OS key store (macOS Keychain, Linux secret service, else an owner-only
