@@ -139,7 +139,7 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: publish-npm
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -157,6 +157,23 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME}, server.json ${v_server} (package ${v_pkg}) and npm ${v_npm} do not agree; nothing was published"
             exit 1
           fi
+      - name: Wait until npm shows this version (up to 10 minutes)
+        shell: bash
+        run: |
+          # The registry reads mcpName from npm; npm can take minutes to show a new version.
+          VERSION="$(jq -r .version server.json)"
+          NAME="$(jq -r .name server.json)"
+          for try in $(seq 1 30); do
+            got="$(curl -fsS "https://registry.npmjs.org/fastpilot/${VERSION}" 2>/dev/null | jq -r '.mcpName // empty' 2>/dev/null || true)"
+            if [ "$got" = "$NAME" ]; then
+              echo "npm shows fastpilot ${VERSION} with mcpName ${NAME} (check ${try} of 30)."
+              exit 0
+            fi
+            echo "npm does not show fastpilot ${VERSION} with mcpName ${NAME} yet (check ${try} of 30); waiting 20 s."
+            sleep 20
+          done
+          echo "::error::npm still does not show fastpilot ${VERSION} with mcpName ${NAME} after 10 minutes, so the MCP Registry was not asked. npm and the GitHub Release are not affected. When 'npm view fastpilot@${VERSION} mcpName' prints ${NAME}, re-run this job (Re-run failed jobs)."
+          exit 1
       - name: mcp-publisher 1.8.11 (pinned by its SHA-256)
         shell: bash
         run: |
@@ -168,7 +185,7 @@ jobs:
         run: |
           ./mcp-publisher validate server.json
           ./mcp-publisher login github-oidc || { echo "::error::the MCP Registry refused the GitHub OIDC login for namespace io.github.autobot-lab. The exact message is above; npm and the GitHub Release are not affected."; exit 1; }
-          # The registry checks npm's mcpName right after npm published it: allow for npm's delay.
+          # npm already shows the version (step above); a short retry for the registry's own lookup.
           for try in 1 2 3; do
             if ./mcp-publisher publish server.json; then exit 0; fi
             [ "$try" -lt 3 ] && sleep 20
