@@ -375,8 +375,10 @@ fn context() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let tests: Vec<String> = crate::ui::test_files(&cwd.join("tests")).into_iter().map(|(p, title)| format!("{p} (\"{title}\")")).collect();
     let secrets: Vec<String> = project_secrets().into_iter().filter(|(_, has)| *has).map(|(n, _)| format!("${{{n}}}")).collect();
+    // QA (v0.4): with the demo password at hand, the demo account is said, never guessed or asked.
+    let demo = if secrets.iter().any(|s| s == "${DEMO_PASS}") { format!("\n{}", fastpilot_mcp::DEMO_ACCOUNT) } else { String::new() };
     format!(
-        "\n\nNow: project folder {}; test cases: {}.\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.\nLimits (settings):\n{}\nSchedules:\n{}",
+        "\n\nNow: project folder {}; test cases: {}.\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.{demo}\nLimits (settings):\n{}\nSchedules:\n{}",
         cwd.display(),
         if tests.is_empty() { "none in ./tests".to_owned() } else { tests.join(", ") },
         if secrets.is_empty() { "none saved yet (the user adds them in Settings › Secrets)".to_owned() } else { secrets.join(", ") },
@@ -1032,10 +1034,19 @@ fn setting_card(op: Result<(String, change::Op), String>, body: &str, t: &mut Tu
         change::Level::Ok => p.note = Some("Nothing changes until you decide. Used from the next run.".into()),
         change::Level::Loosen => {
             // M1: only the user's own words this turn can ask for a looser limit.
-            if !change::provenance(&c, &t.user) {
-                change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "dashboard", "refused-no-provenance");
-                attempts.push(json!({ "what": card.title, "said": clip(body, 600) }));
-                return None;
+            match change::asked(&c, &t.user) {
+                change::Asked::Yes => {}
+                // The user's own "no" ("don't allow Pay"): nothing changes, and the page says it was their words.
+                change::Asked::SaidNo => {
+                    change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "dashboard", "refused-user-said-no");
+                    attempts.push(json!({ "kind": "said_no", "what": card.title, "said": clip(body, 600) }));
+                    return None;
+                }
+                change::Asked::No => {
+                    change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "dashboard", "refused-no-provenance");
+                    attempts.push(json!({ "what": card.title, "said": clip(body, 600) }));
+                    return None;
+                }
             }
             if t.open.iter().any(|(k, a)| *k == c.key && *a == c.after) {
                 return None;
@@ -2013,10 +2024,15 @@ mod tests {
     fn no_card_for_a_no_and_no_change_without_its_log_line() {
         let cfg = Cfg::new("lows");
         let pay = settings(json!([{ "setting": "block_actions", "remove": ["pay"] }]));
-        for user in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "jangan izinkan Pay"] {
-            let (_, cards, _) = proposals_in(&pay, &mut turn(user));
+        for user in ["please don't allow Pay", "never allow Pay", "why allow Pay?", "do not allow pay", "jangan izinkan Pay", "don't allow the Pay button"] {
+            let (_, cards, tried) = proposals_in(&pay, &mut turn(user));
             assert!(cards.iter().all(|c| c.status != "pending"), "{user}: {cards:?}");
+            // FastTest (v0.4): the user's own "no", not "a page tried to change a limit".
+            assert_eq!((tried.len(), tried[0]["kind"].as_str()), (1, Some("said_no")), "{user}: {tried:?}");
         }
+        // A request the user never made stays "a page tried".
+        let (_, _, tried) = proposals_in(&pay, &mut turn("check the login page"));
+        assert!(tried.len() == 1 && tried[0]["kind"].is_null(), "{tried:?}");
         let (_, cards, _) = proposals_in(&pay, &mut turn("allow Pay please"));
         let id = cards[0].id.clone();
         open_cards(cards);

@@ -517,6 +517,22 @@ const VERBS: &[&str] = &[
 /// appear in it, as words, after normalising, together with a word that asks for it ("allow",
 /// "let", ...). "Why is Pay blocked?" names Pay but asks for nothing, so it does not count.
 pub fn provenance(c: &Change, message: &str) -> bool {
+    asked(c, message) == Asked::Yes
+}
+
+/// What the user's own message says about a loosening (M1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// They asked for it ("allow Pay").
+    Yes,
+    /// They named it and said no ("don't allow Pay"): no card, and they are told it was their own "no".
+    SaidNo,
+    /// Their message does not ask for it: it came from somewhere else (a page, an app).
+    No,
+}
+
+/// As `provenance`, telling a "no" in the user's words apart from a request the user never made.
+pub fn asked(c: &Change, message: &str) -> Asked {
     let m = format!(" {} ", policy::normalize(message).replace(|ch: char| !ch.is_alphanumeric() && !"._-/~$".contains(ch), " "));
     let m = m.split_whitespace().collect::<Vec<_>>().join(" ");
     let m = format!(" {m} ");
@@ -526,7 +542,7 @@ pub fn provenance(c: &Change, message: &str) -> bool {
     };
     let asks = VERBS.iter().any(|v| has(v));
     if !asks {
-        return false;
+        return Asked::No;
     }
     // Security (Low 6): "don't allow Pay", "never allow Pay" and "why allow Pay?" ask for the
     // opposite. "don't block Pay" does ask for it. A message with any other "no" makes no card.
@@ -539,15 +555,13 @@ pub fn provenance(c: &Change, message: &str) -> bool {
         " nggak ", " enggak ", " bukan ", " kenapa ", " mengapa ", " nope ", " refuse ", " deny ", " isn t ", " isnt ",
         " aren t ", " arent ", " wasn t ", " wasnt ", " doesnt ", " didnt ", " shouldnt ", " wont ", " cant ",
     ];
-    if VETO.iter().any(|w| rest.contains(w)) {
-        return false;
-    }
+    let said_no = VETO.iter().any(|w| rest.contains(w));
     let before = items(&c.key, c.before.as_deref());
     let after = items(&c.key, c.after.as_deref());
     let added: Vec<String> = after.iter().filter(|x| !before.iter().any(|y| same(x, y))).cloned().collect();
     let removed: Vec<String> = before.iter().filter(|x| !after.iter().any(|y| same(x, y))).cloned().collect();
     let any_of = |words: &[&str]| words.iter().any(|w| has(w));
-    match c.key.as_str() {
+    let named = match c.key.as_str() {
         "block_actions" => match allowed_word(c) {
             Some(w) => has(&w),
             None => removed.iter().all(|w| has(w)),
@@ -567,6 +581,11 @@ pub fn provenance(c: &Change, message: &str) -> bool {
         "test_timeout" => (c.after.as_deref().is_some_and(has) || any_of(&["no limit", "unlimited"])) && any_of(&["minute", "minutes", "time", "timeout"]),
         "state_expire_days" => c.after.as_deref().is_some_and(has) && any_of(&["day", "days", "login", "logins"]),
         _ => false,
+    };
+    match (named, said_no) {
+        (true, false) => Asked::Yes,
+        (true, true) => Asked::SaidNo,
+        (false, _) => Asked::No,
     }
 }
 

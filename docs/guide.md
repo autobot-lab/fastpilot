@@ -346,10 +346,12 @@ schedules, or make limits stricter, in plain language. Each message is answered 
 The conversation continues with `--resume`. Sessions the bot opens appear in Live and can be taken over.
 
 - The bot **cannot** change settings or schedules by itself: the `config` tool is not available to it. It
-  only makes proposals, and a proposal shows as a card (New schedule, or a settings change). Nothing changes
-  until you click *Save the schedule*, *Apply* or *Allow*.
-- Through chat, limits can only be **made stricter**. A proposal that loosens them (e.g. a larger `max_steps`,
-  removing a word from `block_actions`) is refused on its card and again when clicked. You can loosen limits only in
+  only makes proposals, and a proposal shows as a card (New schedule, or a settings change). Most changes wait
+  until you click *Save the schedule* or *Apply*; one more blocked word applies at once, with *Undo*.
+- A proposal that **loosens** a limit (e.g. a larger `max_steps`, allowing a blocked button) gets a red card only
+  when your own message asks for it ("allow the Pay button"); it changes only after you type its word to confirm.
+  If the request came from a tested page, the chat says "A page tried to change a limit"; if your message said no
+  ("don't allow the Pay button"), it says the limit was kept as it is. You can always loosen limits in
   Settings › Limits.
 - "Remember that login uses a code" gives an **Add a project note** card that quotes your message. The note must be
   your own words from that message; nothing is saved until you click *Add note*, and every agent reads it from the

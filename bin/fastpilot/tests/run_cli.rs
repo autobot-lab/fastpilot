@@ -42,7 +42,10 @@ fn run_on(target: &str, dir: &std::path::Path, log: &std::path::Path, env: &[(&s
         .env("FASTPILOT_RETRY_BUDGET", "1");
     // The run's own settings file, not the user's ~/.fastpilot/config.toml (a model chosen there
     // changed which model these tests saw); a test that brings its own HOME uses that one's.
-    if !env.iter().any(|(k, _)| *k == "HOME") {
+    if env.iter().any(|(k, _)| *k == "HOME") {
+        // FastTest (v0.4): never a FASTPILOT_CONFIG from the shell running the tests.
+        cmd.env_remove("FASTPILOT_CONFIG");
+    } else {
         cmd.env("FASTPILOT_CONFIG", dir.join("config.toml"));
     }
     for (k, v) in env {
@@ -425,7 +428,7 @@ fn provider_key_is_not_sent_to_another_server() {
     let fp = |args: &[&str], env: &[(&str, &str)], stdin: &str| {
         use std::io::Write;
         let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
-        c.args(args).env("HOME", &home).env("FASTPILOT_KEYSTORE", "file").env_remove("FASTPILOT_PROVIDER_API_KEY").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        c.args(args).env("HOME", &home).env("FASTPILOT_KEYSTORE", "file").env_remove("FASTPILOT_PROVIDER_API_KEY").env_remove("FASTPILOT_CONFIG").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         for (k, v) in env {
             c.env(k, v);
         }

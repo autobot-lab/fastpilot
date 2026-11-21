@@ -1186,6 +1186,11 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID | watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`\n  watch: after a release, run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first run is the\n  \"before\", and you hear only about a problem that is new since then, once (Mac notification or GitHub issue)";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // `schedule --help`, `schedule watch --help`, `schedule help`: the usage, not an error.
+    if args.iter().any(|a| a == "--help" || a == "-h") || args.first().is_some_and(|a| a == "help") {
+        println!("{USAGE}");
+        return Ok(());
+    }
     match (args.first().map(String::as_str), args.get(1)) {
         (Some("list") | None, _) => {
             let store = load();

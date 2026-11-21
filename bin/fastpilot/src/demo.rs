@@ -240,7 +240,7 @@ pub async fn demo(args: &[String]) -> Res<()> {
         for (page, how) in PRACTICE {
             println!("  \"Test demo/{page} with {how}, using the rules on the page\"");
         }
-        println!("\nDemo password (not a secret): {DEMO_PASS}, already in .mcp.json");
+        println!("\nDemo account: a@b.com, password {DEMO_PASS} (not a secret; saved as DEMO_PASS in .mcp.json, tests write ${{DEMO_PASS}})");
     }
     if installed == Some(false) {
         std::process::exit(1);
