@@ -65,7 +65,7 @@ commands:
                                      95% upper bound of the failure rate
   ios doctor [udid]   why a physical iPhone can or cannot run tests yet (Xcode, signing,
                       Developer Mode, pairing, profile expiry), each with the fix
-  run <tests dir|file.md> [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
+  run <tests dir|file.md> [--changed [BASE]] [--all-after] [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html]
           headless: your Claude Code (`claude -p`, your login, no API key) drives each
           natural-language test case over the same tools; exits non-zero when a test
           outside quarantine fails (FASTPILOT_CLAUDE: path to the claude CLI)
@@ -296,7 +296,7 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             stability::run(path, runs.max(1), web).await
         }
         Some("run") => {
-            const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
+            const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--changed [BASE]] [--all-after] [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
             let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
                 eprintln!("{RUN_USAGE}");
                 std::process::exit(2);
@@ -315,7 +315,13 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                         }
                     }
                     // Any `--report-github=…`: github::Mode::from_args says which values it takes.
-                    "--record" | "--reset" | "--headful" | "--report-github" => {}
+                    "--record" | "--reset" | "--headful" | "--report-github" | "--all-after" => {}
+                    // PF2: `--changed` alone (compared with main) or with a base branch or commit.
+                    "--changed" => {
+                        if rest.clone().next().is_some_and(|n| !n.starts_with("--")) {
+                            rest.next();
+                        }
+                    }
                     other if other.starts_with("--report-github=") => {}
                     "dry" | "live" if args.iter().any(|x| x == "--report-github") => {}
                     other if other.starts_with("--") && other.contains('=') => {
@@ -344,8 +350,13 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 reset: flag("--reset"),
                 report_github: github::Mode::from_args(&args)?,
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
+                changed: flag("--changed").then(|| value("--changed").filter(|b| !b.starts_with("--"))),
+                all_after: flag("--all-after"),
                 web,
             };
+            if opts.all_after && opts.changed.is_none() {
+                bad("--all-after goes with --changed (it runs the other tests after the related ones)".into());
+            }
             live(|| run::run(std::path::Path::new(path), opts), "run").await
         }
         Some("ios") if args.get(1).map(String::as_str) == Some("doctor") => {

@@ -76,6 +76,63 @@ pub struct Options {
     pub reset: bool,
     /// `--report-github`: the results as one comment on the pull request (GitHub Actions).
     pub report_github: crate::github::Mode,
+    /// PF2 `--changed [<base>]`: run the tests related to the code changes first (`Some(None)`:
+    /// compared with where this branch left main).
+    pub changed: Option<Option<String>>,
+    /// `--all-after`: with `--changed`, run the other tests after the related ones.
+    pub all_after: bool,
+}
+
+/// PF2: how many related tests run first.
+pub const CHANGED_TOP: usize = 5;
+
+/// What `--changed` picked: the reason per test id, the tests not run, and the changed files.
+struct ChangedPlan {
+    reasons: std::collections::HashMap<String, String>,
+    not_run: usize,
+    files: Vec<String>,
+}
+
+/// PF2: order (and cut) the suite by the code changes, saying why in plain words. Without
+/// readable changes everything runs, and the person is told why.
+fn plan_changed(cases: Vec<Case>, target: &Path, base: Option<&str>, all_after: bool) -> (Vec<Case>, Option<ChangedPlan>) {
+    use fastpilot_mcp::changes;
+    let total = cases.len();
+    let dir = if target.is_dir() { target.to_path_buf() } else { target.parent().map(Path::to_path_buf).unwrap_or_default() };
+    let dir = if dir.as_os_str().is_empty() { PathBuf::from(".") } else { dir };
+    let ch = match changes::read(&dir, base) {
+        Ok(c) => c,
+        Err(why) => {
+            println!("{}", why.message(total));
+            return (cases, None);
+        }
+    };
+    let memory = fastpilot_memory::Memory::from_env();
+    let infos: Vec<changes::TestInfo> = cases.iter().map(|c| changes::info(&c.path, c.text.clone())).collect();
+    let notes: Vec<String> = fastpilot_memory::notes::Notes::from_env().list().into_iter().filter(|n| n.problem.is_none()).map(|n| n.text).collect();
+    let failed_at: std::collections::BTreeMap<String, String> = cases.iter().filter_map(|c| memory.load(&c.id).and_then(|m| m.failed_at.last().cloned()).map(|w| (c.id.clone(), w))).collect();
+    let choice = changes::choose(&infos, &ch, &notes, &changes::load_history(memory.root()), &failed_at, CHANGED_TOP);
+    let n = ch.files.len();
+    if choice.picked.is_empty() {
+        println!("No test looks related to your changes, and none failed recently. Running all {total} tests instead.");
+        return (cases, None);
+    }
+    if choice.none_related {
+        println!("No test looks related to your changes. Running the {} that failed most recently.", choice.picked.len());
+    } else {
+        println!("Tests chosen from your changes · {} of {total} tests", choice.picked.len());
+    }
+    println!("Changed: {n} {} ({}) · compared with {}", if n == 1 { "file" } else { "files" }, changes::areas_text(&ch), ch.base);
+    let shown: Vec<&str> = ch.files.iter().take(10).map(String::as_str).collect();
+    println!("Files: {}{}", shown.join(", "), if n > 10 { format!(" and {} more", n - 10) } else { String::new() });
+    let reasons = choice.picked.iter().map(|p| (cases[p.index].id.clone(), p.reason.clone())).collect();
+    let mut order: Vec<usize> = choice.picked.iter().map(|p| p.index).collect();
+    if all_after {
+        order.extend(&choice.not_run);
+    }
+    let not_run = if all_after { 0 } else { choice.not_run.len() };
+    let picked: Vec<Case> = order.into_iter().map(|i| cases[i].clone()).collect();
+    (picked, Some(ChangedPlan { reasons, not_run, files: ch.files }))
 }
 
 /// One natural-language test case (`tests/*.md`: `# Title`, `id:`, `platform:`, steps).
@@ -738,6 +795,10 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     if cases.is_empty() {
         return Err(format!("no test cases (*.md) in {}", target.display()).into());
     }
+    let (cases, changed) = match &opts.changed {
+        Some(base) => plan_changed(cases, target, base.as_deref(), opts.all_after),
+        None => (cases, None),
+    };
     // The user's own Claude Code does the thinking (no API key, their login and plan), unless an
     // OpenAI-compatible provider is configured (B2).
     let provider = crate::provider::Provider::configured().transpose()?;
@@ -749,7 +810,9 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     {
         return Err(format!("fastpilot run needs Claude Code. {why} (Or set FASTPILOT_CLAUDE.)").into());
     }
-    let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
+    // PF2: related tests keep their order (most related first); otherwise longest first.
+    let order = if changed.is_some() { (0..cases.len()).collect() } else { shard_order(&cases, &fastpilot_memory::Memory::from_env()) };
+    let reasons = Arc::new(changed.as_ref().map(|c| c.reasons.clone()).unwrap_or_default());
     let mut need: Vec<Platform> = cases.iter().flat_map(Case::platforms).collect();
     need.sort_by_key(|p| p.to_string());
     need.dedup();
@@ -775,6 +838,7 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
         .map(|_| {
             let (queue, results, shared, pool, cases) = (queue.clone(), results.clone(), shared.clone(), pool.clone(), cases.clone());
             let ios_blocked = ios_blocked.clone();
+            let reasons = reasons.clone();
             tokio::spawn(async move {
                 loop {
                     let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
@@ -784,7 +848,10 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
                         Some(why) if cases[i].platforms().contains(&Platform::Ios) => CaseResult::setup_problem(&cases[i], &format!("Could not run: {why}")),
                         _ => run_with_retries(&cases[i], opts, budget, breaker, &pool).await,
                     };
-                    println!("{}", summary_line(&r));
+                    match reasons.get(&r.case.id) {
+                        Some(why) => println!("{}\n    chosen because: {why}", summary_line(&r)),
+                        None => println!("{}", summary_line(&r)),
+                    }
                     results.lock().unwrap_or_else(|p| p.into_inner()).push((i, r));
                 }
             })
@@ -797,7 +864,27 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     results.sort_by_key(|(i, _)| *i);
     let results: Vec<CaseResult> = results.into_iter().map(|(_, r)| r).collect();
     if opts.report_github != crate::github::Mode::Off {
-        github.send(&crate::github::results_body(&results, started.elapsed(), &github.target_or_local())).await;
+        let mut body = crate::github::results_body(&results, started.elapsed(), &github.target_or_local());
+        if let Some(c) = &changed
+            && c.not_run > 0
+        {
+            body.push_str(&format!("\n_{} of {} tests ran: the ones related to these changes. Not a full regression._\n", results.len(), results.len() + c.not_run));
+        }
+        github.send(&body).await;
+    }
+    if let Some(c) = &changed {
+        // "It failed the last time these files changed", next time.
+        let failed: Vec<String> = results.iter().filter(|r| !r.passed && r.class != Some(Class::Setup)).map(|r| r.case.id.clone()).collect();
+        if let Err(e) = fastpilot_mcp::changes::record_failures(fastpilot_memory::Memory::from_env().root(), &failed, &c.files) {
+            eprintln!("fastpilot: could not remember which tests failed for these changes ({e})");
+        }
+        if c.not_run > 0 {
+            println!(
+                "\nNot run ({}): they did not look related to your changes. A related-test run is not a full regression.\nRun them too:  fastpilot run {} --changed --all-after",
+                c.not_run,
+                target.display()
+            );
+        }
     }
     finish_suite(&results, started.elapsed(), &opts)
 }

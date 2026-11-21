@@ -1,6 +1,6 @@
 ---
 name: regression
-description: Run every saved fastpilot test again and say what is newly broken. Use when the user asks for a regression, "run all tests", "check nothing broke", "run the Android tests only", or a re-check after a release or a fix. Separates newly failing tests from known failures and flaky tests, and gives a short summary a non-technical person can act on.
+description: Run every saved fastpilot test again and say what is newly broken. Use when the user asks for a regression, "run all tests", "check nothing broke", "run the Android tests only", "test what I changed", or a re-check after a release or a fix. Separates newly failing tests from known failures and flaky tests, and gives a short summary a non-technical person can act on.
 license: Apache-2.0
 ---
 
@@ -8,6 +8,15 @@ license: Apache-2.0
 
 A regression re-runs the tests the user already saved (`tests/*.md`) and answers one question:
 **what broke since last time?** Use the `fastpilot` skill for the test loop itself.
+
+## Only what changed ("test what I changed")
+When the user asks to test what they changed (or a pull request), call `related_tests` first. Run
+the tests it chooses, in its order, and give each one's reason as **Chosen because: …** under the
+test in the summary (plain words, never a score; file names only if the user asks for details).
+Start the summary with how many ran and why ("5 of 14 tests chosen from your changes"). List the
+others as **Not run (N)**: say they did not look related, that a related-test run is not a full
+regression, and offer to run them. They are never counted as passed. If it says the changes could
+not be read (no git, no changes), say so and run every test.
 
 ## Steps
 1. **Pick the tests.** Default: every `tests/*.md`. If the user names a part ("Android only",

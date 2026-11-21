@@ -39,7 +39,12 @@ fn run_on(target: &str, dir: &std::path::Path, log: &std::path::Path, env: &[(&s
         .env("FASTPILOT_DIR", dir)
         .env("DEMO_PASS", "rahasia123")
         .env("FASTPILOT_VARS", "DEMO_PASS")
-        .env("FASTPILOT_RETRY_BUDGET", "1");
+        .env("FASTPILOT_RETRY_BUDGET", "1")
+        // Never a real adb server: the device pool must not probe the user's emulators (emulator-5554
+        // is off limits); Android cases then take their "no device" path.
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .env_remove("ANDROID_SERIAL")
+        .env_remove("FASTPILOT_ANDROID_SERIAL");
     // The run's own settings file, not the user's ~/.fastpilot/config.toml (a model chosen there
     // changed which model these tests saw); a test that brings its own HOME uses that one's.
     if env.iter().any(|(k, _)| *k == "HOME") {
@@ -519,5 +524,83 @@ fn a_missing_secret_is_a_setup_problem_and_the_test_does_not_start() {
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(text.contains("This folder's .mcp.json has DEMO_PASS for Claude Code and Chat; fastpilot run reads only the environment.") && !text.contains("rahasia123"), "{text}");
     assert!(calls(&dir.join("claude-d")).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// PF2 (v0.6): `--changed` runs the tests related to the code changes first, each with a plain
+/// reason, lists the others as "Not run (N)" with how to run them, and remembers which tests failed
+/// for those files. Without git it says so and runs everything.
+#[test]
+fn changed_runs_the_related_tests_first_with_a_reason() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-changed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let proj = dir.join("shop");
+    std::fs::create_dir_all(proj.join("tests")).expect("tests");
+    std::fs::create_dir_all(proj.join("examples/demo")).expect("demo");
+    std::fs::copy(format!("{ROOT}/examples/demo/login.html"), proj.join("examples/demo/login.html")).expect("page");
+    std::fs::copy(format!("{ROOT}/tests/login.md"), proj.join("tests/login.md")).expect("login test");
+    std::fs::write(proj.join("tests/search.md"), "# Search for shoes\nid: search-shoes\nplatform: web\ntarget: examples/demo/widgets.html\n- Type shoes in the search field\n- Check that results show\n").expect("search test");
+    let run = |args: &[&str], log: &str| {
+        std::fs::create_dir_all(dir.join(log)).expect("log dir");
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .arg("run")
+            .args(args)
+            .current_dir(&proj)
+            .env("HOME", &dir)
+            .env_remove("FASTPILOT_CONFIG")
+            .env("FASTPILOT_CLAUDE", FAKE)
+            .env("FAKE_CLAUDE_LOG", dir.join(log))
+            .env("FASTPILOT_DIR", proj.join(".fastpilot"))
+            .env("DEMO_PASS", "rahasia123")
+            .env("FASTPILOT_VARS", "DEMO_PASS")
+            .env("FASTPILOT_RETRY_BUDGET", "0")
+            .output()
+            .expect("run");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    // Not a git project yet: said plainly, and everything runs.
+    let out = run(&["tests", "--changed"], "claude-nogit");
+    if out.contains("Chrome not found") {
+        return eprintln!("skipping: no Chrome");
+    }
+    assert!(out.contains("I cannot see what you changed because this folder is not tracked by git. Running all 2 tests instead."), "{out}");
+    assert_eq!(calls(&dir.join("claude-nogit")).len(), 2, "{out}");
+    // A git project on a branch that changed the login page.
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git").args(args).current_dir(&proj).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").output().expect("git").status.success();
+        assert!(ok, "git {args:?}");
+    };
+    std::fs::write(proj.join(".gitignore"), ".fastpilot/\n").expect("ignore");
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "shop"]);
+    let out = run(&["tests", "--changed"], "claude-none");
+    assert!(out.contains("I did not find any changes. Running all 2 tests instead."), "{out}");
+    git(&["checkout", "-q", "-b", "fix-login"]);
+    let page = std::fs::read_to_string(proj.join("examples/demo/login.html")).expect("page");
+    std::fs::write(proj.join("examples/demo/login.html"), page.replace("Masuk ke Akun", "Masuk ke akun anda")).expect("change");
+    let out = run(&["tests", "--changed"], "claude-changed");
+    assert!(out.contains("Tests chosen from your changes · 1 of 2 tests"), "{out}");
+    assert!(out.contains("Changed: 1 file (login page) · compared with main") && out.contains("Files: examples/demo/login.html"), "{out}");
+    assert!(out.contains("✓ login-ok") && out.contains("    chosen because: you changed the login page"), "{out}");
+    assert!(out.contains("Not run (1): they did not look related to your changes. A related-test run is not a full regression.") && out.contains("Run them too:  fastpilot run tests --changed --all-after"), "{out}");
+    assert!(out.contains("1 tests: 1 passed"), "the one not run is not counted as passed: {out}");
+    let c = calls(&dir.join("claude-changed"));
+    assert_eq!(c.len(), 1, "only the related test ran");
+    assert!(c[0]["prompt"].as_str().is_some_and(|p| p.contains("login-ok")), "{c:?}");
+    // --all-after: the related one first, then the rest.
+    let out = run(&["tests", "--changed", "--all-after"], "claude-all");
+    assert!(!out.contains("Not run (") && out.contains("2 tests:"), "{out}");
+    let c = calls(&dir.join("claude-all"));
+    assert_eq!(c.len(), 2);
+    assert!(c[0]["prompt"].as_str().is_some_and(|p| p.contains("login-ok")), "related first: {c:?}");
+    // A base git does not know, and --all-after alone.
+    let out = run(&["tests", "--changed", "no-such-branch"], "claude-bad");
+    assert!(out.contains("I cannot compare with \"no-such-branch\": git does not know it. Running all 2 tests instead."), "{out}");
+    let out = run(&["tests", "--all-after"], "claude-x");
+    assert!(out.contains("--all-after goes with --changed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -529,7 +529,7 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_CHROME_ENDPOINT` | Chrome on another computer for all web sessions: `http://host:port` or `ws://...` |
 | `FASTPILOT_LOG` | tracing filter, e.g. `debug` (logs go to stderr; stdout is used by MCP) |
 
-## Tools (10)
+## Tools (11)
 
 | Tool | Purpose |
 |---|---|
@@ -543,6 +543,7 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `state` | Save/load a login (web: cookies + localStorage) so the next test does not have to log in: `save` / `load` / `list` / `delete`. Only the owner can read the files, they expire after 30 days (`FASTPILOT_STATE_EXPIRE_DAYS`), and they are encrypted with AES-256-GCM if `FASTPILOT_STATE_KEY` (64 hex, `openssl rand -hex 32`) is set. Same as the `saveState` / `loadState` steps |
 | `config` | View and change settings (`~/.fastpilot/config.toml`) through chat: `list` / `get` / `set` / `unset`. The agent may only **make limits stricter** (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, the `allow_*` permissions, `upload_dirs`, `max_steps`, `test_timeout`); stricter values apply right away, looser ones only after a restart. Program paths, locations, and other computers (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) can only be changed by the user with `fastpilot config set` or `fastpilot ui` |
 | `docs` | On-demand reference: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
+| `related_tests` | Which saved tests to run first after a code change ("test what I changed"): reads the changed files with git (read only) and gives each chosen test one plain reason |
 
 ## Examples
 
@@ -731,6 +732,17 @@ and signed in once (`claude`). For another location: `fastpilot config set claud
 ```bash
 DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   fastpilot run tests/ --junit junit.xml --html report.html
+```
+
+**Only what you changed** (`--changed [BASE]`): fastpilot reads the files changed since BASE (default:
+where your branch left `main`; uncommitted and new files count too) and runs the 5 most related tests
+first, each with one reason in plain words ("chosen because: you changed the login page"). The others
+are listed as **Not run (N)** and never counted as passed; add `--all-after` to run them after the related
+ones. Without git, or with no changes, it says so and runs every test. In Chat, ask "test what I changed".
+
+```bash
+fastpilot run tests/ --changed            # compared with main
+fastpilot run tests/ --changed release-1  # compared with a branch, tag or commit
 ```
 
 - Claude Code gets only the fastpilot tools: its built-in tools (shell, files, web) are turned off and the fastpilot
@@ -968,7 +980,7 @@ crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserC
 crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
 crates/ios       simctl/devicectl + XCUITest runner, usbmux, Web Inspector, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
-crates/mcp       rmcp stdio server, 10 tools, docs
+crates/mcp       rmcp stdio server, 11 tools, docs
 bin/fastpilot    entrypoint: `mcp`, shell CLI + daemon, `run`, `doctor`/`setup`, `config`, `bench`, `stability`
 agent-android/   instrumentation APK (Java, UiAutomation), built without Gradle
 ios-runner/      XCUITest runner + iOS demo app
