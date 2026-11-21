@@ -18,6 +18,9 @@ pub enum Class {
     Agent,
     /// Passes and fails without a change: passed on retry, or a mixed recent history.
     Flaky,
+    /// The test could not start because something it needs is not set up (a secret `${NAME}` that is
+    /// not set): the person running it fixes the setup. Never retried, never a product bug.
+    Setup,
     /// The tool acted too early: an action reported success but changed nothing on screen,
     /// and the next check failed (e.g. a tap swallowed by an animation). Not a product bug:
     /// rerun, add `waitForAnimationToEnd`, or report it against fastpilot.
@@ -32,6 +35,7 @@ impl Class {
             Self::Agent => "agent",
             Self::Flaky => "flaky",
             Self::Timing => "timing",
+            Self::Setup => "setup",
         }
     }
 }

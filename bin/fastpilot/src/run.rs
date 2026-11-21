@@ -122,6 +122,42 @@ impl Case {
     }
 }
 
+/// A secret a test names as `${NAME}` that this run cannot give it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSecret {
+    pub name: String,
+    /// Listed in FASTPILOT_VARS (or Settings › Secret).
+    pub allowed: bool,
+    /// Has a value in this process's environment.
+    pub set: bool,
+}
+
+/// The secrets `case` needs that are not usable here (V042, DEMO_PASS): named as `${NAME}`, and not
+/// both allowed and set. A name the test also writes bare (a value a step captures) is its own, not
+/// a secret.
+pub fn missing_secrets(case: &Case) -> Vec<MissingSecret> {
+    let allowed: Vec<String> = fastpilot_core::config::var("FASTPILOT_VARS").unwrap_or_default().split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
+    let text = &case.text;
+    let mut out: Vec<MissingSecret> = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("${") {
+        let tail = &rest[i + 2..];
+        let Some(end) = tail.find('}') else { break };
+        let name = &tail[..end];
+        rest = &tail[end..];
+        let ok = name.chars().next().is_some_and(|c| c.is_ascii_uppercase() || c == '_') && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if !ok || out.iter().any(|m| m.name == name) {
+            continue;
+        }
+        let bare = text.replace(&format!("${{{name}}}"), "").split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == name);
+        let m = MissingSecret { name: name.to_owned(), allowed: allowed.iter().any(|a| a == name), set: std::env::var(name).is_ok_and(|v| !v.is_empty()) };
+        if !(bare || m.allowed && m.set) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Test cases under `path` (a `.md` file, or every `.md` directly in a directory, sorted).
 pub fn load(path: &Path) -> Result<Vec<Case>, String> {
     if path.is_file() {
@@ -165,6 +201,14 @@ pub struct CaseResult {
 }
 
 impl CaseResult {
+    /// V042: a test that needs a secret this run does not have: not started, never retried.
+    fn needs_secrets(case: &Case, missing: &[MissingSecret]) -> Self {
+        let names: Vec<&str> = missing.iter().map(|m| m.name.as_str()).collect();
+        let why = if missing.iter().all(|m| m.set) { "its name is not in FASTPILOT_VARS" } else if names.len() == 1 { "it is not set" } else { "they are not set" };
+        let notes = format!("Could not run: needs the secret{} {}, and {why}.", if names.len() == 1 { "" } else { "s" }, names.join(", "));
+        Self { class: Some(Class::Setup), ..Self::skipped(case, &notes) }
+    }
+
     fn skipped(case: &Case, notes: &str) -> Self {
         Self {
             case: case.clone(),
@@ -633,6 +677,11 @@ pub async fn run_with_retries(
     breaker: &Breaker,
     pool: &Pool,
 ) -> CaseResult {
+    // V042: a missing secret is a setup problem: say so at once instead of four failing attempts.
+    let missing = missing_secrets(case);
+    if !missing.is_empty() {
+        return CaseResult::needs_secrets(case, &missing);
+    }
     if breaker.is_open() {
         return CaseResult::skipped(case, "skipped: the infra circuit breaker is open (consecutive infra failures)");
     }
@@ -656,6 +705,9 @@ pub async fn run_with_retries(
 }
 
 pub fn summary_line(r: &CaseResult) -> String {
+    if r.class == Some(Class::Setup) {
+        return format!("✗ {} could not run [setup]: {}", r.case.id, clip(&r.notes, 200));
+    }
     let mark = match (r.passed, r.quarantined) {
         (true, _) if r.class == Some(Class::Flaky) => "~",
         (true, _) => "✓",
@@ -743,7 +795,8 @@ pub fn shard_order(cases: &[Case], memory: &fastpilot_memory::Memory) -> Vec<usi
 }
 
 pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let failed = results.iter().filter(|r| !r.passed && !r.quarantined).count();
+    let setup: Vec<&CaseResult> = results.iter().filter(|r| r.class == Some(Class::Setup)).collect();
+    let failed = results.iter().filter(|r| !r.passed && !r.quarantined && r.class != Some(Class::Setup)).count();
     let quarantined = results.iter().filter(|r| !r.passed && r.quarantined).count();
     let tokens: (u64, u64, u64) =
         results.iter().fold((0, 0, 0), |a, r| (a.0 + r.usage.input, a.1 + r.usage.output, a.2 + r.usage.cache_read));
@@ -751,8 +804,9 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
     if let Some(agent) = std::env::var("FASTPILOT_AGENT").ok().filter(|a| crate::agents::get(a).is_some()) {
         crate::agents::record_usage(&agent, tokens.0, tokens.1);
     }
+    let not_run = if setup.is_empty() { String::new() } else { format!(" {} could not run,", setup.len()) };
     println!(
-        "\n{} tests: {} passed, {failed} failed, {quarantined} quarantined failures, in {:.1}s; tokens in {} (cache read {}) out {}",
+        "\n{} tests: {} passed, {failed} failed,{not_run} {quarantined} quarantined failures, in {:.1}s; tokens in {} (cache read {}) out {}",
         results.len(),
         results.iter().filter(|r| r.passed).count(),
         elapsed.as_secs_f64(),
@@ -771,10 +825,56 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
     if let Err(e) = record_history(results, elapsed, opts) {
         eprintln!("fastpilot: the run is not in History ({e})");
     }
-    if failed > 0 {
-        return Err(format!("{failed} test(s) failed").into());
+    if !setup.is_empty() {
+        println!("\n{}", setup_help(&setup, results.len()));
     }
-    Ok(())
+    match (failed, setup.len()) {
+        (0, 0) => Ok(()),
+        (0, 1) => Err("1 test could not start: a secret it needs is not set".into()),
+        (0, n) => Err(format!("{n} tests could not start: a secret they need is not set").into()),
+        (f, 0) => Err(format!("{f} test(s) failed").into()),
+        (f, n) => Err(format!("{f} test(s) failed, {n} could not start").into()),
+    }
+}
+
+/// V042 (FastUI/UX T1): what could not run, that it is not a pass, and the exact next step. Names
+/// secrets, never their values.
+pub fn setup_help(setup: &[&CaseResult], total: usize) -> String {
+    let mut missing: Vec<MissingSecret> = Vec::new();
+    for m in setup.iter().flat_map(|r| missing_secrets(&r.case)) {
+        if !missing.iter().any(|x| x.name == m.name) {
+            missing.push(m);
+        }
+    }
+    let names: Vec<String> = missing.iter().map(|m| m.name.clone()).collect();
+    let list = names.join(" and ");
+    let s = if names.len() == 1 { "" } else { "s" };
+    let unset = missing.iter().any(|m| !m.set);
+    let what = match setup {
+        [one] => format!("The test \"{}\" needs the secret{s} {list}", if one.case.title.is_empty() { &one.case.id } else { &one.case.title }),
+        _ => format!("{} tests need the secret{s} {list}", setup.len()),
+    };
+    let state = if unset { if names.len() == 1 { "it is not set" } else { "they are not set" } } else { "fastpilot may not read it yet" };
+    let mut out = format!("Could not run. {what}, and {state}.\n{} of {total} tests ran. This is not a pass.\nNext step:", total - setup.len());
+    let allowed: Vec<String> = fastpilot_core::config::var("FASTPILOT_VARS").unwrap_or_default().split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
+    let mut vars = allowed.clone();
+    vars.extend(missing.iter().filter(|m| !m.allowed).map(|m| m.name.clone()));
+    let need_vars = missing.iter().any(|m| !m.allowed);
+    let values: Vec<String> = missing.iter().filter(|m| !m.set).map(|m| format!("{}=…", m.name)).collect();
+    let mut export = Vec::new();
+    if need_vars {
+        export.push(format!("FASTPILOT_VARS={}", vars.join(",")));
+    }
+    export.extend(values);
+    out.push_str(&format!("\n  • Set it for this window:   export {}", export.join(" ")));
+    if need_vars {
+        out.push_str("\n  • Or add the name once in the dashboard (fastpilot ui → Settings → Secret); the value still comes from the environment");
+    }
+    let in_mcp: Vec<String> = names.iter().filter(|n| crate::chat::mcp_secret_names().contains(n)).cloned().collect();
+    if !in_mcp.is_empty() {
+        out.push_str(&format!("\n  This folder's .mcp.json has {} for Claude Code and Chat; fastpilot run reads only the environment.", in_mcp.join(" and ")));
+    }
+    out
 }
 
 /// D6: the project notes, read once when this run starts: every test of the run gets the same.
@@ -799,7 +899,7 @@ fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> 
     // The suite is written below; the folder exists by then on any later run.
     let _ignore = Defer(fastpilot_core::config::keep_out_of_git);
     let id = history.new_suite_id();
-    let not_run = |r: &&CaseResult| !r.passed && r.turns == 0 && r.class == Some(Class::Infra);
+    let not_run = |r: &&CaseResult| !r.passed && r.turns == 0 && matches!(r.class, Some(Class::Infra | Class::Setup));
     let title = fastpilot_core::config::var("FASTPILOT_RUN_TITLE").ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| match results {
         [one] => one.case.title.clone(),
         _ => {

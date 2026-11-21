@@ -138,6 +138,10 @@ pub struct LastRun {
     /// The `fastpilot schedule run` process, while it runs (Run now refuses a second one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// V042: the secrets the run needed and did not have, when that is all that went wrong
+    /// ("DEMO_PASS"): the page shows "could not run" in amber, not a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -880,7 +884,8 @@ pub async fn run(id: &str) -> Res<bool> {
     let summary = summarize(&text, passed);
     let report = report.exists().then(|| report.to_string_lossy().into_owned());
     let (ok, total) = counts(&text).unzip();
-    let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None };
+    let needs = if passed { None } else { setup_only(&text) };
+    let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None, needs: needs.clone() };
     if let Some(w) = s.watch.clone() {
         // R1: compared with the first run; only a new problem is sent, once.
         let (w, new, text) = watch_step(w, &text, &summary);
@@ -899,15 +904,38 @@ pub async fn run(id: &str) -> Res<bool> {
         return Ok(new.is_empty());
     }
     if !passed {
-        let msg = format!(
-            "fastpilot: schedule \"{}\" failed — {summary}{}",
-            s.name,
-            report.as_deref().map(|r| format!("\nReport: {r}")).unwrap_or_default()
-        );
-        last.notified = notify(&s, &format!("Schedule \"{}\" failed", s.name), &msg).await;
+        let report_line = report.as_deref().map(|r| format!("\nReport: {r}")).unwrap_or_default();
+        let (title, msg) = match needs {
+            // V042 (FastUI/UX D1): a setup problem, said as one, never "failed".
+            Some(names) => (
+                format!("Schedule \"{}\" could not run: needs {names}", s.name),
+                format!("fastpilot: \"{}\" could not run. It needs the secret {names}, and no value is set where schedules run. Nothing ran, so this is not a pass. Set it in the environment of fastpilot (and its name in Settings → Secret), then run again.{report_line}", s.name),
+            ),
+            None => (format!("Schedule \"{}\" failed", s.name), format!("fastpilot: schedule \"{}\" failed — {summary}{report_line}", s.name)),
+        };
+        last.notified = notify(&s, &title, &msg).await;
     }
     set_last(id, last)?;
     Ok(passed)
+}
+
+/// When every test that did not pass could not run for a missing secret (`[setup]`), its names
+/// ("DEMO_PASS", "A and B"); otherwise `None`.
+pub fn setup_only(output: &str) -> Option<String> {
+    let bad: Vec<&str> = output.lines().filter(|l| l.starts_with("✗ ") || l.starts_with("q ")).collect();
+    if bad.is_empty() || !bad.iter().all(|l| l.contains(" could not run [setup]: ")) {
+        return None;
+    }
+    let mut names: Vec<String> = Vec::new();
+    for l in bad {
+        let list = l.split("needs the secret").nth(1).map(|x| x.trim_start_matches('s').split(", and").next().unwrap_or("").trim()).unwrap_or("");
+        for n in list.split(", ").map(str::trim).filter(|n| !n.is_empty()) {
+            if !names.iter().any(|x| x == n) {
+                names.push(n.to_owned());
+            }
+        }
+    }
+    (!names.is_empty()).then(|| names.join(" and "))
 }
 
 /// The tests that failed in a run's output (`✗ id …: why`), with why.
@@ -1036,9 +1064,14 @@ pub fn summarize(output: &str, passed: bool) -> String {
     let line = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed")).map(|l| {
         let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok()).unwrap_or(0);
         let (total, ok, bad, quarantined) = (num(" tests:"), num(" passed"), num(" failed"), num(" quarantined failures"));
+        let not_run = if l.contains(" could not run,") { num(" could not run") } else { 0 };
         let mut t = format!("{ok} of {total} {} passed", if total == 1 { "test" } else { "tests" });
         if bad > 0 {
             t.push_str(&format!(", {bad} failed"));
+        }
+        // V042: a test that needs a secret that is not set is not a failure of the app.
+        if not_run > 0 {
+            t.push_str(&format!(", {not_run} could not run"));
         }
         if quarantined > 0 {
             t.push_str(&format!(", {quarantined} set aside failed"));
@@ -1427,6 +1460,15 @@ mod tests {
         // QA B7: the reason is in the table, not only in the report.
         let qa = "✗ demo-login-shows-budi 0.4s, 2 turns, claude-opus-5-5 [product]: variable `EMAIL` is not allowed; list it in FASTPILOT_VARS\n\n1 tests: 0 passed, 1 failed, 0 quarantined failures, in 3.0s\n";
         assert_eq!(summarize(qa, false), "0 of 1 test passed, 1 failed — demo-login-shows-budi: variable `EMAIL` is not allowed; list it in FASTPILOT_VARS");
+        // V042: a missing secret is "could not run", and the notification says so.
+        let setup = "✗ login-ok could not run [setup]: Could not run: needs the secret DEMO_PASS, and it is not set.\n\n1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures, in 0.0s; tokens in 0 (cache read 0) out 0\n";
+        assert_eq!(summarize(setup, false), "0 of 1 test passed, 1 could not run — login-ok: Could not run: needs the secret DEMO_PASS, and it is not set.");
+        assert_eq!(setup_only(setup).as_deref(), Some("DEMO_PASS"));
+        assert_eq!(setup_only(qa), None, "a product failure is not a setup problem");
+        let two = "✗ a could not run [setup]: Could not run: needs the secrets API_KEY, DEMO_PASS, and they are not set.\n✗ b could not run [setup]: Could not run: needs the secret DEMO_PASS, and it is not set.\n";
+        assert_eq!(setup_only(two).as_deref(), Some("API_KEY and DEMO_PASS"));
+        // A release watch names it as a problem with its plain reason.
+        assert_eq!(failed_tests(setup), vec![("login-ok".to_owned(), "Could not run: needs the secret DEMO_PASS, and it is not set.".to_owned())]);
         let many: String = (1..=5).map(|i| format!("✗ t{i} 1.0s, 1 turns, m: broke {i}\n")).collect::<String>() + "5 tests: 0 passed, 5 failed, 0 quarantined failures, in 1s\n";
         assert!(summarize(&many, false).ends_with("t3: broke 3; and 2 more"));
     }
