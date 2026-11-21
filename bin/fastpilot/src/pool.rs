@@ -84,10 +84,13 @@ impl Pool {
         Self { free: Mutex::new(devices.clone()), all: Mutex::new(devices), notify: Notify::new(), health, note: String::new() }
     }
 
-    /// Attached Android devices and booted iPhone/iPad simulators.
-    pub async fn discover() -> Self {
-        let (mut devices, note) = android_devices().await;
-        if let Ok(sims) = fastpilot_ios::devices().await {
+    /// Attached Android devices and booted iPhone/iPad simulators, for the platforms in `need` only
+    /// (a web-only or iPhone-only run never asks adb).
+    pub async fn discover(need: &[Platform]) -> Self {
+        let (mut devices, note) = if need.contains(&Platform::Android) { android_devices().await } else { (Vec::new(), String::new()) };
+        if need.contains(&Platform::Ios)
+            && let Ok(sims) = fastpilot_ios::devices().await
+        {
             devices.extend(
                 sims.into_iter()
                     .filter(|(_, n, st)| st == "Booted" && (n.starts_with("iPhone") || n.starts_with("iPad")))
@@ -118,8 +121,8 @@ impl Pool {
         if need.contains(&Platform::Ios) {
             parts.push(format!("iPhone · {}", count(Platform::Ios)));
         }
-        let mobile = need.iter().any(|p| *p != Platform::Web);
-        let note = if self.note.is_empty() || !mobile { String::new() } else { format!(" · {}", self.note) };
+        // The note is about Android devices (which serial is used).
+        let note = if self.note.is_empty() || !need.contains(&Platform::Android) { String::new() } else { format!(" · {}", self.note) };
         format!("{}{note}", parts.join(", "))
     }
 
