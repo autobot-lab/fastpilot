@@ -66,8 +66,10 @@ expects fastpilot to refuse it.
 
 ### iOS
 
-iOS needs a Mac with Xcode. Run `fastpilot setup ios` once: it builds the iPhone test runner with your
-Xcode (about 5 minutes) and starts an iPhone simulator. From a checkout, `ios-runner/build.sh` does the same
+iOS needs a Mac with Xcode. Your installed iPhone simulators are used as they are; iPhone testing only
+needs a one-time setup: `fastpilot setup ios` builds a small test runner with your Xcode (about 5 minutes).
+`fastpilot init` offers it when Xcode is found, and the dashboard's Device page has **Set up iPhone testing**
+and a list of your simulators to pick the one tests use (`ios_udid`; without a pick, the running one). From a checkout, `ios-runner/build.sh` does the same
 (see [Build from source](#build-from-source)), and also builds the demo app below.
 
 **iOS (simulator):**
@@ -155,7 +157,10 @@ fastpilot doctor
 if that platform is not ready. `fastpilot doctor` with no arguments shows every platform, but its exit
 code depends only on web (≠ 0 if web has a ✗), the same rule as `setup`. In CI,
 name the platforms you use, e.g. `fastpilot doctor web android`. To fix what can be fixed automatically (install Chrome with
-Homebrew, download the Android image, create the `fastpilot_api35` AVD, start the emulator):
+Homebrew, download the Android image, create the `fastpilot_api35` AVD, start the emulator). On the
+dashboard's Device page, when no Android device runs, the emulators already on this computer come first,
+each with **Start** (a free port, never 5554; other emulators are not touched); **Add a new test phone**
+(`fastpilot_api35`) is the second choice:
 
 ```bash
 fastpilot setup android

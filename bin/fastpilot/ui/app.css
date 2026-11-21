@@ -523,3 +523,8 @@ pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
 /* Where an agent tests: the chips, and why the last one stays picked */
 .dev-pick{display:flex;flex-direction:column;gap:4px;align-items:flex-start}.dev-pick .chips{justify-content:flex-start}
 .dev-hint:empty{display:none}
+/* DV1: installed emulators and simulators on the Device page */
+.fix-choices{list-style:none;margin:0 0 6px;padding:0 16px}
+.fix-choices li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.fix-choices li .s{color:var(--muted)}
+.fix-more{padding:4px 16px 12px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}

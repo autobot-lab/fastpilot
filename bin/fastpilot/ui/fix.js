@@ -9,6 +9,7 @@ let fixData = null; // { offers, job }
 let fixBusy = false;
 let fixTimer = null;
 let fixDetails = false;
+let lastStart = null; // the body of the last start, for Try again
 
 async function loadFix() {
   if (fixBusy) return;
@@ -41,15 +42,19 @@ async function fixPost(body) {
   return v;
 }
 
-function confirmFix(offer) {
+const ASK = { chrome: ["Install Chrome?", "Install"], android: ["Set up an Android emulator?", "Set up"], ios: ["Set up iPhone testing?", "Set up"] };
+
+// `ask`: [title, button] of the dialog (a start of an installed emulator has its own).
+function confirmFix(offer, ask) {
+  const [title, yes] = ask || ASK[offer.area] || ["Go ahead?", "OK"];
   return new Promise((resolve) => {
     const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
     const cancel = h("button", { class: "btn", onclick: () => done(false) }, "Cancel");
     const dlg = h("dialog", { class: "hist-dlg", "aria-labelledby": "fix-dlg-t" },
-      h("h2", { id: "fix-dlg-t" }, offer.area === "android" ? "Set up an Android emulator?" : "Install Chrome?"),
+      h("h2", { id: "fix-dlg-t" }, title),
       h("p", {}, offer.confirm),
-      offer.steps.length ? h("ol", { class: "fix-plan" }, offer.steps.map((s) => h("li", {}, s))) : null,
-      h("div", { class: "btns tight" }, cancel, h("button", { class: "btn p", onclick: () => done(true) }, offer.button === "Install Chrome" ? "Install" : "Set up")));
+      (offer.steps || []).length ? h("ol", { class: "fix-plan" }, offer.steps.map((s) => h("li", {}, s))) : null,
+      h("div", { class: "btns tight" }, cancel, h("button", { class: "btn p", onclick: () => done(true) }, yes)));
     dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
     document.body.append(dlg);
     dlg.showModal();
@@ -57,15 +62,30 @@ function confirmFix(offer) {
   });
 }
 
-async function startFix(offer) {
-  if (!(await confirmFix(offer))) return;
+async function startFix(offer, choice) {
+  const ask = choice ? [`Start ${choice.name}?`, "Start"] : null;
+  if (!(await confirmFix(choice ? { area: offer.area, confirm: choice.confirm, steps: [] } : offer, ask))) return;
+  lastStart = { action: "start", area: offer.area, confirmed: true, ...(choice ? { avd: choice.id } : {}) };
+  await run(lastStart);
+}
+
+async function run(body) {
   try {
-    const r = await fixPost({ action: "start", area: offer.area, confirmed: true });
+    const r = await fixPost(body);
     fixData = { ...fixData, job: r.job };
     fixDetails = false;
   } catch (e) {
     toast("Could not start: " + e.message);
   }
+  loadFix();
+}
+
+// Which simulator tests use: a setting, saved at once (nothing is installed or started).
+async function pickSimulator(choice) {
+  try {
+    const r = await fixPost({ action: "pick-simulator", udid: choice.id });
+    toast(r.ok, true);
+  } catch (e) { toast(e.message); }
   loadFix();
 }
 
@@ -83,7 +103,7 @@ function jobPanel(job) {
   const fill = h("i", {});
   fill.style.width = Math.round((done / Math.max(1, n)) * 100) + "%";
   const running = job.state === "running";
-  const head = running ? (job.area === "android" ? "Setting up your emulator" : "Installing Chrome") : job.state === "done" ? "Done" : job.state === "stopped" ? "Stopped" : "Could not finish";
+  const head = running ? job.doing || job.title : job.state === "done" ? "Done" : job.state === "stopped" ? "Stopped" : "Could not finish";
   return h("div", { class: "fix-job", role: "status", "aria-live": "polite" },
     h("div", { class: "fix-head" }, h("b", {}, head), running && current >= 0 ? h("span", { class: "pill" }, `Step ${current + 1} of ${n}`) : null),
     h("div", { class: "fix-bar" }, fill),
@@ -91,7 +111,7 @@ function jobPanel(job) {
     job.message ? h("p", { class: job.state === "failed" ? "note-err" : "s" }, job.message) : null,
     h("div", { class: "btns tight fix-acts" },
       running ? h("button", { class: "btn sm", onclick: stopFix }, "Stop") : null,
-      !running && job.state !== "done" ? h("button", { class: "btn sm", onclick: () => { const o = (fixData.offers || []).find((x) => x.area === job.area && x.button); if (o) startFix(o); else loadFix(); } }, "Try again") : null,
+      !running && job.state !== "done" ? h("button", { class: "btn sm", onclick: () => { if (lastStart && lastStart.area === job.area) run(lastStart); else loadFix(); } }, "Try again") : null,
       h("button", { class: "btn sm", "aria-expanded": String(fixDetails), onclick: () => { fixDetails = !fixDetails; redraw(); } }, fixDetails ? "Hide details" : "Show details")),
     fixDetails ? h("pre", { class: "fix-log", tabindex: "0", "aria-label": "Details" }, job.log.length ? job.log.join("\n") : "Nothing yet.") : null);
 }
@@ -104,12 +124,23 @@ function section() {
     if (fixData.error) body.push(h("div", { class: "err", role: "alert" }, "Could not read the fixes: " + fixData.error));
     const busy = fixData.job && fixData.job.state === "running";
     const offers = fixData.offers || [];
-    if (!offers.length && !fixData.job) body.push(h("div", { class: "s muted" }, "Nothing to set up: Chrome and fastpilot's test phone are ready."));
+    if (!offers.length && !fixData.job) body.push(h("div", { class: "s muted" }, "Nothing to set up: Chrome and a device for tests are ready."));
     // While a fix runs, its own job panel stands for the offer.
     for (const o of offers.filter((x) => !(busy && fixData.job.area === x.area))) {
-      body.push(h("div", { class: "row fix-row" },
-        h("div", {}, h("div", { class: "t" }, h("span", { class: "dot " + (o.button ? "warn" : "fail") }), o.title), h("div", { class: "s" }, o.detail)),
-        o.button ? h("button", { class: "btn sm p", disabled: busy, onclick: () => startFix(o) }, o.button) : null));
+      body.push(h("div", { class: "row fix-row", "data-area": o.area },
+        h("div", {}, h("div", { class: "t" }, h("span", { class: "dot " + (o.ready ? "ok" : o.button || o.choices.length ? "warn" : "fail") }), o.title), h("div", { class: "s" }, o.detail)),
+        o.button && !o.secondary ? h("button", { class: "btn sm p", disabled: busy, onclick: () => startFix(o) }, o.button) : null));
+      // DV1: what is installed on this computer first, each with its own button.
+      if (o.choices.length) {
+        body.push(h("ul", { class: "fix-choices", "aria-label": o.area === "ios" ? "iPhone simulators on this computer" : "Emulators on this computer" },
+          o.choices.map((c) => h("li", { "data-id": c.id },
+            h("span", {}, h("b", {}, c.name), c.note ? h("span", { class: "s" }, ` · ${c.note}`) : null),
+            c.button ? h("button", { class: "btn sm" + (o.area === "android" ? " p" : ""), disabled: busy, onclick: () => (o.area === "android" ? startFix(o, c) : pickSimulator(c)) }, c.button) : null))));
+      }
+      if (o.button && o.secondary) {
+        body.push(h("div", { class: "fix-more" }, h("span", { class: "s" }, "Or "),
+          h("button", { class: "btn sm", disabled: busy, onclick: () => startFix(o) }, o.button), (o.steps || []).some((s) => s.startsWith("Download")) ? h("span", { class: "s" }, " (downloads about 1.5 GB)") : null));
+      }
     }
     if (fixData.job) body.push(jobPanel(fixData.job));
   }

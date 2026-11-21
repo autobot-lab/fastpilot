@@ -43,7 +43,7 @@ pub struct Check {
     pub ids: Option<String>,
 }
 
-fn check(area: &'static str, name: &str, status: Status, detail: impl Into<String>) -> Check {
+pub(crate) fn check(area: &'static str, name: &str, status: Status, detail: impl Into<String>) -> Check {
     Check { area, name: name.to_owned(), status, detail: detail.into(), hint: None, fixes: Vec::new(), screen: None, screen_hint: None, ids: None }
 }
 
@@ -175,9 +175,9 @@ pub async fn android() -> Vec<Check> {
         out.push(check("android", "device", Status::Ok, shown.join(", ")).screen(shown.join(", "), None).ids(ready.iter().map(|d| d.id.clone()).collect()));
     } else if let Some(avd) = avds.first() {
         out.push(
-            check("android", "device", Status::Warn, format!("no device or emulator running; emulators: {}", avds.join(", ")))
-                .hint(format!("start one: `{emulator} -avd {avd} -no-window &`, or connect a phone with USB debugging on"))
-                .screen(format!("no device or emulator running; emulators: {}", avds.join(", ")), Some("start the emulator with the Fix button, or connect a phone with USB debugging on"))
+            check("android", "device", Status::Warn, format!("no device or emulator running; emulators on this computer: {}", avds.join(", ")))
+                .hint(format!("start one with Start on the dashboard's Device page (fastpilot ui), or `{emulator} -avd {avd} &`, or connect a phone with USB debugging on"))
+                .screen(format!("no device or emulator running; emulators on this computer: {}", avds.join(", ")), Some("press Start next to one of them above, or connect a phone with USB debugging on"))
                 .fix(&format!("start emulator {avd} in the background (no window)"), &emulator, &["-avd", avd, "-no-window", "-no-audio", "-no-snapshot-save"]),
         );
     } else {
@@ -256,7 +256,10 @@ pub async fn ios() -> Vec<Check> {
     out.push(match fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator) {
         Some(p) => check("ios", "runner", Status::Ok, p.display().to_string()).screen("iPhone test runner is set up", None),
         None => {
-            let mut c = check("ios", "runner", Status::Fail, "iPhone test runner not set up").hint("fastpilot setup ios (builds it once with your Xcode, about 5 minutes)");
+            // DV1: a one-time step, not something broken (your simulators are used as they are).
+            let mut c = check("ios", "runner", Status::Warn, crate::fix::IOS_SETUP)
+                .hint("fastpilot setup ios (builds a small test runner with your Xcode, once)")
+                .screen(crate::fix::IOS_SETUP, Some("press Set up iPhone testing above"));
             if let Ok(exe) = std::env::current_exe() {
                 c = c.fix("Build the iPhone test runner with your Xcode (about 5 minutes, once)", exe.to_string_lossy().as_ref(), &["setup", "ios", "--yes"]);
             }
