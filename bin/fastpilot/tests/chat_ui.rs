@@ -180,6 +180,8 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let sys = first.iter().position(|a| *a == "--append-system-prompt").map(|i| first[i + 1]).expect("system prompt");
     assert!(sys.contains("fastpilot-proposal") && sys.contains("block_actions ="), "{sys}");
     // V042 (QA Low): the bot answers about Pay in plain words, never with the setting's name.
+    // PF2: "test what I changed" goes through related_tests, with the reasons and what was not run.
+    assert!(sys.contains("call `related_tests` first") && sys.contains("Not run (N)"), "{sys}");
     assert!(sys.contains("Never show the user an internal setting name") && sys.contains("The Pay button is blocked by limits. You can change that in Settings → Limits & permissions."), "{sys}");
     // S5 (v0.4): the bot knows the skill library (index here; each skill through the docs tool).
     assert!(sys.contains("- regression: ") && sys.contains("docs(topic: \"skill/<name>\")"), "skill index in the system prompt");

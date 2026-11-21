@@ -13,7 +13,7 @@ answers with a compact text snapshot and a diff, not raw view hierarchies.
 Two ways in:
 
 - **MCP tools** (preferred): `session`, `run_flow`, `check_flow`, `snapshot`, `screenshot`, `assert`,
-  `report`, `state`, `config`, `docs`.
+  `report`, `state`, `config`, `docs`, `related_tests` (which saved tests to run first after a code change).
 - **Shell CLI** (when only a shell is available): `fastpilot open <url|app>`, `fastpilot snapshot -i`,
   `fastpilot click @e3`, `fastpilot fill "Email" a@b.com`, `fastpilot wait "Dashboard"`,
   `fastpilot assert visible "Dashboard"`, `fastpilot flow file.yaml`, `fastpilot close`. Sessions stay

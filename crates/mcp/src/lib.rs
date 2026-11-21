@@ -2,6 +2,7 @@
 //! `report`, `docs` (PRD §10).
 
 mod docs;
+pub mod changes;
 pub mod skills;
 
 use std::collections::HashMap;
@@ -231,6 +232,12 @@ pub struct StateArgs {
     /// State name (save, load, delete): `.fastpilot/states/<name>.json`.
     pub name: Option<String>,
     pub session: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RelatedArgs {
+    /// Branch or commit to compare with (default: where this branch left main).
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -953,6 +960,14 @@ impl FastPilot {
             }
             other => fail(format!("unknown action `{other}` (save, load, list, delete)")),
         }
+    }
+
+    #[tool(description = "The saved tests (tests/*.md) most related to the project's code changes since `base` (default: where this branch left main), each with one plain reason, then the ones not related. Read only (git). For \"test what I changed\": run the chosen tests first and say \"Chosen because …\".")]
+    async fn related_tests(&self, Parameters(args): Parameters<RelatedArgs>) -> Result<CallToolResult, ErrorData> {
+        let project = std::env::current_dir().unwrap_or_default();
+        let notes: Vec<String> = fastpilot_memory::notes::Notes::from_env().list().into_iter().filter(|n| n.problem.is_none()).map(|n| n.text).collect();
+        let memory = fastpilot_memory::Memory::from_env();
+        ok(changes::for_ai(&project, &project.join("tests"), args.base.as_deref(), &memory, &notes))
     }
 
     #[tool(description = "fastpilot reference docs. Topics: dsl, selectors, parallel, examples, errors, memory, devices, skills (the testing skills: regression, bug-report, test techniques, ...), skill/<name> (one skill to follow).")]
