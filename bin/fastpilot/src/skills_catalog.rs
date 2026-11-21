@@ -33,8 +33,11 @@ pub const CATALOG: &[(&str, &str, &str, &str)] = &[
     ("accessibility-basics", "experience", "Checklist · Accessibility", "Names, labels, focus and contrast basics."),
     ("mobile-basics", "experience", "Checklist · Mobile", "Permissions, the back button, offline and slow network."),
     ("ticket-to-test", "collaboration", "Acceptance tests", "Turns a story, acceptance criteria or a ticket into tests."),
+    ("jira-ticket-to-test", "collaboration", "Jira · Ticket to tests", "Reads a Jira ticket's acceptance criteria and drafts tests. Read only."),
     ("regression", "management", "Regression", "Runs every saved test again and says what is newly broken."),
     ("bug-report", "management", "Bug report", "Turns a failure into a report a developer can act on."),
+    ("jira-bug-report", "management", "Jira · Bug report", "Creates one Jira issue for a failure, after your OK. Links, no uploads."),
+    ("jira-test-result", "management", "Jira · Test result", "Comments a result on a ticket after your OK; moves it only when you ask."),
     ("test-report", "management", "Test report", "Sums up results for people who were not watching."),
     ("release-check", "management", "Release check", "One verdict: SHIP, SHIP WITH FIXES or DO NOT SHIP."),
 ];
@@ -71,7 +74,8 @@ pub fn suggest(job: &str, app: &str, devices: &[String]) -> Vec<(String, String)
         (&["login", "account", "otp", "sign up", "signup", "password"], &["login-and-otp", "form-validation"]),
         (&["form", "register", "profile", "address"], &["form-validation", "edge-cases"]),
         (&["release", "deploy", "staging", "go/no-go"], &["release-check", "test-report"]),
-        (&["ticket", "jira", "story"], &["ticket-to-test"]),
+        (&["jira"], &["jira-ticket-to-test", "jira-bug-report"]),
+        (&["ticket", "story"], &["ticket-to-test"]),
     ];
     for (words, skills) in rules {
         if let Some(w) = words.iter().find(|w| text.contains(*w)) {
@@ -133,6 +137,9 @@ mod tests {
         assert!(s.iter().any(|(id, _)| id == "edge-cases"));
         let s = suggest("Check the login", "", &["web".into()]);
         assert_eq!(s.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["login-and-otp", "form-validation", "regression", "bug-report"]);
+        // X3: Jira in the job suggests the Jira skills.
+        let s = suggest("Test the Jira tickets in QA", "", &["web".into()]);
+        assert_eq!(s.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["jira-ticket-to-test", "jira-bug-report", "ticket-to-test", "regression"]);
         let s = suggest("Test the app", "", &["web".into()]);
         assert_eq!(s.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["regression", "bug-report"]);
         let lib = library();

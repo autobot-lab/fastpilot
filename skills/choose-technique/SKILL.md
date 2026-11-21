@@ -20,6 +20,7 @@ loop; this skill only decides *how* to design the checks.
 | Many options that combine (payment × shipping × country) | `pairwise` |
 | A whole journey a person does end to end, with its other and error paths | `use-case-scenarios` |
 | A user story, acceptance criteria or a ticket | `ticket-to-test` (acceptance tests) |
+| A Jira ticket key or link (the Atlassian server is connected) | `jira-ticket-to-test`, which reads it and hands off to `ticket-to-test` |
 | A new feature with no description | `exploratory-check` (exploratory testing) |
 | Login, a form, checkout, accessibility, mobile behaviour, or the user's own list | `checklist-based` |
 | Always, briefly | a few `edge-cases` (error guessing) |

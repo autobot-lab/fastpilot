@@ -25,7 +25,7 @@ fastpilot init
 `init` asks before each change; answer `y`. At the end it asks **"Open the dashboard now?"**:
 press Enter.
 
-> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 21 testing
+> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 24 testing
 > skills in one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
@@ -67,6 +67,9 @@ An agent is a tester with its own job, devices, instructions, and skills.
   instructions. Click a suggested instruction to add it.
 - **Skills** are ready-made test know-how, grouped by technique: boundary values, decision tables,
   regression, safe checkout, and more. Suggested skills are already ticked, each with a reason.
+  With Atlassian's MCP server in Claude Code, three Jira skills turn tickets into tests, log a
+  failed run as a bug and post results; each write to Jira waits for your OK
+  ([setup](docs/guide.md#jira)).
 - Or simply describe the agent in one sentence in Chat and click **Create**.
 
 You can have several agents, for example "Checkout" on web and "Login" on Android. Each has its own

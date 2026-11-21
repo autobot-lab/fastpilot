@@ -6,6 +6,10 @@ license: Apache-2.0
 
 # Ticket to test (acceptance tests)
 
+When the requirement is a Jira key or link and Claude Code has the Atlassian server, the
+`jira-ticket-to-test` skill reads it first and then comes back here. To log a failure or post a result
+in Jira, use the `jira-bug-report` or `jira-test-result` skill (each write needs the user's OK).
+
 ## Steps
 1. **Read the requirement** and list what must be true (one line each). Ask about anything
    unclear instead of guessing (which environment, which account, expected text).
