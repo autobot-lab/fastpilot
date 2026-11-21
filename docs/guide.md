@@ -260,12 +260,17 @@ claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp
 Then open Claude Code, type `/mcp`, choose **atlassian** and sign in in the browser. The sign-in is
 between you and Atlassian: fastpilot never sees a password or a token, and never asks for one in chat.
 
+- **Keep Claude Code's own question for every write:** never allow the `mcp__atlassian` server as a
+  whole. Allow only its read tools, and keep Claude Code asking for every tool that writes or deletes:
+  create, edit, comment, transition, the generic write and delete tools (`executeWrite`,
+  `executeDestructive`), and Confluence create or update. Claude Code then asks before each write as
+  well, even if a skill was not used. Never use the Jira skills with `--dangerously-skip-permissions`.
+- **A test account:** the browser sign-in can do everything your Atlassian user can do, Confluence
+  included. If you can, sign in with a dedicated account that sees only the projects testing needs.
 - **API token instead of the browser sign-in:** Atlassian's API-token mode for its MCP server has to be
-  allowed by an organisation admin of your Atlassian site. Ask them; the token is then set in Claude
-  Code's MCP settings, never in fastpilot or in chat.
-- **Keep Claude Code's own question for writes:** do not add `mcp__atlassian__createJiraIssue`,
-  `mcp__atlassian__addOrEditJiraIssueComment` or `mcp__atlassian__transitionJiraIssue` to the tools
-  you always allow. Claude Code then asks before each write as well, even if a skill was not used.
+  allowed by an organisation admin of your Atlassian site. Ask them. Keep the token in an environment
+  variable rather than on the command line (shell history), never commit a `.mcp.json` that holds it,
+  and do not add it with `--scope project`. It never goes into fastpilot or the chat.
 - **Where it works:** Claude Code (terminal, or the fastpilot plugin) with the Atlassian server
   connected. The dashboard's Chat uses only fastpilot's own tools, so it cannot reach Jira.
 - **Which site and project:** when your account sees several Atlassian sites, the skill asks which
