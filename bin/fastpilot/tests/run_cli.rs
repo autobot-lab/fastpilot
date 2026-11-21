@@ -463,3 +463,57 @@ fn provider_key_is_not_sent_to_another_server() {
     assert!(calls(&dir.join("claude")).is_empty(), "no silent fall back to Claude Code");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// V042 (DEMO_PASS): a test that names a secret this run does not have is a setup problem: it does
+/// not start (no Claude Code, no retries), the line says "could not run [setup]", the summary says it
+/// is not a pass with the exact next step, the secret's value is never printed, and the exit is 1.
+#[test]
+fn a_missing_secret_is_a_setup_problem_and_the_test_does_not_start() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Allowed, but no value: only the value is missing.
+    let log = dir.join("claude-a");
+    let (ok, out) = run_on("tests/login.md", &dir, &log, &[("DEMO_PASS", "")], &[]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("✗ login-ok could not run [setup]: Could not run: needs the secret DEMO_PASS, and it is not set."), "{out}");
+    assert!(out.contains("1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures"), "{out}");
+    assert!(out.contains("Could not run. The test \"Login works\" needs the secret DEMO_PASS, and it is not set.\n0 of 1 tests ran. This is not a pass."), "{out}");
+    assert!(out.contains("• Set it for this window:   export DEMO_PASS=…") && !out.contains("export FASTPILOT_VARS"), "{out}");
+    assert!(out.contains("1 test could not start: a secret it needs is not set") && !out.contains("attempts"), "{out}");
+    assert!(calls(&log).is_empty(), "Claude Code never started for a test that cannot run");
+    // Neither allowed nor set: both go in the export line, and the dashboard way is named.
+    let log = dir.join("claude-b");
+    let (ok, out) = run_on("tests/login.md", &dir, &log, &[("DEMO_PASS", ""), ("FASTPILOT_VARS", "")], &[]);
+    assert!(!ok && out.contains("export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=…") && out.contains("Settings → Secret"), "{out}");
+    assert!(calls(&log).is_empty());
+    // A value without its name in FASTPILOT_VARS: the value is never printed.
+    let log = dir.join("claude-c");
+    let (ok, out) = run_on("tests/login.md", &dir, &log, &[("FASTPILOT_VARS", "")], &[]);
+    assert!(!ok && out.contains("its name is not in FASTPILOT_VARS") && out.contains("export FASTPILOT_VARS=DEMO_PASS\n"), "{out}");
+    assert!(!out.contains("rahasia123"), "{out}");
+    // In a demo folder: the value is in .mcp.json, which `fastpilot run` does not read; it says so.
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("tests")).expect("proj");
+    std::fs::copy(format!("{ROOT}/tests/login.md"), proj.join("tests/login.md")).expect("copy");
+    std::fs::write(proj.join(".mcp.json"), json!({ "mcpServers": { "fastpilot": { "command": "fastpilot", "args": ["mcp"], "env": { "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123" } } } }).to_string()).expect("mcp");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["run", "tests/login.md"])
+        .current_dir(&proj)
+        .env("HOME", &dir)
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("DEMO_PASS")
+        .env_remove("FASTPILOT_VARS")
+        .env("FASTPILOT_CLAUDE", FAKE)
+        .env("FAKE_CLAUDE_LOG", dir.join("claude-d"))
+        .env("FASTPILOT_DIR", proj.join(".fastpilot"))
+        .output()
+        .expect("run");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("This folder's .mcp.json has DEMO_PASS for Claude Code and Chat; fastpilot run reads only the environment.") && !text.contains("rahasia123"), "{text}");
+    assert!(calls(&dir.join("claude-d")).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -80,6 +80,9 @@ fn env_for(cmd: &mut std::process::Command, home: &Path, entries: &Path, github:
         .env("FAKE_CLAUDE_FAIL", "1")
         .env("FAKE_CLAUDE_LOG", { let _ = std::fs::create_dir_all(home.join("claude-log")); home.join("claude-log") })
         .env("FASTPILOT_RETRY_BUDGET", "0")
+        // The test names ${DEMO_PASS}: without it the run is "could not run" (V042), not a failure.
+        .env("FASTPILOT_VARS", "DEMO_PASS")
+        .env("DEMO_PASS", "rahasia123")
         .env_remove("ANTHROPIC_API_KEY");
 }
 
@@ -177,6 +180,29 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     assert_eq!(last["passed"], false, "{v}");
     assert!(last["summary"].as_str().is_some_and(|s| s.contains("0 of 1 test passed, 1 failed — login-ok: ") && s.contains("login-ok")), "{last}");
     assert!(last["notified"].as_array().is_some_and(|n| n.len() == 3), "{last}");
+    assert!(last["needs"].is_null(), "a real failure is not a setup problem: {last}");
+
+    // V042: the secret is not set where the schedule runs: "could not run", in amber, said as a
+    // setup problem in the notification, no Claude Code started, the value never shown.
+    let calls_before = std::fs::read_dir(home.join("claude-log")).map(|d| d.count()).unwrap_or(0);
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["schedule", "run", "login-harian"]).current_dir("/");
+    env_for(&mut cmd, &home, &entries, gh_port);
+    cmd.env_remove("DEMO_PASS");
+    let out = cmd.output().expect("schedule run");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("login-ok could not run [setup]"), "{text}");
+    let sent = hook.lock().expect("hook").last().cloned().unwrap_or_default();
+    assert!(sent.contains("could not run. It needs the secret DEMO_PASS") && sent.contains("this is not a pass") && !sent.contains("rahasia123"), "{sent}");
+    let issue = gh.lock().expect("gh").last().cloned().unwrap_or_default();
+    assert!(issue.contains("could not run: needs DEMO_PASS"), "the title says it too: {issue}");
+    assert_eq!(std::fs::read_dir(home.join("claude-log")).map(|d| d.count()).unwrap_or(0), calls_before, "Claude Code never started");
+    let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
+    let v: serde_json::Value = serde_json::from_str(&list).expect("json");
+    let last = &v["schedules"][0]["last"];
+    assert_eq!((last["passed"].as_bool(), last["needs"].as_str()), (Some(false), Some("DEMO_PASS")), "{last}");
+    assert!(last["summary"].as_str().is_some_and(|s| s.starts_with("0 of 1 test passed, 1 could not run")), "{last}");
 
     // D5: every 2 hours inside 08:00–20:00. Bad N or an inverted window is refused for people.
     let hourly = |n: u64, from: &str, to: &str| serde_json::json!({ "id": "", "name": "Checkout every 2 hours", "tests": tests, "when": { "every": "hours", "hours": n, "from": from, "to": to }, "notify": { "os": true }, "enabled": true });

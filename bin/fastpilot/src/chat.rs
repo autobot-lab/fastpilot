@@ -1308,6 +1308,11 @@ pub fn test_of(v: &Value) -> Res<TestDraft> {
 /// QA B2: the secrets the project's `.mcp.json` gives fastpilot (the names in its fastpilot
 /// entry's FASTPILOT_VARS, with their values), as `fastpilot demo` writes `DEMO_PASS`. Only
 /// these go to Chat's fastpilot server: nothing else from that file (it could loosen limits).
+/// The secret names the project's `.mcp.json` gives fastpilot a value for (names only).
+pub fn mcp_secret_names() -> Vec<String> {
+    mcp_secrets().into_iter().map(|(n, _)| n).collect()
+}
+
 fn mcp_secrets() -> Vec<(String, String)> {
     let Some(v) = std::fs::read_to_string(std::env::current_dir().unwrap_or_default().join(".mcp.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
         return vec![];

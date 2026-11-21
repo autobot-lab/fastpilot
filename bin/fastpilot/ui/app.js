@@ -1495,6 +1495,13 @@ function lastRun(x) {
       : h("span", { class: "muted" }, "Not run yet");
   }
   const at = when(new Date(l.finished_ms || l.started_ms));
+  // V042 (FastUI/UX D1): a secret that is not set is a setup problem: amber "could not run", never a pass or a failure.
+  if (l.needs) {
+    return h("div", {}, h("span", { class: "warn-txt" }, "Could not run · ", at),
+      h("div", { class: "s" }, `${x.schedule.name} could not run. It needs the secret ${l.needs}, and no value is set where schedules run. Nothing ran, so this is not a pass.`),
+      h("div", { class: "s" }, h("a", { class: "lk", href: "#/settings/secret" }, "Open Settings → Secret")),
+      l.notified && l.notified.length ? h("div", { class: "s" }, l.notified.join(" · ")) : null);
+  }
   const count = l.total !== undefined && l.total !== null ? `${l.ok}/${l.total}` : (l.passed ? "passed" : "failed");
   const label = [l.passed ? "✓ " : "✗ ", count, " ", at];
   const sr = `${l.passed ? "Passed" : "Failed"} ${count} at ${at}, open the report`;
