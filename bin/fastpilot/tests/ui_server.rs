@@ -376,34 +376,48 @@ fn ui_doctor_shows_no_paths_or_device_ids() {
 /// the server keeps running instead of dying on a broken pipe (flaky "connection reset" in tests).
 #[test]
 fn ui_survives_a_closed_stdout() {
-    let free = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = free.local_addr().expect("addr").port();
-    drop(free);
     let home = std::env::temp_dir().join(format!("fp-ui-pipe-{}", std::process::id()));
     std::fs::create_dir_all(&home).expect("home");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fastpilot"))
-        .args(["ui", "--no-open", "--port", &port.to_string()])
-        .env("HOME", &home)
-        .env_remove("FASTPILOT_CONFIG")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("ui");
-    drop(child.stdout.take());
-    let mut up = false;
-    for _ in 0..40 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            up = true;
+    // The free port is picked here and handed over, so another test running in parallel can take
+    // it in between (v0.4.0 gate: "up true, alive false"). That shows as "already in use" on the
+    // server's stderr: then try another port. Any other exit is the failure this test is about.
+    let (mut up, mut alive, mut status, mut last_err) = (false, false, 0, String::new());
+    for _attempt in 0..3 {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = free.local_addr().expect("addr").port();
+        drop(free);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(["ui", "--no-open", "--port", &port.to_string()])
+            .env("HOME", &home)
+            .env_remove("FASTPILOT_CONFIG")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("ui");
+        // Closed before the server writes its first line: every write it makes hits a closed pipe.
+        drop(child.stdout.take());
+        up = false;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                up = true;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        alive = child.try_wait().expect("wait").is_none();
+        status = if up && alive { http(port, "GET", "/api/live", &[], "").status } else { 0 };
+        let _ = child.kill();
+        let _ = child.wait();
+        last_err.clear();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut err, &mut last_err);
+        }
+        if alive || !last_err.contains("already in use") {
             break;
         }
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let alive = child.try_wait().expect("wait").is_none();
-    let status = if up && alive { http(port, "GET", "/api/live", &[], "").status } else { 0 };
-    let _ = child.kill();
-    let _ = child.wait();
     let _ = std::fs::remove_dir_all(home);
-    assert!(up && alive, "still serving with its stdout closed (up {up}, alive {alive})");
+    assert!(up && alive, "still serving with its stdout closed (up {up}, alive {alive}): {last_err}");
     assert_eq!(status, 401, "and answers");
 }

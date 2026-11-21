@@ -66,6 +66,7 @@ def save():
             json.dump(entry, f)
 
 def result(text, is_error=False, turns=0, code=0):
+    entry["end"] = time.time()
     save()
     print(json.dumps({"type": "result", "subtype": "error_during_execution" if is_error else "success",
                       "is_error": is_error, "num_turns": turns, "result": text,

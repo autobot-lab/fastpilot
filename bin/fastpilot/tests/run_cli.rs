@@ -191,8 +191,19 @@ fn parallel_suite_with_stand_in_claude() {
     let mut head = first[..3].to_vec();
     head.sort();
     assert_eq!(head, ["par-a", "par-b", "par-c"], "{first:?}");
-    // 3 web tests × 3 tool calls × 300 ms run concurrently, not one after another.
-    assert!(started.elapsed() < std::time::Duration::from_secs(15), "{:?}", started.elapsed());
+    // The 3 web tests run concurrently, not one after another: there is a moment when all three
+    // are running (each one started before any of them ended). Measured on the stand-in's own
+    // start and end times, so a busy machine makes them slower but not serial (a fixed 15 s limit
+    // failed at 18.4 s under load in the v0.4.0 gate).
+    let spans: Vec<(f64, f64)> = calls(&log)
+        .iter()
+        .filter(|c| c["prompt"].as_str().and_then(|p| p.split('`').nth(1)).is_some_and(|id| id.starts_with("par-")))
+        .filter_map(|c| Some((c["start"].as_f64()?, c["end"].as_f64()?)))
+        .collect();
+    assert_eq!(spans.len(), 3, "one finished stand-in run per web test: {spans:?}");
+    let last_start = spans.iter().map(|s| s.0).fold(f64::MIN, f64::max);
+    let first_end = spans.iter().map(|s| s.1).fold(f64::MAX, f64::min);
+    assert!(last_start < first_end, "all three web tests ran at the same time: {spans:?} ({:?} in all)", started.elapsed());
     if has_android {
         let cross = out.lines().find(|l| l.contains("login-cross-platform")).unwrap_or("");
         assert!(cross.contains("Session plan: web: your own Chrome; android:"), "{cross}");
