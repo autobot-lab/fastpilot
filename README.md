@@ -25,6 +25,9 @@ fastpilot init
 `init` asks before each change; answer `y`. At the end it asks **"Open the dashboard now?"**:
 press Enter.
 
+> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 21 testing
+> skills in one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
+
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
 > pages and example tests, and opens the dashboard on it.
 
