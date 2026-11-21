@@ -133,6 +133,12 @@ async fn live_page_works_with_the_keyboard() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     assert!(at.contains("#/agents/device-pick/chat"), "Create opens the new agent: {at}");
+    // v0.4.1 (the user): the empty Chat shows no suggestion chips ("Test the login page in
+    // Chrome", …), only its title and help line.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Ask or tell the fastpilot bot\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let empty = eval(&client, "(() => { const e = document.querySelector('.empty'); return [e.querySelectorAll('button, .chip').length, /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|'); })()").await;
+    assert_eq!(empty, "\"0|false\"", "no suggestion chips in the empty Chat");
     eval(&client, "location.hash = '#/live', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n", "session": "viewer" })).await;
     assert!(ok, "back on Live: {out}");

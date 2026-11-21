@@ -968,7 +968,6 @@ async function pollLive() {
 
 // ---- Chat (C4) ----
 let chatData = null, chatTimer = null, chatSig = "";
-const SUGGEST = ["Test the login page in Chrome", "Write a test for the login and run it every 2 hours", "Block the Pay button in all tests"];
 const chatEdits = {}; // proposal id -> what the user is changing with Edit
 
 // D10a: whose conversation Chat shows, and where it draws (agents.js puts it in an agent's Chat tab;
@@ -1406,8 +1405,7 @@ function renderChat() {
     log.replaceChildren(h("li", { class: "err", role: "alert" }, "Cannot read the chat: " + chatData.error));
   } else if (!msgs.length) {
     log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Ask or tell the fastpilot bot"),
-      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter."),
-      h("div", { class: "chips" }, SUGGEST.map((t) => h("button", { class: "chip sug", onclick: () => chatSend(t) }, t)))));
+      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter.")));
   } else {
     log.replaceChildren(...msgs.map(chatMsg));
   }
