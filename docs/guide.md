@@ -357,6 +357,9 @@ The conversation continues with `--resume`. Sessions the bot opens appear in Liv
   your own words from that message; nothing is saved until you click *Add note*, and every agent reads it from the
   next run (Memory › Project notes). A note the bot got from a tested page is never a card: the chat shows "A page
   tried to give the agent a rule" instead. Hidden characters, passwords, tokens and codes are refused.
+- Project notes reach `fastpilot run`, Chat (an open conversation gets your changes with your next message) and
+  agents on another provider. Claude Code in Terminal reads them when its fastpilot starts: restart it after you
+  change a note.
 - Webhook URLs and tokens never go through chat: a schedule from chat that asks for a webhook is saved without
   the webhook, and you then fill in the URL in Schedules › Edit.
 - Model: `model_explore` (see Settings › AI model).

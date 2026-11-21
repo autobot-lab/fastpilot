@@ -229,8 +229,8 @@ function notesPanel() {
     noteForm.id ? null : [h("div", { class: "mem-k" }, "Or start from a question"),
       h("div", { class: "note-qs" }, QUESTIONS.map(([q, g, start]) => h("button", { class: "chip preset", onclick: () => { noteForm = { group: g, text: start, id: null }; noteError = null; pageNotes(); const t = document.querySelector(".note-text"); t?.focus(); t?.setSelectionRange(start.length, start.length); } }, q)))],
     h("p", { class: "note-warn" }, h("b", {}, "Notes are not hidden. "), "Never write a password, a token or a code here. Save those as ", h("a", { class: "lk", href: "#/settings/secret" }, "Secrets"), " and only mention the name."),
-    h("p", { class: "s muted" }, "Every agent in this project reads these notes when a run starts. Runs already started keep the notes they began with."),
-    h("p", { class: "s muted" }, "Kept on this computer for this project folder, not in the project's files: a project you download cannot bring notes of its own."));
+    h("p", { class: "s muted" }, "Every agent in this project reads these notes when a run starts; runs already started keep the notes they began with. Chat gets your changes with your next message. A Claude Code session in Terminal reads them after you restart it."),
+    h("p", { class: "s muted" }, "Kept on this computer for this project folder, not in the project's files: a project you download cannot bring notes of its own. An agent on another AI provider sends them to that provider with its messages."));
 }
 
 // The page's CSP has no inline styles: the width is set through the DOM, not a style attribute.
