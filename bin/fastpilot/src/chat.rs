@@ -117,6 +117,9 @@ struct Chat {
     /// D10b: the conversation so far for an agent on another provider (chat-completions messages,
     /// without the system prompt). Dropped with the session (M6).
     history: Vec<Value>,
+    /// QA (notes): the project notes this Claude Code conversation was given (its fastpilot read them
+    /// once at its start), so a resumed turn can carry notes the user changed since.
+    notes_given: Option<String>,
 }
 
 /// D10a: one conversation per agent (agent id -> its Chat).
@@ -382,6 +385,26 @@ fn context() -> String {
     )
 }
 
+/// The text a Claude Code turn gets on stdin. A new conversation's fastpilot puts the notes in its
+/// instructions; a resumed one keeps the notes it began with, so when the user changed them since,
+/// the current notes come first, marked as theirs and replacing the earlier ones.
+fn notes_update(agent: &str, resumed: bool, notes: Option<String>, text: &str) -> String {
+    let mut c = chat_of(agent);
+    if !resumed {
+        c.notes_given = notes;
+        return text.to_owned();
+    }
+    if c.notes_given == notes {
+        return text.to_owned();
+    }
+    let block = match &notes {
+        Some(n) => format!("{n}\n(These are the project notes as they are now; they replace the notes this conversation began with.)"),
+        None => "Project notes: the user removed all project notes for this project; earlier notes in this conversation no longer apply.".to_owned(),
+    };
+    c.notes_given = notes;
+    format!("[fastpilot: the user changed the project notes since this conversation started.]\n{block}\n\n[The user's message:]\n{text}")
+}
+
 /// One `claude -p` run for the user's message, streamed into the bot message `bot`.
 async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<()> {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
@@ -402,8 +425,13 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
         }
     }
     // D10b: an agent on another provider: the same tools, prompt and cards, another model loop.
+    // D6: the project notes, read once for this turn (marked as the user's own context; notes with
+    // hidden characters or a secret are left out by `for_agents`).
+    let notes = fastpilot_memory::notes::Notes::from_env().for_agents();
     if me.provider.as_deref().is_some_and(|p| p != "claude") {
-        let system = format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me));
+        // Another provider never sees fastpilot's MCP instructions: the notes go in its system prompt.
+        let notes_part = notes.as_deref().map(|n| format!("\n\n{n}")).unwrap_or_default();
+        let system = format!("{SYSTEM}\n\n{}{}{}{notes_part}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me));
         return turn_provider(agent, &me, text, bot, &system, &env).await;
     }
     // QA B1: an old Claude Code answers every message with an API error; say what to do first.
@@ -420,6 +448,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     if let Some(id) = &resume {
         cmd.args(["--resume", id]);
     }
+    let prompt = notes_update(agent, resume.is_some(), notes, text);
     let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -429,7 +458,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
         .map_err(|e| format!("Claude Code does not start (`{}`): {e}. Install it from https://claude.com/claude-code, then run `claude` once in Terminal to log in.", crate::run::claude_bin()))?;
     // The prompt on stdin: variadic options would swallow it.
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(text.as_bytes()).await;
+        let _ = stdin.write_all(prompt.as_bytes()).await;
     }
     let stdout = child.stdout.take().ok_or("no output")?;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
