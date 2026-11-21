@@ -1,0 +1,13 @@
+{
+  "name": "fastpilot",
+  "owner": { "name": "autobot-lab", "url": "https://github.com/autobot-lab" },
+  "metadata": { "description": "fastpilot, AI-driven QA for web, Android and iOS, as a Claude Code plugin." },
+  "plugins": [
+    {
+      "name": "fastpilot",
+      "source": "./",
+      "description": "An MCP server that drives Chrome, emulators and simulators, plus 21 testing skills.",
+      "category": "testing"
+    }
+  ]
+}
