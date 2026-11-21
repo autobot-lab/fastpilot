@@ -604,3 +604,28 @@ fn changed_runs_the_related_tests_first_with_a_reason() {
     assert!(out.contains("--all-after goes with --changed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// PF6: every run leaves `outcome.json` for the flaky test doctor: pass or fail, the failed step and
+/// how, where it ran and when.
+#[test]
+fn a_run_leaves_its_outcome_for_the_doctor() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-outcome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (ok, out) = run_on("tests/login.md", &dir, &dir.join("claude"), &[("FAKE_CLAUDE_FAIL", "1"), ("FASTPILOT_RETRY_BUDGET", "0")], &[]);
+    if out.contains("Chrome not found") {
+        return eprintln!("skipping: no Chrome");
+    }
+    assert!(!ok, "{out}");
+    let runs: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("runs")).expect("runs").flatten().map(|e| e.path().join("outcome.json")).filter(|p| p.exists()).collect();
+    assert_eq!(runs.len(), 1, "{out}");
+    let o: Value = serde_json::from_str(&std::fs::read_to_string(&runs[0]).expect("outcome")).expect("json");
+    assert_eq!((o["test_id"].as_str(), o["passed"].as_bool(), o["passed_on_retry"].as_bool()), (Some("login-ok"), Some(false), Some(false)), "{o}");
+    assert!(o["failed_step"].as_str().is_some_and(|s| s.starts_with("assertVisible")), "{o}");
+    assert_eq!(o["platforms"], json!(["web"]), "{o}");
+    assert!(o["started_ms"].as_u64().unwrap_or(0) > 0 && o["finished_ms"].as_u64() >= o["started_ms"].as_u64(), "{o}");
+    assert!(!o.to_string().contains("rahasia123"), "no secret values");
+    let _ = std::fs::remove_dir_all(dir);
+}

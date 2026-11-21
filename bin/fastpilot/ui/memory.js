@@ -64,6 +64,40 @@ function rowAction(t) {
   return null;
 }
 
+// PF6: "Why unstable?": evidence first, then the likely cause with how many runs it is based on,
+// then what to do; the three actions, the one that fits the cause first. Chat opens with the text
+// written and the person presses Send.
+function askChat(text) {
+  chatPrefill = text;
+  location.hash = "#/agents/default/chat";
+}
+
+function doctorPanel(t) {
+  const d = t.doctor;
+  if (!d) return null;
+  const strip = d.runs.map((p) => (p ? "✓" : "✗")).join("");
+  const passed = d.runs.filter((p) => p).length;
+  const stepPart = d.step ? (d.step.includes('"') ? ` at the step ${d.step}` : ` at the step "${d.step}"`) : "";
+  const fix = () => askChat(`Fix the test "${t.title}". It is unstable: it fails${stepPart}. ${d.todo || ""}`.trim());
+  const bug = () => askChat(`Write a bug report for the test "${t.title}": it fails${stepPart}.`);
+  const aside = () => { if (confirm(`Set aside "${t.title}"?\n\nIt will still run and be shown, but a failure will not turn the run red. You can bring it back at any time.`)) act("set_aside", t); };
+  const all = { chat: ["Ask Chat to fix this test", fix], bug: ["Make a bug report", bug], set_aside: ["Set aside", aside] };
+  const order = [d.main, "chat", "bug", "set_aside"].filter((k, i, a) => k && all[k] && a.indexOf(k) === i);
+  // No cause: only the evidence and the safe actions.
+  const keys = d.cause === "unknown" ? ["bug", "set_aside"] : d.cause === "not_enough" ? [] : order;
+  const buttons = keys.map((k, i) => h("button", { class: "btn sm" + (i === 0 ? " p" : ""), onclick: all[k][1] }, all[k][0]));
+  if (d.main === "device") buttons.unshift(h("a", { class: "btn sm p", href: "#/device" }, "Open Device"));
+  const tone = { real_bug: "bad", always_fails: "bad", not_enough: "", unknown: "", site: "info", hours: "info" }[d.cause] ?? "warn";
+  return h("section", { class: "mem-doctor", "aria-label": t.status === "failing" ? "Why failing?" : "Why unstable?" },
+    h("h3", {}, t.status === "failing" ? "Why failing?" : "Why unstable?"),
+    d.runs.length ? h("div", { class: "doc-runs" }, h("span", { class: "mono", "aria-hidden": "true" }, strip),
+      h("span", { class: "s muted" }, ` ${passed} passed, ${d.runs.length - passed} failed · oldest → newest`)) : null,
+    d.evidence.length ? h("dl", { class: "mem-facts" }, d.evidence.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])) : null,
+    h("p", { class: "doc-cause " + tone, role: "status" }, d.text),
+    d.todo ? h("p", {}, h("b", {}, "What to do: "), d.todo) : null,
+    buttons.length ? h("div", { class: "btns tight" }, buttons) : null);
+}
+
 function panel(t) {
   const [label, cls] = STATUS[t.status] || [t.status, ""];
   const facts = [
@@ -89,6 +123,7 @@ function panel(t) {
     t.orphan ? h("p", { class: "s muted" }, "Its test file is gone; only what fastpilot remembers is left.") : null,
     h("dl", { class: "mem-facts" }, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])),
     explain ? h("p", { class: "mem-note" }, explain) : null,
+    doctorPanel(t),
     buttons.length ? h("div", { class: "btns tight mem-btns" }, buttons) : null,
     h("p", { class: "s muted" }, h("b", {}, "Forget this: "), "the next run works the steps out again and may take a little longer. Your test itself is not changed."),
     h("p", { class: "s muted" }, h("b", {}, "Set aside: "), "the test still runs and is shown, but a failure does not turn the run red."));

@@ -156,3 +156,74 @@ fn memory_page_lists_tests_in_words_and_changes_only_on_the_users_click() {
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// One recorded run, as `Run::finish` writes it (`runs/<id>/outcome.json`).
+fn outcome(fp: &Path, n: usize, test: &str, passed: bool, retried: bool, step: Option<&str>, start: u64) {
+    let dir = fp.join(format!("runs/20261120-{n:06}-{test}"));
+    std::fs::create_dir_all(&dir).expect("run");
+    let o = json!({ "test_id": test, "passed": passed, "passed_on_retry": retried, "could_not_run": false, "started_ms": start, "finished_ms": start + 60_000,
+        "platforms": ["web"], "failed_step": step, "reason": step.map(|_| "not_found"), "category": step.map(|_| "product"), "error": step.map(|_| "not visible yet") });
+    std::fs::write(dir.join("outcome.json"), o.to_string()).expect("outcome");
+}
+
+/// PF6 (v0.6): "Why unstable?" on the Memory page: the evidence and a likely cause from fixed rules
+/// for an Unstable test, "not unstable, always fails" for a Failing one, "not enough runs yet" with
+/// fewer than 3 recorded runs, and nothing for a reliable test.
+#[test]
+fn why_unstable_explains_with_evidence_and_never_invents() {
+    let home = std::env::temp_dir().join(format!("fp-memory-doctor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    let fp = project.join(".fastpilot");
+    std::fs::create_dir_all(project.join("tests")).expect("tests");
+    std::fs::create_dir_all(fp.join("memory")).expect("memory");
+    for (id, title) in [("voucher", "Checkout with voucher SAVE10"), ("export", "Admin export"), ("login", "Login"), ("search", "Search")] {
+        std::fs::write(project.join(format!("tests/{id}.md")), format!("# {title}\nid: {id}\nplatform: web\ntarget: https://shop.example\n- Open the shop\n")).expect("test");
+    }
+    memory(&fp, "voucher", &[true, false, true, true, false, true, true, false, true, true]);
+    memory(&fp, "export", &[true, true, false, false, false, false]);
+    memory(&fp, "login", &[true, true, true]);
+    memory(&fp, "search", &[true, false, true]);
+    let t0 = 1_795_000_000_000u64;
+    // voucher: fails now and then at the same step; the passes after them came from a retry.
+    for (i, p) in [true, false, true, true, false, true, true, false, true, true].iter().enumerate() {
+        let retried = i > 0 && [1, 4, 7].contains(&(i - 1));
+        outcome(&fp, i, "voucher", *p, *p && retried, (!*p).then_some("assertVisible \"10% off\""), t0 + i as u64 * 3_600_000);
+    }
+    // export: the last 4 runs failed at the same step, the same way.
+    for i in 0..6 {
+        outcome(&fp, 100 + i, "export", i < 2, false, (i >= 2).then_some("tapOn \"Download\""), t0 + i as u64 * 3_600_000 + 1_800_000);
+    }
+    // search: only 2 runs recorded with details.
+    outcome(&fp, 200, "search", true, false, None, t0 + 90_000_000);
+    outcome(&fp, 201, "search", false, false, Some("tapOn \"Go\""), t0 + 95_000_000);
+
+    let ui = start_ui(&home, &project);
+    let own = format!("http://127.0.0.1:{}", ui.port);
+    let (st, body) = request(&ui, "GET", "/api/memory", "", &own);
+    assert_eq!(st, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).expect("json");
+    let d = &row(&v, "voucher")["doctor"];
+    assert_eq!((d["cause"].as_str(), d["main"].as_str()), (Some("timing"), Some("chat")), "{d}");
+    assert!(d["text"].as_str().is_some_and(|t| t.starts_with("Likely cause: timing.") && t.ends_with("Based on 10 runs. This is a likely cause, not a certainty.")), "{d}");
+    assert_eq!(d["runs"].as_array().map(Vec::len), Some(10));
+    let ev = d["evidence"].to_string();
+    assert!(ev.contains("Failed 3 of the last 10 runs") && ev.contains("all 3 failures") && ev.contains("\"Passes on retry\",\"3 of 3 times\""), "{ev}");
+    assert_eq!(d["step"], "assertVisible \"10% off\"");
+    let e = &row(&v, "export")["doctor"];
+    assert_eq!((row(&v, "export")["status"].as_str(), e["cause"].as_str(), e["main"].as_str()), (Some("failing"), Some("always_fails"), Some("bug")), "{e}");
+    assert!(e["text"].as_str().is_some_and(|t| t.starts_with("This test is not unstable. It always fails.")), "{e}");
+    let s = &row(&v, "search")["doctor"];
+    assert_eq!(s["cause"], "not_enough", "{s}");
+    assert!(s["text"].as_str().is_some_and(|t| t.starts_with("Not enough runs yet.")), "{s}");
+    assert!(row(&v, "login").get("doctor").is_none(), "a reliable test has no doctor");
+    // The page: the panel, the three actions, Chat prefilled (never sent by the page).
+    let (_, js) = request(&ui, "GET", "/assets/memory.js", "", &own);
+    for w in ["Why unstable?", "Why failing?", "Ask Chat to fix this test", "Make a bug report", "Set aside", "chatPrefill = text"] {
+        assert!(js.contains(w), "memory.js: {w}");
+    }
+    let (_, app) = request(&ui, "GET", "/assets/app.js", "", &own);
+    assert!(app.contains("if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); }"), "Chat fills the box and waits for Send");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
