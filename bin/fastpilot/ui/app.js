@@ -330,7 +330,7 @@ function pageLimits() {
     h("h2", {}, "Limits & permissions", savedNote()),
     h("p", { class: "sub" }, "These rules apply to every test: from Claude Code, Cursor, the CLI, or ", code("fastpilot run"), "."),
     news,
-    h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, the AI can only make rules stricter, never looser. Saved in ", code(S.path), ".")),
+    h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, a looser rule needs your own words and your typed confirmation on its red card. Saved in ", code(S.path), ".")),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("globe"), "domains that may be opened"),
       opt("Only allow these domains", "Empty = every domain is allowed. Links, redirects and pop-ups to other domains are blocked.",
@@ -1192,13 +1192,24 @@ function settingCard(p) {
 }
 
 // M1: a looser limit the bot proposed that the user did not ask for. Nothing was changed.
+// A loosening the user's own words said no to ("don't allow Pay") is kept apart: it was their words.
 function pageAttempts(list) {
-  const note = list.every((a) => a.kind === "note");
-  return h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
-    h("div", {}, note ? [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]
-      : [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."],
-      h("details", {}, h("summary", {}, "See what it said"),
-        list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said))))));
+  const mine = list.filter((a) => a.kind === "said_no");
+  const page = list.filter((a) => a.kind !== "said_no");
+  const out = [];
+  if (mine.length) {
+    out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
+      h("div", {}, h("b", {}, "Limit kept as it is. "), "Your message names it but does not ask for it (it says no, or asks why): ", mine.map((a) => a.what).join(", "), ". Nothing was changed.")));
+  }
+  if (page.length) {
+    const note = page.every((a) => a.kind === "note");
+    out.push(h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
+      h("div", {}, note ? [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]
+        : [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."],
+        h("details", {}, h("summary", {}, "See what it said"),
+          page.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said)))))));
+  }
+  return out;
 }
 
 // D10a: "New agent · …" (v7 #s4, right): created only on Create; Edit opens the form filled in.
@@ -1380,7 +1391,7 @@ function renderChat() {
     root = h("div", { id: "chat-root", class: "chat" },
       h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" }),
       h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Send")),
-      h("p", { class: "s muted" }, "The bot uses your Claude Code (claude -p) and fastpilot's tools. Schedules and limits only change after you click their card; through chat, limits can only get stricter."));
+      h("p", { class: "s muted" }, "The bot uses your Claude Code (claude -p) and fastpilot's tools. Schedules and most changes wait for your click on their card; one more blocked word applies at once, with Undo. A looser limit gets a red card only when your own message asks for it, and changes only after you type its word to confirm."));
     if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
   }
   const send = document.getElementById("chat-send");

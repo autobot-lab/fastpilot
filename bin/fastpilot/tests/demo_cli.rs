@@ -154,7 +154,9 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
         "fastpilot demo --android",
         "cd fastpilot-demo && claude",
         "\"Use fastpilot to run tests/login.md, then report\"",
-        "Demo password (not a secret): rahasia123",
+        // QA (v0.4): the demo says which account to use, so nobody guesses an email.
+        "Demo account: a@b.com, password rahasia123",
+        "tests write ${DEMO_PASS}",
     ] {
         assert!(out.contains(line), "missing {line:?}:\n{out}");
     }
@@ -164,7 +166,9 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
         assert_eq!(std::fs::read(folder.join(format!("demo/{page}.html"))).expect("page"), repo, "{page}");
     }
     let login = std::fs::read_to_string(folder.join("tests/login.md")).expect("test");
-    assert!(login.contains("target: demo/login.html"), "{login}");
+    assert!(login.contains("target: demo/login.html") && login.contains("a@b.com / ${DEMO_PASS}"), "{login}");
+    let page = std::fs::read_to_string(folder.join("demo/login.html")).expect("page");
+    assert!(page.contains("Demo account: a@b.com, password ${DEMO_PASS}") && !page.contains("Demo account: a@b.com, password rahasia123"), "the page names the account, the password as its variable");
     // QA Low 4: the Skill is in the demo folder, so Claude knows the steps.
     let skill = std::fs::read(format!("{ROOT}/skills/fastpilot/SKILL.md")).expect("repo skill");
     assert_eq!(std::fs::read(folder.join(".claude/skills/fastpilot/SKILL.md")).expect("skill"), skill);
@@ -247,6 +251,9 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
         return eprintln!("skipping the web run: no Chrome");
     }
     let client = mcp_from(&folder, &[]).await;
+    // The demo folder's fastpilot tells Claude Code the demo account (MCP instructions).
+    let told = client.peer_info().and_then(|i| i.instructions.clone()).unwrap_or_default();
+    assert!(told.contains("email a@b.com, password ${DEMO_PASS}") && told.contains("do not ask the user") && !told.contains("rahasia123"), "{told}");
     let flow = "- session: { start: web, platform: web, target: demo/login.html }\n- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n- assertVisible: Budi\n";
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok && out.contains("ok 5/5"), "{out}");

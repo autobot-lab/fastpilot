@@ -49,6 +49,11 @@ commands:
                                      without the repository (--android: install the demo app)
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)
   schedule [list|run ID|remove ID]   scheduled runs (made in `fastpilot ui` › Schedules; run by launchd/systemd/cron)
+  schedule watch TESTS --every MIN --for HOURS [--os] [--github owner/repo]
+                                     after a release: run TESTS every MIN minutes for HOURS hours, hear only
+                                     about new problems (`fastpilot schedule --help`)
+  ship-check [url]... [--links N] [--cookies]   one release verdict for the pages: console errors, failed
+                                     requests, broken links (`fastpilot help` for the details)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
                                      daemon (`fastpilot help` lists them all)
   mcp     serve MCP over stdio (what MCP clients run); --reset: mobile sessions reset their app first
