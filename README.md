@@ -5,6 +5,8 @@ You say what to check; AI runs it on your own computer, shows you every step liv
 what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
 blocked from the start.
 
+<img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard: an agent called QA Checkout gets one sentence in Chat and answers with a Save test and schedule card that lists the test steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only and Edit.">
+
 ## Start in 3 steps
 
 You need a Mac (or Linux), Google Chrome, and [Claude Code](https://claude.com/claude-code) signed in.
@@ -54,6 +56,8 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
 - **iPhone** testing needs a one-time setup with your Xcode (about 5 minutes).
 - Only web? Chrome is enough.
 
+<img src="docs/images/02-device.png" width="860" alt="fastpilot's Device page: two Android emulators installed on this computer, each with a Start button, and the iPhone simulators tests can use.">
+
 ### 2. Pick the AI and store passwords: **Settings**
 - **AI model:** pick the provider, then the model. Claude Code is the default. Other providers
   (OpenAI, OpenRouter, Groq, Ollama) also work, and are marked "not tested yet".
@@ -88,12 +92,14 @@ Write what you want in plain words:
 | Understand a failure | *Why did the checkout test fail?* |
 
 When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**. Nothing is
-saved before you click.
+saved before you click. The picture at the top of this page shows such a card.
 
 ### 5. Watch it run: **Live**
 Watch every test step by step, on web, Android, and iOS. **Take over** if you need to tap something
 yourself, then hand it back to the AI. Several agents can run at the same time; a phone runs one
 test at a time and the others wait their turn.
+
+<img src="docs/images/08-live.png" width="860" alt="The Live page: the QA Checkout agent is testing the event tickets page in Chrome; four steps are done and the fifth, waiting for the reservation message, is running, with Enlarge and Take over buttons.">
 
 ### 6. Run it automatically: **Schedules**
 - **Every N hours** (with active hours, for example 08:00–20:00), every day, or every week.
@@ -102,6 +108,8 @@ test at a time and the others wait their turn.
   about new problems.
 - Get notified by Slack webhook, Mac notification, or GitHub issue when something fails.
 - Or just ask in Chat: *"run the checkout tests every 2 hours"*.
+
+<img src="docs/images/09-schedules.png" width="860" alt="The Schedules page: a test that runs every 2 hours from 08:00 to 20:00 and a release watch that checks every 10 minutes, each with its next run, a passed last run and a Mac notification on failure.">
 
 ### 7. See results: **History** and **Memory**
 - **History:** every run and every Chat conversation, with report, screenshots, and video. Delete
