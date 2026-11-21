@@ -899,7 +899,7 @@ impl FastPilot {
                         "I can't loosen a limit myself. I saved a request for the user to approve:\n  {}  LOOSENS A LIMIT\n  Now:   {}\n  After: {}\nTo approve it, the user opens a terminal and runs:\n  fastpilot config approve\nNothing has changed. Tell the user; do not try another way.{add}",
                         card.title, card.now, card.after
                     )),
-                    Err(e) => fail(format!("`{key}` is a guard rail and this change would loosen it, so it needs the user. It was not saved as a request: {e}. Nothing has changed.{add}")),
+                    Err(e) => fail(format!("`{key}` is a guard rail and this change would loosen it, so it needs the user. It was not saved as a request: {}. Nothing has changed.{add}", e.trim_end_matches('.'))),
                 };
             }
             _ => {}
@@ -1015,8 +1015,20 @@ impl ServerHandler for FastPilot {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("fastpilot", env!("CARGO_PKG_VERSION")))
-            .with_instructions(instructions(self.state.notes.as_deref()))
+            .with_instructions(match demo_account() {
+                Some(d) => format!("{}\n\n{d}", instructions(self.state.notes.as_deref())),
+                None => instructions(self.state.notes.as_deref()),
+            })
     }
+}
+
+/// The account of fastpilot's demo pages and app (QA v0.4: the bot guessed `demo@example.com`).
+pub const DEMO_ACCOUNT: &str = "Demo account (the fastpilot demo pages such as demo/login.html or examples/demo/login.html, and the demo app): \
+                                email a@b.com, password ${DEMO_PASS}. Use it for the demo login; do not ask the user for it.";
+
+/// `DEMO_ACCOUNT` when the demo password is one of this fastpilot's variables (`fastpilot demo` writes it into .mcp.json).
+pub fn demo_account() -> Option<&'static str> {
+    fastpilot_core::config::var("FASTPILOT_VARS").ok().filter(|v| v.split(',').any(|n| n.trim() == "DEMO_PASS")).map(|_| DEMO_ACCOUNT)
 }
 
 /// What the client's model is told at the start: how to use fastpilot, then the project's notes

@@ -91,6 +91,9 @@ async fn settings_through_the_config_tool() {
     assert!(!ok && out.contains("loosen") && out.contains("default,"), "{out}");
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": "default,Keluar" })).await;
     assert!(ok, "{out}");
+    // FastTest (v0.4): an empty list cannot even be a request; the reason reads as one sentence ("..").
+    let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "block_actions", "value": "" })).await;
+    assert!(!ok && out.contains("switched off by you, in Settings") && out.contains("Nothing has changed") && !out.contains(".."), "{out}");
     // Program paths: people only. Environment wins and is not overwritten.
     let (ok, out) = call(&client, "config", json!({ "action": "set", "key": "chrome", "value": "/bin/sh" })).await;
     assert!(!ok && out.contains("only the user"), "{out}");

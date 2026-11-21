@@ -140,7 +140,8 @@ Step names are fastpilot's, not Playwright's or Cypress's. Use these, never `fil
 | choose from a list | `selectOption: { from: "Country", option: "Indonesia" }` |
 | check a page before a release (web) | `shipCheck` (console, requests, links, 3 sizes, accessibility; one verdict) |
 
-In a folder made by `fastpilot demo`, the demo pages are `demo/login.html` and so on.
+In a folder made by `fastpilot demo`, the demo pages are `demo/login.html` and so on. The demo account is
+email `a@b.com` with the password `${DEMO_PASS}` (already in `.mcp.json`): use it, do not ask the user.
 
 ```yaml
 - session: { start: web1, platform: web, target: "demo/login.html" }

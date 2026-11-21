@@ -778,6 +778,8 @@ fn chat_knows_the_projects_secrets_and_never_saves_a_test_sure_to_fail() {
     assert_eq!((env["FASTPILOT_VARS"].as_str(), env["DEMO_PASS"].as_str()), (Some("DEMO_PASS"), Some("rahasia123")), "{env}");
     assert!(env.get("FASTPILOT_ALLOW_EVAL_SCRIPT").is_none() && env["FASTPILOT_BLOCK_ACTIONS"] != "", "nothing else from .mcp.json: {env}");
     assert!(at("--append-system-prompt").contains("Secrets you can use in tests (write them as ${NAME}, never the value): ${DEMO_PASS}"));
+    // QA (v0.4): with the demo password at hand, the bot is told the demo account, not left to guess.
+    assert!(at("--append-system-prompt").contains("email a@b.com, password ${DEMO_PASS}. Use it for the demo login; do not ask the user"), "demo account in the context");
 
     // The demo's own secret is fine: no warning.
     let (_, _) = post("/api/chat", json!({ "message": "write a test for the demo login and save it" }));

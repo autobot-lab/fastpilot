@@ -129,6 +129,12 @@ fn run_options_are_checked_and_help_is_help() {
     assert!(!dir.join("d.sock").exists(), "help must not start the daemon");
     let (_, out) = run(&["--help"]);
     assert!(out.contains("one-time link") && !out.contains("127.0.0.1 + token"), "{out}");
+    // v0.4 (FastTest): the release commands are listed, and their help is help, not an error.
+    assert!(out.contains("schedule watch TESTS --every MIN --for HOURS") && out.contains("ship-check [url]..."), "{out}");
+    for args in [&["schedule", "watch", "--help"][..], &["schedule", "--help"], &["schedule", "help"]] {
+        let (code, out) = run(args);
+        assert!(code == Some(0) && out.starts_with("usage: fastpilot schedule") && out.contains("watch TESTS --every MIN") && !out.contains("not found"), "{args:?}: {code:?} {out}");
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
