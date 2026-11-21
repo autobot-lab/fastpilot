@@ -38,16 +38,23 @@ pub struct Check {
     /// Device page shows no paths or device ids; the terminal keeps them). FastTest M3.
     pub screen: Option<String>,
     pub screen_hint: Option<String>,
+    /// Device serials behind `detail` (`emulator-5556`), printed only with `--verbose`: people
+    /// see the kind of device, developers who need the id ask for it (FastTest, final report).
+    pub ids: Option<String>,
 }
 
 fn check(area: &'static str, name: &str, status: Status, detail: impl Into<String>) -> Check {
-    Check { area, name: name.to_owned(), status, detail: detail.into(), hint: None, fixes: Vec::new(), screen: None, screen_hint: None }
+    Check { area, name: name.to_owned(), status, detail: detail.into(), hint: None, fixes: Vec::new(), screen: None, screen_hint: None, ids: None }
 }
 
 impl Check {
     fn screen(mut self, text: impl Into<String>, hint: Option<&str>) -> Self {
         self.screen = Some(text.into());
         self.screen_hint = hint.map(str::to_owned);
+        self
+    }
+    fn ids(mut self, ids: Vec<String>) -> Self {
+        self.ids = Some(ids.join(", ")).filter(|s| !s.is_empty());
         self
     }
     fn hint(mut self, h: impl Into<String>) -> Self {
@@ -164,9 +171,8 @@ pub async fn android() -> Vec<Check> {
     let emulator = fastpilot_android::sdk_tool("emulator/emulator", "emulator");
     let avds: Vec<String> = output(&emulator, &["-list-avds"]).await.map(|s| s.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty() && !l.starts_with("INFO")).collect()).unwrap_or_default();
     if !ready.is_empty() {
-        let names: Vec<String> = ready.iter().map(|d| format!("{}: {} ({})", d.kind.label(), d.name, d.id)).collect();
         let shown: Vec<String> = ready.iter().map(|d| format!("{}: {}", d.kind.label(), d.name)).collect();
-        out.push(check("android", "device", Status::Ok, names.join(", ")).screen(shown.join(", "), None));
+        out.push(check("android", "device", Status::Ok, shown.join(", ")).screen(shown.join(", "), None).ids(ready.iter().map(|d| d.id.clone()).collect()));
     } else if let Some(avd) = avds.first() {
         out.push(
             check("android", "device", Status::Warn, format!("no device or emulator running; emulators: {}", avds.join(", ")))
@@ -211,12 +217,12 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
             .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
-    let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| format!("{} ({})", d.id, d.name)).collect();
-    let shown: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| d.name.clone()).collect();
+    let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| d.id.clone()).collect();
+    let shown: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| format!("{}: {}", d.kind.label(), d.name)).collect();
     out.push(if ready.is_empty() {
         check("android", "device", Status::Warn, format!("no device on the adb server {server}")).hint("start the emulator or connect the phone on that machine").screen("no device on the other computer", None)
     } else {
-        check("android", "device", Status::Ok, ready.join(", ")).screen(format!("on another computer: {}", shown.join(", ")), None)
+        check("android", "device", Status::Ok, format!("on the adb server {server}: {}", shown.join(", "))).screen(format!("on another computer: {}", shown.join(", ")), None).ids(ready)
     });
     out
 }
@@ -292,6 +298,11 @@ pub async fn checks(areas: &[&str]) -> Vec<Check> {
 }
 
 pub fn render(checks: &[Check]) -> String {
+    render_with(checks, false)
+}
+
+/// `verbose`: also the device serials (`fastpilot doctor --verbose`).
+pub fn render_with(checks: &[Check], verbose: bool) -> String {
     let mut out = Vec::new();
     let mut area = "";
     for c in checks {
@@ -304,7 +315,10 @@ pub fn render(checks: &[Check]) -> String {
             Status::Warn => "!",
             Status::Fail => "✗",
         };
-        out.push(format!("  {mark} {:<12} {}", c.name, c.detail));
+        match (&c.ids, verbose) {
+            (Some(ids), true) => out.push(format!("  {mark} {:<12} {} [{ids}]", c.name, c.detail)),
+            _ => out.push(format!("  {mark} {:<12} {}", c.name, c.detail)),
+        }
         if let (Some(h), false) = (&c.hint, c.status == Status::Ok) {
             out.push(format!("    → {h}"));
         }
@@ -340,9 +354,10 @@ fn failed(checks: &[Check], args: &[String]) -> bool {
     checks.iter().any(|c| c.status == Status::Fail && (named || c.area == "web"))
 }
 
-const DOCTOR_USAGE: &str = "usage: fastpilot doctor [web|android|ios|run|all]
+const DOCTOR_USAGE: &str = "usage: fastpilot doctor [web|android|ios|run|all] [--verbose]
   checks whether this computer can run tests, per platform, and says what to do about each gap.
-  Nothing is changed. Exit code 1 when a platform you named (or web, when none is named) is not ready.";
+  Nothing is changed. Exit code 1 when a platform you named (or web, when none is named) is not ready.
+  --verbose   also the device ids (serials), e.g. for `fastpilot demo --android --device <id>`";
 
 const SETUP_USAGE: &str = "usage: fastpilot setup [web|android|ios] [--yes]
   runs the checks of `fastpilot doctor`, then each fix fastpilot can make itself (install Chrome or
@@ -359,7 +374,7 @@ pub async fn doctor(args: &[String]) -> Result<(), Box<dyn Error + Send + Sync>>
         return Ok(());
     }
     let list = checks(&areas(args)?).await;
-    println!("{}", render(&list));
+    println!("{}", render_with(&list, args.iter().any(|a| a == "--verbose")));
     if failed(&list, args) {
         std::process::exit(1);
     }
@@ -453,6 +468,11 @@ mod tests {
             check("android", "adb", Status::Fail, "not found").hint("install the SDK").fix("install platform-tools", "brew", &["install", "x"]),
             check("ios", "runner", Status::Warn, "not built").hint("ios-runner/build.sh"),
         ];
+        // FastTest final report: the kind of device for people, the serial only with --verbose.
+        let dev = vec![check("android", "device", Status::Ok, "Android emulator: sdk gphone64 arm64").ids(vec!["emulator-5556".into()])];
+        assert!(!render(&dev).contains("emulator-5556"), "{}", render(&dev));
+        assert!(render(&dev).contains("✓ device       Android emulator: sdk gphone64 arm64"), "{}", render(&dev));
+        assert!(render_with(&dev, true).contains("Android emulator: sdk gphone64 arm64 [emulator-5556]"), "{}", render_with(&dev, true));
         let text = render(&list);
         assert!(text.contains("web:\n  ✓ Chrome") && text.contains("  ✗ adb") && text.contains("→ install the SDK"), "{text}");
         assert!(text.contains("1 fix(es) can be applied"), "{text}");

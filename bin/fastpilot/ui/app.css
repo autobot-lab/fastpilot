@@ -520,3 +520,6 @@ pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
 .vmissing{border:1px dashed #8a93a3;border-radius:var(--r-sm);padding:8px 10px;margin:8px 0;font-size:13.5px}
 .bugcard dd ol{margin:0;padding-left:18px}
 @media (max-width:520px){.vrow{grid-template-columns:1fr auto}.vdetail{grid-column:1/-1;order:3}}
+/* Where an agent tests: the chips, and why the last one stays picked */
+.dev-pick{display:flex;flex-direction:column;gap:4px;align-items:flex-start}.dev-pick .chips{justify-content:flex-start}
+.dev-hint:empty{display:none}
