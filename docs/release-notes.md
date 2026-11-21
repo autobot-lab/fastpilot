@@ -1,3 +1,25 @@
+## What's new in 0.5.1
+
+Small fixes after the 0.5.0 checks.
+
+- **Plugin or `fastpilot init`, not both.** The README says so: together they start two fastpilot
+  servers. With the plugin, a secret such as `DEMO_PASS` works like this: add its name in `fastpilot ui` ›
+  Settings › Secret, and set its value with `export DEMO_PASS=…` before you start Claude Code. When a
+  secret is missing, the message now names the plugin case too.
+- **Jira skills explain the connection themselves.** Each skill gives the two steps:
+  `claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp`, then `/mcp` › atlassian ›
+  sign in, picking the site that has your project. If Atlassian says a site "isn't explicitly granted",
+  the skill asks you to sign in again and pick that site, and never switches to another site.
+- **Run now works again after its run was stopped from outside.** A scheduled run that was killed no
+  longer stays "already running" until `fastpilot ui` restarts.
+- Settings › Limits & permissions no longer shows the old "New in 0.3.2" notice.
+- The skill count is the same everywhere: the Skills page says "23 on, plus the fastpilot skill (always
+  on)", 24 in all, as in the README.
+
+### Known limits
+- The Jira skills have not been tested against a real Jira site yet.
+- The known limits of 0.5.0 below still apply.
+
 ## What's new in 0.5.0
 
 fastpilot where you already work: a Claude Code plugin, the official MCP Registry, GitHub Actions and
