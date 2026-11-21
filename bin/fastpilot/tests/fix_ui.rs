@@ -19,7 +19,7 @@ case "$1" in
   version) echo "Android Debug Bridge version 1.0.41";;
   devices)
     echo "List of devices attached"
-    printf 'emulator-5554\tdevice\n'
+    [ -e "$FAKE_SDK/user-5554" ] && printf 'emulator-5554\tdevice\n'
     for f in "$FAKE_SDK"/running-*; do [ -e "$f" ] && printf 'emulator-%s\tdevice\n' "${f##*-}"; done;;
   -s)
     port="${2#emulator-}"; shift 2
@@ -33,7 +33,7 @@ exit 0
 
 const EMULATOR: &str = r#"#!/bin/bash
 echo "emulator $*" >> "$FAKE_SDK/calls.log"
-if [ "$1" = "-list-avds" ]; then echo Pixel_User; [ -e "$FAKE_SDK/avd-created" ] && echo fastpilot_api35; exit 0; fi
+if [ "$1" = "-list-avds" ]; then [ -e "$FAKE_SDK/user-avd" ] && echo Pixel_User; [ -e "$FAKE_SDK/avd-created" ] && echo fastpilot_api35; exit 0; fi
 port=""; prev=""
 for a in "$@"; do [ "$prev" = "-port" ] && port="$a"; prev="$a"; done
 touch "$FAKE_SDK/running-$port"
@@ -99,9 +99,24 @@ fn request(ui: &Ui, method: &str, path: &str, body: &str, origin: &str) -> (u16,
     (status, raw.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default())
 }
 
+/// A stand-in `xcrun simctl` (two iPhones, one running, and a watch) and `xcodebuild -version`.
+const XCRUN: &str = r#"#!/bin/bash
+echo "xcrun $*" >> "$FAKE_SDK/calls.log"
+if [ "$1 $2" = "simctl list" ]; then
+  echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-1":[{"udid":"AAAA-1111","name":"iPhone 16","state":"Booted"},{"udid":"BBBB-2222","name":"iPhone SE (3rd generation)","state":"Shutdown"}],"com.apple.CoreSimulator.SimRuntime.watchOS-11-1":[{"udid":"CCCC-3333","name":"Apple Watch Series 10","state":"Shutdown"}]}}'
+fi
+exit 0
+"#;
+const XCODEBUILD: &str = "#!/bin/bash\necho \"xcodebuild $*\" >> \"$FAKE_SDK/calls.log\"\necho 'Xcode 16.1'\necho 'Build version 16B40'\n";
+
 fn start_ui(home: &Path, sdk: &Path) -> Ui {
+    start_ui_with(home, sdk, &[])
+}
+
+fn start_ui_with(home: &Path, sdk: &Path, extra: &[(&str, String)]) -> Ui {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
         .args(["ui", "--no-open"])
+        .envs(extra.iter().map(|(k, v)| (*k, v.as_str())))
         .current_dir(home)
         .env("HOME", home)
         .env_remove("FASTPILOT_CONFIG")
@@ -212,8 +227,10 @@ fn the_fix_button_sets_up_fastpilots_own_test_phone_only_after_the_person_confir
     std::fs::write(sdk.join("no-boot"), "").expect("no-boot");
     let (_, body) = request(&ui, "GET", "/api/fix", "", &own);
     let again = android(&serde_json::from_str(&body).expect("json")).expect("offer again");
-    assert_eq!((again["button"].as_str(), again["steps"].clone()), (Some("Start the test phone"), json!(["Start it and check it works"])), "image and phone exist: {again}");
-    let (st, _) = post(json!({ "action": "start", "area": "android", "confirmed": true }), &own);
+    // DV1: the phone now exists, so it is one of the installed emulators, with its own Start.
+    assert_eq!(again["button"], Value::Null, "{again}");
+    assert_eq!(again["choices"].as_array().map(|c| c.iter().map(|x| (x["id"].clone(), x["button"].clone())).collect::<Vec<_>>()), Some(vec![(json!("fastpilot_api35"), json!("Start"))]), "{again}");
+    let (st, _) = post(json!({ "action": "start", "area": "android", "avd": "fastpilot_api35", "confirmed": true }), &own);
     assert_eq!(st, 200);
     wait_job(&ui, &own, |_| std::fs::read_dir(&sdk).map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("running-"))).unwrap_or(false));
     let (st, _) = post(json!({ "action": "stop" }), &own);
@@ -232,6 +249,103 @@ fn the_fix_button_sets_up_fastpilots_own_test_phone_only_after_the_person_confir
     assert!(st == 200 && js.contains("PAGES.deviceFix") && js.contains("You cannot start them from Chat, so the AI cannot install things."));
     let code: Vec<&str> = js.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("//")).collect();
     assert!(code.first() == Some(&"(() => {") && code.last() == Some(&"})();") && !js.contains("style: "), "wrapped, no inline styles");
+    drop(ui);
+    let _ = std::process::Command::new("pkill").args(["-f", &format!("{}/emulator/emulator", sdk.display())]).status();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// DV1 (v0.4.1): the emulators and simulators already on this computer come first. Each emulator
+/// has its own Start (on a free port, never 5554, with its window, its saved state not written);
+/// fastpilot's own test phone is the second choice; a running device is simply used; nothing is
+/// sent to the person's emulator-5554. iPhone: the installed simulators to pick from, and the
+/// runner as a one-time setup. Stand-in SDK, `xcrun simctl` and `xcodebuild` only.
+#[test]
+fn installed_emulators_and_simulators_come_first() {
+    let home = std::env::temp_dir().join(format!("fp-fix-dv1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let sdk = home.join("sdk");
+    fake_sdk(&sdk);
+    std::fs::write(sdk.join("user-avd"), "").expect("an installed emulator");
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    for (name, text) in [("xcrun", XCRUN), ("xcodebuild", XCODEBUILD)] {
+        std::fs::write(bin.join(name), text).expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let no_runner = home.join("no-runner");
+    let ui = start_ui_with(&home, &sdk, &[("PATH", path), ("FASTPILOT_IOS_RUNNER", no_runner.display().to_string())]);
+    let own = format!("http://127.0.0.1:{}", ui.port);
+    let get = || serde_json::from_str::<Value>(&request(&ui, "GET", "/api/fix", "", &own).1).expect("json");
+    let post = |body: Value| {
+        let (st, text) = request(&ui, "POST", "/api/fix", &body.to_string(), &own);
+        (st, serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+    };
+
+    // Android: the installed emulator with Start; a new test phone only as the second choice.
+    let offer = android(&get()).expect("android offer");
+    assert_eq!(offer["choices"].as_array().map(|c| c.iter().map(|x| x["name"].clone()).collect::<Vec<_>>()), Some(vec![json!("Pixel_User")]), "{offer}");
+    assert_eq!(offer["choices"][0]["button"], "Start");
+    assert!(offer["choices"][0]["confirm"].as_str().is_some_and(|c| c.contains("Its saved state is not changed") && c.contains("other emulators and phones are not touched")), "{offer}");
+    assert_eq!((offer["button"].as_str(), offer["secondary"].as_bool()), (Some("Add a new test phone"), Some(true)), "{offer}");
+    // Only an emulator that is installed, only after confirming.
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": "Pixel_User" }));
+    assert_eq!(st, 400, "{r}");
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": "Someone_Else", "confirmed": true }));
+    assert!(st == 409 && r["error"].as_str().is_some_and(|e| e.contains("no emulator called")), "{r}");
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": "-wipe-data", "confirmed": true }));
+    assert_eq!(st, 409, "not a name: {r}");
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": "Pixel_User", "confirmed": true }));
+    assert_eq!((st, r["job"]["doing"].as_str()), (200, Some("Starting Pixel_User")), "{r}");
+    let v = wait_job(&ui, &own, |j| j["state"] != "running");
+    assert_eq!((v["job"]["state"].as_str(), v["job"]["message"].as_str()), (Some("done"), Some("Pixel_User is running. Android tests use it now.")), "{v}");
+    let calls = std::fs::read_to_string(sdk.join("calls.log")).expect("calls");
+    let start = calls.lines().find(|l| l.starts_with("emulator -avd")).expect("started");
+    assert!(start.starts_with("emulator -avd Pixel_User -port ") && start.contains("-no-snapshot-save") && !start.contains("-no-window"), "{start}");
+    let port: u16 = start.split("-port ").nth(1).and_then(|r| r.split(' ').next()).and_then(|p| p.parse().ok()).expect("port");
+    assert!(port != 5554 && (5556..=5584).contains(&port), "{port}");
+    assert!(!calls.contains("avdmanager") && !calls.contains("sdkmanager"), "nothing downloaded or created: {calls}");
+    // A device runs now: nothing to offer, and no second start.
+    assert!(android(&get()).is_none());
+    let _ = std::process::Command::new("pkill").args(["-f", &format!("{}/emulator/emulator", sdk.display())]).status();
+    let end = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_dir(&sdk).expect("sdk").flatten().any(|e| e.file_name().to_string_lossy().starts_with("running-")) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The person's own emulator-5554 runs: it is used as it is, never contacted or stopped.
+    std::fs::write(sdk.join("user-5554"), "").expect("user emulator");
+    assert!(android(&get()).is_none(), "a running device is used");
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": "Pixel_User", "confirmed": true }));
+    assert!(st == 409 && r["error"].as_str().is_some_and(|e| e.contains("already running")), "{r}");
+    let calls = std::fs::read_to_string(sdk.join("calls.log")).expect("calls");
+    assert!(!calls.contains("emulator-5554") && !calls.contains("kill"), "emulator-5554 is never contacted: {calls}");
+
+    // iPhone (macOS): the installed simulators to pick from; the runner as a one-time setup.
+    if cfg!(target_os = "macos") {
+        let v = get();
+        let ios = v["offers"].as_array().and_then(|o| o.iter().find(|x| x["area"] == "ios")).cloned().expect("ios offer");
+        assert_eq!((ios["detail"].as_str(), ios["button"].as_str()), (Some("iPhone testing needs a one-time setup (about 5 minutes)"), Some("Set up iPhone testing")), "{ios}");
+        let names: Vec<String> = ios["choices"].as_array().expect("choices").iter().map(|c| format!("{}|{}", c["name"].as_str().unwrap_or(""), c["note"].as_str().unwrap_or(""))).collect();
+        assert_eq!(names, ["iPhone 16|running · tests use it", "iPhone SE (3rd generation)|"], "no watch, the running one in use");
+        let (st, r) = post(json!({ "action": "pick-simulator", "udid": "BBBB-2222" }));
+        assert_eq!((st, r["ok"].as_str()), (200, Some("Tests use iPhone SE (3rd generation) now.")), "{r}");
+        let cfg = std::fs::read_to_string(home.join(".fastpilot/config.toml")).unwrap_or_default();
+        assert!(cfg.contains("ios_udid") && cfg.contains("BBBB-2222"), "{cfg}");
+        let ios = get()["offers"].as_array().and_then(|o| o.iter().find(|x| x["area"] == "ios")).cloned().expect("ios offer");
+        let picked = ios["choices"].as_array().and_then(|c| c.iter().find(|x| x["id"] == "BBBB-2222")).cloned().expect("picked");
+        assert_eq!((picked["note"].as_str(), picked["button"].clone()), (Some("you picked it for tests"), Value::Null), "{ios}");
+        assert!(ios["choices"].as_array().is_some_and(|c| c.iter().any(|x| x["id"] == "" && x["button"] == "Use for tests")), "back to any running one: {ios}");
+        let (st, _) = post(json!({ "action": "pick-simulator", "udid": "CCCC-3333" }));
+        assert_eq!(st, 409, "a watch is not an iPhone simulator");
+        let (st, _) = post(json!({ "action": "start", "area": "ios" }));
+        assert_eq!(st, 400, "the runner is built only after confirming");
+        let calls = std::fs::read_to_string(sdk.join("calls.log")).expect("calls");
+        assert!(!calls.contains("simctl boot") && !calls.contains("build-for-testing"), "nothing booted or built: {calls}");
+    }
     drop(ui);
     let _ = std::process::Command::new("pkill").args(["-f", &format!("{}/emulator/emulator", sdk.display())]).status();
     let _ = std::fs::remove_dir_all(&home);

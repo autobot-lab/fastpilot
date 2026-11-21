@@ -92,7 +92,15 @@ pub async fn init(args: &[String]) -> Res<()> {
     }
 
     println!("\n1/5 Check this computer");
-    machine().await;
+    let ios_setup = machine().await;
+    // DV1: iPhone testing is a one-time setup; offered here when Xcode is found (only when asked
+    // step by step: it takes about 5 minutes, so --yes and scripts do not start it).
+    if ios_setup && mode == Mode::Ask && ask(mode, "Set up iPhone testing now? fastpilot builds a small test runner with your Xcode (about 5 minutes, once).") {
+        let ok = std::env::current_exe().ok().and_then(|exe| std::process::Command::new(exe).args(["setup", "ios", "--yes"]).status().ok()).is_some_and(|s| s.success());
+        if !ok {
+            println!("  iPhone testing is not set up yet: run `fastpilot setup ios` later.");
+        }
+    }
 
     let scope = if global { "user" } else { "project" };
     println!("\n2/5 Register fastpilot with Claude Code ({})", if global { "every folder" } else { "this project" });
@@ -115,8 +123,9 @@ pub async fn init(args: &[String]) -> Res<()> {
     Ok(())
 }
 
-/// One line per platform: ✓ ready, or ! with what to run later.
-async fn machine() {
+/// One line per platform: ✓ ready, or ! with what to run later. `true`: Xcode is here and only
+/// the iPhone test runner is missing (the one-time setup can be offered).
+async fn machine() -> bool {
     let list = crate::doctor::checks(&["web", "android", "ios", "run"]).await;
     for (area, label) in [("web", "web"), ("android", "android"), ("ios", "ios"), ("run", "claude")] {
         let mine: Vec<&Check> = list.iter().filter(|c| c.area == area).collect();
@@ -132,6 +141,13 @@ async fn machine() {
             }
         }
     }
+    ios_setup_needed(&list)
+}
+
+/// Xcode works and the runner is the only iPhone gap.
+fn ios_setup_needed(list: &[Check]) -> bool {
+    let ios: Vec<&Check> = list.iter().filter(|c| c.area == "ios").collect();
+    ios.iter().any(|c| c.name == "Xcode" && c.status == Status::Ok) && ios.iter().any(|c| c.name == "runner" && c.status != Status::Ok) && ios.iter().all(|c| c.name == "runner" || c.status == Status::Ok)
 }
 
 /// A ready platform in a few words.
@@ -154,7 +170,7 @@ fn gap(c: &Check) -> String {
         "Chrome" => "Chrome does not start yet".into(),
         "Xcode" => "Xcode is missing".into(),
         "simulator" => "no iPhone simulator".into(),
-        "runner" => "test runner not built yet".into(),
+        "runner" => crate::fix::IOS_SETUP.into(),
         "Claude Code" if c.detail.ends_with("too old") => "Claude Code is too old: run `claude update`".into(),
         "Claude Code" => "Claude Code is not installed".into(),
         _ => clip(&c.detail, 45),
@@ -411,6 +427,20 @@ mod tests {
         }
     }
 
+
+    /// DV1: the iPhone runner is a one-time setup, offered only when Xcode works and the runner
+    /// is the only thing missing; its line says so, not "not built".
+    #[test]
+    fn iphone_testing_is_a_one_time_setup() {
+        use crate::doctor::check;
+        let ok = |n: &str| check("ios", n, Status::Ok, "x");
+        let runner = check("ios", "runner", Status::Warn, crate::fix::IOS_SETUP);
+        assert!(ios_setup_needed(&[ok("Xcode"), ok("simulator"), runner.clone()]));
+        assert!(!ios_setup_needed(&[ok("Xcode"), ok("simulator"), ok("runner")]), "already built");
+        assert!(!ios_setup_needed(&[check("ios", "Xcode", Status::Fail, "Xcode not found")]), "no Xcode");
+        assert!(!ios_setup_needed(&[ok("Xcode"), check("ios", "simulator", Status::Fail, "none"), runner.clone()]), "no simulator yet");
+        assert_eq!(gap(&runner), "iPhone testing needs a one-time setup (about 5 minutes)");
+    }
 
     /// T1-T3: step 1/5 listed only the first device.
     #[test]

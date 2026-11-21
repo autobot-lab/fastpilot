@@ -3,10 +3,15 @@
 //! start a fix), and shows the steps and a live log while it works.
 //!
 //! - **Chrome**: install Google Chrome with Homebrew (macOS, when Chrome is missing).
-//! - **Android**: fastpilot's own test phone, `fastpilot_api35`: download the Android tools and an
-//!   Android 15 image when missing, create the phone, start it without a window and check it
-//!   boots. It never starts, stops or sends anything to another emulator or phone; it starts on a
-//!   free port and never on 5554 (often the person's own first emulator).
+//! - **Android** (v0.4.1, DV1: what is installed comes first): when no device runs, the emulators
+//!   already on this computer are listed, each with **Start** (it starts that one on a free port,
+//!   never 5554, and waits until it has booted; its saved state is not changed). Adding
+//!   fastpilot's own test phone, `fastpilot_api35` (download the Android tools and an Android 15
+//!   image when missing, create the phone, start it without a window), is the second choice, or
+//!   the only one when no emulator is installed. A running device is used as it is. Nothing is
+//!   ever stopped or sent to another emulator or phone.
+//! - **iPhone**: the simulators already installed are listed, and the person picks the one tests
+//!   use (`ios_udid`). The test runner is a one-time setup (`fastpilot setup ios`, with its log).
 //!
 //! The plan is made on the server and made again when the person confirms; the page only names
 //! the area. One fix runs at a time; Stop ends it.
@@ -66,8 +71,8 @@ enum Action {
     Run { program: String, args: Vec<String>, answer: Option<&'static str>, minutes: u64 },
     /// A command-line tool that may only exist after an earlier step.
     Tool { name: &'static str, args: Vec<String>, answer: Option<&'static str>, minutes: u64 },
-    /// Start the test phone and wait until it has booted.
-    StartPhone,
+    /// Start this emulator (an AVD on this computer) and wait until it has booted.
+    StartAvd(String),
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +88,22 @@ struct Plan {
     confirm: String,
     button: &'static str,
     steps: Vec<Step>,
+    /// What the page says while it runs, and when it is done.
+    doing: String,
+    done: String,
+}
+
+/// One thing to pick in an offer: an installed emulator to start, or a simulator for tests.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Choice {
+    pub id: String,
+    pub name: String,
+    /// `running`, `in use for tests`, … (`None`: nothing to say).
+    pub note: Option<String>,
+    /// The button; `None` when there is nothing to do (it is already the one in use).
+    pub button: Option<&'static str>,
+    /// Shown before it starts (emulators); `None`: no confirmation needed (picking a simulator).
+    pub confirm: Option<String>,
 }
 
 /// What the page shows for an area: a fix fastpilot can run, or what the person can do.
@@ -95,6 +116,31 @@ pub struct Offer {
     pub button: Option<&'static str>,
     pub confirm: Option<String>,
     pub steps: Vec<String>,
+    /// Installed emulators / simulators to pick from (DV1).
+    pub choices: Vec<Choice>,
+    /// The button is the second choice (the list comes first).
+    pub secondary: bool,
+    /// Nothing is missing; the offer is only there to pick from.
+    pub ready: bool,
+}
+
+impl Offer {
+    fn from_plan(p: &Plan, detail: impl Into<String>) -> Self {
+        Offer {
+            area: p.area,
+            title: p.title.clone(),
+            detail: detail.into(),
+            button: Some(p.button),
+            confirm: Some(p.confirm.clone()),
+            steps: p.steps.iter().map(|s| s.label.clone()).collect(),
+            choices: vec![],
+            secondary: false,
+            ready: false,
+        }
+    }
+    fn note(area: &'static str, title: &str, detail: impl Into<String>) -> Self {
+        Offer { area, title: title.into(), detail: detail.into(), button: None, confirm: None, steps: vec![], choices: vec![], secondary: false, ready: false }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -108,6 +154,8 @@ pub struct StepView {
 pub struct Job {
     pub area: &'static str,
     pub title: String,
+    /// What the page says while it runs.
+    pub doing: String,
     /// `running`, `done`, `failed` or `stopped`.
     pub state: &'static str,
     pub steps: Vec<StepView>,
@@ -179,15 +227,8 @@ async fn chrome_offer() -> Option<Offer> {
         return None;
     }
     Some(match chrome_plan() {
-        Some(p) => Offer { area: p.area, title: p.title.clone(), detail: "Not installed. Needed for web tests.".into(), button: Some(p.button), confirm: Some(p.confirm.clone()), steps: p.steps.iter().map(|s| s.label.clone()).collect() },
-        None => Offer {
-            area: "chrome",
-            title: "Chrome".into(),
-            detail: "Not installed. Download it from google.com/chrome, then press Check again.".into(),
-            button: None,
-            confirm: None,
-            steps: vec![],
-        },
+        Some(p) => Offer::from_plan(&p, "Not installed. Needed for web tests."),
+        None => Offer::note("chrome", "Chrome", "Not installed. Download it from google.com/chrome, then press Check again."),
     })
 }
 
@@ -202,6 +243,8 @@ fn chrome_plan() -> Option<Plan> {
             label: "Install Google Chrome".into(),
             action: Action::Run { program: brew.to_string_lossy().into_owned(), args: ["install", "--cask", "google-chrome"].map(String::from).to_vec(), answer: None, minutes: 30 },
         }],
+        doing: "Installing Chrome".into(),
+        done: "Chrome is installed. Web tests can use it now.".into(),
     })
 }
 
@@ -253,7 +296,7 @@ async fn android_plan() -> Result<Option<Plan>, String> {
     {
         return Ok(None);
     }
-    steps.push(Step { label: "Start it and check it works".into(), action: Action::StartPhone });
+    steps.push(Step { label: "Start it and check it works".into(), action: Action::StartAvd(AVD.into()) });
     let size = if download { "download about 1.5 GB and " } else { "" };
     let licence = if download { " Downloading Android means accepting Google's Android SDK licence." } else { "" };
     let time = if download { "about 10 minutes" } else { "a few minutes" };
@@ -266,22 +309,173 @@ async fn android_plan() -> Result<Option<Plan>, String> {
         ),
         button: if exists { "Start the test phone" } else { "Set up an emulator" },
         steps,
+        doing: "Setting up your emulator".into(),
+        done: "The test phone is running. Android tests can use it now.".into(),
     }))
 }
 
-async fn android_offer() -> Option<Offer> {
-    match android_plan().await {
-        Ok(Some(p)) => Some(Offer {
-            area: p.area,
-            title: p.title.clone(),
-            detail: "fastpilot's own test phone is not running. Needed for Android tests on this computer.".into(),
-            button: Some(p.button),
-            confirm: Some(p.confirm.clone()),
-            steps: p.steps.iter().map(|s| s.label.clone()).collect(),
-        }),
-        Ok(None) => None,
-        Err(why) => Some(Offer { area: "android", title: "Android emulator".into(), detail: why, button: None, confirm: None, steps: vec![] }),
+/// An AVD name as `emulator -list-avds` prints it; anything else is never passed on.
+fn avd_name_ok(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 100 && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
+/// The emulators (AVDs) on this computer, by name. Only lists them: nothing is started.
+async fn installed_avds(emulator: &Path) -> Vec<String> {
+    let o = tokio::process::Command::new(emulator).arg("-list-avds").stdin(std::process::Stdio::null()).output();
+    let Ok(Ok(o)) = tokio::time::timeout(Duration::from_secs(20), o).await else { return vec![] };
+    String::from_utf8_lossy(&o.stdout).lines().map(str::trim).filter(|l| avd_name_ok(l)).map(str::to_owned).collect()
+}
+
+/// A device is running (an emulator or a phone): tests use it, there is nothing to start.
+async fn device_running(adb: Option<&Path>) -> bool {
+    match adb {
+        Some(adb) => adb_devices(adb).await.iter().any(|(_, st)| st == "device"),
+        None => false,
     }
+}
+
+/// Start one of the person's own emulators (DV1).
+async fn avd_plan(name: &str) -> Result<Plan, String> {
+    if fastpilot_android::configured_server().is_some() {
+        return Err("Android devices come from another computer (FASTPILOT_ADB_SERVER); start the emulator there.".into());
+    }
+    let adb = sdk("platform-tools/adb", "adb").ok_or("adb is not installed")?;
+    let emulator = sdk("emulator/emulator", "emulator").ok_or("the Android emulator is not installed")?;
+    if device_running(Some(&adb)).await {
+        return Err("An Android device is already running; tests use it. Nothing was started.".into());
+    }
+    if !avd_name_ok(name) || !installed_avds(&emulator).await.iter().any(|a| a == name) {
+        return Err(format!("There is no emulator called \"{name}\" on this computer."));
+    }
+    Ok(Plan {
+        area: "android",
+        title: format!("Android emulator {name}"),
+        confirm: avd_confirm(name),
+        button: "Start",
+        steps: vec![Step { label: format!("Start {name} and check it works"), action: Action::StartAvd(name.into()) }],
+        doing: format!("Starting {name}"),
+        done: format!("{name} is running. Android tests use it now."),
+    })
+}
+
+fn avd_confirm(name: &str) -> String {
+    if name == AVD {
+        return format!("fastpilot will start its test phone \"{AVD}\". It takes a few minutes. Your own phones and emulators are not touched.");
+    }
+    format!("fastpilot will start your emulator \"{name}\" on a free port and wait until it is ready (usually 1–2 minutes). Its saved state is not changed, and other emulators and phones are not touched.")
+}
+
+async fn android_offer() -> Option<Offer> {
+    if let Some(server) = fastpilot_android::configured_server() {
+        let why = server.err().unwrap_or_else(|| "Android devices come from another computer (FASTPILOT_ADB_SERVER); start the emulator there.".into());
+        return Some(Offer::note("android", "Android emulator", why));
+    }
+    let adb = sdk("platform-tools/adb", "adb");
+    if device_running(adb.as_deref()).await {
+        return None;
+    }
+    let avds = match sdk("emulator/emulator", "emulator") {
+        Some(e) => installed_avds(&e).await,
+        None => vec![],
+    };
+    let plan = android_plan().await;
+    if avds.is_empty() {
+        return match plan {
+            Ok(Some(p)) => Some(Offer::from_plan(&p, "No emulator is installed yet. Needed for Android tests on this computer.")),
+            Ok(None) => None,
+            Err(why) => Some(Offer::note("android", "Android emulator", why)),
+        };
+    }
+    // DV1: the emulators already here first; a new test phone only as the second choice.
+    let choices = avds.iter().map(|a| Choice { id: a.clone(), name: a.clone(), note: (a == AVD).then(|| "fastpilot's test phone".into()), button: Some("Start"), confirm: Some(avd_confirm(a)) }).collect();
+    let mut offer = Offer::note("android", "Android emulator", "No emulator is running. Start one of the emulators on this computer; tests use it.");
+    offer.choices = choices;
+    if let Ok(Some(p)) = plan.as_ref()
+        && !avds.iter().any(|a| a == AVD)
+    {
+        offer.button = Some("Add a new test phone");
+        offer.confirm = Some(p.confirm.clone());
+        offer.steps = p.steps.iter().map(|s| s.label.clone()).collect();
+        offer.secondary = true;
+    }
+    Some(offer)
+}
+
+/// iPhone simulators on this computer (`simctl`), and the runner as a one-time setup (DV1).
+async fn ios_offer() -> Option<Offer> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let sims: Vec<(String, String, String)> = fastpilot_ios::devices().await.ok()?.into_iter().filter(|(_, n, _)| n.starts_with("iPhone") || n.starts_with("iPad")).collect();
+    let chosen = fastpilot_core::config::var("FASTPILOT_IOS_UDID").ok().filter(|u| !u.trim().is_empty());
+    let booted = sims.iter().find(|(_, _, st)| st == "Booted").map(|(u, _, _)| u.clone());
+    let in_use = chosen.clone().filter(|c| sims.iter().any(|(u, _, _)| u == c)).or(booted);
+    let mut choices: Vec<Choice> = sims
+        .iter()
+        .map(|(udid, name, st)| {
+            let mut notes = Vec::new();
+            if st == "Booted" {
+                notes.push("running");
+            }
+            if in_use.as_deref() == Some(udid.as_str()) {
+                notes.push(if chosen.is_some() { "you picked it for tests" } else { "tests use it" });
+            }
+            let picked = chosen.as_deref() == Some(udid.as_str());
+            Choice { id: udid.clone(), name: name.clone(), note: (!notes.is_empty()).then(|| notes.join(" · ")), button: (!picked).then_some("Use for tests"), confirm: None }
+        })
+        .collect();
+    if chosen.is_some() {
+        choices.push(Choice { id: String::new(), name: "Any running simulator".into(), note: None, button: Some("Use for tests"), confirm: None });
+    }
+    let runner = fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator).is_some();
+    let mut offer = match ios_plan().filter(|_| !runner) {
+        Some(p) => Offer::from_plan(&p, IOS_SETUP),
+        None if sims.is_empty() => Offer::note("ios", "iPhone simulator", "No iPhone simulator is installed. Xcode › Settings › Components: install an iOS simulator."),
+        None if runner => {
+            let mut o = Offer::note("ios", "iPhone simulator", "Pick the simulator tests use. Without a pick, they use the one that is running (or start an iPhone 16).");
+            o.ready = true;
+            o
+        }
+        None => Offer::note("ios", "iPhone simulator", "iPhone testing needs a one-time setup (about 5 minutes) with Xcode. Install Xcode from the App Store, then press Check again."),
+    };
+    offer.choices = choices;
+    Some(offer)
+}
+
+/// What the doctor, init and the Device page say while the runner is not built yet.
+pub const IOS_SETUP: &str = "iPhone testing needs a one-time setup (about 5 minutes)";
+
+/// Build the iPhone test runner (`fastpilot setup ios --yes`, its output in the log). `None`
+/// without Xcode.
+fn ios_plan() -> Option<Plan> {
+    if !cfg!(target_os = "macos") || !std::process::Command::new("xcodebuild").arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success()) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(Plan {
+        area: "ios",
+        title: "iPhone testing".into(),
+        confirm: "fastpilot will build a small test runner with your Xcode. It takes about 5 minutes, once. It runs inside your simulators to tap and read the screen; your simulators and Xcode are not changed.".into(),
+        button: "Set up iPhone testing",
+        steps: vec![Step {
+            label: "Build the iPhone test runner with your Xcode".into(),
+            action: Action::Run { program: exe.to_string_lossy().into_owned(), args: ["setup", "ios", "--yes"].map(String::from).to_vec(), answer: None, minutes: 30 },
+        }],
+        doing: "Setting up iPhone testing".into(),
+        done: "iPhone testing is set up. Tests use your simulators now.".into(),
+    })
+}
+
+/// Tests use this simulator (`ios_udid`; empty: any running one). Only a simulator `simctl` lists.
+pub async fn pick_simulator(udid: &str) -> Result<String, String> {
+    if udid.is_empty() {
+        fastpilot_core::config::write("ios_udid", None).map_err(|e| e.to_string())?;
+        return Ok("Tests use the simulator that is running.".into());
+    }
+    let sims = fastpilot_ios::devices().await.map_err(|e| e.to_string())?;
+    let (_, name, _) = sims.iter().find(|(u, n, _)| u == udid && (n.starts_with("iPhone") || n.starts_with("iPad"))).ok_or("There is no such iPhone simulator on this computer.")?;
+    fastpilot_core::config::write("ios_udid", Some(udid)).map_err(|e| e.to_string())?;
+    Ok(format!("Tests use {name} now."))
 }
 
 /// What the Device page can offer now, and the fix that runs or last ran.
@@ -289,11 +483,13 @@ pub async fn state() -> (Vec<Offer>, Option<Job>) {
     let mut offers = Vec::new();
     offers.extend(chrome_offer().await);
     offers.extend(android_offer().await);
+    offers.extend(ios_offer().await);
     (offers, job().as_ref().map(|r| r.job.clone()))
 }
 
-/// Start the fix for `area` (`chrome` or `android`) after the person confirmed on the page.
-pub async fn start(area: &str) -> Result<Job, String> {
+/// Start the fix for `area` (`chrome`, `android` or `ios`) after the person confirmed on the
+/// page; `avd`: start that installed emulator instead of setting up the test phone.
+pub async fn start(area: &str, avd: Option<&str>) -> Result<Job, String> {
     if job().as_ref().is_some_and(|r| r.job.state == "running") {
         return Err("A fix is already running. Wait for it, or press Stop.".into());
     }
@@ -304,13 +500,23 @@ pub async fn start(area: &str) -> Result<Job, String> {
             }
             chrome_plan().ok_or("fastpilot cannot install Chrome here; download it from google.com/chrome.")?
         }
-        "android" => android_plan().await?.ok_or("fastpilot's test phone is already running.")?,
+        "android" => match avd {
+            Some(name) => avd_plan(name).await?,
+            None => android_plan().await?.ok_or("fastpilot's test phone is already running.")?,
+        },
+        "ios" => {
+            if fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator).is_some() {
+                return Err("iPhone testing is already set up.".into());
+            }
+            ios_plan().ok_or("iPhone testing needs Xcode on a Mac. Install Xcode from the App Store first.")?
+        }
         _ => return Err("Unknown fix.".into()),
     };
     let stop = std::sync::Arc::new(tokio::sync::Notify::new());
     let view = Job {
         area: plan.area,
         title: plan.title.clone(),
+        doing: plan.doing.clone(),
         state: "running",
         steps: plan.steps.iter().map(|s| StepView { label: s.label.clone(), state: "waiting" }).collect(),
         log: vec![],
@@ -363,7 +569,7 @@ async fn run(plan: Plan, stop: std::sync::Arc<tokio::sync::Notify>) {
                 Some(p) => run_program(&p, args, *answer, *minutes, &root, &stop).await,
                 None => Err(format!("{name} is not installed")),
             },
-            Action::StartPhone => start_phone(&root, &stop).await,
+            Action::StartAvd(name) => start_phone(&root, &stop, name).await,
         };
         match result {
             Ok(()) => set_step(i, "done"),
@@ -379,7 +585,7 @@ async fn run(plan: Plan, stop: std::sync::Arc<tokio::sync::Notify>) {
             }
         }
     }
-    finish("done", Some(if plan.area == "android" { "The test phone is running. Android tests can use it now.".into() } else { "Chrome is installed. Web tests can use it now.".into() }));
+    finish("done", Some(plan.done.clone()));
 }
 
 async fn run_program(program: &Path, args: &[String], answer: Option<&'static str>, minutes: u64, root: &Path, stop: &tokio::sync::Notify) -> Result<(), String> {
@@ -446,20 +652,31 @@ async fn free_port(adb: &Path) -> Option<u16> {
     })
 }
 
-async fn start_phone(root: &Path, stop: &tokio::sync::Notify) -> Result<(), String> {
+/// Start the AVD `name` on a free port and wait until it has booted. fastpilot's own test phone
+/// runs without a window (its port is noted); the person's own emulator opens as usual, and its
+/// saved state is not written (`-no-snapshot-save`).
+async fn start_phone(root: &Path, stop: &tokio::sync::Notify, name: &str) -> Result<(), String> {
     let adb = sdk("platform-tools/adb", "adb").ok_or("adb is not installed")?;
     let emulator = sdk("emulator/emulator", "emulator").ok_or("the Android emulator is not installed")?;
-    if let Some(serial) = running_phone(&adb).await {
+    let own = name == AVD;
+    if own && let Some(serial) = running_phone(&adb).await {
         log(&format!("the test phone is already running ({serial})"));
         return Ok(());
     }
     let port = free_port(&adb).await.ok_or("no free emulator port between 5556 and 5584")?;
     let serial = format!("emulator-{port}");
-    if let Some(dir) = port_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
+    if own {
+        if let Some(dir) = port_file().parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(port_file(), port.to_string()).map_err(|e| format!("could not note the test phone's port: {e}"))?;
     }
-    std::fs::write(port_file(), port.to_string()).map_err(|e| format!("could not note the test phone's port: {e}"))?;
-    let args: Vec<String> = ["-avd", AVD, "-port", &port.to_string(), "-no-window", "-no-audio", "-no-snapshot-save", "-no-boot-anim"].map(String::from).to_vec();
+    let p = port.to_string();
+    let args: Vec<String> = if own {
+        ["-avd", AVD, "-port", &p, "-no-window", "-no-audio", "-no-snapshot-save", "-no-boot-anim"].map(String::from).to_vec()
+    } else {
+        ["-avd", name, "-port", &p, "-no-snapshot-save", "-no-boot-anim"].map(String::from).to_vec()
+    };
     log(&format!("$ emulator {}", args.join(" ")));
     // It keeps running after this page and fastpilot stop: not killed on drop.
     let mut child = tokio::process::Command::new(&emulator)
@@ -497,7 +714,7 @@ async fn start_phone(root: &Path, stop: &tokio::sync::Notify) -> Result<(), Stri
     };
     match result {
         Ok(()) => {
-            log(&format!("the test phone is running ({serial})"));
+            log(&format!("{} is running ({serial})", if own { "the test phone" } else { name }));
             Ok(())
         }
         Err(e) => {
@@ -530,8 +747,13 @@ pub async fn api_change(axum::Json(body): axum::Json<serde_json::Value>) -> axum
     use axum::response::IntoResponse;
     match body["action"].as_str().unwrap_or("") {
         "start" if body["confirmed"] != true => refuse(StatusCode::BAD_REQUEST, "Confirm the fix on the Device page first."),
-        "start" => match start(body["area"].as_str().unwrap_or("")).await {
+        "start" => match start(body["area"].as_str().unwrap_or(""), body["avd"].as_str()).await {
             Ok(job) => axum::Json(serde_json::json!({ "job": job })).into_response(),
+            Err(e) => refuse(StatusCode::CONFLICT, &e),
+        },
+        // Which simulator tests use: a setting, not a fix (nothing is installed or started).
+        "pick-simulator" => match pick_simulator(body["udid"].as_str().unwrap_or("")).await {
+            Ok(note) => axum::Json(serde_json::json!({ "ok": note })).into_response(),
             Err(e) => refuse(StatusCode::CONFLICT, &e),
         },
         "stop" => match stop() {
