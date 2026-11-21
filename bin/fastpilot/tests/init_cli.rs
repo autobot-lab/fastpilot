@@ -38,6 +38,9 @@ impl Box_ {
             .env("HOME", self.home())
             .env("FASTPILOT_CLAUDE", claude)
             .env("FAKE_CLAUDE_LOG", self.log())
+            // The stand-in Claude Code is a Python script: Apple's Python would otherwise cache its
+            // bytecode in the temp HOME (Library/Caches/com.apple.python), which "nothing written" sees.
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
             .env_remove("FASTPILOT_CONFIG")
             .env_remove("FASTPILOT_VIA_NPX")
