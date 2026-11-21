@@ -277,6 +277,14 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .quote{margin:0;font-size:13px;border-left:3px solid var(--line);padding-left:10px;color:var(--ink)}
 .btn.danger-fill{background:var(--bad);color:#fff;border-color:var(--bad)}
 .btn.danger-fill:disabled{opacity:.5}
+.prop.jira .jira-pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-weight:400;margin:0;max-height:24rem;overflow:auto}
+.prop.jira details summary{cursor:pointer;text-decoration:underline;font-weight:500;font-size:13px;margin-top:4px}
+.prop.jira details summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.prop.jira .jira-where{margin:0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.jira-dup{display:flex;gap:8px;align-items:flex-start;background:var(--warn-soft);border:1px solid #e7c58f;color:#6b4206;border-radius:var(--r-sm);padding:10px 12px;font-size:13.5px}
+.jira-read{display:flex;gap:8px;align-items:flex-start;background:var(--blue-soft);border:1px solid #c5d3f3;color:var(--ink);border-radius:var(--r-sm);padding:10px 12px;font-size:13.5px;max-width:620px}
+.jira-read p{margin:2px 0 0}
+.tag.ok-tag{background:var(--acc-soft);border-color:#b9e2c8;color:var(--acc-ink)}
 .page-try{display:flex;gap:8px;align-items:flex-start;background:var(--warn-soft);border:1px solid #e7c58f;color:#6b4206;border-radius:var(--r-sm);padding:10px 12px;font-size:13.5px;max-width:620px}
 .page-try pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px var(--mono);background:#fff;border:1px solid #e7c58f;border-radius:6px;padding:8px;margin:4px 0 0;color:var(--ink)}
 .page-try summary,.bot-said summary{cursor:pointer;text-decoration:underline}

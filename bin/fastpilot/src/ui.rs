@@ -443,7 +443,13 @@ async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
 /// word the user typed on a card that asks for one, D9).
 async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
-    match crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), body.get("edit").filter(|e| e.is_object()), body["confirm"].as_str()) {
+    let edit = body.get("edit").filter(|e| e.is_object());
+    // v0.6: a Jira card is sent from here, with the token only in this process.
+    let r = match crate::chat::decide_jira(id, body["apply"] == true, body["mode"].as_str(), edit).await {
+        Some(r) => r,
+        None => crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), edit, body["confirm"].as_str()),
+    };
+    match r {
         Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
