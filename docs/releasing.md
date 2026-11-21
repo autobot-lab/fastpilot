@@ -66,6 +66,10 @@ Log, `results.tsv`, `release-check-report.html` dan perubahan dibanding run sebe
      dengan SHA-256-nya). Versi di `server.json` (dua tempat), `packaging/npm/package.json` dan tag harus
      sama. Cek: `https://registry.modelcontextprotocol.io/v0/servers?search=fastpilot`. Kalau registry
      menolak namespace organisasi, pesan aslinya ada di log job; npm dan GitHub Release tidak terpengaruh.
+     Satu versi hanya bisa didaftarkan sekali: kalau isinya salah, perbaikannya adalah versi patch berikutnya.
+     Login OIDC registry hanya membuktikan pemilik repo (`autobot-lab`), bukan branch atau persetujuan:
+     yang menjaga daftar ini adalah aturan bahwa hanya admin yang boleh membuat tag `v*` (langkah pemilik
+     nomor 2 di atas, wajib sebelum rilis), bukan `needs: publish-npm`.
 4. Homebrew: `scripts/homebrew-formula.sh <versi> > Formula/fastpilot.rb` di repo tap
    (mis. `autobot-lab/homebrew-fastpilot`), lalu pengguna:
    `brew install autobot-lab/fastpilot/fastpilot`.

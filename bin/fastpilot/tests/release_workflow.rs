@@ -80,6 +80,7 @@ fn the_mcp_registry_is_published_after_npm_with_a_pinned_publisher() {
     let guard = steps.iter().position(|s| run(s).contains("GITHUB_REF_NAME") && run(s).contains("server.json") && run(s).contains("packaging/npm/package.json")).expect("version guard");
     let fetch = steps.iter().position(|s| run(s).contains("mcp-publisher") && run(s).contains("sha256sum -c")).expect("pinned publisher");
     let publish = steps.iter().position(|s| run(s).contains("login github-oidc") && run(s).contains("publish server.json")).expect("publish");
+    assert!(run(&steps[publish]).contains("for try in 1 2 3"), "retries for npm's delay");
     assert!(guard < fetch && fetch < publish);
     assert!(run(&steps[fetch]).contains("/download/v1.") && run(&steps[fetch]).contains("  mcp-publisher.tar.gz"), "a fixed version and its hash");
     assert!(run(&steps[publish]).contains("::error::"), "a refusal is reported");
