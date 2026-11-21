@@ -1,3 +1,55 @@
+## What's new in 0.5.0
+
+fastpilot where you already work: a Claude Code plugin, the official MCP Registry, GitHub Actions and
+Jira.
+
+### Claude Code plugin
+- Install fastpilot in Claude Code in one step: `/plugin marketplace add autobot-lab/fastpilot`, then
+  `/plugin install fastpilot@fastpilot`. You get the fastpilot tools and its testing skills, shown as
+  `fastpilot:<skill>`, for example `fastpilot:boundary-value-analysis`.
+- Use either the plugin or `fastpilot init` in a project, not both: with both, Claude Code shows two
+  fastpilot servers.
+
+### Official MCP Registry
+- fastpilot is listed on the official MCP Registry as `io.github.autobot-lab/fastpilot`, so MCP clients
+  that read the registry can find and install it.
+
+### GitHub Actions
+- Run your fastpilot web tests in CI with
+  [`autobot-lab/fastpilot-action@v1`](https://github.com/autobot-lab/fastpilot-action). It downloads
+  the fastpilot release for the runner, checks its SHA-256, runs your tests, and gives a JUnit file for
+  the checks tab and an HTML report. Pull requests from forks get no secrets, so their tests show
+  "could not run" instead of a pass.
+
+### Jira
+- **Three Jira skills**, used through Atlassian's own MCP server in Claude Code:
+  - **Jira ticket to test** reads a ticket's acceptance criteria and turns them into tests. It never
+    writes to Jira.
+  - **Jira bug report** turns a failed run into one new Jira issue (steps, expected and actual result,
+    links to the report and video).
+  - **Jira test result** posts one comment with the result. It changes the ticket's status only when you
+    ask for it in your own words.
+- Every write shows the exact draft, including the Jira site, and waits for your "yes". With nobody to
+  ask (a scheduled or unattended run) nothing is written. Ticket and page text is treated as data, never
+  as instructions, and emails, names and order numbers from tested pages are masked.
+- Setup: connect Atlassian's MCP server in Claude Code (`/mcp` to sign in) and keep Claude Code's own
+  question on for every Jira write. See the guide's "Jira" section. Jira works in Claude Code, not in
+  dashboard Chat.
+
+### Docs
+- The README shows the dashboard: Chat creating a test, the Device page, Live and Schedules.
+
+### Known limits
+- **The Jira skills have not been tested against a real Jira site yet**, only with a stand-in Atlassian
+  server. The Atlassian endpoint in the guide was checked through Claude's built-in Atlassian connector,
+  not against Atlassian's own documentation.
+- With the plugin alone, a test that needs a secret such as `${DEMO_PASS}` stops and asks you to set it:
+  put it in the project's `.mcp.json` (as `fastpilot init` and `fastpilot demo` do) or export it.
+- The Jira skills point to the guide for setup; npm and plugin installs have no local copy of the guide,
+  so use the [online guide](https://github.com/autobot-lab/fastpilot/blob/main/docs/guide.md#jira).
+- Settings › Limits & permissions still says "New in 0.3.2" about blocked payment buttons.
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
+
 ## What's new in 0.4.2
 
 Installs on npm 12, says plainly when a test could not run, and sets up iPhone testing by itself.
