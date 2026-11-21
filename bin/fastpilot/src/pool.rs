@@ -99,11 +99,28 @@ impl Pool {
         Self { note, ..Self::new(devices, Box::new(|d| Box::pin(healthy(d)))) }
     }
 
-    pub fn summary(&self) -> String {
+    /// What the run will use, only for the platforms its tests need (V042: a web-only run says
+    /// "Web · Chrome", not "0 android, 0 ios").
+    pub fn summary(&self, need: &[Platform]) -> String {
         let all = lock(&self.all);
         let n = |p: Platform| all.iter().filter(|d| d.platform == p).count();
-        let note = if self.note.is_empty() { String::new() } else { format!(" · {}", self.note) };
-        format!("devices: {} android, {} ios (web: one Chrome per test){note}", n(Platform::Android), n(Platform::Ios))
+        let count = |p: Platform| match n(p) {
+            1 => "1 device".to_owned(),
+            c => format!("{c} devices"),
+        };
+        let mut parts = Vec::new();
+        if need.contains(&Platform::Web) {
+            parts.push("Web · Chrome".to_owned());
+        }
+        if need.contains(&Platform::Android) {
+            parts.push(format!("Android · {}", count(Platform::Android)));
+        }
+        if need.contains(&Platform::Ios) {
+            parts.push(format!("iPhone · {}", count(Platform::Ios)));
+        }
+        let mobile = need.iter().any(|p| *p != Platform::Web);
+        let note = if self.note.is_empty() || !mobile { String::new() } else { format!(" · {}", self.note) };
+        format!("{}{note}", parts.join(", "))
     }
 
     /// One device per mobile platform in `need`, preferring ones not in `avoid` (a retry
@@ -197,7 +214,7 @@ mod tests {
         let waiting = tokio::spawn(async move { p2.lease(&[Platform::Android], &[]).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!waiting.is_finished());
-        assert!(!pool.summary().contains("3 android"), "{}", pool.summary());
+        assert!(!pool.summary(&[Platform::Android]).contains("3 devices"), "{}", pool.summary(&[Platform::Android]));
         pool.release(a);
         assert_eq!(waiting.await.expect("join").expect("lease"), vec![dev(Platform::Android, "a2")]);
         // With a1 as the only other device, avoiding it still yields it when nothing else exists.
@@ -274,7 +291,7 @@ mod tests {
         let pool = Pool { note, ..Pool::new(devices, Box::new(|d| Box::pin(healthy(d)))) };
         let leased = pool.lease(&[Platform::Android], &[]).await.expect("lease");
         assert_eq!(leased, vec![dev(Platform::Android, "emulator-5556")]);
-        assert!(pool.summary().contains("1 android") && pool.summary().contains("emulator-5556 only"), "{}", pool.summary());
+        assert!(pool.summary(&[Platform::Android]).contains("Android · 1 device") && pool.summary(&[Platform::Android]).contains("emulator-5556 only"), "{}", pool.summary(&[Platform::Android]));
         let asked = lock(&log).clone();
         assert!(asked.contains(&"host:transport:emulator-5556".to_owned()) && asked.iter().any(|r| r == "shell:getprop sys.boot_completed"), "the health check ran: {asked:?}");
         assert!(asked.iter().all(|r| !r.contains("5554")), "nothing goes to the other emulator: {asked:?}");

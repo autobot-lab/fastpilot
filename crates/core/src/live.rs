@@ -100,6 +100,10 @@ pub struct LiveProcess {
     /// D10a: the agent this process works for (`FASTPILOT_AGENT`, set by the dashboard's Chat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// V042: the schedule that started this process (`FASTPILOT_SCHEDULED_AS`, set by `schedule run`),
+    /// so Live says "Scheduled · …" instead of an agent's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<String>,
     pub sessions: Vec<LiveSession>,
     pub flows: Vec<LiveFlow>,
 }
@@ -136,6 +140,7 @@ pub fn enable(kind: &str) {
             kind: kind.to_owned(),
             takeover: crate::config::flag("allow_takeover"),
             agent: std::env::var("FASTPILOT_AGENT").ok().filter(|a| !a.is_empty() && a.len() <= 40 && a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')),
+            scheduled: std::env::var("FASTPILOT_SCHEDULED_AS").ok().map(|t| t.chars().filter(|c| !c.is_control()).take(80).collect::<String>()).filter(|t| !t.trim().is_empty()),
             ..Default::default()
         },
         next_flow: 1,

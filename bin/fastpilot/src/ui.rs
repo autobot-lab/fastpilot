@@ -1070,7 +1070,7 @@ async fn live_api() -> Response {
                 let by_me = mine.contains(&(p.pid, s.id.clone())) && s.taken_over_ms.is_some();
                 let device = matches!(s.platform.as_str(), "android" | "ios");
                 json!({
-                    "pid": p.pid, "kind": p.kind, "agent": p.agent, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
+                    "pid": p.pid, "kind": p.kind, "agent": p.agent, "scheduled": p.scheduled, "id": s.id, "platform": s.platform, "started_ms": s.started_ms,
                     "watchable": s.screen.is_some() || (device && controllable),
                     "controllable": controllable && (s.screen.is_some() || device),
                     "taken_over_ms": s.taken_over_ms,
@@ -1091,6 +1091,14 @@ async fn live_api() -> Response {
     let sessions: Vec<Value> = sessions
         .into_iter()
         .map(|mut s| {
+            // V042: a session no agent started is not "My agent": say where it came from.
+            if s["agent"].is_null() {
+                s["agent_name"] = json!(match s["scheduled"].as_str() {
+                    Some(name) => format!("Scheduled · {name}"),
+                    None => "Started from the terminal".to_owned(),
+                });
+                return s;
+            }
             if let Some((name, model, tested)) = named(s["agent"].as_str()) {
                 s["agent_name"] = json!(name);
                 s["model_label"] = json!(model);

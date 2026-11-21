@@ -746,7 +746,10 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     }
     let pool = Arc::new(Pool::discover().await);
     let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
-    println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary());
+    let mut need: Vec<Platform> = cases.iter().flat_map(Case::platforms).collect();
+    need.sort_by_key(|p| p.to_string());
+    need.dedup();
+    println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary(&need));
     let github = crate::github::Reporter::new(opts.report_github);
     if opts.report_github == crate::github::Mode::Live {
         github.send(&crate::github::running_body(cases.len(), &github.target_or_local())).await;

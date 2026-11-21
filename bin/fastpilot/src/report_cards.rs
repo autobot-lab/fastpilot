@@ -136,8 +136,25 @@ fn evidence_item(raw: &str) -> Value {
     json!({ "name": name, "detail": detail, "state": state })
 }
 
+/// `a; b; c` -> items. A `;` inside brackets belongs to its item (V042: "smoke 2/2 (login works;
+/// wrong password is refused)" is one row, not "Smoke" and "Wrong").
 fn items(s: &str) -> Vec<String> {
-    s.split(';').map(|x| x.trim().trim_end_matches('.').to_owned()).filter(|x| !x.is_empty()).collect()
+    let mut out = Vec::new();
+    let (mut depth, mut cur) = (0i32, String::new());
+    for c in s.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = (depth - 1).max(0),
+            ';' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    out.into_iter().map(|x| x.trim().trim_end_matches('.').to_owned()).filter(|x| !x.is_empty()).collect()
 }
 
 /// The release verdict in `text`: the card's fields, and the text without the report.
@@ -294,6 +311,11 @@ mod tests {
         for (detail, state) in [("pages no crashes or error screens", "checked"), ("regression 14 tests: 0 failed", "checked"), ("main journeys 3 of 4 passed, 1 failed", "problem"), ("the app crashes on start", "problem")] {
             assert_eq!(state_of(detail), state, "{detail}");
         }
+        // V042 (QA Low): a ";" inside brackets stays in its row: one "Smoke" row, never "Smoke" and "Wrong".
+        let (card, _) = verdict("Verdict: SHIP WITH FIXES\nWhy: one check is slow\nEvidence: regression 14 of 14 passed; smoke 2/2 (login works; wrong password is refused); visual not checked (no baseline)").expect("card");
+        let names: Vec<&str> = card["evidence"].as_array().expect("ev").iter().filter_map(|e| e["name"].as_str()).collect();
+        assert_eq!(names, ["Regression", "Smoke", "Visual"], "{card}");
+        assert_eq!(card["evidence"][1]["detail"], "2/2 (login works; wrong password is refused)");
         // Not a verdict.
         assert!(verdict("Verdict: looks fine to me").is_none());
         assert!(verdict("We should ship it").is_none());

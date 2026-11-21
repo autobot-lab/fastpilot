@@ -161,6 +161,11 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
         assert!(out.contains(line), "missing {line:?}:\n{out}");
     }
     let folder = tmp.join("fastpilot-demo");
+    // V042 (QA Low): every demo page scales to a phone (Ship check marked each one without it).
+    for e in std::fs::read_dir(format!("{ROOT}/examples/demo")).expect("demo").flatten().filter(|e| e.path().extension().is_some_and(|x| x == "html")) {
+        let text = std::fs::read_to_string(e.path()).expect("page");
+        assert!(text.contains(r#"<meta name="viewport" content="width=device-width, initial-scale=1">"#), "{} has no viewport meta tag", e.path().display());
+    }
     for page in ["login", "widgets", "pin", "secret", "maestro"] {
         let repo = std::fs::read(format!("{ROOT}/examples/demo/{page}.html")).expect("repo page");
         assert_eq!(std::fs::read(folder.join(format!("demo/{page}.html"))).expect("page"), repo, "{page}");
@@ -315,7 +320,7 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     assert!(ok, "{out}");
     // Its last step (Design M2, F5): "Bayar" is refused by the built-in limits; the app stays put.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: Bayar\n", "session": "and1" })).await;
-    assert!(!ok && out.contains("contains \"bayar\" (block_actions, built-in list)"), "{out}");
+    assert!(!ok && out.contains("contains \"bayar\" (the built-in blocked list)") && !out.contains("block_actions"), "{out}");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: \"Selamat datang, Budi\"\n- assertNotVisible: \"Total Rp 150.000\"\n", "session": "and1" })).await;
     assert!(ok, "still on the dashboard: {out}");
     let md = std::fs::read_to_string(folder.join("tests/login-android.md")).expect("login-android.md");
