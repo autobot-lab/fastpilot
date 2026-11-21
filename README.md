@@ -1,16 +1,13 @@
 # fastpilot
 
-**Test your web, Android, and iOS apps in plain language.**
-You write what to check, and AI (Claude Code) runs it on your own computer.
-Free, no cloud, and payment buttons are blocked from the start.
+**Test your web, Android, and iOS apps in plain language, from one dashboard.**
+You say what to check; AI runs it on your own computer, shows you every step live, and tells you
+what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
+blocked from the start.
 
-## What you need
+## Start in 3 steps
 
-- A Mac (or Linux)
-- Google Chrome
-- [Claude Code](https://claude.com/claude-code), signed in
-
-## How to use it
+You need a Mac (or Linux), Google Chrome, and [Claude Code](https://claude.com/claude-code) signed in.
 
 **1. Install** (once)
 
@@ -25,120 +22,142 @@ cd ~/your-project
 fastpilot init
 ```
 
-`init` asks before each change; answer `y`. It connects fastpilot to Claude Code and creates
-an example test, `tests/example.md`.
+`init` asks before each change; answer `y`. At the end it asks **"Open the dashboard now?"**:
+press Enter.
 
-**3. Talk to fastpilot**
+> Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
+> pages and example tests, and opens the dashboard on it.
 
-Open Claude in your project folder:
+**3. Open the dashboard** (every time)
 
 ```bash
-claude
+fastpilot ui
 ```
 
-Then just say what you want, in plain words. No commands, no code:
+Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl-C` closes it.
 
-| You want to | Type |
+- The link works **once**, for **10 minutes**. If it expired, press `Ctrl-C` and run `fastpilot ui` again.
+- The dashboard only works on this computer.
+- Open it yourself; do not ask the AI to open it for you.
+
+Everything else happens in the dashboard.
+
+## Guide: your first test in the dashboard
+
+### 1. Check your devices: **Device**
+Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why not.
+- **Install Chrome** and **Set up an emulator** are one-click **Fix** buttons. Each asks you first,
+  showing the size and the time it takes.
+- **iPhone** testing needs a one-time setup with your Xcode (about 5 minutes).
+- Only web? Chrome is enough.
+
+### 2. Pick the AI and store passwords: **Settings**
+- **AI model:** pick the provider, then the model. Claude Code is the default. Other providers
+  (OpenAI, OpenRouter, Groq, Ollama) also work, and are marked "not tested yet".
+- **Secret:** add the names of passwords your tests need, for example `TEST_PASS`. Tests write them as
+  `${TEST_PASS}`, and they always show as `***`. Never type a password in Chat.
+- **Limits & permissions:** see the next section, "Safe from the start".
+
+### 3. Make an agent: **Agents › New agent**
+An agent is a tester with its own job, devices, instructions, and skills.
+- Fill in three things: what it tests, where (Web, Android emulator, iPhone simulator…), and its
+  instructions. Click a suggested instruction to add it.
+- **Skills** are ready-made test know-how, grouped by technique: boundary values, decision tables,
+  regression, safe checkout, and more. Suggested skills are already ticked, each with a reason.
+- Or simply describe the agent in one sentence in Chat and click **Create**.
+
+You can have several agents, for example "Checkout" on web and "Login" on Android. Each has its own
+**Chat, Live, Schedules, Instructions, Skills, History** and **Agent settings**.
+
+### 4. Ask for a test: **Chat**
+Write what you want in plain words:
+
+| You want to | Type in Chat |
 |---|---|
-| Check something quickly | *fastpilot, check that login on https://yourapp.com goes to the Dashboard* |
-| Save a test for later | *fastpilot, create a test for the checkout flow and save it* |
-| Run a regression | *fastpilot, run a regression* |
-| Run part of it | *fastpilot, run the Android tests only* |
-| Understand a failure | *Why did the checkout test fail? Show me the screenshot* |
+| Check something now | *Check that login on https://yourapp.com goes to the Dashboard* |
+| Save a test | *Create a test for the checkout flow and save it* |
+| Test a field properly | *Test the quantity field properly* (it picks the technique and shows what it covered) |
+| Run everything | *Run a regression* (newly failing tests come first) |
+| Before a release | *Is staging ready to ship?* (one verdict: SHIP, SHIP WITH FIXES, DO NOT SHIP) |
+| Understand a failure | *Why did the checkout test fail?* |
 
-fastpilot opens the app, does every step, and tells you what passed and what failed.
-A regression runs every test you saved, so save a few tests first.
+When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**. Nothing is
+saved before you click.
 
-## Open the dashboard
+### 5. Watch it run: **Live**
+Watch every test step by step, on web, Android, and iOS. **Take over** if you need to tap something
+yourself, then hand it back to the AI. Several agents can run at the same time; a phone runs one
+test at a time and the others wait their turn.
 
-The dashboard is a page in your browser where you can chat, watch tests run, schedule them, and
-change settings, without typing commands in Claude.
+### 6. Run it automatically: **Schedules**
+- **Every N hours** (with active hours, for example 08:00–20:00), every day, or every week.
+- **Run now** for any schedule.
+- **Release watch:** after a release, re-check every few minutes for a few hours and only tell you
+  about new problems.
+- Get notified by Slack webhook, Mac notification, or GitHub issue when something fails.
+- Or just ask in Chat: *"run the checkout tests every 2 hours"*.
 
-1. Open the **Terminal** app.
-2. Type this and press Enter:
+### 7. See results: **History** and **Memory**
+- **History:** every run and every Chat conversation, with report, screenshots, and video. Delete
+  one, several, or all, or let them be deleted after 7, 30, or 90 days.
+- **Memory:** how each test is doing (Reliable, Unstable, Failing, Set aside), plus **project notes**
+  every agent reads, for example *"Staging is https://staging.yourapp.com"* or *"Login uses a code"*.
 
-   ```bash
-   fastpilot ui
-   ```
-
-3. Your browser opens the dashboard by itself.
-   If it does not, the Terminal shows a link like `http://127.0.0.1:53712/?code=...`.
-   Copy it into your browser.
-4. Keep the Terminal open while you use the dashboard. To close it, press `Ctrl-C` in the Terminal.
-
-Good to know:
-
-- The link works **once** and for **10 minutes**. If it expired, or you closed the page, press
-  `Ctrl-C` and run `fastpilot ui` again for a new link.
-- The dashboard only works on this computer, not from your phone or another computer.
-- Open it yourself. Do not ask the AI to open it for you: the dashboard can loosen the limits.
-
-## What's in the dashboard
+## Dashboard map
 
 | Menu | What it's for |
 |---|---|
-| **Chat** | Ask for a test in plain words, e.g. *"Test https://example.com and check that 'Example Domain' is shown"* |
-| **Live** | Watch tests run, and take over if needed |
-| **Schedules** | Run tests automatically every few hours, every day or every week. If one fails, you get a Slack message or a Mac notification |
-| **Memory** | What fastpilot learned about each test, and short project notes for every agent |
-| **History** | Past runs and Chat conversations; delete them, or have them deleted after a number of days |
-| **Device** | Check whether Chrome, Android, and iOS are ready, and set them up with one click |
-| **Settings** | Pick the AI model, set limits, store secrets |
-
-## Write a test yourself (optional)
-
-You don't have to: fastpilot can write tests for you. If you want to, one test is one `.md` file
-in the `tests/` folder:
-
-```markdown
-# Search for a product
-id: search-product
-platform: web
-target: https://yourshop.com
-- Type "shoes" in the search box and press Enter
-- Check that a list of search results is shown
-```
-
-No selectors or code. Write it like you would explain it to a friend.
-`platform` can be `web`, `android`, or `ios`.
+| **Agents** | Your testers: Chat, Live, Schedules, Instructions, Skills, History, Agent settings. Also the skill **Library** |
+| **Live** | Every running test, from all agents |
+| **Schedules** | All schedules and release watches |
+| **Memory** | Test health and project notes |
+| **History** | Past runs and conversations |
+| **Device** | Chrome, Android, iOS readiness and Fix buttons |
+| **Settings** | AI model, Limits & permissions, Secret |
 
 ## Safe from the start
 
 - Buttons like **pay, buy, checkout, transfer, delete account** are always blocked.
 - Plain **delete/remove** buttons must be confirmed first.
-- Passwords are written as `${NAME}` and always show as `***` in results ([how to store them](docs/guide.md#write-your-own-tests)).
-- The AI can only make the rules stricter. To loosen one, **you** approve it: on a red card in Chat (it quotes what you asked, and Pay needs the word typed), or with `fastpilot config approve` in your own terminal. Every change is kept in `~/.fastpilot/audit.jsonl`.
+- The AI can make the rules stricter, never looser. To loosen one, **you** approve it: Chat shows a red
+  card that quotes what you asked, and allowing **Pay** also needs you to type "Pay". Text on a tested
+  page can never ask for a change.
+- Every change is kept in `~/.fastpilot/audit.jsonl`.
 
-Want to test a checkout? Ask in Chat: *"Allow the Pay button for this project"*, or open `fastpilot ui` → **Settings › Limits & permissions** and remove the word from the list.
+Want to test a checkout for real? Ask in Chat: *"Allow the Pay button for this project"*, or open
+**Settings › Limits & permissions**.
 
-These limits protect you from what a tested page tells the AI. They are not a lock against programs on your own computer: anything that runs as you can edit `~/.fastpilot/config.toml`. If you let Claude Code run `fastpilot config` commands (`Bash(fastpilot config:*)`), that also covers `fastpilot config approve`; keep it out of your allowed commands.
+These limits protect you from what a tested page tells the AI. They are not a lock against programs
+on your own computer: anything that runs as you can edit `~/.fastpilot/config.toml`.
+
+## Prefer the terminal?
+
+Everything also works from Claude Code. Open Claude in your project folder (`claude`) and say it in
+plain words, for example *"fastpilot, run a regression"* or *"fastpilot, test the login page"*.
+Results, schedules, and history show up in the dashboard too.
 
 ## If you get stuck
 
-Run this first:
+Open **Device** in the dashboard, or run:
 
 ```bash
 fastpilot doctor
 ```
 
-`doctor` shows what isn't ready yet and how to fix it.
-
 | Problem | Try |
 |---|---|
-| Chrome not found | `fastpilot setup web` |
-| fastpilot doesn't show up in Claude | Run `fastpilot init` again |
 | The dashboard link doesn't work | It works once, for 10 minutes. Press `Ctrl-C`, then run `fastpilot ui` again |
-| Android isn't ready | `fastpilot setup android`, then `fastpilot doctor android` |
-| A test stops with "Blocked by Limits" | That's on purpose. Change it in the dashboard › Settings › Limits & permissions |
+| Chrome or Android isn't ready | **Device** › Fix buttons, or `fastpilot setup web` / `fastpilot setup android` |
+| iPhone isn't ready | `fastpilot setup ios` (once, with Xcode) |
+| fastpilot doesn't show up in Claude | Run `fastpilot init` again |
+| A test stops with "Blocked by limits" | That's on purpose. See **Settings › Limits & permissions** |
+| A saved test can't find its password in `fastpilot run` | Export it first, e.g. `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
 
 ## Learn more
 
-More details, including the technical ones, are in the **[full guide](docs/guide.md)** (currently in Indonesian):
-
-- [Android](docs/guide.md#android) and [iOS](docs/guide.md#ios)
-- [Claude Desktop](docs/guide.md#claude-desktop)
-- [All settings](docs/guide.md#settings)
-- [Devices on another machine](docs/guide.md#devices-on-another-computer) and [physical phones](docs/real-devices.md)
-- [Known limits](docs/guide.md#known-limitations)
+- **[Full guide](docs/guide.md)**: writing tests by hand, all settings, Android, iOS, Claude Desktop,
+  devices on another computer, known limits
+- [Physical phones](docs/real-devices.md)
+- [Release notes](https://github.com/autobot-lab/fastpilot/releases)
 
 License: [Apache-2.0](LICENSE)
