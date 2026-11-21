@@ -14,7 +14,11 @@ fn npm_is_published_by_the_release_workflow_without_a_token() {
     let wf: Value = serde_yaml::from_str(WORKFLOW).expect("release.yml is YAML");
     let job = &wf["jobs"]["publish-npm"];
     assert!(job.is_mapping(), "a publish-npm job");
-    assert_eq!(job["if"].as_str(), Some("github.ref_type == 'tag'"), "only for a tag: a dry run publishes nothing");
+    assert_eq!(job["if"].as_str(), Some("github.event_name == 'push' && github.ref_type == 'tag'"), "only a pushed tag: a manual run publishes nothing");
+    assert_eq!(wf["jobs"]["release"]["if"].as_str(), Some("github.event_name == 'push' && github.ref_type == 'tag'"), "a manual run releases nothing either");
+    // Security, Medium 1: a person approves in GitHub (environment `npm`) before the job starts.
+    assert_eq!(job["environment"].as_str(), Some("npm"));
+    assert!(job["timeout-minutes"].as_u64().is_some_and(|m| m <= 30));
     let needs: Vec<&str> = match &job["needs"] {
         Value::String(s) => vec![s.as_str()],
         Value::Sequence(v) => v.iter().filter_map(Value::as_str).collect(),
@@ -32,10 +36,17 @@ fn npm_is_published_by_the_release_workflow_without_a_token() {
         assert!(!text.contains(forbidden), "no token in publish-npm ({forbidden})");
     }
     let steps = job["steps"].as_sequence().expect("steps");
-    for s in steps {
-        if let Some(uses) = s["uses"].as_str() {
-            let pin = uses.split('@').nth(1).unwrap_or("");
-            assert!(pin.len() == 40 && pin.chars().all(|c| c.is_ascii_hexdigit()), "pinned to a commit: {uses}");
+    // Security, Low 2: every action of the whole workflow (the binary npm users run is built
+    // here) is pinned to a commit, and no checkout leaves git credentials behind.
+    for (name, j) in wf["jobs"].as_mapping().expect("jobs") {
+        for s in j["steps"].as_sequence().expect("steps") {
+            if let Some(uses) = s["uses"].as_str() {
+                let pin = uses.split('@').nth(1).unwrap_or("");
+                assert!(pin.len() == 40 && pin.chars().all(|c| c.is_ascii_hexdigit()), "{name:?}: pinned to a commit: {uses}");
+                if uses.starts_with("actions/checkout@") {
+                    assert_eq!(s["with"]["persist-credentials"].as_bool(), Some(false), "{name:?}: no git credentials left behind");
+                }
+            }
         }
     }
     assert!(steps.iter().any(|s| s["uses"].as_str().is_some_and(|u| u.starts_with("actions/checkout@")) && s["with"]["persist-credentials"].as_bool() == Some(false)), "no git credentials left behind");
@@ -45,7 +56,7 @@ fn npm_is_published_by_the_release_workflow_without_a_token() {
     assert!(guard < publish, "the guard runs before the publish");
     assert!(run(&steps[guard]).contains("exit 1"), "a wrong tag stops the job");
     let p = run(&steps[publish]);
-    assert!(p.contains("--provenance") && p.contains("Trusted Publisher") && p.contains("autobot-lab") && p.contains("release.yml"), "says what to configure when npm refuses: {p}");
+    assert!(p.contains("--provenance") && p.contains("Trusted Publisher") && p.contains("autobot-lab") && p.contains("release.yml") && p.contains("environment npm"), "says what to configure when npm refuses: {p}");
     assert!(p.contains("npm view") && p.contains("already on npm"), "a version published by hand is not an error");
     assert_eq!(steps[publish]["working-directory"].as_str(), Some("packaging/npm"));
     assert!(steps.iter().any(|s| run(s).contains("npm install -g npm@11.")), "npm 11.5.1+ for Trusted Publishing");

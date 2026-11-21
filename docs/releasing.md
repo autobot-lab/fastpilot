@@ -41,15 +41,22 @@ Log, `results.tsv`, `release-check-report.html` dan perubahan dibanding run sebe
    `release` membangun ketiga arsip dan membuat GitHub Release dengan arsip dan checksum-nya
    (catatan rilis dari `docs/release-notes.md`). Tidak ada token yang perlu disimpan.
    Uji coba tanpa merilis: jalankan workflow `release` secara manual (Actions → release → Run
-   workflow); arsipnya hanya jadi artifact workflow, dan `release` serta `publish-npm` dilewati.
+   workflow, pilih **branch**); arsipnya hanya jadi artifact workflow, dan `release` serta
+   `publish-npm` dilewati (keduanya hanya jalan untuk tag yang di-push, juga kalau run manual memilih tag).
 3. npm: job `publish-npm` di workflow `release` jalan otomatis setelah GitHub Release jadi. Job ini
    memakai **npm Trusted Publishing** (identitas OIDC sesaat dari GitHub Actions, tanpa token yang
    disimpan, dengan provenance). Job berhenti tanpa publish kalau tag ≠ versi di
    `packaging/npm/package.json`, dan selesai tanpa apa-apa kalau versi itu sudah ada di npm.
-   - **Sekali saja, oleh pemilik paket di npmjs.com:** fastpilot › Settings › Trusted Publisher ›
-     GitHub Actions: organization `autobot-lab`, repository `fastpilot`, workflow `release.yml`.
-     Setelah satu publish lewat workflow berhasil: Settings › Publishing access › "Require two-factor
-     authentication and disallow tokens".
+   - **Sekali saja, oleh pemilik repo dan paket** (urutannya penting):
+     1. GitHub › autobot-lab/fastpilot › Settings › Environments › New environment `npm`, isi
+        **Required reviewers** dengan pemilik (dan centang "Prevent self-review" kalau ada lebih dari satu
+        pemilik). Job `publish-npm` lalu menunggu klik **Approve** di halaman run; klik itu menggantikan
+        passkey, jadi akses push saja tidak cukup untuk publish.
+     2. GitHub › Settings › Rules › Rulesets: tag `v*` hanya boleh dibuat oleh admin.
+     3. npmjs.com › fastpilot › Settings › Trusted Publisher › GitHub Actions: organization
+        `autobot-lab`, repository `fastpilot`, workflow `release.yml`, environment `npm`.
+     4. Setelah satu publish lewat workflow berhasil: Settings › Publishing access › "Require two-factor
+        authentication and disallow tokens".
    - **Belum disetel (atau job gagal):** pesan error job menyebut apa yang perlu disetel. Publish
      manual seperti dulu: `cd packaging/npm && npm publish`, lalu setujui dengan passkey (2FA tidak
      dilewati).
