@@ -85,7 +85,7 @@ async fn new_limits_are_enforced_by_the_engine() {
     // "Bayar" inside "Lanjut ke Pembayaran": blocked, confirmed or not; the button was not pressed.
     for flow in ["- tapOn: \"Lanjut ke Pembayaran\"\n", "- tapOn: { text: \"Lanjut ke Pembayaran\", confirm: true }\n", "- longPressOn: \"Lanjut ke Pembayaran\"\n"] {
         let (ok, out) = call(&client, "run_flow", step(flow)).await;
-        assert!(!ok && out.contains("blocked") && out.contains("block_actions"), "{flow}: {out}");
+        assert!(!ok && out.contains("blocked") && out.contains("(your blocked words)") && !out.contains("block_actions"), "{flow}: {out}");
     }
     let (ok, out) = call(&client, "run_flow", step("- assertVisible: belum\n")).await;
     assert!(ok, "the pay button must not have been pressed: {out}");

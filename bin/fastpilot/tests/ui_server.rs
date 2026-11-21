@@ -421,3 +421,33 @@ fn ui_survives_a_closed_stdout() {
     assert!(up && alive, "still serving with its stdout closed (up {up}, alive {alive}): {last_err}");
     assert_eq!(status, 401, "and answers");
 }
+
+/// V042 (QA Low): a session no agent started is not labelled "My agent" in Live: a terminal session
+/// says "Started from the terminal", a scheduled run "Scheduled · <name>", Chat keeps its agent.
+#[test]
+fn live_says_where_a_session_came_from() {
+    let ui = start("live-source", &[]);
+    let p = ui.port;
+    let live = ui.home.join(".fastpilot/live");
+    std::fs::create_dir_all(&live).expect("live");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as u64;
+    let proc = |pid: u32, kind: &str, extra: serde_json::Value, id: &str| {
+        let mut v = serde_json::json!({ "pid": pid, "kind": kind, "updated_ms": now, "sessions": [{ "id": id, "platform": "web", "started_ms": now }], "flows": [] });
+        for (k, x) in extra.as_object().expect("obj") {
+            v[k] = x.clone();
+        }
+        std::fs::write(live.join(format!("{pid}.json")), v.to_string()).expect("write");
+    };
+    proc(4_000_001, "mcp", serde_json::json!({}), "term1");
+    proc(4_000_002, "run", serde_json::json!({ "scheduled": "Checkout every 2 hours" }), "sched1");
+    proc(4_000_003, "mcp", serde_json::json!({ "agent": "default" }), "chat1");
+    let r = http(p, "GET", &format!("/?code={}", ui.code), &[], "");
+    let session = r.header("set-cookie").and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let r = http(p, "GET", "/api/live", &[("Cookie", session)], "");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v: serde_json::Value = serde_json::from_str(&r.text()).expect("json");
+    let label = |id: &str| v["sessions"].as_array().and_then(|a| a.iter().find(|s| s["id"] == id)).map(|s| (s["agent_name"].as_str().unwrap_or("").to_owned(), s["model_label"].is_null()));
+    assert_eq!(label("term1"), Some(("Started from the terminal".to_owned(), true)), "{v}");
+    assert_eq!(label("sched1"), Some(("Scheduled · Checkout every 2 hours".to_owned(), true)), "{v}");
+    assert_eq!(label("chat1").map(|l| l.0), Some("My agent".to_owned()), "Chat keeps its agent: {v}");
+}

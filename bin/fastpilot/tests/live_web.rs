@@ -126,7 +126,9 @@ async fn live_panel_shows_a_running_web_session() {
     assert_eq!(session["watchable"], true);
     assert_eq!(session["kind"], "mcp");
     assert_eq!(session["flow"]["steps"][0]["state"], "done");
-    assert!(session["flow"]["steps"][2]["will_block"].as_str().is_some_and(|w| w.contains("block_actions")), "{session}");
+    assert!(session["flow"]["steps"][2]["will_block"].as_str().is_some_and(|w| w.contains("(your blocked words)") && !w.contains("block_actions")), "{session}");
+    // V042: a terminal session is not "My agent".
+    assert_eq!(session["agent_name"], "Started from the terminal", "{session}");
     let pid = session["pid"].as_u64().expect("pid");
 
     // The screen: JPEG frames, only with the cookie, only for a session that exists.

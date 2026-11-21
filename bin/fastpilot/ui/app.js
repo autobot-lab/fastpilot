@@ -515,8 +515,8 @@ function asWritten(key, w) {
 // Why a guard rail stopped a step, in a few words, from the engine's message.
 function blockReason(note) {
   const n = note || "";
-  let m = /contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(n);
-  if (m) return `the text contains "${asWritten("block_actions", m[1])}"${m[2] ? " (built-in list)" : ""}`;
+  let m = /contains "([^"]+)" \((the built-in blocked list|your blocked words)\)/.exec(n);
+  if (m) return `the text contains "${asWritten("block_actions", m[1])}"${m[2] === "the built-in blocked list" ? " (built-in list)" : ""}`;
   m = /risky action \("([^"]+)"/.exec(n);
   if (m) return `needs confirm: true ("${asWritten("confirm_actions", m[1])}")`;
   if (/allowed_domains|ALLOWED_DOMAINS|not in the allowed/i.test(n)) return "domain not in the list";
@@ -617,7 +617,7 @@ function card(s) {
   const el = h("article", { class: "lcard", tabindex: "0", "data-fk": `card:${key}`, "aria-label": `Session ${s.id}, ${s.platform}. Enter to see its steps.`,
     onclick: (e) => { if (!e.target.closest("button")) selectSession(key); } },
     h("div", { class: "lh" }, h("span", { class: "pf " + s.platform }, s.platform), h("span", { class: "muted mono" }, PLATFORM[s.platform] || s.platform), h("span", { class: "chip" }, s.id)),
-    s.agent_name ? h("div", { class: "l-agent" }, h("b", {}, s.agent_name), h("span", { class: "s" }, ` · ${s.model_label || ""}`),
+    s.agent_name ? h("div", { class: "l-agent" }, h("b", {}, s.agent_name), s.model_label ? h("span", { class: "s" }, ` · ${s.model_label}`) : null,
       s.model_tested === false ? h("span", { class: "ag-untested" }, "not tested yet") : null) : null,
     screenEl(s, false),
     h("div", { class: "card-text" }, h("div", {}, line, status), more));
@@ -652,9 +652,10 @@ function stepsPanel(s) {
     if (x.state === "failed") return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "failed" }, "✗"), h("span", {}, n, x.label), h("span", { class: "r" }, x.note || "failed"));
     if (x.state === "blocked") {
       // block_actions: the button, the word and where it comes from (v0.3.2 design).
-      const b = /"([^"]*)"[^"]* contains "([^"]+)" \(block_actions(, built-in list)?\)/.exec(x.note || "");
+      const b = /"([^"]*)"[^"]* contains "([^"]+)" \((the built-in blocked list|your blocked words)\)/.exec(x.note || "");
+      const built = b && b[3] === "the built-in blocked list";
       const why = b
-        ? h("span", { class: "r" }, h("b", {}, "Blocked by Limits. "), `The button text "${b[1]}" contains `, code(b[3] ? b[2] : asWritten("block_actions", b[2])), b[3] ? " (built-in list)" : "", ". The page was not pressed. ", limits(i, true))
+        ? h("span", { class: "r" }, h("b", {}, "Blocked by Limits. "), `The button text "${b[1]}" contains `, code(built ? b[2] : asWritten("block_actions", b[2])), built ? " (built-in list)" : "", ". The page was not pressed. ", limits(i, true))
         : h("span", { class: "r" }, `blocked: ${blockReason(x.note)} · `, limits(i));
       return h("li", { class: "blk" }, h("span", { class: "i", "aria-label": "blocked" }, icon("lock", "sm")), h("span", {}, n, x.label), why);
     }

@@ -279,7 +279,9 @@ fn with_bot(agent: &str, id: u64, f: impl FnOnce(&mut Msg)) {
 
 const SYSTEM: &str = "You are the fastpilot bot inside `fastpilot ui`, a local QA app. The user chats with you to run \
 and debug UI tests (web, Android, iOS), read results, and set up schedules and limits. Reply in the user's language, \
-short and plain.
+short and plain. Never show the user an internal setting name (block_actions, confirm_actions, allowed_domains, \
+max_steps and the like): say \"limits\", \"the built-in blocked list\" or the page, for example \"The Pay button is \
+blocked by limits. You can change that in Settings → Limits & permissions.\"
 
 Tools: only the fastpilot MCP tools. Start a session (`session`, action start) and batch steps in `run_flow`; sessions \
 you start appear on the Live page, where the user can watch them and take them over. Close sessions you no longer \

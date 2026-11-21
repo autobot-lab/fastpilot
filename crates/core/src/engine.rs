@@ -784,8 +784,7 @@ fn will_block(step: &Step) -> Option<String> {
         Step::TapOn(sel) | Step::LongPressOn(sel) | Step::DoubleTapOn(sel) => {
             let (Selector::Text(name) | Selector::Role { name: Some(name), .. }) = sel else { return None };
             if let Some(hit) = crate::policy::block_match(name, &crate::policy::block_rules()) {
-                let list = if hit.builtin { ", built-in list" } else { "" };
-                return Some(format!("will be blocked: the text contains \"{}\" (block_actions{list})", hit.word));
+                return Some(format!("will be blocked: the text contains \"{}\" ({})", hit.word, block_source(&hit)));
             }
             match crate::policy::risky_match(name, &crate::policy::risky_words()) {
                 Some(w) if !confirmed => Some(format!("will stop: needs confirm: true (\"{w}\", confirm_actions)")),
@@ -837,7 +836,7 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
         // the rules win (fail closed).
         let names = point_targets(d, *p).await.ok_or_else(|| {
             Error::Blocked(format!(
-                "{sel}: cannot tell which element is at this point (no snapshot, or no element covers it) while block_actions / confirm_actions are on; tap it by text or ref"
+                "{sel}: cannot tell which element is at this point (no snapshot, or no element covers it) while blocked or risky words are set (Limits & permissions); tap it by text or ref"
             ))
         })?;
         return judge_tap(sel, &names, confirmed, words, blocked);
@@ -871,7 +870,7 @@ async fn guard_tap(d: &dyn Driver, sel: &Selector, confirmed: bool, words: &[Str
         // told apart, so the rules win (fail closed), like a point.
         Err(_) if no_snapshot && own.is_some() => Ok(()),
         Err(_) if no_snapshot => Err(Error::Blocked(format!(
-            "{sel}: cannot tell which element this is (no snapshot) while block_actions / confirm_actions are on; tap it by text"
+            "{sel}: cannot tell which element this is (no snapshot) while blocked or risky words are set (Limits & permissions); tap it by text"
         ))),
         // Not on screen (or ambiguous) within the step's time: the tap would fail the same way.
         Err(e) => Err(e),
@@ -948,7 +947,7 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
     }
     let snap = d.snapshot().await.map_err(|_| {
         Error::Blocked(format!(
-            "pressKey {key}: cannot tell what it would press (no snapshot) while block_actions / confirm_actions are on; tap the button by text or ref"
+            "pressKey {key}: cannot tell what it would press (no snapshot) while blocked or risky words are set (Limits & permissions); tap the button by text or ref"
         ))
     })?;
     let focused = snap.entries.iter().find(|e| e.node.focused);
@@ -980,8 +979,9 @@ async fn guard_key(d: &dyn Driver, key: &str, confirmed: bool, words: &[String],
 const BLOCKED_HOW: &str =
     "Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Settings › Limits & permissions.";
 
+/// In plain words, never the setting's name (V042: the Pay answer showed `block_actions`).
 fn block_source(hit: &crate::policy::BlockHit) -> &'static str {
-    if hit.builtin { "block_actions, built-in list" } else { "block_actions" }
+    if hit.builtin { "the built-in blocked list" } else { "your blocked words" }
 }
 
 /// A script can click anything, which block_actions cannot see: no evalScript while it is set,
@@ -991,7 +991,7 @@ fn guard_script(blocked: &[String]) -> Result<()> {
         return Ok(());
     }
     Err(Error::Blocked(
-        "evalScript is off while block_actions is on (the built-in list too): a script could press a blocked button. Do not work around it. The user can allow scripts in fastpilot ui › Settings › Limits & permissions (Run any JavaScript) or with `fastpilot config set allow_eval_script true`.".into(),
+        "evalScript is off while buttons are blocked (the built-in blocked list too): a script could press a blocked button. Do not work around it. The user can allow scripts in fastpilot ui › Settings › Limits & permissions (Run any JavaScript) or with `fastpilot config set allow_eval_script true`.".into(),
     ))
 }
 
@@ -1808,7 +1808,7 @@ mod tests {
         let pt = |x: f64, y: f64| Selector::Point(Point { x, y });
         let bayar = ["bayar".to_owned()];
         let e = guard_tap(&page, &pt(60.0, 133.0), true, &[], &bayar).await.expect_err("blocked by its text");
-        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && (m.contains("the built-in blocked list") || m.contains("your blocked words")) && !m.contains("block_actions")), "{e}");
         // The nameless icon inside the button is covered by the button.
         assert!(guard_tap(&page, &pt(15.0, 130.0), true, &[], &bayar).await.is_err(), "icon in the pay button");
         // confirm_actions: refused unless confirmed.
@@ -1840,7 +1840,7 @@ mod tests {
         let pay = Selector::Id("pay".into());
         let page = PointPage { fail: false, refs: Mutex::default(), late: 3.into() };
         let e = guard_tap(&page, &pay, true, &[], &bayar).await.expect_err("late pay button");
-        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && (m.contains("the built-in blocked list") || m.contains("your blocked words")) && !m.contains("block_actions")), "{e}");
         let page = PointPage { fail: false, refs: Mutex::default(), late: 3.into() };
         assert!(guard_tap(&page, &pay, false, &bayar, &[]).await.is_err(), "confirm_actions, late button");
         assert!(guard_tap(&page, &Selector::Id("nope".into()), false, &[], &bayar).await.is_err(), "never on screen");
@@ -1854,7 +1854,7 @@ mod tests {
         let page = PointPage { fail: false, refs: Mutex::default(), late: Default::default() };
         let t0 = tokio::time::Instant::now();
         let e = guard_tap(&page, &Selector::Text("Keluar".into()), false, &[], &["keluar".to_owned()]).await.expect_err("blocked text");
-        assert!(matches!(&e, Error::Blocked(m) if m.contains("Keluar") && m.contains("block_actions")), "{e}");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("Keluar") && m.contains("your blocked words") && !m.contains("block_actions")), "{e}");
         assert!(t0.elapsed() < Duration::from_millis(50), "refused without waiting");
         // A text selector without a snapshot is judged by its text, as before.
         assert!(guard_tap(&broken, &Selector::Text("Batal".into()), false, &[], &bayar).await.is_ok());
@@ -1952,7 +1952,7 @@ mod tests {
         let page = KeyPage::new(Some(form(focused(node("textfield", "Nomor kartu")))));
         for confirmed in [false, true] {
             let e = guard_key(&page, "Enter", confirmed, &[], &bayar).await.expect_err("Enter may submit to Bayar");
-            assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && m.contains("block_actions")), "{e}");
+            assert!(matches!(&e, Error::Blocked(m) if m.contains("Bayar sekarang") && (m.contains("the built-in blocked list") || m.contains("your blocked words")) && !m.contains("block_actions")), "{e}");
         }
         // Enter / Space on the blocked button itself.
         let on_button = KeyPage::new(Some(vec![focused(node("button", "Bayar sekarang"))]));
@@ -1974,7 +1974,7 @@ mod tests {
         assert!(guard_key(&blind, "Enter", false, &[], &bayar).await.is_err());
         // evalScript: refused while block_actions is set, allowed otherwise.
         let e = guard_script(&bayar).expect_err("script while block_actions");
-        assert!(matches!(&e, Error::Blocked(m) if m.contains("evalScript") && m.contains("block_actions")), "{e}");
+        assert!(matches!(&e, Error::Blocked(m) if m.contains("evalScript") && m.contains("buttons are blocked") && !m.contains("block_actions")), "{e}");
         assert!(guard_script(&[]).is_ok());
         assert!(page.done.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "guards never press or run anything");
     }
@@ -2255,10 +2255,10 @@ mod tests {
             let e = guard_risky(&page, &pay, true).await.expect_err("built-in block");
             assert_eq!(
                 e.to_string(),
-                "\"Bayar sekarang\" contains \"bayar\" (block_actions, built-in list). Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Settings › Limits & permissions."
+                "\"Bayar sekarang\" contains \"bayar\" (the built-in blocked list). Do not retry or work around it (`confirm: true` does not lift it). The user can change it in fastpilot ui › Settings › Limits & permissions."
             );
             assert_eq!(e.reason(), "blocked");
-            assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("will be blocked: the text contains \"bayar\" (block_actions, built-in list)"));
+            assert_eq!(will_block(&Step::TapOn(pay.clone())).as_deref(), Some("will be blocked: the text contains \"bayar\" (the built-in blocked list)"));
             // A plain delete: confirm only.
             let e = guard_tap(&page, &Selector::Text("Hapus filter".into()), false, &crate::policy::risky_words(), &crate::policy::block_rules()).await.expect_err("confirm");
             assert!(matches!(&e, Error::Blocked(m) if m.contains("confirm_actions") && m.contains("confirm: true")), "{e}");

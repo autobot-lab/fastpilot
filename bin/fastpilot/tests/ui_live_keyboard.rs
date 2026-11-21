@@ -85,7 +85,7 @@ async fn live_page_works_with_the_keyboard() {
         "- session: {{ start: shop, platform: web, target: \"{page}\" }}\n- inputText: {{ into: Email, text: a@b.com }}\n- inputText: {{ into: Password, text: x }}\n- tapOn: Masuk\n- tapOn: Keluar\n"
     );
     let (ok, out) = call(&shop, "run_flow", json!({ "flow": flow })).await;
-    assert!(!ok && out.contains("block_actions"), "{out}");
+    assert!(!ok && out.contains("(your blocked words)"), "{out}");
 
     // The user opens the printed link: no `#/live` in it.
     let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Step 5/5\", timeout: 10000 }}\n", link.trim());

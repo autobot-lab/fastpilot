@@ -71,6 +71,8 @@ fn headless_run_drives_claude_code() {
     println!("{out}");
     assert!(ok, "{out}");
     assert!(out.contains("✓ login-ok") && out.contains("claude-opus-5-5") && out.contains("1 passed, 0 failed"), "{out}");
+    // V042 (QA Low): a web-only run names only what it uses, no Android or iPhone counts.
+    assert!(out.contains("1 tests, 1 workers, Web · Chrome\n") && !out.contains("android") && !out.contains(" ios"), "{out}");
     {
         let c = calls(&log);
         assert_eq!(c.len(), 1, "{c:?}");
