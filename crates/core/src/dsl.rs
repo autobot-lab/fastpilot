@@ -1438,9 +1438,13 @@ fn allowed() -> Vec<String> {
 
 fn lookup(name: &str) -> Result<String, String> {
     if !allowed().iter().any(|a| a == name) {
-        return Err(format!("variable `{name}` is not allowed; list it in FASTPILOT_VARS"));
+        return Err(format!(
+            "variable `{name}` is not allowed: the user adds its name in fastpilot ui › Settings › Secret (or FASTPILOT_VARS); the value comes from the environment fastpilot starts in (with the Claude Code plugin: export {name}=… before starting Claude Code)"
+        ));
     }
-    std::env::var(name).map_err(|_| format!("environment variable `{name}` is not set"))
+    std::env::var(name).map_err(|_| {
+        format!("variable `{name}` has no value where fastpilot runs: the user sets it in that environment (with the Claude Code plugin: export {name}=… before starting Claude Code; with a project .mcp.json: its env)")
+    })
 }
 
 /// Replace `${NAME}` with allowed environment values of fastpilot's own process.
@@ -1966,6 +1970,9 @@ mod tests {
         assert_eq!(var_names("a ${X} b ${Y_2} `${a.b}` $${Z}"), vec!["X", "Y_2"]);
         assert!(substitute("${FP_DEFINITELY_UNSET}").is_err());
         assert!(substitute("${HOME}").expect_err("not allowlisted").contains("FASTPILOT_VARS"));
+        // V051: what a plugin user (no .mcp.json) sees in Claude Code says where the name and the value go.
+        let e = substitute("${HOME}").expect_err("not allowlisted");
+        assert!(e.contains("Settings › Secret") && e.contains("with the Claude Code plugin: export HOME=… before starting Claude Code"), "{e}");
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }

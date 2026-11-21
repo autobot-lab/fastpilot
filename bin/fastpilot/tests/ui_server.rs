@@ -451,3 +451,21 @@ fn live_says_where_a_session_came_from() {
     assert_eq!(label("sched1"), Some(("Scheduled · Checkout every 2 hours".to_owned(), true)), "{v}");
     assert_eq!(label("chat1").map(|l| l.0), Some("My agent".to_owned()), "Chat keeps its agent: {v}");
 }
+
+/// V051 (QA Lows 1, 3, 4): the words people read agree with what fastpilot does.
+#[test]
+fn the_dashboard_and_readme_words_are_current() {
+    const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let app = std::fs::read_to_string(format!("{ROOT}/bin/fastpilot/ui/app.js")).expect("app.js");
+    assert!(!app.contains("New in 0.3.2"), "Settings › Limits has no stale 0.3.2 notice");
+    // The Skills page counts the skills an agent can switch; the fastpilot skill is always on, so the
+    // page and the README's 24 add up.
+    let agents = std::fs::read_to_string(format!("{ROOT}/bin/fastpilot/ui/agents.js")).expect("agents.js");
+    assert!(agents.contains("on for ${a.name}, plus the fastpilot skill (always on)"), "Skills page count");
+    let skills = std::fs::read_dir(format!("{ROOT}/skills")).expect("skills").flatten().filter(|e| e.path().join("SKILL.md").is_file()).count();
+    let readme = std::fs::read_to_string(format!("{ROOT}/README.md")).expect("README");
+    assert!(readme.contains(&format!("its {skills} skills")), "README counts all {skills} skills");
+    // The plugin or `init`, not both; where a plugin user's secret goes.
+    assert!(readme.contains("Use **either** the plugin **or** `fastpilot init`") && readme.contains("two\n> fastpilot servers"), "plugin or init");
+    assert!(readme.contains("add its **name** in\n> `fastpilot ui` › Settings › Secret") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
+}

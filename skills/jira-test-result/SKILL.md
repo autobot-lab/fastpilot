@@ -9,8 +9,15 @@ license: Apache-2.0
 Adds **one comment** with a run's result to a ticket the user names. Moving the ticket to another
 status is a separate step that happens only when the user asked for it in their own words.
 
-Needs the Atlassian server in Claude Code (setup: `fastpilot` guide, "Jira"). If its tools are
-missing, say so and show the setup line; do not ask for a password or an API token in chat.
+Needs Atlassian's MCP server in Claude Code. If its tools are missing, tell the user how to connect
+it, once (do not ask for a password or an API token in chat):
+1. In a terminal: `claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp`
+2. In Claude Code: type `/mcp`, choose **atlassian** and sign in in the browser. When Atlassian asks
+   which site to allow, pick the site with the project to test.
+
+The permission is given per site. If a call says access to a site "isn't explicitly granted", the
+sign-in allowed another site: ask the user to sign in again (`/mcp` › atlassian › re-authenticate) and
+pick that site. Never switch to another site that happens to be allowed.
 
 ## Steps
 1. **Site.** **getAccessibleAtlassianResources** once for the cloud ID (more than one site: ask which).

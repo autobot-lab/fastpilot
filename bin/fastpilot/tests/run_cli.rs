@@ -484,6 +484,8 @@ fn a_missing_secret_is_a_setup_problem_and_the_test_does_not_start() {
     assert!(out.contains("1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures"), "{out}");
     assert!(out.contains("Could not run. The test \"Login works\" needs the secret DEMO_PASS, and it is not set.\n0 of 1 tests ran. This is not a pass."), "{out}");
     assert!(out.contains("• Set it for this window:   export DEMO_PASS=…") && !out.contains("export FASTPILOT_VARS"), "{out}");
+    // V051: the plugin case (no .mcp.json; the value comes from Claude Code's environment).
+    assert!(out.contains("With the Claude Code plugin: add the name in Settings → Secret, and export the value before you start Claude Code."), "{out}");
     assert!(out.contains("1 test could not start: a secret it needs is not set") && !out.contains("attempts"), "{out}");
     assert!(calls(&log).is_empty(), "Claude Code never started for a test that cannot run");
     // Neither allowed nor set: both go in the export line, and the dashboard way is named.
