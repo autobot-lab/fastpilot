@@ -134,7 +134,7 @@ curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/
 
 - npm and the script download the release archive from [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   and check its SHA-256 before installing. The script installs to `~/.local/bin`. For another location:
-  `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.4.0`.
+  `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.4.1`.
 - Without installing: `npx -y fastpilot mcp`.
 - Homebrew is not available yet (the tap repo does not exist yet).
 - The Android agent is already built into the release binary. iOS still needs Xcode and the runner from a checkout

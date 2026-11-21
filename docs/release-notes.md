@@ -1,3 +1,37 @@
+## What's new in 0.4.1
+
+Use the phones you already have, and a quieter Chat.
+
+### Devices
+- **Your installed emulators come first.** When no Android device is running, the Device page lists the
+  emulators already on this computer by name, each with **Start**. An emulator starts only when you
+  click Start and confirm; Chat and agents cannot start one. It uses a free port, and other running
+  emulators are not touched. **Add a new test phone** (a download of about 1.5 GB) is now the second
+  choice, and the main one only when no emulator is installed.
+- **Pick the iPhone simulator tests use.** The Device page lists your installed iPhone simulators.
+  **Use for tests** saves one; **Any running simulator** goes back to the default.
+- **iPhone testing is a one-time setup**, no longer shown as an error. `fastpilot doctor`, `fastpilot init`
+  and the Device page say "iPhone testing needs a one-time setup (about 5 minutes)". The Device page has
+  **Set up iPhone testing**, and `fastpilot init` offers it when Xcode is found.
+- **`fastpilot run --workers` uses only the device you chose.** With `FASTPILOT_ANDROID_SERIAL` (or
+  `ANDROID_SERIAL`) set, no other Android device is contacted. The first line of the run says which
+  devices are used.
+
+### Dashboard
+- The empty Chat no longer shows the three suggestion buttons. It keeps the heading and one help line.
+
+### Docs
+- The README is now a step-by-step guide to the dashboard: start in 3 steps, then each page in turn.
+
+### Fixes
+- The release check reaches an Android device only in its Android step, and two tests that sometimes
+  failed on a busy machine are stable.
+
+### Known limits
+- The iPhone test runner is not built automatically on the first iPhone test yet: run **Set up iPhone
+  testing** (or `fastpilot setup ios`) once.
+- The known limits of 0.4.0 below still apply.
+
 ## What's new in 0.4.0
 
 Talk to it, in plain words. Several QA agents, each with its own model and skills, that test like a
