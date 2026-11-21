@@ -129,3 +129,43 @@ jobs:
             echo "::error::npm refused the publish. Set up Trusted Publishing once on npmjs.com: fastpilot › Settings › Trusted Publisher › GitHub Actions, organization autobot-lab, repository fastpilot, workflow release.yml, environment npm. Until then publish by hand: cd packaging/npm && npm publish (docs/releasing.md)."
             exit 1
           fi
+  # Official MCP Registry (B2 G1): list fastpilot as io.github.autobot-lab/fastpilot, after npm
+  # has the version (the registry checks the npm package's mcpName). GitHub OIDC proves the
+  # io.github.autobot-lab namespace; no token. Runs only after publish-npm (which needs the
+  # owner's approval in the `npm` environment), so it adds no new way to publish.
+  publish-mcp:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: The tag is the server version
+        shell: bash
+        run: |
+          v_server="$(jq -r .version server.json)"
+          v_pkg="$(jq -r '.packages[0].version' server.json)"
+          v_npm="$(jq -r .version packaging/npm/package.json)"
+          if [ "${GITHUB_REF_NAME}" != "v${v_server}" ] || [ "${v_pkg}" != "${v_server}" ] || [ "${v_npm}" != "${v_server}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME}, server.json ${v_server} (package ${v_pkg}) and npm ${v_npm} do not agree; nothing was published"
+            exit 1
+          fi
+      - name: mcp-publisher 1.8.11 (pinned by its SHA-256)
+        shell: bash
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.11/mcp-publisher_linux_amd64.tar.gz
+          echo "99fbd857ae2277e5e4a4a2cddc7f4d3e64612c6f90950f44584c3539c9df854f  mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+      - name: Publish to the MCP Registry (GitHub OIDC)
+        shell: bash
+        run: |
+          ./mcp-publisher validate server.json
+          if ! ./mcp-publisher login github-oidc || ! ./mcp-publisher publish server.json; then
+            echo "::error::the MCP Registry refused fastpilot (namespace io.github.autobot-lab via GitHub OIDC). The exact message is above; npm and the GitHub Release are not affected."
+            exit 1
+          fi

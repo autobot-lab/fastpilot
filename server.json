@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.autobot-lab/fastpilot",
+  "title": "fastpilot",
+  "description": "AI-driven QA for web, Android and iOS: drive Chrome, emulators and simulators.",
+  "repository": { "url": "https://github.com/autobot-lab/fastpilot", "source": "github" },
+  "websiteUrl": "https://github.com/autobot-lab/fastpilot",
+  "version": "0.4.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "fastpilot",
+      "version": "0.4.1",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [{ "type": "positional", "value": "mcp" }]
+    }
+  ]
+}

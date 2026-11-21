@@ -61,6 +61,11 @@ Log, `results.tsv`, `release-check-report.html` dan perubahan dibanding run sebe
      manual seperti dulu: `cd packaging/npm && npm publish`, lalu setujui dengan passkey (2FA tidak
      dilewati).
    - Cek setelahnya: `npm view fastpilot version dist-tags` dan `npx fastpilot@<versi> --version`.
+   - **MCP Registry:** job `publish-mcp` jalan setelah `publish-npm` dan mendaftarkan `server.json`
+     sebagai `io.github.autobot-lab/fastpilot` (login GitHub OIDC, `mcp-publisher` 1.8.11 yang dikunci
+     dengan SHA-256-nya). Versi di `server.json` (dua tempat), `packaging/npm/package.json` dan tag harus
+     sama. Cek: `https://registry.modelcontextprotocol.io/v0/servers?search=fastpilot`. Kalau registry
+     menolak namespace organisasi, pesan aslinya ada di log job; npm dan GitHub Release tidak terpengaruh.
 4. Homebrew: `scripts/homebrew-formula.sh <versi> > Formula/fastpilot.rb` di repo tap
    (mis. `autobot-lab/homebrew-fastpilot`), lalu pengguna:
    `brew install autobot-lab/fastpilot/fastpilot`.
