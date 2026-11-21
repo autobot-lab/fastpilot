@@ -54,6 +54,13 @@ pub struct Watch {
     /// The watch is over.
     #[serde(default)]
     pub ended: bool,
+    /// PF4: when the watch began (ms since 1970): speed is compared with the check before it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub started_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,6 +743,9 @@ pub fn with_watch(mut s: Schedule, hours: Option<u64>) -> Res<Schedule> {
     }
     let old = if s.id.is_empty() { None } else { load().schedules.into_iter().find(|x| x.id == s.id).and_then(|x| x.watch) };
     let mut w = old.unwrap_or_default();
+    if w.started_ms == 0 {
+        w.started_ms = now_ms();
+    }
     match hours {
         Some(h @ 1..=24) => {
             w.until_ms = now_ms() + h * 3_600_000;
@@ -883,6 +893,10 @@ pub async fn run(id: &str) -> Res<bool> {
     for (k, v) in agent_env(s.agent.as_deref()) {
         cmd.env(k, v);
     }
+    // PF4: during a release watch, ship checks compare speed with the check before the watch began.
+    if let Some(w) = s.watch.as_ref().filter(|w| w.started_ms > 0) {
+        cmd.env("FASTPILOT_SPEED_BASELINE_MS", w.started_ms.to_string());
+    }
     let out = cmd
         .args(["run", &s.tests, "--html", &report.to_string_lossy()])
         // The schedule's name is the run's title in History (D7).
@@ -904,7 +918,9 @@ pub async fn run(id: &str) -> Res<bool> {
     let mut last = LastRun { started_ms: started, finished_ms: Some(now_ms()), passed: Some(passed), summary: summary.clone(), report: report.clone(), notified: vec![], ok, total, pid: None, needs: needs.clone() };
     if let Some(w) = s.watch.clone() {
         // R1: compared with the first run; only a new problem is sent, once.
-        let (w, new, text) = watch_step(w, &text, &summary);
+        // PF4: a page that got slower in this run is a problem too (said once, like a failing test).
+        let speed = speed_problems(&project_fastpilot_dir(project), started);
+        let (w, new, text) = watch_step(w, &text, &summary, &speed);
         last.summary = text;
         if !new.is_empty() {
             let list = new.iter().map(|(id, why)| if why.is_empty() { id.clone() } else { format!("{id}: {why}") }).collect::<Vec<_>>().join("; ");
@@ -980,8 +996,36 @@ const NOT_RUN: &str = "(the tests could not run)";
 
 /// One run of a release watch: the first sets "before"; a later one finds the failures that are
 /// new (not failing before, not sent yet). The watch's new state, the new problems, the summary.
-pub fn watch_step(mut w: Watch, output: &str, summary: &str) -> (Watch, Vec<(String, String)>, String) {
+/// The project's fastpilot folder as the run sees it: `FASTPILOT_DIR` when absolute, else
+/// `<project>/.fastpilot`.
+fn project_fastpilot_dir(project: &Path) -> std::path::PathBuf {
+    match std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from) {
+        Some(d) if d.is_absolute() => d,
+        Some(d) => project.join(d),
+        None => project.join(".fastpilot"),
+    }
+}
+
+/// PF4: pages whose speed was flagged by a ship check since `since_ms` (`Speed · /checkout`, the
+/// first thing flagged), from `<fastpilot dir>/ship/*.json`.
+pub fn speed_problems(fastpilot_dir: &Path, since_ms: u64) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(fastpilot_dir.join("ship")).into_iter().flatten().flatten() {
+        let samples: Vec<fastpilot_core::ship::Sample> = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        for s in samples.iter().filter(|s| s.at_ms >= since_ms && !s.flags.is_empty()) {
+            let page = s.speed.url.split_once("://").map_or(s.speed.url.as_str(), |(_, r)| r.split_once('/').map_or("/", |(_, p)| p));
+            let id = format!("Speed · /{}", page.trim_start_matches('/').split(['?', '#']).next().unwrap_or(""));
+            if !out.iter().any(|(x, _)| *x == id) {
+                out.push((id, clip(&s.flags[0], 160)));
+            }
+        }
+    }
+    out
+}
+
+pub fn watch_step(mut w: Watch, output: &str, summary: &str, speed: &[(String, String)]) -> (Watch, Vec<(String, String)>, String) {
     let mut failing = failed_tests(output);
+    failing.extend(speed.iter().cloned());
     if counts(output).is_none() {
         failing.push((NOT_RUN.into(), clip(summary, 160)));
     }
@@ -1322,21 +1366,27 @@ mod tests {
             t
         };
         let w = Watch { until_ms: now_ms() + 3_600_000, ..Default::default() };
-        let (w, new, text) = watch_step(w, &out(&["search"]), "2 of 3 tests passed, 1 failed");
+        let (w, new, text) = watch_step(w, &out(&["search"]), "2 of 3 tests passed, 1 failed", &[]);
+        // PF4: a page that got slower during the watch is a new problem, said once.
+        let speed = vec![("Speed · /checkout".to_owned(), "Loads in 2.8 s, up from 2.0 s (41% slower)".to_owned())];
+        let (w2, new2, _) = watch_step(w.clone(), &out(&["search"]), "2 of 3 tests passed, 1 failed", &speed);
+        assert_eq!(new2, speed, "the slower page is new since the release");
+        let (_, new3, _) = watch_step(w2, &out(&["search"]), "2 of 3 tests passed, 1 failed", &speed);
+        assert!(new3.is_empty(), "and said once");
         assert!(new.is_empty() && text.starts_with("Before the release: 2 of 3 tests passed"), "{text}");
         assert_eq!(w.before.as_deref(), Some(&["search".to_owned()][..]));
         // "search" failed before: not new. "checkout" is.
-        let (w, new, text) = watch_step(w, &out(&["search", "checkout"]), "1 of 3 tests passed, 2 failed");
+        let (w, new, text) = watch_step(w, &out(&["search", "checkout"]), "1 of 3 tests passed, 2 failed", &[]);
         assert_eq!(new, [("checkout".to_owned(), "checkout broke".to_owned())]);
         assert!(text.starts_with("1 problem new since the release"), "{text}");
         // Still failing: sent once only.
-        let (w, new, _) = watch_step(w, &out(&["search", "checkout"]), "x");
+        let (w, new, _) = watch_step(w, &out(&["search", "checkout"]), "x", &[]);
         assert!(new.is_empty());
         // The suite could not run at all: that is new once too.
-        let (w, new, _) = watch_step(w, "error: Chrome not found", "did not run: Chrome not found");
+        let (w, new, _) = watch_step(w, "error: Chrome not found", "did not run: Chrome not found", &[]);
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].0, NOT_RUN);
-        let (_, new, _) = watch_step(w, "error: Chrome not found", "did not run");
+        let (_, new, _) = watch_step(w, "error: Chrome not found", "did not run", &[]);
         assert!(new.is_empty());
     }
 

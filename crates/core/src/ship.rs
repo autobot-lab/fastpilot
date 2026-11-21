@@ -54,6 +54,9 @@ impl State {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Check {
+    /// PF4: missing evidence here never makes the verdict INCONCLUSIVE (speed is extra evidence).
+    #[serde(skip)]
+    pub optional: bool,
     pub name: &'static str,
     pub state: State,
     /// One line: "No errors", "2 of 14 links are broken".
@@ -101,7 +104,7 @@ pub struct Report {
 pub fn verdict(checks: &[&Check]) -> (Verdict, String) {
     let major: Vec<&&Check> = checks.iter().filter(|c| c.state == State::Problem && c.major).collect();
     let problems: Vec<&&Check> = checks.iter().filter(|c| c.state == State::Problem).collect();
-    let missing: Vec<&&Check> = checks.iter().filter(|c| matches!(c.state, State::CouldNotRun | State::NotChecked)).collect();
+    let missing: Vec<&&Check> = checks.iter().filter(|c| !c.optional && matches!(c.state, State::CouldNotRun | State::NotChecked)).collect();
     let names = |v: &[&&Check]| {
         let mut n: Vec<&str> = v.iter().map(|c| c.name).collect();
         n.dedup();
@@ -224,7 +227,241 @@ const A11Y_JS: &str = r#"(() => {
 const SIZES: &[(&str, u32, u32, bool)] = &[("phone", 390, 844, true), ("tablet", 768, 1024, true), ("desktop", 1280, 800, false)];
 
 fn check(name: &'static str, state: State, summary: impl Into<String>, details: Vec<String>) -> Check {
-    Check { name, state, summary: summary.into(), details: details.into_iter().take(5).collect(), major: false }
+    Check { name, state, summary: summary.into(), details: details.into_iter().take(5).collect(), major: false, optional: false }
+}
+
+// ---- PF4: speed, compared with the check before -------------------------------------------
+
+/// Speed is measured on one window size and the normal connection, every time.
+pub const SPEED_VIEWPORT: (u32, u32) = (1280, 800);
+const CONNECTION: &str = "normal";
+
+/// One measurement as stored in `<project>/.fastpilot/ship/<host>.json`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
+pub struct Sample {
+    pub at_ms: u64,
+    pub connection: String,
+    pub viewport: String,
+    #[serde(flatten)]
+    pub speed: crate::Speed,
+    /// What was flagged against the earlier check, in words (Release watch reads these).
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
+/// Leaving, deleting or a change in the address: the page is not opened again to measure it.
+const NO_REOPEN_WORDS: &[&str] = &[
+    "logout", "log-out", "log_out", "signout", "sign-out", "sign_out", "logoff", "deauth", "disconnect", "delete", "remove", "unsubscribe", "destroy", "cancel", "keluar", "hapus",
+];
+
+/// Why the page's own address is not opened again for a speed measurement, if it is not.
+pub fn reopen_refusal(url: &str) -> Option<&'static str> {
+    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")) {
+        return Some("it is not a web address");
+    }
+    let rest = url.split_once("://").map_or("", |(_, r)| r.split_once('/').map_or("", |(_, p)| p));
+    let words = pct_decode(rest).to_lowercase();
+    let query = rest.split_once('?').map_or("", |(_, q)| q).to_lowercase();
+    if query.split('&').any(|kv| SECRET_PARAMS.contains(&kv.split('=').next().unwrap_or(""))) {
+        return Some("its address carries a one-time code or key");
+    }
+    if CHANGE_WORDS.iter().chain(NO_REOPEN_WORDS).any(|w| words.contains(w)) {
+        return Some("its address looks like a link that changes something");
+    }
+    None
+}
+
+/// Text kept in the speed file or shown: test variables masked (`dsl::redact`), any
+/// `user:password@` and the values of one-time code or key parameters replaced by `***`.
+fn scrub(text: &str) -> String {
+    let text = crate::dsl::redact(text);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("://") {
+        out.push_str(&rest[..i + 3]);
+        rest = &rest[i + 3..];
+        let end = rest.find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).unwrap_or(rest.len());
+        match rest[..end].rfind('@') {
+            Some(at) => {
+                out.push_str("***");
+                out.push_str(&rest[at..end]);
+            }
+            None => out.push_str(&rest[..end]),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    let lower = out.to_ascii_lowercase();
+    let mut masked = String::with_capacity(out.len());
+    let mut last = 0;
+    for (i, c) in out.char_indices() {
+        if i < last || !matches!(c, '?' | '&' | ';') {
+            continue;
+        }
+        let Some(p) = SECRET_PARAMS.iter().find(|p| lower[i + 1..].starts_with(&format!("{p}="))) else { continue };
+        let start = i + 1 + p.len() + 1;
+        let end = out[start..].find(|c: char| matches!(c, '&' | '#' | '"' | '\'' | ')' | ',') || c.is_whitespace()).map_or(out.len(), |e| start + e);
+        masked.push_str(&out[last..start]);
+        masked.push_str("***");
+        last = end;
+    }
+    masked.push_str(&out[last..]);
+    masked
+}
+
+/// The file for a page's measurements (`shop.example.json`, `local-files.json`).
+pub fn speed_file(url: &str) -> std::path::PathBuf {
+    let host = url.split_once("://").filter(|(s, _)| *s != "file").map(|(_, r)| r.split(['/', '?', '#']).next().unwrap_or("").rsplit('@').next().unwrap_or("").to_lowercase()).unwrap_or_default();
+    let host: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    let name = if host.is_empty() || host.chars().all(|c| c == '.') { "local-files".to_owned() } else { host };
+    crate::config::project_dir().join("ship").join(format!("{name}.json"))
+}
+
+pub fn load_samples(url: &str) -> Vec<Sample> {
+    std::fs::read_to_string(speed_file(url)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_sample(s: &Sample) -> std::io::Result<()> {
+    let path = speed_file(&s.speed.url);
+    let mut all = load_samples(&s.speed.url);
+    all.push(s.clone());
+    let extra = all.len().saturating_sub(100);
+    all.drain(..extra);
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    crate::config::keep_out_of_git();
+    std::fs::write(path, serde_json::to_string_pretty(&all).unwrap_or_default())
+}
+
+/// The check to compare with: the latest of the same page, connection and window size. During a
+/// Release watch (`FASTPILOT_SPEED_BASELINE_MS`): the latest from before the watch began, else the
+/// watch's own first ("before") check.
+pub fn baseline<'a>(samples: &'a [Sample], now: &Sample, before_ms: Option<u64>) -> Option<&'a Sample> {
+    let same = || samples.iter().filter(|s| s.speed.url == now.speed.url && s.connection == now.connection && s.viewport == now.viewport && s.at_ms < now.at_ms);
+    match before_ms {
+        None => same().max_by_key(|s| s.at_ms),
+        Some(b) => same().filter(|s| s.at_ms <= b).max_by_key(|s| s.at_ms).or_else(|| same().filter(|s| s.at_ms > b).min_by_key(|s| s.at_ms)),
+    }
+}
+
+/// One value and its change in words ("2.8 s ▲ 41% slower", "no change", "not measured").
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedRow {
+    pub label: &'static str,
+    pub value: String,
+    pub change: String,
+    pub flagged: Option<String>,
+}
+
+fn secs(ms: u64) -> String {
+    if ms < 1000 { format!("{:.2} s", ms as f64 / 1000.0) } else { format!("{:.1} s", ms as f64 / 1000.0) }
+}
+
+fn mb(bytes: u64) -> String {
+    if bytes >= 1_000_000 { format!("{:.1} MB", bytes as f64 / 1_000_000.0) } else { format!("{} KB", bytes.div_ceil(1000)) }
+}
+
+/// The rows of the Speed section, with what is flagged: more than 20% and more than 300 ms slower,
+/// layout jumps up by more than 0.1, a new page error, a new failed request. Within 10%: no change.
+pub fn compare(now: &Sample, before: Option<&Sample>) -> Vec<SpeedRow> {
+    let time = |label: &'static str, n: Option<u64>, b: Option<Option<u64>>| -> SpeedRow {
+        let Some(n) = n else { return SpeedRow { label, value: "not measured".into(), change: String::new(), flagged: None } };
+        let (change, flagged) = match b {
+            None => ("no earlier value".to_owned(), None),
+            Some(None) => ("no earlier value".to_owned(), None),
+            Some(Some(b)) => {
+                let pct = if b == 0 { 0.0 } else { (n as f64 - b as f64) / b as f64 * 100.0 };
+                if pct.abs() <= 10.0 {
+                    ("no change".into(), None)
+                } else if pct > 0.0 {
+                    let flag = (pct > 20.0 && n.saturating_sub(b) > 300).then(|| format!("{label} {}, up from {} ({:.0}% slower)", secs(n), secs(b), pct));
+                    (format!("▲ {:.0}% slower", pct), flag)
+                } else {
+                    (format!("▼ {:.0}% faster", -pct), None)
+                }
+            }
+        };
+        SpeedRow { label, value: secs(n), change, flagged }
+    };
+    let b = before.map(|b| &b.speed);
+    let mut rows = vec![time("Loads in", now.speed.load_ms, b.map(|b| b.load_ms)), time("Main content appears", now.speed.lcp_ms, b.map(|b| b.lcp_ms))];
+    rows.push(match (now.speed.cls, b.map(|b| b.cls)) {
+        (None, _) => SpeedRow { label: "Layout jumps", value: "not measured".into(), change: String::new(), flagged: None },
+        (Some(n), None | Some(None)) => SpeedRow { label: "Layout jumps", value: format!("{n:.2}"), change: "no earlier value".into(), flagged: None },
+        (Some(n), Some(Some(o))) => {
+            let up = n - o;
+            let flagged = (up > 0.1).then(|| format!("Layout jumps {n:.2}, up from {o:.2}"));
+            SpeedRow { label: "Layout jumps", value: format!("{n:.2}"), change: if up.abs() < 0.01 { "no change".into() } else if up > 0.0 { format!("▲ {up:.2} more") } else { format!("▼ {:.2} less", -up) }, flagged }
+        }
+    });
+    let req = format!("{} · {}", now.speed.requests, mb(now.speed.bytes));
+    rows.push(match b {
+        None => SpeedRow { label: "Requests", value: req, change: "no earlier value".into(), flagged: None },
+        Some(b) => {
+            let d = now.speed.requests as i64 - b.requests as i64;
+            let small = (d.unsigned_abs() as f64) <= (b.requests as f64 * 0.1).max(1.0);
+            SpeedRow { label: "Requests", value: req, change: if small { "no change".into() } else if d > 0 { format!("▲ {d} more") } else { format!("▼ {} fewer", -d) }, flagged: None }
+        }
+    });
+    let new_items = |now: &[String], before: &[String]| -> Vec<String> { now.iter().filter(|e| !before.contains(e)).cloned().collect() };
+    let (errs, fails) = match b {
+        Some(b) => (new_items(&now.speed.errors, &b.errors), new_items(&now.speed.failed, &b.failed)),
+        None => (vec![], vec![]),
+    };
+    rows.push(SpeedRow {
+        label: "Page errors",
+        value: now.speed.errors.len().to_string(),
+        change: match b {
+            None => "no earlier value".into(),
+            Some(_) if errs.is_empty() => "no change".into(),
+            Some(_) => format!("▲ {} new", errs.len()),
+        },
+        flagged: (!errs.is_empty()).then(|| format!("{} new page {}: {}", errs.len(), if errs.len() == 1 { "error" } else { "errors" }, clean(&errs[0], 120))),
+    });
+    if !fails.is_empty() {
+        rows.push(SpeedRow { label: "Failed requests", value: now.speed.failed.len().to_string(), change: format!("▲ {} new", fails.len()), flagged: Some(format!("{} new failed {}: {}", fails.len(), if fails.len() == 1 { "request" } else { "requests" }, clean(&fails[0], 120))) });
+    }
+    rows
+}
+
+/// PF4: measure, compare with the check before, store, and say it as the Speed check. Never a
+/// guessed value; speed alone gives at most SHIP WITH FIXES; not measured never blocks the verdict.
+pub async fn speed_check(d: &dyn Driver, url: &str) -> Check {
+    let c = |state: State, summary: String, details: Vec<String>| Check { optional: true, ..check("Speed", state, summary, details) };
+    if let Some(why) = reopen_refusal(url) {
+        return c(State::NotChecked, format!("Not measured: {why}, so it is not opened again"), vec![]);
+    }
+    let (w, h) = SPEED_VIEWPORT;
+    let v = Viewport { width: w, height: h, scale: 1.0, mobile: false, touch: false, user_agent: None };
+    if let Err(e) = d.set_viewport(Some(&v)).await {
+        return c(State::CouldNotRun, format!("Not measured: {}", clean(&e.to_string(), 200)), vec![]);
+    }
+    let speed = match d.measure_speed().await {
+        Ok(s) => crate::Speed { url: scrub(&s.url), errors: s.errors.iter().map(|e| scrub(e)).collect(), failed: s.failed.iter().map(|f| scrub(f)).collect(), ..s },
+        Err(e) => return c(State::NotChecked, format!("Not measured: {}", clean(&e.to_string(), 200)), vec![]),
+    };
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let mut now = Sample { at_ms: now_ms, connection: CONNECTION.into(), viewport: format!("{w}x{h}"), speed, flags: vec![] };
+    let samples = load_samples(&now.speed.url);
+    let before_ms = crate::config::var("FASTPILOT_SPEED_BASELINE_MS").ok().and_then(|v| v.trim().parse().ok());
+    let before = baseline(&samples, &now, before_ms).cloned();
+    let rows = compare(&now, before.as_ref());
+    now.flags = rows.iter().filter_map(|r| r.flagged.clone()).collect();
+    let _ = save_sample(&now);
+    let line = rows.iter().map(|r| if r.change.is_empty() { format!("{} {}", r.label, r.value) } else { format!("{} {} ({})", r.label, r.value, r.change) }).collect::<Vec<_>>().join(" · ");
+    let basis = match &before {
+        Some(b) => format!("Compared with the check of {}, {} · normal connection · {w}×{h}", crate::claim::local_date(b.at_ms), crate::claim::local_hm(b.at_ms)),
+        None => "This is the first speed measurement. There is nothing to compare with yet. The next check will show what changed.".into(),
+    };
+    let mut details = vec![basis];
+    details.extend(now.flags.iter().cloned());
+    details.push(format!(
+        "Details: LCP {}, CLS {} (layout shifts summed). Flagged when a page is more than 20% and more than 0.3 s slower, layout jumps grow by more than 0.1, or a new page error or failed request appears.",
+        now.speed.lcp_ms.map_or("not measured".into(), |m| format!("{m} ms")),
+        now.speed.cls.map_or("not measured".into(), |x| format!("{x:.3}"))
+    ));
+    if now.flags.is_empty() { c(State::Checked, line, details) } else { c(State::Problem, line, details) }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -426,6 +663,13 @@ pub async fn run(d: &dyn Driver, links: usize, cookies: bool) -> Result<Report> 
     checks.push(link_check);
     checks.push(layout);
     checks.push(a11y);
+    // PF4: speed last, from a fresh load measured through CDP only, so the other checks above are
+    // about the page as it was. The window size is put back, and what the reload itself reported
+    // is not left for the next step.
+    let speed = speed_check(d, &url).await;
+    let _ = d.set_viewport(Some(&before)).await;
+    let _ = d.diagnostics().await;
+    checks.push(speed);
 
     let (verdict, why) = verdict(&checks.iter().collect::<Vec<_>>());
     Ok(Report { url, checks, verdict, why })
@@ -505,7 +749,7 @@ mod tests {
     use super::*;
 
     fn c(name: &'static str, state: State, major: bool) -> Check {
-        Check { name, state, summary: format!("{name} summary"), details: vec![], major }
+        Check { name, state, summary: format!("{name} summary"), details: vec![], major, optional: false }
     }
 
     #[test]
@@ -523,6 +767,68 @@ mod tests {
         assert!(why.contains("layout at 3 sizes could not be checked") && why.contains("Found so far: broken links"), "{why}");
         assert_eq!(verdict(&[&ok, &skipped]).0, Verdict::Inconclusive, "not checked is not a pass either");
         assert_eq!(serde_json::to_value(Verdict::ShipWithFixes).expect("json"), "SHIP WITH FIXES");
+    }
+
+    fn sample(at: u64, load: Option<u64>, lcp: Option<u64>, cls: Option<f64>, req: u64, errors: &[&str]) -> Sample {
+        Sample {
+            at_ms: at,
+            connection: "normal".into(),
+            viewport: "1280x800".into(),
+            speed: crate::Speed { url: "https://shop.test/checkout".into(), load_ms: load, lcp_ms: lcp, cls, requests: req, bytes: 2_100_000, errors: errors.iter().map(|e| (*e).to_owned()).collect(), failed: vec![] },
+            flags: vec![],
+        }
+    }
+
+    /// PF4: flagged only when more than 20% and more than 300 ms slower, layout jumps up by more
+    /// than 0.1, or a new page error; within 10% is "no change"; never a guessed value.
+    #[test]
+    fn speed_changes_in_words_and_what_is_flagged() {
+        let before = sample(1, Some(2000), Some(1520), Some(0.04), 46, &[]);
+        let now = sample(2, Some(2820), Some(2100), Some(0.04), 58, &[]);
+        let rows = compare(&now, Some(&before));
+        let words: Vec<(&str, &str, &str)> = rows.iter().map(|r| (r.label, r.value.as_str(), r.change.as_str())).collect();
+        assert_eq!(words[..4], [("Loads in", "2.8 s", "▲ 41% slower"), ("Main content appears", "2.1 s", "▲ 38% slower"), ("Layout jumps", "0.04", "no change"), ("Requests", "58 · 2.1 MB", "▲ 12 more")]);
+        assert_eq!(rows[0].flagged.as_deref(), Some("Loads in 2.8 s, up from 2.0 s (41% slower)"));
+        // 25% but only 50 ms slower: not flagged. Within 10%: no change. Faster: never flagged.
+        let rows = compare(&sample(3, Some(250), Some(1600), None, 46, &[]), Some(&sample(1, Some(200), Some(1520), Some(0.04), 46, &[])));
+        assert_eq!((rows[0].change.as_str(), rows[0].flagged.is_none(), rows[1].change.as_str()), ("▲ 25% slower", true, "no change"));
+        assert_eq!((rows[2].value.as_str(), rows[2].change.as_str()), ("not measured", ""), "a value Chrome did not give is never guessed");
+        let rows = compare(&sample(3, Some(1000), None, Some(0.2), 46, &["exception: boom"]), Some(&before));
+        assert_eq!(rows[0].change, "▼ 50% faster");
+        assert_eq!(rows[1].value, "not measured");
+        assert!(rows[2].flagged.as_deref() == Some("Layout jumps 0.20, up from 0.04") && rows[4].flagged.as_deref() == Some("1 new page error: exception: boom"), "{rows:?}");
+        // First measurement.
+        let rows = compare(&now, None);
+        assert!(rows.iter().all(|r| r.flagged.is_none()) && rows[0].change == "no earlier value");
+        // Speed problems are a fix at most, and not measured never blocks the verdict.
+        let speed = Check { optional: true, ..check("Speed", State::Problem, "slower", vec![]) };
+        assert_eq!(verdict(&[&c("Console errors", State::Checked, false), &speed]).0, Verdict::ShipWithFixes);
+        let unmeasured = Check { optional: true, ..check("Speed", State::NotChecked, "Not measured", vec![]) };
+        assert_eq!(verdict(&[&c("Console errors", State::Checked, false), &unmeasured]).0, Verdict::Ship);
+    }
+
+    #[test]
+    fn speed_baseline_and_what_is_never_opened_again() {
+        let s = vec![sample(10, Some(1), None, None, 1, &[]), sample(20, Some(2), None, None, 1, &[]), sample(30, Some(3), None, None, 1, &[])];
+        let now = sample(40, Some(4), None, None, 1, &[]);
+        assert_eq!(baseline(&s, &now, None).map(|b| b.at_ms), Some(30), "the check before");
+        assert_eq!(baseline(&s, &now, Some(25)).map(|b| b.at_ms), Some(20), "a release watch: the check before it began");
+        assert_eq!(baseline(&s, &now, Some(5)).map(|b| b.at_ms), Some(10), "else the watch's own first check");
+        let mut other = sample(35, Some(1), None, None, 1, &[]);
+        other.connection = "slow 4g".into();
+        assert_eq!(baseline(&[other], &now, None), None, "only the same connection is compared");
+        assert_eq!(reopen_refusal("https://shop.test/checkout"), None);
+        assert_eq!(reopen_refusal("https://shop.test/welcome?token=abc"), Some("its address carries a one-time code or key"));
+        assert_eq!(reopen_refusal("https://shop.test/account/delete"), Some("its address looks like a link that changes something"));
+        assert_eq!(reopen_refusal("https://shop.test/newsletter/unsubscribe"), Some("its address looks like a link that changes something"));
+        assert_eq!(reopen_refusal("about:blank"), Some("it is not a web address"));
+        assert!(speed_file("https://Shop.Test:8080/x?y").ends_with("ship/shop.test_8080.json"));
+        // Nothing secret is kept: no password in the address, no one-time code in a failed request.
+        assert_eq!(scrub("https://ann:pw1@shop.test/a?page=2&token=abc#x"), "https://***@shop.test/a?page=2&token=***#x");
+        assert_eq!(scrub("404 GET https://api.test/v1?CODE=9f8e&lang=en failed"), "404 GET https://api.test/v1?CODE=***&lang=en failed");
+        assert_eq!(scrub("TypeError: x is null at https://shop.test/app.js:3"), "TypeError: x is null at https://shop.test/app.js:3");
+        assert!(speed_file("https://ann:pw1@shop.test/").ends_with("ship/shop.test.json"));
+        assert!(speed_file("file:///Users/x/demo/login.html").ends_with("ship/local-files.json"));
     }
 
     #[test]

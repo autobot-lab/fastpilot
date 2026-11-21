@@ -221,3 +221,98 @@ fn ship_check_in_the_terminal() {
     let _ = run(&["daemon".into(), "stop".into()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// PF4 (v0.6): Speed in the ship check, measured through CDP only on a fresh load: the first check
+/// says there is nothing to compare with; a page made 1 s slower is flagged on the next check, which
+/// gives SHIP WITH FIXES (never DO NOT SHIP for speed alone); values are stored per site; a page whose
+/// address carries a one-time code is not opened again ("Not measured"), and that does not make the
+/// verdict INCONCLUSIVE.
+#[tokio::test]
+async fn ship_check_measures_speed_and_flags_a_slower_page() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let delay = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    {
+        let (delay, seen) = (delay.clone(), seen.clone());
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let (delay, seen) = (delay.clone(), seen.clone());
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_owned();
+                    let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    seen.lock().expect("seen").push(format!("{} {path}", head.split_whitespace().next().unwrap_or("")));
+                    if path == "/go" {
+                        let _ = s.write_all(b"HTTP/1.1 302 Found\r\nLocation: /welcome?code=xyz789\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    }
+                    let page = "<!doctype html><html lang=en><head><title>Shop</title><meta name=viewport content=\"width=device-width\"><script src=\"/app.js\"></script></head><body><h1>Checkout</h1><p>Your cart</p><a href=\"/shop\">Shop</a></body></html>";
+                    let (ctype, body) = match path.as_str() {
+                        "/app.js" => {
+                            std::thread::sleep(std::time::Duration::from_millis(delay.load(std::sync::atomic::Ordering::SeqCst)));
+                            ("application/javascript", "window.ready = true;")
+                        }
+                        p if p.starts_with("/checkout") || p.starts_with("/welcome") => ("text/html", page),
+                        _ => ("text/html", "<!doctype html><title>ok</title>ok"),
+                    };
+                    let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                });
+            }
+        });
+    }
+    let dir = std::env::temp_dir().join(format!("fp-ship-speed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(|c| {
+        c.arg("mcp").current_dir(&dir).env("HOME", &dir).env("FASTPILOT_DIR", dir.join("fp")).env("FASTPILOT_CONFIG", dir.join("config.toml"))
+            .env_remove("FASTPILOT_ALLOWED_DOMAINS").env_remove("FASTPILOT_BLOCK_ACTIONS").env_remove("FASTPILOT_CONFIRM_ACTIONS").env_remove("FASTPILOT_SPEED_BASELINE_MS");
+    });
+    let Ok(client) = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await else {
+        return eprintln!("skipping: server did not start");
+    };
+    let client: Client = client;
+    let url = format!("http://127.0.0.1:{port}/checkout");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "ship", "platform": "web", "target": url })).await;
+    assert!(ok, "{out}");
+    let first = check(&client, &url).await;
+    assert!(first.contains("✓ Speed") && first.contains("Loads in ") && first.contains("This is the first speed measurement. There is nothing to compare with yet."), "{first}");
+    assert!(first.contains("Verdict: SHIP\n"), "the first measurement changes nothing: {first}");
+    let gets = seen.lock().expect("seen").iter().filter(|r| *r == "GET /checkout").count();
+    assert!(gets >= 3, "speed opens the page's address again (a GET): {gets}");
+    // One second slower.
+    delay.store(1200, std::sync::atomic::Ordering::SeqCst);
+    let slow = check(&client, &url).await;
+    println!("{slow}");
+    assert!(slow.contains("✗ Speed") && slow.contains("% slower") && slow.contains("Loads in ") && slow.contains("Compared with the check of "), "{slow}");
+    assert!(slow.contains("Verdict: SHIP WITH FIXES") && !slow.contains("DO NOT SHIP"), "speed alone is a fix, never DO NOT SHIP: {slow}");
+    assert!(slow.contains("Details: LCP ") && slow.contains("CLS "), "{slow}");
+    // Stored per site, with what was flagged.
+    let file = dir.join(format!("fp/ship/127.0.0.1_{port}.json"));
+    let stored: Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("ship file")).expect("json");
+    let samples = stored.as_array().expect("samples");
+    assert_eq!(samples.len(), 2, "{stored}");
+    assert!(samples[1]["flags"].as_array().is_some_and(|f| f.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Loads in ") && t.contains("% slower)")))), "{stored}");
+    assert!(samples[0]["load_ms"].as_u64().is_some() && samples[1]["load_ms"].as_u64() > samples[0]["load_ms"].as_u64(), "{stored}");
+    assert_eq!((samples[1]["viewport"].as_str(), samples[1]["connection"].as_str()), (Some("1280x800"), Some("normal")));
+    // A one-time link is never opened again; speed not measured is not INCONCLUSIVE by itself.
+    delay.store(0, std::sync::atomic::Ordering::SeqCst);
+    let token = format!("http://127.0.0.1:{port}/welcome?token=abc123");
+    seen.lock().expect("seen").clear();
+    let out = check(&client, &token).await;
+    assert!(out.contains("Not measured: its address carries a one-time code or key, so it is not opened again"), "{out}");
+    assert!(out.contains("Verdict: SHIP\n"), "{out}");
+    assert_eq!(seen.lock().expect("seen").iter().filter(|r| r.starts_with("GET /welcome")).count(), 1, "opened once, by the test itself");
+    // The same for the address a page ended on after a redirect.
+    seen.lock().expect("seen").clear();
+    let out = check(&client, &format!("http://127.0.0.1:{port}/go")).await;
+    assert!(out.contains("Not measured: its address carries a one-time code or key, so it is not opened again"), "{out}");
+    assert_eq!(seen.lock().expect("seen").iter().filter(|r| r.starts_with("GET /welcome")).count(), 1, "the redirect target is not opened again: {:?}", seen.lock().expect("seen"));
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "ship" })).await;
+    let _ = client.cancel().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

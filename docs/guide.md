@@ -380,6 +380,8 @@ sent to the browser.
   - The first run starts right away and is the "before".
   - After that you hear only about a problem that is new since then (a test that passed before and fails
     now, or the tests no longer running at all), once per problem, on the schedule's notifications.
+  - A `shipCheck` page that got slower than before the watch began counts as a new problem too
+    ("Speed · /checkout: Loads in 2.8 s, up from 2.0 s (41% slower)"), with the same rules as below.
   - When the hours are up, the watch removes itself from the system scheduler and the list says how it went
     ("Release watch ended: no new problem since the release").
   - Start one from Schedules › New schedule › *Release watch*, from Chat ("watch the release every 10 minutes
@@ -675,7 +677,7 @@ fastpilot close
 fastpilot ship-check https://staging.shop.example https://staging.shop.example/cart [--links N] [--cookies]
 ```
 
-For each page, fastpilot opens it in Chrome and checks five things:
+For each page, fastpilot opens it in Chrome and checks six things:
 
 - **Console errors**: exceptions and `console.error`. An uncaught error means the page's own script crashed.
 - **Failed requests**: HTTP errors, requests that did not finish, and the page's own status.
@@ -695,6 +697,19 @@ For each page, fastpilot opens it in Chrome and checks five things:
   screen, or a page without a mobile viewport. The size is put back afterwards.
 - **Accessibility basics**: page language and title, images without `alt`, fields, buttons and links
   without a name, and repeated ids.
+- **Speed**, measured last, from Chrome itself (DevTools events; nothing is added to the page):
+  - **Loads in** (load time), **Main content appears** (LCP), **Layout jumps** (CLS), requests and
+    their size, and page errors. Always at 1280 × 800 on a normal connection.
+  - A value Chrome does not give is "not measured", never estimated.
+  - The page is opened once more with a plain `GET`. A page that came from a form, or whose address
+    carries a one-time code or key (`token=`, `code=`, `key=`, ...) or a word for a change (delete,
+    sign out, unsubscribe, confirm, ...) is not opened again: Speed then says "Not measured" and why.
+  - Each result is kept in `.fastpilot/ship/<host>.json` (the last 100, kept out of git; passwords in
+    addresses, one-time codes and test variables masked) and compared
+    with the previous check of the same page. Flagged: more than 20% **and** more than 0.3 s slower,
+    layout jumps up by more than 0.1, a new page error or a new failed request. Within 10% is "no change".
+  - Speed alone gives at most SHIP WITH FIXES, never DO NOT SHIP, and "not measured" does not change
+    the verdict.
 
 It never clicks, types or submits.
 
