@@ -45,14 +45,23 @@ certified tester and show what they covered.
 ### Schedules and releases
 - **Every N hours** (1–24) with an active window (for example 08:00–20:00), **Run now**, and Next / Last
   columns.
-- **Release watch**: after a release, re-runs your tests every 5–60 minutes for 1–24 hours and tells you
-  only about problems that are new since the start. It removes itself when the time is up.
+- **The Schedules table says why a run failed** (which test, and the reason), not only "0 of 1 passed".
+- **Release watch**: after a release, re-runs your tests every 5, 10, 15, 20, 30 or 60 minutes for 1 to
+  24 hours. The first run is the "before". After that you hear once about each problem that is new
+  since then (a test that starts failing, or the tests no longer running), on the schedule's
+  notifications: Mac notification, Slack webhook or GitHub issue. When the time is up it turns itself
+  off and removes its system-scheduler entry; the Schedules list keeps it with how it went. Start one
+  from Schedules › New schedule › Release watch, from Chat, or with
   `fastpilot schedule watch tests/ --every 10 --for 2`.
 - **Ship check**: `fastpilot ship-check <url>` (or a `shipCheck` step) looks for console errors,
   failed requests, broken links, layout at phone, tablet and desktop width, and basic accessibility,
   then gives one verdict: SHIP, SHIP WITH FIXES, DO NOT SHIP or INCONCLUSIVE, always with what was not
-  checked. Links are checked without your cookies unless you ask (`--cookies`); sign-out, delete and
-  one-time links are never opened.
+  checked. It exits with 0 (SHIP or SHIP WITH FIXES), 1 (DO NOT SHIP) or 2 (INCONCLUSIVE). Links are
+  checked without your cookies unless you ask (`--cookies`); sign-out, delete, one-time and other
+  links that change something are never opened.
+- **In Chat**, a release check shows as a **verdict card**, labelled "the bot's summary" (the bot wrote
+  it from the checks it ran; fastpilot does not verify it). A bug report shows as a **preview card**
+  that is not sent anywhere, with Copy report and Copy as Markdown.
 
 ### Dashboard
 - **History**: runs and saved Chat conversations; delete one, several or all; optional auto-delete
@@ -71,7 +80,8 @@ certified tester and show what they covered.
   your Xcode into `~/.fastpilot/ios-runner`.
 - **Android tests fail clearly** when no emulator is there, instead of being skipped. They are also
   more stable on a busy machine.
-- fastpilot checks your **Claude Code version** and says when it is too old for Chat.
+- fastpilot checks your **Claude Code version** in `init`, `doctor`, Chat and `fastpilot run`. It needs
+  2.1.280 or newer and tells you to run `claude update` when it is older.
 - `fastpilot setup --help` and `fastpilot doctor --help` show help instead of running.
 
 ### Upgrading from 0.3.2
@@ -83,6 +93,17 @@ certified tester and show what they covered.
   baselines, and never overwrites a file you already have.
 - Project notes live in your own fastpilot folder (`~/.fastpilot/projects/`), not in the project, so a
   downloaded project cannot bring notes of its own.
+
+### Fixes
+- History serves and deletes only reports in fastpilot's own folders.
+- A schedule saved while a run is finishing is no longer lost.
+- Session ids are checked before they name a file.
+- "Save note" works when you type into the empty form.
+
+### Known limits
+- Ship check reads the page from inside the page, so a hostile page can fake its own layout and
+  accessibility results (not which links are opened). Afterwards the screen size is put back from the
+  page's own numbers, within safe bounds.
 
 ### Not in this release
 - Jira and the Apps page (planned for 0.5).
