@@ -93,6 +93,49 @@ async fn live_page_works_with_the_keyboard() {
     assert!(ok, "the first page must show the sessions, not hang on 'Membaca sesi…': {out}");
     // Header pill counts the blocked session; the step says why.
     assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 blocked"));
+    // FastTest final report: no "null" in the header (a null child became text).
+    let top = eval(&client, "document.querySelector('.top').textContent").await;
+    assert!(!top.contains("null") && top.contains("Tests at once"), "{top}");
+
+    // FastTest final report: "click Web, fill in, Create" said "Pick where it tests" (Web was
+    // picked already and the click took it off). The last place picked stays on, with a reason.
+    eval(&client, "location.hash = '#/agents/new', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Create agent\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let chip = |id: &str| format!("document.querySelector('.ag-new button[data-device=\"{id}\"]')");
+    let state = |id: &str| format!("(() => {{ const b = {}; return b.getAttribute('aria-pressed'); }})()", chip(id));
+    assert_eq!(eval(&client, &state("web")).await, "\"true\"", "Web is picked from the start");
+    eval(&client, &format!("{}.click(), 'ok'", chip("web"))).await;
+    assert_eq!(eval(&client, &state("web")).await, "\"true\"", "clicking the only pick keeps it");
+    assert!(eval(&client, "document.querySelector('.ag-new .dev-hint').textContent").await.contains("stays picked"));
+    eval(&client, &format!("{}.click(), {}.click(), 'ok'", chip("android_emulator"), chip("web"))).await;
+    assert_eq!((eval(&client, &state("web")).await, eval(&client, &state("android_emulator")).await), ("\"false\"".to_owned(), "\"true\"".to_owned()), "switched to the emulator");
+    eval(&client, &format!("{}.click(), 'ok'", chip("web"))).await;
+    let fill = "(() => { for (const [l, v] of [['Name', 'Device pick'], ['What it does', 'Check the shop on the web and Android']]) { const e = document.querySelector(`.ag-new [aria-label=\"${l}\"]`); e.value = v; e.dispatchEvent(new Event('input')); } [...document.querySelectorAll('.top button')].find((b) => b.textContent.includes('Create agent')).click(); return 'ok'; })()";
+    eval(&client, fill).await;
+    let mut saved = String::new();
+    for _ in 0..40 {
+        saved = std::fs::read_to_string(home.join(".fastpilot/agents.json")).unwrap_or_default();
+        if saved.contains("device-pick") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let agents: Value = serde_json::from_str(&saved).unwrap_or_default();
+    let made = agents["agents"].as_array().and_then(|a| a.iter().find(|x| x["id"] == "device-pick")).cloned().unwrap_or_default();
+    assert_eq!(made["devices"], json!(["web", "android_emulator"]), "{saved}");
+    let mut at = String::new();
+    for _ in 0..40 {
+        at = eval(&client, "location.hash").await;
+        if at.contains("device-pick/chat") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(at.contains("#/agents/device-pick/chat"), "Create opens the new agent: {at}");
+    eval(&client, "location.hash = '#/live', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n", "session": "viewer" })).await;
+    assert!(ok, "back on Live: {out}");
     let why = eval(&client, "[...document.querySelectorAll('.steps .blk')].map(l => l.textContent).join('|')").await;
     // Design N2 (P2): the word as the user wrote it in Batasan, not lower-cased.
     // v0.3.2 design (s3): the button, the word as written in Batasan, and where to change it.

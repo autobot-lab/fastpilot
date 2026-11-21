@@ -837,7 +837,7 @@ function livePill(sessions) {
   const count = (st) => sessions.filter((s) => s.flow && s.flow.steps.some((x) => x.state === st)).length;
   const running = sessions.filter((s) => s.flow && !s.flow.finished).length;
   const blocked = count("blocked"), failed = count("failed");
-  const parts = [`${sessions.length} sessions`, `${running} running`];
+  const parts = [`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}`, `${running} running`];
   const taken = sessions.filter((s) => s.taken_over_ms).length;
   if (taken) parts.push(`${taken} taken over`);
   if (blocked) parts.push(`${blocked} blocked`);
@@ -875,8 +875,9 @@ function renderLive(data) {
   lastLive = data;
   const sessions = data.sessions || [];
   const q = (data.queue || []).length;
-  $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions),
-    q ? h("span", { class: "pill warn" }, `${q} queued`) : null, data.limit ? limitPicker(data) : null);
+  // No null children: replaceChildren writes them as the text "null" (FastTest, final report).
+  $top().replaceChildren(...[icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions),
+    q ? h("span", { class: "pill warn" }, `${q} queued`) : null, data.limit ? limitPicker(data) : null].filter(Boolean));
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();

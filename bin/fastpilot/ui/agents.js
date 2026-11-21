@@ -26,6 +26,28 @@ function color(id) {
   return n % COLORS;
 }
 const avatar = (x, cls) => h("span", { class: `ag-av ag-c${color(x.agent.id)} ${cls || ""}`, "aria-hidden": "true" }, x.initials);
+// Where an agent tests: chips that toggle, but the last one picked stays on. Web is picked from the
+// start, and "click Web" used to switch it off, so Create then said "Pick where it tests"
+// (FastTest, final report). `picked` is a Set that the caller reads on save.
+const deviceChips = (picked, onChange) => {
+  const hint = h("span", { class: "s dev-hint", role: "status" });
+  const chips = (agData.devices || []).map((d) => {
+    const b = h("button", { type: "button", class: "chip pick" + (picked.has(d.id) ? " on" : ""), "aria-pressed": String(picked.has(d.id)), "data-device": d.id }, d.name);
+    b.addEventListener("click", () => {
+      if (picked.has(d.id) && picked.size === 1) {
+        hint.textContent = `${d.name} stays picked: an agent tests somewhere. To change it, pick another place first.`;
+        return;
+      }
+      hint.textContent = "";
+      if (picked.has(d.id)) picked.delete(d.id); else picked.add(d.id);
+      b.classList.toggle("on", picked.has(d.id));
+      b.setAttribute("aria-pressed", String(picked.has(d.id)));
+      if (onChange) onChange();
+    });
+    return b;
+  });
+  return h("div", { class: "dev-pick" }, h("div", { class: "chips" }, chips), hint);
+};
 const deviceName = (d) => ((agData.devices || []).find((x) => x.id === d) || { name: d }).name;
 // D10b: "Provider · Model", from the server; models other than Claude are not tried with fastpilot.
 const modelLabel = (x) => x.model_label || "Claude Code";
@@ -121,11 +143,7 @@ function tabSettings(x) {
   const job = h("textarea", { rows: "2", maxlength: "300" }, a.job);
   const app = h("input", { type: "text", maxlength: "300", value: a.app, placeholder: "e.g. https://staging.shop.example or Shop (staging)" });
   const picked = new Set(a.devices);
-  const devs = h("div", { class: "chips" }, (agData.devices || []).map((d) => {
-    const b = h("button", { type: "button", class: "chip pick" + (picked.has(d.id) ? " on" : ""), "aria-pressed": String(picked.has(d.id)) }, d.name);
-    b.addEventListener("click", () => { picked.has(d.id) ? picked.delete(d.id) : picked.add(d.id); b.classList.toggle("on"); b.setAttribute("aria-pressed", String(picked.has(d.id))); });
-    return b;
-  }));
+  const devs = deviceChips(picked);
   const blocked = h("input", { type: "text", value: a.blocked.join(", "), placeholder: "e.g. Confirm order" });
   const fld = (l, el, hint) => h("label", { class: "fld" }, h("span", { class: "l" }, l), el, hint ? h("span", { class: "s" }, hint) : null);
   const ai = { provider: a.provider || "claude", model: a.model || null };
@@ -292,15 +310,9 @@ function pageNew() {
   name.addEventListener("input", () => { d.name = name.value; });
   const job = h("textarea", { rows: "2", maxlength: "300", placeholder: "e.g. Keep cart and payment working in the Android and iOS app on every release", "aria-label": "What it does" }, d.job);
   job.addEventListener("input", () => { d.job = job.value; });
-  const devs = h("div", { class: "chips" }, (agData.devices || []).map((v) => {
-    const on = d.devices.includes(v.id);
-    const b = h("button", { type: "button", class: "chip pick" + (on ? " on" : ""), "aria-pressed": String(on) }, v.name);
-    b.addEventListener("click", () => {
-      d.devices = d.devices.includes(v.id) ? d.devices.filter((x) => x !== v.id) : [...d.devices, v.id];
-      b.classList.toggle("on"); b.setAttribute("aria-pressed", String(d.devices.includes(v.id)));
-    });
-    return b;
-  }));
+  if (!d.devices.length) d.devices = ["web"];
+  const pickedNew = new Set(d.devices);
+  const devs = deviceChips(pickedNew, () => { d.devices = (agData.devices || []).map((v) => v.id).filter((id) => pickedNew.has(id)); });
   const app = h("input", { type: "text", maxlength: "300", value: d.app, placeholder: "App or site, e.g. https://staging.shop.example", "aria-label": "App or site" });
   app.addEventListener("input", () => { d.app = app.value; });
   const rules = h("ul", { class: "ag-rules" });
