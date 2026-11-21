@@ -27,3 +27,4 @@ rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 ring.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 serde_json.workspace = true
+serde_yaml.workspace = true

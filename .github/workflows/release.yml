@@ -70,3 +70,49 @@ jobs:
       - run: scripts/publish.sh
         env:
           GH_TOKEN: ${{ github.token }}
+  # npm Trusted Publishing (A2 TP1): publish packaging/npm with a short-lived OIDC identity of this
+  # workflow, no token stored anywhere, with provenance. Runs only for a tag, after the GitHub
+  # Release exists (the package downloads its binary from it). Needs a one-time setting on
+  # npmjs.com (fastpilot › Settings › Trusted Publisher › GitHub Actions: autobot-lab / fastpilot /
+  # release.yml); without it npm refuses, this job fails, and the release is published by hand
+  # with the passkey as before (docs/releasing.md).
+  publish-npm:
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: The tag is the package version
+        id: version
+        shell: bash
+        run: |
+          version="$(node -p "require('./packaging/npm/package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} is not v${version} (packaging/npm/package.json); nothing was published"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: npm 11.5.1 or newer (needed for Trusted Publishing)
+        run: npm install -g npm@11.12.1 && npm --version
+      - name: Publish to npm (OIDC, provenance)
+        working-directory: packaging/npm
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "fastpilot@${VERSION}" version >/dev/null 2>&1; then
+            echo "fastpilot ${VERSION} is already on npm (published by hand); nothing to do."
+            exit 0
+          fi
+          if ! npm publish --access public --provenance; then
+            echo "::error::npm refused the publish. Set up Trusted Publishing once on npmjs.com: fastpilot › Settings › Trusted Publisher › GitHub Actions, organization autobot-lab, repository fastpilot, workflow release.yml. Until then publish by hand: cd packaging/npm && npm publish (docs/releasing.md)."
+            exit 1
+          fi
