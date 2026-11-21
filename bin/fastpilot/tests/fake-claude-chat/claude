@@ -42,6 +42,10 @@ if os.environ.get("FAKE_CHAT_NOLOGIN") == "1":
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "Not logged in · Please run /login"}]}})
     emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "result": "Not logged in · Please run /login"})
     sys.exit(1)
+if prompt.rstrip().endswith("FAKE_API_ERROR"):
+    # An API error after the session started (the conversation stays resumable).
+    emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session, "result": "API Error: 529 overloaded"})
+    sys.exit(1)
 time.sleep(int(os.environ.get("FAKE_CHAT_DELAY_MS", "0")) / 1000)
 low = prompt.lower()
 said = []

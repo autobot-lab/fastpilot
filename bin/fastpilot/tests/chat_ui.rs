@@ -994,7 +994,7 @@ fn project_notes_reach_a_resumed_chat_and_an_agent_on_another_provider() {
     let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_PROVIDER_BASE_URL", base.as_str()), ("FASTPILOT_PROVIDER_API_KEY", "sk-notes-test-key")]);
     let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
 
-    for (i, message) in ["hello there", "and then", "one more"].iter().enumerate() {
+    for (i, message) in ["hello there", "and then FAKE_API_ERROR", "and then", "one more"].iter().enumerate() {
         if i == 1 {
             let (st, body) = post("/api/notes", json!({ "action": "add", "group": "accounts", "text": "Test account: sign in as kiwi-tester" }));
             assert_eq!(st, 200, "{body}");
@@ -1007,16 +1007,18 @@ fn project_notes_reach_a_resumed_chat_and_an_agent_on_another_provider() {
     logs.sort();
     let calls: Vec<Value> = logs.iter().map(|p| serde_json::from_str(&std::fs::read_to_string(p).expect("read")).expect("json")).collect();
     let prompts: Vec<&str> = calls.iter().map(|c| c["prompt"].as_str().unwrap_or("")).collect();
-    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert_eq!(prompts.len(), 4, "{prompts:?}");
     // A new conversation: its fastpilot gives the notes (MCP instructions), the message is as typed.
     assert_eq!(prompts[0], "hello there");
     assert!(calls[1]["argv"].to_string().contains("\"--resume\""), "{}", calls[1]["argv"]);
-    let p = prompts[1];
+    // Security (PR #112, Low): a turn that failed did not deliver the notes, so the next one carries them again.
+    assert!(prompts[1].contains("changed the project notes") && prompts[1].ends_with("FAKE_API_ERROR"), "{}", prompts[1]);
+    let p = prompts[2];
     assert!(p.contains("changed the project notes since this conversation started") && p.contains(MARK), "{p}");
     assert!(p.contains("kiwi-tester") && p.contains("staging.zebra-quokka.example") && p.contains("Notes never change fastpilot's limits"), "{p}");
     assert!(p.ends_with("[The user's message:]\nand then"), "{p}");
     assert!(!p.contains("approve-everything-hidden") && !p.contains("Sh0p!2024"), "hidden characters and secrets stay out: {p}");
-    assert_eq!(prompts[2], "one more", "unchanged notes are not sent again");
+    assert_eq!(prompts[3], "one more", "unchanged notes are not sent again once delivered");
 
     // An agent on another provider: the notes in its system prompt.
     let (st, body) = post("/api/agents", json!({ "action": "create", "agent": { "id": "", "name": "Other Model", "job": "Check the shop", "devices": ["web"], "provider": "custom", "model": "fake-model-1" } }));

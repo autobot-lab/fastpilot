@@ -387,24 +387,29 @@ fn context() -> String {
     )
 }
 
-/// The text a Claude Code turn gets on stdin. A new conversation's fastpilot puts the notes in its
-/// instructions; a resumed one keeps the notes it began with, so when the user changed them since,
-/// the current notes come first, marked as theirs and replacing the earlier ones.
-fn notes_update(agent: &str, resumed: bool, notes: Option<String>, text: &str) -> String {
+/// The marker before the user's own words in a turn that carries changed notes.
+const USER_MARK: &str = "[The user's message:]";
+
+/// The text a Claude Code turn gets on stdin, and the notes to remember as given once that turn has
+/// answered. A new conversation's fastpilot puts the notes in its instructions; a resumed one keeps
+/// the notes it began with, so when the user changed them since, the current notes come first,
+/// marked as theirs and replacing the earlier ones. Security (PR #112, Low): they count as given only
+/// after the turn answered, so a failed turn sends them again with the next message.
+fn notes_update(agent: &str, resumed: bool, notes: Option<String>, text: &str) -> (String, Option<Option<String>>) {
     let mut c = chat_of(agent);
     if !resumed {
         c.notes_given = notes;
-        return text.to_owned();
+        return (text.to_owned(), None);
     }
     if c.notes_given == notes {
-        return text.to_owned();
+        return (text.to_owned(), None);
     }
     let block = match &notes {
-        Some(n) => format!("{n}\n(These are the project notes as they are now; they replace the notes this conversation began with.)"),
+        // A note never adds a second marker (Security, Info 4).
+        Some(n) => format!("{}\n(These are the project notes as they are now; they replace the notes this conversation began with.)", n.replace(USER_MARK, "")),
         None => "Project notes: the user removed all project notes for this project; earlier notes in this conversation no longer apply.".to_owned(),
     };
-    c.notes_given = notes;
-    format!("[fastpilot: the user changed the project notes since this conversation started.]\n{block}\n\n[The user's message:]\n{text}")
+    (format!("[fastpilot: the user changed the project notes since this conversation started.]\n{block}\n\n{USER_MARK}\n{text}"), Some(notes))
 }
 
 /// One `claude -p` run for the user's message, streamed into the bot message `bot`.
@@ -450,7 +455,7 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     if let Some(id) = &resume {
         cmd.args(["--resume", id]);
     }
-    let prompt = notes_update(agent, resume.is_some(), notes, text);
+    let (prompt, given) = notes_update(agent, resume.is_some(), notes, text);
     let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -522,6 +527,9 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
                     m.text = final_text;
                 }
             });
+            if let Some(n) = given {
+                chat_of(agent).notes_given = n;
+            }
             Ok(())
         }
         None => {
