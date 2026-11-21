@@ -206,7 +206,12 @@ impl CaseResult {
         let names: Vec<&str> = missing.iter().map(|m| m.name.as_str()).collect();
         let why = if missing.iter().all(|m| m.set) { "its name is not in FASTPILOT_VARS" } else if names.len() == 1 { "it is not set" } else { "they are not set" };
         let notes = format!("Could not run: needs the secret{} {}, and {why}.", if names.len() == 1 { "" } else { "s" }, names.join(", "));
-        Self { class: Some(Class::Setup), ..Self::skipped(case, &notes) }
+        Self::setup_problem(case, &notes)
+    }
+
+    /// Not started because something it needs is not set up (class `setup`), never retried.
+    fn setup_problem(case: &Case, notes: &str) -> Self {
+        Self { class: Some(Class::Setup), ..Self::skipped(case, notes) }
     }
 
     fn skipped(case: &Case, notes: &str) -> Self {
@@ -744,12 +749,20 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     {
         return Err(format!("fastpilot run needs Claude Code. {why} (Or set FASTPILOT_CLAUDE.)").into());
     }
-    let pool = Arc::new(Pool::discover().await);
     let order = shard_order(&cases, &fastpilot_memory::Memory::from_env());
     let mut need: Vec<Platform> = cases.iter().flat_map(Case::platforms).collect();
     need.sort_by_key(|p| p.to_string());
     need.dedup();
+    let pool = Arc::new(Pool::discover(&need).await);
     println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary(&need));
+    // V042: the first iPhone test builds the runner once (a person's run), or says what to do (a schedule).
+    let ios_blocked: Option<String> = (need.contains(&Platform::Ios) && fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator).is_none())
+        .then(|| {
+            let scheduled = std::env::var_os("FASTPILOT_SCHEDULED_AS").is_some();
+            let by_person = std::env::var("FASTPILOT_RUN_BY_PERSON").is_ok_and(|v| v == "1");
+            crate::ios_setup::first_test_build(!scheduled || by_person).err()
+        })
+        .flatten();
     let github = crate::github::Reporter::new(opts.report_github);
     if opts.report_github == crate::github::Mode::Live {
         github.send(&crate::github::running_body(cases.len(), &github.target_or_local())).await;
@@ -761,12 +774,16 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let workers: Vec<_> = (0..opts.workers.clamp(1, cases.len()))
         .map(|_| {
             let (queue, results, shared, pool, cases) = (queue.clone(), results.clone(), shared.clone(), pool.clone(), cases.clone());
+            let ios_blocked = ios_blocked.clone();
             tokio::spawn(async move {
                 loop {
                     let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     let Some(i) = next else { break };
                     let (opts, budget, breaker) = &*shared;
-                    let r = run_with_retries(&cases[i], opts, budget, breaker, &pool).await;
+                    let r = match &ios_blocked {
+                        Some(why) if cases[i].platforms().contains(&Platform::Ios) => CaseResult::setup_problem(&cases[i], &format!("Could not run: {why}")),
+                        _ => run_with_retries(&cases[i], opts, budget, breaker, &pool).await,
+                    };
                     println!("{}", summary_line(&r));
                     results.lock().unwrap_or_else(|p| p.into_inner()).push((i, r));
                 }
@@ -828,13 +845,17 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
     if let Err(e) = record_history(results, elapsed, opts) {
         eprintln!("fastpilot: the run is not in History ({e})");
     }
-    if !setup.is_empty() {
-        println!("\n{}", setup_help(&setup, results.len()));
+    let secrets: Vec<&CaseResult> = setup.iter().copied().filter(|r| !missing_secrets(&r.case).is_empty()).collect();
+    if !secrets.is_empty() {
+        println!("\n{}", setup_help(&secrets, results.len()));
     }
+    let only_secrets = secrets.len() == setup.len();
     match (failed, setup.len()) {
         (0, 0) => Ok(()),
-        (0, 1) => Err("1 test could not start: a secret it needs is not set".into()),
-        (0, n) => Err(format!("{n} tests could not start: a secret they need is not set").into()),
+        (0, 1) if only_secrets => Err("1 test could not start: a secret it needs is not set".into()),
+        (0, n) if only_secrets => Err(format!("{n} tests could not start: a secret they need is not set").into()),
+        (0, 1) => Err("1 test could not start: it needs a one-time setup (see above)".into()),
+        (0, n) => Err(format!("{n} tests could not start: they need a one-time setup (see above)").into()),
         (f, 0) => Err(format!("{f} test(s) failed").into()),
         (f, n) => Err(format!("{f} test(s) failed, {n} could not start").into()),
     }

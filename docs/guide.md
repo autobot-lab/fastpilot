@@ -69,7 +69,10 @@ expects fastpilot to refuse it.
 iOS needs a Mac with Xcode. Your installed iPhone simulators are used as they are; iPhone testing only
 needs a one-time setup: `fastpilot setup ios` builds a small test runner with your Xcode (about 5 minutes).
 `fastpilot init` offers it when Xcode is found, and the dashboard's Device page has **Set up iPhone testing**
-and a list of your simulators to pick the one tests use (`ios_udid`; without a pick, the running one). From a checkout, `ios-runner/build.sh` does the same
+and a list of your simulators to pick the one tests use (`ios_udid`; without a pick, the running one).
+You can also skip it: the first iPhone test of `fastpilot run` (in Terminal, or **Run now** on the Schedules page)
+builds the runner once, showing the time so far, then starts the test. A schedule does not start that build: it
+says "could not run" and asks you to run one iPhone test by hand first. From a checkout, `ios-runner/build.sh` does the same
 (see [Build from source](#build-from-source)), and also builds the demo app below.
 
 **iOS (simulator):**

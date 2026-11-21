@@ -823,6 +823,8 @@ pub fn start_now(id: &str) -> Res<()> {
     let err = out.try_clone().map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
     std::process::Command::new(exe().map_err(undo)?)
         .args(["schedule", "run", id])
+        // V042: a person clicked Run now: the first iPhone test may build the runner.
+        .env("FASTPILOT_RUN_BY_PERSON", "1")
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err)
@@ -913,6 +915,11 @@ pub async fn run(id: &str) -> Res<bool> {
                 format!("Schedule \"{}\" could not run: needs {names}", s.name),
                 format!("fastpilot: \"{}\" could not run. It needs the secret {names}, and no value is set where schedules run. Nothing ran, so this is not a pass. Set it in the environment of fastpilot (and its name in Settings → Secret), then run again.{report_line}", s.name),
             ),
+            // V042: no iPhone runner yet: a schedule does not build it; it says so, not "failed".
+            None if setup_lines_only(&text) => (
+                format!("Schedule \"{}\" could not run: it needs a one-time setup", s.name),
+                format!("fastpilot: \"{}\" could not run — {summary}. Nothing ran, so this is not a pass.{report_line}", s.name),
+            ),
             None => (format!("Schedule \"{}\" failed", s.name), format!("fastpilot: schedule \"{}\" failed — {summary}{report_line}", s.name)),
         };
         last.notified = notify(&s, &title, &msg).await;
@@ -938,6 +945,12 @@ pub fn setup_only(output: &str) -> Option<String> {
         }
     }
     (!names.is_empty()).then(|| names.join(" and "))
+}
+
+/// Every test that did not pass could not start for a setup reason (`[setup]`).
+pub fn setup_lines_only(output: &str) -> bool {
+    let bad: Vec<&str> = output.lines().filter(|l| l.starts_with("✗ ") || l.starts_with("q ")).collect();
+    !bad.is_empty() && bad.iter().all(|l| l.contains(" could not run [setup]: "))
 }
 
 /// The tests that failed in a run's output (`✗ id …: why`), with why.
@@ -1467,6 +1480,10 @@ mod tests {
         assert_eq!(summarize(setup, false), "0 of 1 test passed, 1 could not run — login-ok: Could not run: needs the secret DEMO_PASS, and it is not set.");
         assert_eq!(setup_only(setup).as_deref(), Some("DEMO_PASS"));
         assert_eq!(setup_only(qa), None, "a product failure is not a setup problem");
+        // V042: no iPhone runner on a schedule: a setup problem without a secret.
+        let ios = "✗ ios-settings could not run [setup]: Could not run: iPhone testing needs a one-time setup (about 5 minutes), and a schedule does not start it.\n";
+        assert!(setup_lines_only(ios) && setup_lines_only(setup) && !setup_lines_only(qa));
+        assert_eq!(setup_only(ios), None);
         let two = "✗ a could not run [setup]: Could not run: needs the secrets API_KEY, DEMO_PASS, and they are not set.\n✗ b could not run [setup]: Could not run: needs the secret DEMO_PASS, and it is not set.\n";
         assert_eq!(setup_only(two).as_deref(), Some("API_KEY and DEMO_PASS"));
         // A release watch names it as a problem with its plain reason.

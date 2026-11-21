@@ -75,6 +75,112 @@ fn write_sources(src: &Path) -> Res<()> {
     Ok(())
 }
 
+/// `xcodebuild -version`, or why iPhone testing cannot be set up on this computer (the next step
+/// ends with `again`: "run `fastpilot setup ios` again" or "run the test again").
+fn xcode(again: &str) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("iPhone simulators need a Mac with Xcode.\nWeb and Android tests work on this computer.".into());
+    }
+    let (ok, xcode) = run("xcodebuild", &["-version"]);
+    if ok {
+        return Ok(xcode);
+    }
+    if xcode.to_ascii_lowercase().contains("command line tools") || xcode.to_ascii_lowercase().contains("requires xcode") {
+        return Err(explain(&xcode).replace("run `fastpilot setup ios` again", again));
+    }
+    Err(format!("Xcode is not installed.\nInstall it from the App Store, then {again}."))
+}
+
+/// Writes the runner's project and builds it with `xcodebuild build-for-testing` (minutes), calling
+/// `tick` with the time so far about once a second. The build log is kept next to it; a failure says
+/// why in plain words, with the log's tail when Xcode gave no known reason.
+fn build_runner(xcode: &str, again: &str, mut tick: impl FnMut(std::time::Duration)) -> Result<(), String> {
+    let home = fastpilot_ios::runner::setup_dir();
+    let (build, src) = (home.join("build"), home.join("src"));
+    write_sources(&src).map_err(|e| format!("The runner's files could not be written to {} ({e}).", src.display()))?;
+    let project = src.join("ios-runner/FastpilotRunner.xcodeproj");
+    let log_file = home.join("build.log");
+    let log = std::fs::File::create(&log_file).map_err(|e| format!("The build log could not be written to {} ({e}).", log_file.display()))?;
+    let err = log.try_clone().map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    let mut child = std::process::Command::new("xcodebuild")
+        .args(["build-for-testing", "-project"])
+        .arg(&project)
+        .args(["-scheme", "FastpilotRunner", "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath"])
+        .arg(&build)
+        .arg("-quiet")
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(err)
+        .spawn()
+        .map_err(|e| format!("Xcode could not start ({e})."))?;
+    let ok = loop {
+        if let Ok(Some(st)) = child.try_wait() {
+            break st.success();
+        }
+        tick(started.elapsed());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    let log = std::fs::read_to_string(&log_file).unwrap_or_default();
+    if !ok || fastpilot_ios::runner::pick_xctestrun(&build.join("Build/Products"), fastpilot_ios::runner::Target::Simulator).is_none() {
+        let why = explain(&log);
+        let tail: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail[tail.len().saturating_sub(12)..].join("\n");
+        let more = if why == "The test runner did not build." { format!("\nThe last lines from Xcode:\n{tail}") } else { String::new() };
+        return Err(format!("{}{more}\nFull log: {}", why.replace("run `fastpilot setup ios` again", again), log_file.display()));
+    }
+    let _ = std::fs::write(home.join("built-for"), stamp(xcode));
+    Ok(())
+}
+
+fn mmss(d: std::time::Duration) -> String {
+    format!("{}:{:02}", d.as_secs() / 60, d.as_secs() % 60)
+}
+
+/// V042: the first iPhone test of a `fastpilot run` when no runner is built yet. With `may_build`
+/// (a person started the run: Terminal, or Run now) it builds the runner once, with the time so far
+/// on stderr against "about 5 minutes" (never a percentage), and the test then goes on. A schedule
+/// does not start a 5-minute build: it says what to do instead. `Err` is the plain reason the iPhone
+/// tests of this run cannot start.
+pub fn first_test_build(may_build: bool) -> Result<(), String> {
+    const AGAIN: &str = "run the test again";
+    if !may_build {
+        return Err("iPhone testing needs a one-time setup (about 5 minutes), and a schedule does not start it. Run one iPhone test by hand first (fastpilot run in Terminal, or Run now on the Schedules page), or run `fastpilot setup ios`.".into());
+    }
+    let mut err = std::io::stderr();
+    let tty = err.is_terminal();
+    let _ = writeln!(err, "\niPhone testing needs a one-time setup  (about 5 minutes)\nfastpilot builds a small helper app that taps and types on the\niPhone simulator. Your own apps are not touched.");
+    let xcode = xcode(AGAIN).map_err(|why| {
+        let _ = writeln!(std::io::stderr(), "\n{FAILED} {why}");
+        format!("iPhone testing could not be set up: {}", why.lines().next().unwrap_or(""))
+    })?;
+    let _ = writeln!(err, "  ✓ Xcode found\nPress Ctrl+C to stop. The test starts when this is done.");
+    let mut shown = 0;
+    if !tty {
+        let _ = writeln!(err, "  ▶ Building the helper…");
+    }
+    let built = build_runner(&xcode, AGAIN, |t| {
+        let s = t.as_secs();
+        if tty && s != shown {
+            let _ = write!(std::io::stderr(), "\r  ▶ Building the helper…  {}", mmss(t));
+            shown = s;
+        } else if !tty && s >= shown + 30 {
+            let _ = writeln!(std::io::stderr(), "  ▶ Building the helper…  {} of about 5:00", mmss(t));
+            shown = s - s % 30;
+        }
+    });
+    match built {
+        Ok(()) => {
+            let _ = writeln!(err, "{}  ✓ Helper built. Starting the test.", if tty { "\r" } else { "" });
+            Ok(())
+        }
+        Err(why) => {
+            let _ = writeln!(err, "{}\n{FAILED} {why}", if tty { "\r" } else { "" });
+            Err(format!("iPhone testing could not be set up: {}", why.lines().next().unwrap_or("")))
+        }
+    }
+}
+
 /// `fastpilot setup ios [--yes]`.
 pub async fn setup(yes: bool) -> Res<()> {
     let fail = |why: &str| -> Res<()> {
@@ -85,13 +191,10 @@ pub async fn setup(yes: bool) -> Res<()> {
         return fail("iPhone simulators need a Mac with Xcode.\nWeb and Android tests work on this computer.");
     }
     println!("Setting up iPhone testing   (about 5 minutes, once)");
-    let (ok, xcode) = run("xcodebuild", &["-version"]);
-    if !ok {
-        if xcode.to_ascii_lowercase().contains("command line tools") || xcode.to_ascii_lowercase().contains("requires xcode") {
-            return fail(explain(&xcode));
-        }
-        return fail("Xcode is not installed.\nInstall it from the App Store, then run `fastpilot setup ios` again.");
-    }
+    let xcode = match xcode("run `fastpilot setup ios` again") {
+        Ok(x) => x,
+        Err(why) => return fail(&why),
+    };
     println!("✓ Xcode found ({})", xcode.lines().next().unwrap_or("Xcode").trim());
 
     let home = fastpilot_ios::runner::setup_dir();
@@ -116,28 +219,11 @@ pub async fn setup(yes: bool) -> Res<()> {
                 return Ok(());
             }
         }
-        let src = home.join("src");
-        if let Err(e) = write_sources(&src) {
-            return fail(&format!("The runner's files could not be written to {} ({e}).", src.display()));
-        }
         println!("▶ Building the test runner… (the long part)");
         std::io::stdout().flush()?;
-        let project = src.join("ios-runner/FastpilotRunner.xcodeproj");
-        let (project, build_s) = (project.to_string_lossy().into_owned(), build.to_string_lossy().into_owned());
-        let (ok, log) = run(
-            "xcodebuild",
-            &["build-for-testing", "-project", &project, "-scheme", "FastpilotRunner", "-sdk", "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", &build_s, "-quiet"],
-        );
-        let log_file = home.join("build.log");
-        let _ = std::fs::write(&log_file, &log);
-        if !ok || fastpilot_ios::runner::pick_xctestrun(&build.join("Build/Products"), fastpilot_ios::runner::Target::Simulator).is_none() {
-            let why = explain(&log);
-            let tail: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
-            let tail = tail[tail.len().saturating_sub(12)..].join("\n");
-            let more = if why == "The test runner did not build." { format!("\nThe last lines from Xcode:\n{tail}") } else { String::new() };
-            return fail(&format!("{why}{more}\nFull log: {}", log_file.display()));
+        if let Err(why) = build_runner(&xcode, "run `fastpilot setup ios` again", |_| {}) {
+            return fail(&why);
         }
-        let _ = std::fs::write(&marker, stamp(&xcode));
         println!("✓ Test runner built");
     }
 
