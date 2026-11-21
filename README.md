@@ -5,6 +5,10 @@ You say what to check; AI runs it on your own computer, shows you every step liv
 what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
 blocked from the start.
 
+<img src="docs/images/demo.gif" width="860" alt="A 60-second tour of fastpilot: one sentence in Chat becomes a test card, Save and schedule runs it every 2 hours, Live shows each step on web and on an Android emulator where the Pay button is blocked, and a failing test is explained in plain words.">
+
+*A 60-second tour, sped up where the AI is thinking. Chat turns one sentence into a test, Live shows each step on web and on an Android emulator (the Pay button is blocked), and a failing test says why.*
+
 <img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard: an agent called QA Checkout gets one sentence in Chat and answers with a Save test and schedule card that lists the test steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only and Edit.">
 
 ## Start in 3 steps
