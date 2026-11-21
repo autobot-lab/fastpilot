@@ -139,6 +139,9 @@ Everything also works from Claude Code. Open Claude in your project folder (`cla
 plain words, for example *"fastpilot, run a regression"* or *"fastpilot, test the login page"*.
 Results, schedules, and history show up in the dashboard too.
 
+In GitHub Actions, use [`autobot-lab/fastpilot-action@v1`](https://github.com/autobot-lab/fastpilot-action):
+it runs your tests on every pull request and adds the JUnit and HTML reports.
+
 ## If you get stuck
 
 Open **Device** in the dashboard, or run:

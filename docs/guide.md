@@ -705,6 +705,9 @@ DEMO_PASS=rahasia123 FASTPILOT_VARS=DEMO_PASS \
   fails the check is taken out), a retry uses another device if there is one, and the queue is ordered by the longest
   recorded duration (tests that have never run go first).
   With `FASTPILOT_ANDROID_SERIAL` (or `ANDROID_SERIAL`) set, only that Android device is used and no other one is contacted; without it, every connected device is. The first line of the run says which.
+- **In GitHub Actions:** [`autobot-lab/fastpilot-action@v1`](https://github.com/autobot-lab/fastpilot-action)
+  installs the release for the runner (SHA-256 checked) and runs `fastpilot run <tests> --junit … --html …`;
+  its README has a copy-paste workflow with the JUnit report on the pull request and the HTML report as an artifact.
 - `--record` records the screen of each session (web: a CDP screencast as an HTML filmstrip; Android: `screenrecord`;
   iOS: `simctl io recordVideo`). `--html` produces one self-contained HTML file with the report for each
   run (steps, durations, diffs, screenshots, recordings); `--junit` is for CI dashboards.
