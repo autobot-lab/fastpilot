@@ -46,6 +46,9 @@ pub struct Row {
     pub set_aside_auto: bool,
     /// The test file is gone; only its memory is left.
     pub orphan: bool,
+    /// PF6: "Why unstable?" for an Unstable or Failing test (the flaky test doctor).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doctor: Option<fastpilot_memory::doctor::Diagnosis>,
 }
 
 /// `2026-11-17 10:00:00` (UTC, as the memory files store it) → ms since 1970.
@@ -134,6 +137,7 @@ pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Opt
         set_aside_since_ms: q.and_then(|q| stamp_ms(&q.since)),
         set_aside_auto: q.is_some_and(|q| q.auto),
         orphan,
+        doctor: None,
     }
 }
 
@@ -154,6 +158,14 @@ pub fn rows(memory: &Memory) -> Vec<Row> {
     for (id, q) in &quarantined {
         if !out.iter().any(|r| &r.id == id) {
             out.push(row(id, id, "", None, Some(q), true));
+        }
+    }
+    // PF6: the doctor for the tests that need it, from the recorded runs (read once).
+    if out.iter().any(|r| matches!(r.status, "unstable" | "failing")) {
+        let all = fastpilot_memory::doctor::load_all(memory.root());
+        for r in out.iter_mut().filter(|r| matches!(r.status, "unstable" | "failing")) {
+            let mine: Vec<fastpilot_memory::doctor::Outcome> = all.iter().filter(|o| o.test_id == r.id).cloned().collect();
+            r.doctor = Some(fastpilot_memory::doctor::diagnose(&mine, &all));
         }
     }
     out

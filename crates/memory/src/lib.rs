@@ -5,6 +5,7 @@
 //! - `memory/<test_id>.json`: the last passing flow as a *hint* (durable selectors, never refs).
 //!   Written only after a run reported as passed; a failed run only updates statistics.
 
+pub mod doctor;
 pub mod history;
 pub mod notes;
 mod triage;
@@ -262,7 +263,8 @@ impl Memory {
                 Err(e) => Some(Err(io(&dir)(e))),
             })
             .unwrap_or_else(|| Err(Error::TestId(test_id.to_owned())))?;
-        Ok(Run { id, test_id: test_id.to_owned(), dir, ..Run::default() })
+        let started_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        Ok(Run { id, test_id: test_id.to_owned(), dir, started_ms, ..Run::default() })
     }
 }
 
@@ -298,6 +300,9 @@ pub struct Run {
     shots: Vec<(String, Vec<u8>)>,
     /// `(session, recording, start in ms since the epoch)`: the start places the steps on it.
     recordings: Vec<(String, Recording, Option<u64>)>,
+    /// PF6: when the run began (ms since 1970) and the platforms of its sessions, for the doctor.
+    started_ms: u64,
+    platforms: Vec<String>,
 }
 
 impl Run {
@@ -325,6 +330,32 @@ impl Run {
     /// The test could not run at all (an infrastructure problem): not a failure of the test.
     pub fn could_not_run(&mut self) {
         self.could_not_run = true;
+    }
+
+    /// PF6: the platforms its sessions ran on (`web`, `android`, `ios`).
+    pub fn set_platforms(&mut self, mut platforms: Vec<String>) {
+        platforms.sort();
+        platforms.dedup();
+        self.platforms = platforms;
+    }
+
+    /// PF6: what this run leaves for the flaky test doctor (`outcome.json`).
+    fn outcome(&self, passed: bool) -> doctor::Outcome {
+        let failed = self.rows.iter().find(|r| r["ok"] == false);
+        let text = |k: &str| failed.and_then(|r| r[k].as_str()).map(|s| fastpilot_core::redact(s).chars().take(300).collect::<String>());
+        doctor::Outcome {
+            test_id: self.test_id.clone(),
+            passed,
+            passed_on_retry: passed && self.passed_on_retry,
+            could_not_run: self.could_not_run,
+            started_ms: self.started_ms,
+            finished_ms: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            platforms: self.platforms.clone(),
+            failed_step: if passed { None } else { text("label") },
+            reason: if passed { None } else { text("reason").or_else(|| self.first_failure.as_ref().map(|(r, _)| r.clone())) },
+            category: if passed { None } else { text("category").or_else(|| self.first_failure.as_ref().map(|(_, c)| c.clone())) },
+            error: if passed { None } else { text("error") },
+        }
     }
 
     fn note_failure(&mut self, reason: &str, category: &str) {
@@ -512,6 +543,9 @@ impl Run {
         md.push_str("Evidence: `report.html` (self-contained), `steps.jsonl`, `assertions.json`, `fail-*.txt|jpg`, `recording-*`.\n");
         let report = self.dir.join("report.md");
         fs::write(&report, fastpilot_core::redact(&md)).map_err(io(&report))?;
+        let outcome = self.dir.join("outcome.json");
+        let json = serde_json::to_string_pretty(&self.outcome(passed)).map_err(|source| Error::Json { path: outcome.clone(), source })?;
+        fs::write(&outcome, json).map_err(io(&outcome))?;
         let html = self.html(passed, notes, class, stats.as_ref(), quarantine.as_ref(), &stamp);
         let html_path = self.dir.join("report.html");
         fs::write(&html_path, fastpilot_core::redact(&html)).map_err(io(&html_path))?;

@@ -493,6 +493,8 @@ impl FastPilot {
             let reg = self.state.registry.lock().await;
             reg.ids().into_iter().filter_map(|id| reg.shared(&id).map(|d| (id, d))).collect()
         };
+        // PF6: where it ran, for the flaky test doctor.
+        run.set_platforms(sessions.iter().map(|(_, d)| d.platform().to_string()).collect());
         for (id, d) in sessions {
             let _busy = self.lock_sessions([id.clone()]).await;
             if let Ok(jpeg) = d.screenshot().await {

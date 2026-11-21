@@ -981,6 +981,9 @@ async function loadChat() {
   if (chatData.busy && chatShown()) chatTimer = setTimeout(loadChat, 800);
 }
 
+// PF6: text to put in the Chat box (not sent) when Chat opens next.
+let chatPrefill = null;
+
 async function chatSend(text) {
   const t = (text || "").trim();
   if (!t) return;
@@ -1387,6 +1390,8 @@ function renderChat() {
       h("p", { class: "s muted" }, "The bot uses your Claude Code (claude -p) and fastpilot's tools. Schedules and most changes wait for your click on their card; one more blocked word applies at once, with Undo. A looser limit gets a red card only when your own message asks for it, and changes only after you type its word to confirm."));
     if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
   }
+  const box = document.getElementById("chat-input");
+  if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); }
   const send = document.getElementById("chat-send");
   if (send) send.disabled = busy;
   const log = document.getElementById("chat-log");
