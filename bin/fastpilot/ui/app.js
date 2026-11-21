@@ -317,19 +317,12 @@ function pageModel() {
     providerGroup());
 }
 
-const NEW_032 = "fp-new-0.3.2-limits";
 function pageLimits() {
   const confirmShow = (w) => (w === "default" ? "default (delete, pay, buy, …)" : w);
   const emptied = (key) => { const s = get(key); return s && s.source !== "default" && Array.isArray(s.value) && !s.value.length; };
-  let seen = false;
-  try { seen = localStorage.getItem(NEW_032) === "1"; } catch (e) { /* private mode: show it */ }
-  const news = seen ? null : h("div", { class: "banner info new" }, icon("info"),
-    h("span", {}, h("b", {}, "New in 0.3.2: "), "payment and account-deletion buttons are now blocked by default. If you do want to test a checkout, remove the word below or click ", h("b", {}, "Empty it"), "."),
-    h("button", { class: "rm", "aria-label": "Close this notice", onclick: () => { try { localStorage.setItem(NEW_032, "1"); } catch (e) { /* ignore */ } render(); } }, icon("close", "sm")));
   return h("section", { class: "panel" },
     h("h2", {}, "Limits & permissions", savedNote()),
     h("p", { class: "sub" }, "These rules apply to every test: from Claude Code, Cursor, the CLI, or ", code("fastpilot run"), "."),
-    news,
     h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, a looser rule needs your own words and your typed confirmation on its red card. Saved in ", code(S.path), ".")),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("globe"), "domains that may be opened"),

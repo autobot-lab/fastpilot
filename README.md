@@ -27,8 +27,12 @@ fastpilot init
 `init` asks before each change; answer `y`. At the end it asks **"Open the dashboard now?"**:
 press Enter.
 
-> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 24 testing
-> skills in one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
+> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 24 skills in
+> one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
+> Use **either** the plugin **or** `fastpilot init` in a project, not both: both together start two
+> fastpilot servers. With the plugin, a secret such as `DEMO_PASS` works like this: add its **name** in
+> `fastpilot ui` › Settings › Secret, and set its **value** in the environment you start Claude Code
+> from (`export DEMO_PASS=…`). The value is never typed into the dashboard or the chat.
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
 > pages and example tests, and opens the dashboard on it.

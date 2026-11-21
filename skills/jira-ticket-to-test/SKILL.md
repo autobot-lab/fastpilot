@@ -10,8 +10,15 @@ Reads one ticket (or a short list) from Jira, then hands the requirement to the 
 skill, which writes the tests. This skill **only reads**: it never creates, comments on, edits or
 moves a Jira issue. For those, see the `jira-bug-report` and `jira-test-result` skills.
 
-Needs the Atlassian server in Claude Code (setup: `fastpilot` guide, "Jira"). If its tools are
-missing, say so and show the setup line; do not ask for a password or an API token in chat.
+Needs Atlassian's MCP server in Claude Code. If its tools are missing, tell the user how to connect
+it, once (do not ask for a password or an API token in chat):
+1. In a terminal: `claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp`
+2. In Claude Code: type `/mcp`, choose **atlassian** and sign in in the browser. When Atlassian asks
+   which site to allow, pick the site with the project to test.
+
+The permission is given per site. If a call says access to a site "isn't explicitly granted", the
+sign-in allowed another site: ask the user to sign in again (`/mcp` › atlassian › re-authenticate) and
+pick that site. Never switch to another site that happens to be allowed.
 
 ## Steps
 1. **Site.** Call **getAccessibleAtlassianResources** once and use its cloud ID. If it lists more

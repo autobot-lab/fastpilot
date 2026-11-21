@@ -233,7 +233,7 @@ async function tabSkills(x, box) {
           h("div", { class: "sk-txt" }, h("b", {}, sk.name), h("span", { class: "s" }, sk.line)),
           h("button", { class: "lk", onclick: (e) => details(sk, e.target) }, "Details")))))));
   }
-  box.replaceChildren(h("div", { class: "sk-head" }, tabsRow, h("span", { class: "s" }, `${on.size} on for ${a.name}`)), h("div", { class: "sk-wrap" }, main, skillsView === "library" ? side : null));
+  box.replaceChildren(h("div", { class: "sk-head" }, tabsRow, h("span", { class: "s" }, `${on.size} on for ${a.name}, plus the fastpilot skill (always on)`)), h("div", { class: "sk-wrap" }, main, skillsView === "library" ? side : null));
 }
 
 async function tabSchedules(x, box) {

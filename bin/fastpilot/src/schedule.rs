@@ -793,8 +793,16 @@ pub fn is_running(last: Option<&LastRun>) -> bool {
     }
 }
 
+/// Alive and not a zombie: a run killed from outside is gone even while its parent has not reaped
+/// it yet (V051: Run now stayed "already running" until `fastpilot ui` restarted).
 fn alive(pid: u32) -> bool {
-    std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+    let exists = std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+    exists
+        && !std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
 }
 
 /// Start `fastpilot schedule run <id>` in the background (Run now). Refused while it runs.
@@ -821,7 +829,7 @@ pub fn start_now(id: &str) -> Res<()> {
     std::fs::create_dir_all(log.parent().unwrap_or(&home())).map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
     let err = out.try_clone().map_err(|e| undo(format!("Could not prepare the schedule files: {e}")))?;
-    std::process::Command::new(exe().map_err(undo)?)
+    let mut child = std::process::Command::new(exe().map_err(undo)?)
         .args(["schedule", "run", id])
         // V042: a person clicked Run now: the first iPhone test may build the runner.
         .env("FASTPILOT_RUN_BY_PERSON", "1")
@@ -830,6 +838,10 @@ pub fn start_now(id: &str) -> Res<()> {
         .stderr(err)
         .spawn()
         .map_err(|e| undo(format!("The run could not start: {e}")))?;
+    // V051: reap it when it ends, however it ends, so it never lingers as a zombie of this process.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

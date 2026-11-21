@@ -280,3 +280,84 @@ fn schedules_from_the_page_to_the_os_entry_and_notifications() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// V051 (FastTest): a Run now whose `schedule run` is killed from outside no longer stays "already
+/// running" until `fastpilot ui` restarts: the dashboard reaps its child, and a zombie is not alive.
+#[test]
+fn run_now_after_its_run_was_killed_from_outside() {
+    let home: PathBuf = std::env::temp_dir().join(format!("fp-sched-kill-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let entries = home.join("LaunchAgents");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let (gh_port, _) = fake_server("{}");
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["ui", "--no-open"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    env_for(&mut cmd, &home, &entries, gh_port);
+    cmd.env("FAKE_CLAUDE_DELAY_MS", "30000");
+    let mut child = cmd.spawn().expect("ui");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut line).expect("link");
+    let rest = line.trim().strip_prefix("http://127.0.0.1:").expect("link").to_owned();
+    let (port, code) = rest.split_once("/?code=").expect("code");
+    let port: u16 = port.parse().expect("port");
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.write_all(format!("GET /?code={code} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).expect("write");
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).expect("read");
+    let cookie = raw.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.trim().to_owned())).and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let ui = Ui { child, port, cookie };
+    let post = |body: &str| request(ui.port, "POST", "/api/schedules", &ui.cookie, body, true);
+    let schedule = serde_json::json!({ "id": "", "name": "Slow login", "tests": format!("{ROOT}/tests/login.md"), "when": { "every": "day", "time": "08:00" }, "notify": {}, "enabled": true });
+    let (st, body) = post(&serde_json::json!({ "action": "save", "schedule": schedule }).to_string());
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post(r#"{"action":"run","id":"slow-login"}"#);
+    assert_eq!(st, 200, "{body}");
+    // Its `schedule run` process, once it has written its pid.
+    let mut pid = 0;
+    for _ in 0..120 {
+        let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
+        let v: serde_json::Value = serde_json::from_str(&list).expect("json");
+        if let Some(p) = v["schedules"][0]["last"]["pid"].as_u64() {
+            pid = p;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(pid > 0, "the run wrote its pid");
+    let (st, body) = post(r#"{"action":"run","id":"slow-login"}"#);
+    assert!(st == 422 && body.contains("already running"), "while it runs: {st} {body}");
+    // Killed from outside, as FastTest did: `schedule run` itself, so it never writes a result. Its
+    // children (noted first) are stopped afterwards, so nothing is left behind.
+    let kids = std::process::Command::new("pgrep").args(["-P", &pid.to_string()]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+    for k in kids.split_whitespace() {
+        let _ = std::process::Command::new("pkill").args(["-9", "-P", k]).status();
+        let _ = std::process::Command::new("kill").args(["-9", k]).status();
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (st, body) = loop {
+        let (st, body) = post(r#"{"action":"run","id":"slow-login"}"#);
+        if st == 200 || std::time::Instant::now() > until {
+            break (st, body);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    assert_eq!(st, 200, "Run now works again without restarting the dashboard: {body}");
+    // Stop the second run too.
+    for _ in 0..40 {
+        let (_, list) = request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false);
+        let v: serde_json::Value = serde_json::from_str(&list).expect("json");
+        if let Some(p) = v["schedules"][0]["last"]["pid"].as_u64().filter(|p| *p != pid) {
+            let kids = std::process::Command::new("pgrep").args(["-P", &p.to_string()]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let _ = std::process::Command::new("kill").args(["-9", &p.to_string()]).status();
+            for k in kids.split_whitespace() {
+                let _ = std::process::Command::new("pkill").args(["-9", "-P", k]).status();
+                let _ = std::process::Command::new("kill").args(["-9", k]).status();
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

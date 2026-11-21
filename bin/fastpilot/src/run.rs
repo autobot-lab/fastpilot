@@ -894,6 +894,8 @@ pub fn setup_help(setup: &[&CaseResult], total: usize) -> String {
     if need_vars {
         out.push_str("\n  • Or add the name once in the dashboard (fastpilot ui → Settings → Secret); the value still comes from the environment");
     }
+    // V051: a plugin user has no .mcp.json; the value comes from Claude Code's own environment.
+    out.push_str("\n  With the Claude Code plugin: add the name in Settings → Secret, and export the value before you start Claude Code.");
     let in_mcp: Vec<String> = names.iter().filter(|n| crate::chat::mcp_secret_names().contains(n)).cloned().collect();
     if !in_mcp.is_empty() {
         out.push_str(&format!("\n  This folder's .mcp.json has {} for Claude Code and Chat; fastpilot run reads only the environment.", in_mcp.join(" and ")));
