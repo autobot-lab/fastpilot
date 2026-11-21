@@ -12,7 +12,9 @@
 # A missing device is a skipped check with its reason, never a pass. Exit 0 only when READY.
 #
 # Android runs on RELEASE_CHECK_ANDROID_SERIAL (default emulator-5556) and on no other device;
-# emulator-5554 is never used (it is the emulator kept for hands-on work).
+# emulator-5554 is never used (it is the emulator kept for hands-on work). Only the Android check
+# can reach an Android device: the code, unit, web and iPhone checks run with no adb, no Android
+# SDK and an adb server address where nothing listens.
 # The tests run with a throwaway HOME and FASTPILOT_KEYSTORE=file, so your ~/.fastpilot and the
 # Keychain are not read or changed. The repo's .fastpilot/ (project memory, recordings) is moved
 # aside for the run and put back afterwards; the run's own .fastpilot/ is kept next to the logs.
@@ -24,7 +26,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # The newest earlier run in $1 that ran in full (no --skip, not interrupted), except $2: "Since the
 # last run" compares with that one, never with a partial run (FastTest M3).
@@ -107,6 +109,17 @@ tenv() {
   HOME="$SANDBOX/home" FASTPILOT_KEYSTORE=file FASTPILOT_CONFIG="$SANDBOX/home/.fastpilot/config.toml" "$@" >>"$LOG" 2>&1
 }
 
+# The same, with Android out of reach: every check but the Android one. fastpilot talks to the adb
+# server over TCP itself (127.0.0.1:5037), so hiding the adb program is not enough: the server
+# address points where nothing listens. Before this, `fastpilot run --workers` in the web tests
+# listed every attached device and sent a read-only getprop to emulator-5554 (v0.4.0 gate).
+NO_ANDROID_SDK="$SANDBOX/no-android-sdk"
+mkdir -p "$NO_ANDROID_SDK"
+NO_ADB_PATH="$(printf '%s\n' "$PATH" | tr ':' '\n' | grep -v -e '/platform-tools/*$' -e '/emulator/*$' -e '/Android/[Ss]dk' | paste -sd: -)"
+noandroid() {
+  tenv env ANDROID_HOME="$NO_ANDROID_SDK" ANDROID_SDK_ROOT="$NO_ANDROID_SDK" FASTPILOT_ADB_SERVER=127.0.0.1:1 PATH="$NO_ADB_PATH" "$@"
+}
+
 # Totals over every `test result:` line in $LOG: sets PASSED FAILED RESULTS SKIPPED FAILS.
 count() {
   set -- $(awk '/^test result:/ { n++; for (i = 2; i <= NF; i++) { if ($i ~ /^passed;/) p += $(i-1); if ($i ~ /^failed;/) f += $(i-1) } }
@@ -146,7 +159,7 @@ judge() {
 skip() { STATUS[$1]=skipped; DETAIL[$1]="skipped: $2"; }
 
 check_code() {
-  tenv cargo clippy --workspace --all-targets --locked -- -D warnings
+  noandroid cargo clippy --workspace --all-targets --locked -- -D warnings
   local rc=$? n
   if [ "$rc" -eq 0 ]; then STATUS[0]=passed; DETAIL[0]="passed"; return; fi
   n=$(grep -cE '^error(\[|:)' "$LOG"); STATUS[0]=failed
@@ -155,7 +168,7 @@ check_code() {
 }
 
 check_unit() {
-  tenv cargo test --release --locked --workspace --lib --bins --no-fail-fast
+  noandroid cargo test --release --locked --workspace --lib --bins --no-fail-fast
   judge 1 $?
 }
 
@@ -171,7 +184,7 @@ done
 check_web() {
   local args=() s
   for s in $WEB_SUITES; do args+=(--test "$s"); done
-  tenv cargo test --release --locked -p fastpilot --no-fail-fast "${args[@]}" -- --nocapture --skip "$ANDROID_DEMO"
+  noandroid cargo test --release --locked -p fastpilot --no-fail-fast "${args[@]}" -- --nocapture --skip "$ANDROID_DEMO"
   judge 2 $?
 }
 
@@ -204,10 +217,10 @@ check_ios() {
   echo "== ios-runner/build.sh" >>"$LOG"
   ios-runner/build.sh >>"$LOG" 2>&1 || { STATUS[4]=failed; DETAIL[4]="ios-runner/build.sh failed, see $(basename "$LOG")"; return; }
   echo "== tests on simulator $udid" >>"$LOG"
-  tenv env FASTPILOT_IOS_DEVICE="$udid" \
+  noandroid env FASTPILOT_IOS_DEVICE="$udid" \
     cargo test --release --locked -p fastpilot --no-fail-fast --test ios -- --test-threads=1 --nocapture
   rc=$?
-  tenv env FASTPILOT_IOS_DEVICE="$udid" \
+  noandroid env FASTPILOT_IOS_DEVICE="$udid" \
     cargo test --release --locked -p fastpilot --test ui_takeover_device -- --exact take_over_ios_simulator --nocapture
   [ $? -ne 0 ] && rc=1
   judge 4 "$rc" 1
@@ -253,6 +266,21 @@ elif [ "$nskip" -gt 0 ]; then READY=1; RESULT="READY TO RELEASE, with $(plural $
 else READY=1; RESULT="READY TO RELEASE."
 fi
 
+# Evidence for the summary: no log but the Android one names an emulator, and that one names only
+# $SERIAL. A line, not a result: it tells whether the run kept to its devices.
+OTHER_LOGS=""
+for k in code unit web ios; do
+  grep -qE 'emulator-[0-9]+' "$OUT/$k.log" 2>/dev/null && OTHER_LOGS="$OTHER_LOGS${OTHER_LOGS:+, }$k.log"
+done
+OTHER_SERIALS="$(grep -oE 'emulator-[0-9]+' "$OUT/android.log" 2>/dev/null | grep -vx "$SERIAL" | sort -u | paste -sd, -)"
+if [ -n "$OTHER_LOGS" ] || [ -n "$OTHER_SERIALS" ]; then
+  ISOLATION="Android devices: ✗ ${OTHER_LOGS:+an emulator is named in $OTHER_LOGS}${OTHER_LOGS:+${OTHER_SERIALS:+; }}${OTHER_SERIALS:+the Android check named $OTHER_SERIALS}"
+elif [ "${STATUS[3]}" = skipped ]; then
+  ISOLATION="Android devices: none reached (the Android check was skipped)"
+else
+  ISOLATION="Android devices: only the Android check reached one, and only $SERIAL"
+fi
+
 SUMMARY="$OUT/summary.txt"
 {
   echo "Release check · $BRANCH @ $SHA$DIRTY · $(date '+%Y-%m-%d %H:%M')"
@@ -260,6 +288,7 @@ SUMMARY="$OUT/summary.txt"
     case "${STATUS[$i]}" in passed) m="✓" ;; failed) m="✗" ;; *) m="-" ;; esac
     printf '%s %-14s %s\n' "$m" "${NAMES[$i]}" "${DETAIL[$i]}"
   done
+  echo "$ISOLATION"
   echo "Result: $RESULT"
 } >"$SUMMARY"
 
@@ -291,13 +320,14 @@ REPORT="$OUT/release-check-report.html"
     echo "<tr><td>${NAMES[$i]}</td><td class=${STATUS[$i]}>${STATUS[$i]}</td><td>$(echo "${DETAIL[$i]}" | html)</td><td>$(fmt_time "${SECS[$i]}")</td><td><a href=\"$k.log\">$k.log</a></td></tr>"
     i=$((i + 1))
   done
-  echo "</table><p><b>Result: $(echo "$RESULT" | html)</b></p>"
+  echo "</table><p>$(echo "$ISOLATION" | html)</p><p><b>Result: $(echo "$RESULT" | html)</b></p>"
   [ -n "$CHANGES" ] && echo "<pre>$(printf '%s' "$CHANGES" | html)</pre>"
 } >"$REPORT"
 
 echo
 echo "${B}Release check${N}"
 for i in 0 1 2 3 4; do printf '%s %-14s %s\n' "$(mark "${STATUS[$i]}")" "${NAMES[$i]}" "${DETAIL[$i]}"; done
+echo "$ISOLATION"
 [ -n "$CHANGES" ] && { echo; printf '%s' "$CHANGES"; }
 echo
 if [ "$READY" -eq 1 ]; then echo "${B}Result: ${G}$RESULT${N}"; else echo "${B}Result: ${R}$RESULT${N}"; fi

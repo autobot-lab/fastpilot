@@ -32,3 +32,36 @@ fn since_the_last_run_means_the_last_full_run() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// v0.4.0 gate: `fastpilot run --workers` in the web tests listed every attached device and sent a
+/// read-only getprop to emulator-5554. Only the Android check may reach an Android device: every
+/// other check runs its cargo commands through `noandroid` (no adb, no SDK, an adb server address
+/// where nothing listens), and the Android check pins its serial.
+#[test]
+fn only_the_android_check_reaches_an_android_device() {
+    let script = std::fs::read_to_string(SCRIPT).expect("script");
+    let noandroid = script.lines().skip_while(|l| !l.starts_with("noandroid() {")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n");
+    for part in ["ANDROID_HOME=\"$NO_ANDROID_SDK\"", "ANDROID_SDK_ROOT=\"$NO_ANDROID_SDK\"", "FASTPILOT_ADB_SERVER=127.0.0.1:1", "PATH=\"$NO_ADB_PATH\""] {
+        assert!(noandroid.contains(part), "noandroid sets {part}: {noandroid}");
+    }
+    let mut check = "";
+    let mut cargo_lines = 0;
+    let lines: Vec<&str> = script.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(name) = line.strip_prefix("check_").and_then(|r| r.strip_suffix("() {")) {
+            check = name;
+        }
+        if line.trim_start().starts_with('#') || check.is_empty() || (!line.contains("cargo clippy") && !line.contains("cargo test")) {
+            continue;
+        }
+        cargo_lines += 1;
+        // A command may continue the line before it (`env X=… \` then `cargo test …`).
+        let start = if i > 0 && lines[i - 1].trim_end().ends_with('\\') { lines[i - 1] } else { line };
+        if check == "android" {
+            assert!(start.contains("tenv env FASTPILOT_ANDROID_SERIAL=\"$SERIAL\" ANDROID_SERIAL=\"$SERIAL\""), "the Android check pins its serial: {start}");
+        } else {
+            assert!(start.trim_start().starts_with("noandroid "), "check_{check} keeps Android out of reach: {start}");
+        }
+    }
+    assert!(cargo_lines >= 7, "every check's cargo command was looked at ({cargo_lines})");
+}
