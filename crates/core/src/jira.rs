@@ -543,6 +543,57 @@ fn rejection(text: &str) -> String {
     if s.is_empty() { "a required field is missing or not allowed".into() } else { s }
 }
 
+/// Text fastpilot sends to Jira, cleaned (design 03, "cleaned text"): the project's secrets as
+/// `***`, no email addresses, no links to other sites (links to `site` stay), no @mentions or
+/// `[~account]` mentions, no control characters; one line for a summary. What is shown on a card
+/// is exactly what is sent.
+pub fn clean(text: &str, site: &str, one_line: bool, max: usize) -> String {
+    let text = no_escapes(&crate::dsl::redact(text));
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_inclusive(char::is_whitespace) {
+        let (w, tail) = word.split_at(word.trim_end().len());
+        let bare = w.trim_matches(|c: char| "()[]<>\"',.;:!?".contains(c));
+        let lower = bare.to_ascii_lowercase();
+        let cleaned = if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.") {
+            let host = lower.trim_start_matches("http://").trim_start_matches("https://").split(['/', '?', '#', ':']).next().unwrap_or("").to_owned();
+            if host == site { w.to_owned() } else { w.replace(bare, "[link removed]") }
+        } else if bare.contains('@') && bare.split('@').nth(1).is_some_and(|d| d.contains('.')) && !bare.starts_with('@') {
+            w.replace(bare, "[email removed]")
+        } else if let Some(name) = bare.strip_prefix('@') {
+            w.replacen(bare, name, 1)
+        } else if bare.starts_with('~') || lower.starts_with("accountid:") {
+            String::new()
+        } else {
+            w.to_owned()
+        };
+        out.push(format!("{cleaned}{tail}"));
+    }
+    let joined = out.concat();
+    let joined: String = if one_line { joined.split_whitespace().collect::<Vec<_>>().join(" ") } else { joined };
+    plain(&joined, max)
+}
+
+/// Without terminal escape sequences (`ESC [ … letter`), so nothing is left of them but text.
+fn no_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' {
+            if it.peek() == Some(&'[') {
+                it.next();
+                for d in it.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Text without control characters (newlines kept), at most `max` characters.
 pub fn plain(s: &str, max: usize) -> String {
     s.chars().filter(|c| !c.is_control() || *c == '\n').take(max).collect::<String>().trim().to_owned()
@@ -603,6 +654,10 @@ mod tests {
         }
         assert!(check_issue("KAN-12").is_ok() && check_issue("kan-12").is_err() && check_issue("KAN-12/../x").is_err() && check_issue("KAN-").is_err());
         assert!(check_project("KAN").is_ok() && check_project("K").is_err() && check_project("KAN\" OR").is_err());
+        // What fastpilot sends is cleaned: no emails, no links elsewhere, no mentions.
+        let c = clean("Total is wrong @alex see https://evil.example/x and https://yourteam.atlassian.net/browse/KAN-1 mail bob@corp.com [~accountid:557058]\u{1b}[2J", "yourteam.atlassian.net", false, 500);
+        assert_eq!(c, "Total is wrong alex see [link removed] and https://yourteam.atlassian.net/browse/KAN-1 mail [email removed]");
+        assert_eq!(clean("line one\nline two", "x.atlassian.net", true, 9), "line one");
         for bad in ["jira.mycompany.com", "evil.com/x.atlassian.net", "atlassian.net", "a.b.atlassian.net", "https://user@evil.com", "", "-x.atlassian.net", "x.atlassian.net.evil.com"] {
             assert!(parse_site(bad).is_err(), "{bad}");
         }

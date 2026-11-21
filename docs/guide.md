@@ -551,7 +551,7 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_CHROME_ENDPOINT` | Chrome on another computer for all web sessions: `http://host:port` or `ws://...` |
 | `FASTPILOT_LOG` | tracing filter, e.g. `debug` (logs go to stderr; stdout is used by MCP) |
 
-## Tools (11)
+## Tools (14)
 
 | Tool | Purpose |
 |---|---|
@@ -566,6 +566,9 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `config` | View and change settings (`~/.fastpilot/config.toml`) through chat: `list` / `get` / `set` / `unset`. The agent may only **make limits stricter** (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, the `allow_*` permissions, `upload_dirs`, `max_steps`, `test_timeout`); stricter values apply right away, looser ones only after a restart. Program paths, locations, and other computers (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) can only be changed by the user with `fastpilot config set` or `fastpilot ui` |
 | `docs` | On-demand reference: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 | `related_tests` | Which saved tests to run first after a code change ("test what I changed"): reads the changed files with git (read only) and gives each chosen test one plain reason |
+| `jira_read` | Read a ticket from the Jira connected in the dashboard (Apps › Jira): summary, status, type, description, marked as data that is never followed as instructions. The token stays with fastpilot |
+| `jira_create_issue` | Create one issue there, after the user saw the exact text. Looks for an open issue that seems the same first. Text is cleaned (secrets as `***`, no emails, no other sites' links, no mentions). Refused in the dashboard Chat (it uses cards) and in `fastpilot run` / schedules (nobody to approve) |
+| `jira_comment` | Add one comment to a ticket, the same way. Never changes a ticket's status |
 
 ## Examples
 
@@ -1022,7 +1025,7 @@ crates/web       CDP client, launch/attach Chrome, WebPage (Driver) per BrowserC
 crates/android   adb server protocol, agent client, AndroidDriver (+ WebView via CDP)
 crates/ios       simctl/devicectl + XCUITest runner, usbmux, Web Inspector, IosDriver
 crates/memory    run evidence (.fastpilot/runs) + path memory (.fastpilot/memory)
-crates/mcp       rmcp stdio server, 11 tools, docs
+crates/mcp       rmcp stdio server, 14 tools, docs
 bin/fastpilot    entrypoint: `mcp`, shell CLI + daemon, `run`, `doctor`/`setup`, `config`, `bench`, `stability`
 agent-android/   instrumentation APK (Java, UiAutomation), built without Gradle
 ios-runner/      XCUITest runner + iOS demo app

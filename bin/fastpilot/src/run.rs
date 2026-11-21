@@ -549,6 +549,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let started = Instant::now();
     let pick = |p: Platform| devices.iter().find(|d| d.platform == p).map(|d| d.id.clone());
     let fp = FastPilot::with_devices(opts.web.clone(), Devices { android: pick(Platform::Android), ios: pick(Platform::Ios) });
+    // v0.6: nobody watches a run (or a schedule) to approve a Jira write.
+    fp.set_jira_writes_off();
     fp.set_record(opts.record);
     fp.set_reset(opts.reset);
     let hint = fp.hint(&case.id);

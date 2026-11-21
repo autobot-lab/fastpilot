@@ -176,7 +176,7 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!(calls.len(), 2, "{calls:?}");
     let first: Vec<&str> = calls[0]["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
     let i = first.iter().position(|a| *a == "--disallowedTools").expect("disallowed");
-    assert_eq!(first[i + 1], "mcp__fastpilot__config");
+    assert_eq!(first[i + 1], "mcp__fastpilot__config,mcp__fastpilot__jira_create_issue,mcp__fastpilot__jira_comment", "Chat cannot write to Jira either: that goes through a card");
     let sys = first.iter().position(|a| *a == "--append-system-prompt").map(|i| first[i + 1]).expect("system prompt");
     assert!(sys.contains("fastpilot-proposal") && sys.contains("block_actions ="), "{sys}");
     // V042 (QA Low): the bot answers about Pay in plain words, never with the setting's name.
@@ -699,7 +699,7 @@ fn chat_saves_a_test_and_its_schedule_only_after_a_click() {
     let call: Value = serde_json::from_str(&call).expect("json");
     let argv: Vec<&str> = call["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
     let at = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]);
-    assert_eq!((at("--tools"), at("--allowedTools"), at("--disallowedTools")), (Some(""), Some("mcp__fastpilot"), Some("mcp__fastpilot__config")), "{argv:?}");
+    assert_eq!((at("--tools"), at("--allowedTools"), at("--disallowedTools")), (Some(""), Some("mcp__fastpilot"), Some("mcp__fastpilot__config,mcp__fastpilot__jira_create_issue,mcp__fastpilot__jira_comment")), "{argv:?}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
