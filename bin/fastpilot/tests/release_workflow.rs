@@ -79,9 +79,16 @@ fn the_mcp_registry_is_published_after_npm_with_a_pinned_publisher() {
     let steps = job["steps"].as_sequence().expect("steps");
     let guard = steps.iter().position(|s| run(s).contains("GITHUB_REF_NAME") && run(s).contains("server.json") && run(s).contains("packaging/npm/package.json")).expect("version guard");
     let fetch = steps.iter().position(|s| run(s).contains("mcp-publisher") && run(s).contains("sha256sum -c")).expect("pinned publisher");
+    // FastRelease (v0.6): every release had to re-run this job by hand while npm caught up. It now
+    // waits for npm to show the version with its mcpName (about 10 minutes), then says what to do.
+    let wait = steps.iter().position(|s| run(s).contains("https://registry.npmjs.org/fastpilot/${VERSION}")).expect("waits for npm");
+    let w = run(&steps[wait]);
+    assert!(w.contains("seq 1 30") && w.contains("sleep 20") && w.contains(".mcpName") && w.contains("jq -r .name server.json"), "30 checks, 20 s apart, of npm's mcpName: {w}");
+    assert!(w.contains("::error::npm still does not show fastpilot") && w.contains("re-run this job"), "a clear message when npm never shows it: {w}");
+    assert!(job["timeout-minutes"].as_u64().is_some_and(|m| m >= 15), "room for the wait");
     let publish = steps.iter().position(|s| run(s).contains("login github-oidc") && run(s).contains("publish server.json")).expect("publish");
     assert!(run(&steps[publish]).contains("for try in 1 2 3"), "retries for npm's delay");
-    assert!(guard < fetch && fetch < publish);
+    assert!(guard < wait && wait < publish && guard < fetch && fetch < publish);
     assert!(run(&steps[fetch]).contains("/download/v1.") && run(&steps[fetch]).contains("  mcp-publisher.tar.gz"), "a fixed version and its hash");
     assert!(run(&steps[publish]).contains("::error::"), "a refusal is reported");
 }
