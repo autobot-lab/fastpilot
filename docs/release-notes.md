@@ -1,3 +1,52 @@
+## What's new in 0.4.2
+
+Installs on npm 12, says plainly when a test could not run, and sets up iPhone testing by itself.
+
+### Install
+- **Works on npm 12.** npm 12 skips install scripts unless you allow them, so 0.4.1 installed without
+  its program and `fastpilot` failed to start. Now the first run downloads the program for your
+  computer, checks its SHA-256 against the GitHub Release, and then starts. This happens once; later
+  runs need no network. Messages go to stderr, so Claude Code's connection to fastpilot is not
+  disturbed. npm 11 and older still download it at install time.
+- The download stops after 2 minutes or 150 MB, and a mirror set with `FASTPILOT_DOWNLOAD_BASE` must
+  use https (except on your own computer).
+- **Claude Code plugin:** `/plugin marketplace add autobot-lab/fastpilot`, then
+  `/plugin install fastpilot@fastpilot` adds the fastpilot tools and its 21 testing skills in one step.
+- **GitHub Actions:** run your fastpilot web tests in CI with
+  [`autobot-lab/fastpilot-action@v1`](https://github.com/autobot-lab/fastpilot-action).
+
+### Clear messages
+- **A missing secret stops the test before it starts.** When a test needs a secret such as
+  `${DEMO_PASS}` that is not set, `fastpilot run` says "Could not run", names the secret (never its
+  value), gives the exact command to set it, and does not retry. It is reported as a setup problem,
+  not as a bug in your app, and never as a pass. Schedules and Release watch say "could not run:
+  needs DEMO_PASS" in the summary and the notification, and the Schedules page shows it in amber with
+  a link to Settings › Secret.
+- The Ship check card keeps each test on one row.
+- Live says where a session came from: "Started from the terminal" or "Scheduled · <schedule name>".
+- Blocked actions are explained in plain words ("the built-in blocked list"), without setting names.
+- A web-only run prints "Web · Chrome" instead of phone and iPhone counts.
+- The demo pages work at phone width, so Ship check no longer flags every demo page.
+
+### iPhone
+- **The first iPhone test sets up iPhone testing by itself.** When the test runner is missing,
+  `fastpilot run` (or **Run now**) builds it once with your Xcode, shows the time so far, and then
+  starts the test. Without Xcode it says to install Xcode from the App Store.
+- A scheduled run does not build it: it reports that a one-time setup is needed, so run one iPhone
+  test by hand first.
+
+### For maintainers
+- The release workflow can publish to npm with Trusted Publishing (no stored token, with
+  provenance) once the owner sets it up on npmjs.com and GitHub. See
+  `docs/releasing.md`.
+
+### Known limits
+- iPhone sessions started from Claude Code or dashboard Chat do not build the runner yet: use **Set up
+  iPhone testing** on the Device page, or `fastpilot setup ios`, once.
+- `fastpilot run` reads secrets only from the environment, not from `.mcp.json`. The message says how
+  to set them.
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
+
 ## What's new in 0.4.1
 
 Use the phones you already have, and a quieter Chat.
