@@ -132,6 +132,7 @@ All settings: [Settings](#settings).
 curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh
 ```
 
+- npm 12 skips install scripts unless you allow them; then `fastpilot` downloads and checks its program the first time it runs (once; messages on stderr, so MCP is not affected).
 - npm and the script download the release archive from [GitHub Releases](https://github.com/autobot-lab/fastpilot/releases)
   and check its SHA-256 before installing. The script installs to `~/.local/bin`. For another location:
   `FASTPILOT_INSTALL_DIR=/usr/local/bin`. For a specific version: `FASTPILOT_VERSION=0.4.1`.
