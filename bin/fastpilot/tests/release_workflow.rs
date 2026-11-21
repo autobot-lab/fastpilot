@@ -61,3 +61,27 @@ fn npm_is_published_by_the_release_workflow_without_a_token() {
     assert_eq!(steps[publish]["working-directory"].as_str(), Some("packaging/npm"));
     assert!(steps.iter().any(|s| run(s).contains("npm install -g npm@11.")), "npm 11.5.1+ for Trusted Publishing");
 }
+
+/// B2 G1: the MCP Registry listing comes after npm, with GitHub OIDC and a mcp-publisher pinned by
+/// its SHA-256; tag, server.json and npm versions must agree.
+#[test]
+fn the_mcp_registry_is_published_after_npm_with_a_pinned_publisher() {
+    let wf: Value = serde_yaml::from_str(WORKFLOW).expect("release.yml is YAML");
+    let job = &wf["jobs"]["publish-mcp"];
+    assert!(job.is_mapping(), "a publish-mcp job");
+    assert_eq!(job["if"].as_str(), Some("github.event_name == 'push' && github.ref_type == 'tag'"));
+    assert_eq!(job["needs"].as_str(), Some("publish-npm"), "after npm has the version");
+    let perms: Vec<(String, String)> = job["permissions"].as_mapping().expect("permissions").iter().map(|(k, v)| (k.as_str().unwrap_or("").to_owned(), v.as_str().unwrap_or("").to_owned())).collect();
+    assert_eq!(perms, [("contents".to_owned(), "read".to_owned()), ("id-token".to_owned(), "write".to_owned())]);
+    let text = serde_yaml::to_string(job).expect("yaml");
+    assert!(!text.contains("secrets.") && !text.contains("TOKEN"), "no token");
+    let run = |s: &Value| s["run"].as_str().unwrap_or("").to_owned();
+    let steps = job["steps"].as_sequence().expect("steps");
+    let guard = steps.iter().position(|s| run(s).contains("GITHUB_REF_NAME") && run(s).contains("server.json") && run(s).contains("packaging/npm/package.json")).expect("version guard");
+    let fetch = steps.iter().position(|s| run(s).contains("mcp-publisher") && run(s).contains("sha256sum -c")).expect("pinned publisher");
+    let publish = steps.iter().position(|s| run(s).contains("login github-oidc") && run(s).contains("publish server.json")).expect("publish");
+    assert!(run(&steps[publish]).contains("for try in 1 2 3"), "retries for npm's delay");
+    assert!(guard < fetch && fetch < publish);
+    assert!(run(&steps[fetch]).contains("/download/v1.") && run(&steps[fetch]).contains("  mcp-publisher.tar.gz"), "a fixed version and its hash");
+    assert!(run(&steps[publish]).contains("::error::"), "a refusal is reported");
+}
