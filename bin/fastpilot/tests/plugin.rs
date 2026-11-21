@@ -1,5 +1,5 @@
 //! B1 I2 (v0.5): the repo is its own Claude Code marketplace with one plugin, `fastpilot`: the MCP
-//! server through `npx -y fastpilot mcp` and the 21 skills of `skills/` (namespaced
+//! server through `npx -y fastpilot mcp` and the 24 skills of `skills/` (namespaced
 //! `fastpilot:<skill>`). Checks the manifests' shape, that every skill folder has a SKILL.md with
 //! a name and a description, and, when an installed `claude` knows `plugin validate --strict`,
 //! runs it (else the shape checks stand in for it, e.g. in CI).
@@ -37,7 +37,7 @@ fn the_repo_is_a_claude_code_marketplace_with_the_fastpilot_plugin() {
         assert!(get("description").len() > 20, "{:?} has a description", e.file_name());
         names.push(get("name"));
     }
-    assert_eq!(names.len(), 21, "{names:?}");
+    assert_eq!(names.len(), 24, "{names:?}");
 
     // The real validator, when this computer has a Claude Code that knows it.
     let claude = std::env::var("FASTPILOT_CLAUDE").unwrap_or_else(|_| "claude".into());

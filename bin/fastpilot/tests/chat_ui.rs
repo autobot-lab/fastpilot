@@ -529,7 +529,7 @@ fn agents_use_their_own_skills() {
     let lib = get("/api/skills");
     let packs: Vec<&str> = lib["packs"].as_array().expect("packs").iter().filter_map(|p| p["name"].as_str()).collect();
     assert_eq!(packs, ["Black-box", "Experience-based", "Collaboration", "Management"]);
-    assert_eq!(lib["skills"].as_array().map(Vec::len), Some(19), "every skill but fastpilot and the chooser");
+    assert_eq!(lib["skills"].as_array().map(Vec::len), Some(22), "every skill but fastpilot and the chooser (X3: + 3 Jira skills)");
     let community = lib["community"].as_array().expect("community");
     assert!(community.iter().any(|c| c["license"] == "Noncommercial — personal use only" && c["url"] == "https://github.com/naodeng/awesome-qa-skills"), "{community:?}");
     let (st, _) = request(ui.port, "POST", "/api/skills", &ui.cookie, "{}", true);

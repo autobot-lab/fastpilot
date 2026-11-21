@@ -36,6 +36,7 @@ Impact (estimate): who is affected and how badly, in one sentence — marked as 
 - Passwords, codes and tokens stay masked (`***`); never paste them.
 - A `blocked` step is a limit, not a bug: do not write a bug for it.
 - Do not create tickets in Jira or GitHub yourself unless the user asked for that specific ticket.
+  For Jira, the `jira-bug-report` skill shows the exact issue first and sends it only after the user's OK.
 
 *Writing principles adapted from petrkindlmann/qa-skills `qa-report-humanizer` and `ai-bug-triage`
 (MIT).*

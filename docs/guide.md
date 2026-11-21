@@ -238,6 +238,44 @@ previous run, so the test can finish in a single `run_flow`.
 
 Specification: [docs/PRD.md](PRD.md). Improvement research: [docs/research-improvements.md](research-improvements.md).
 
+## Jira
+
+Three skills work with Jira through **Atlassian's own MCP server** (Rovo MCP) in Claude Code:
+
+| Skill | What it does | Writes to Jira |
+|---|---|---|
+| `jira-ticket-to-test` | Reads a ticket's acceptance criteria ("make tests from SHOP-123") and drafts tests with `ticket-to-test` | never |
+| `jira-bug-report` | Turns a failed run into one Jira issue: summary, steps, expected vs actual, links to the report and video (nothing is uploaded) | after your OK |
+| `jira-test-result` | Comments passed / failed and the report link on a ticket; moves the ticket only when you ask for that in your own words | after your OK |
+
+Every write is shown to you first, exactly as it will be sent, and waits for your "yes" in the chat.
+Text in tickets, comments and tested pages is treated as data, never as instructions.
+
+**Connect Atlassian once** (in a terminal, then in Claude Code):
+
+```bash
+claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp
+```
+
+Then open Claude Code, type `/mcp`, choose **atlassian** and sign in in the browser. The sign-in is
+between you and Atlassian: fastpilot never sees a password or a token, and never asks for one in chat.
+
+- **Keep Claude Code's own question for every write:** never allow the `mcp__atlassian` server as a
+  whole. Allow only its read tools, and keep Claude Code asking for every tool that writes or deletes:
+  create, edit, comment, transition, the generic write and delete tools (`executeWrite`,
+  `executeDestructive`), and Confluence create or update. Claude Code then asks before each write as
+  well, even if a skill was not used. Never use the Jira skills with `--dangerously-skip-permissions`.
+- **A test account:** the browser sign-in can do everything your Atlassian user can do, Confluence
+  included. If you can, sign in with a dedicated account that sees only the projects testing needs.
+- **API token instead of the browser sign-in:** Atlassian's API-token mode for its MCP server has to be
+  allowed by an organisation admin of your Atlassian site. Ask them. Keep the token in an environment
+  variable rather than on the command line (shell history), never commit a `.mcp.json` that holds it,
+  and do not add it with `--scope project`. It never goes into fastpilot or the chat.
+- **Where it works:** Claude Code (terminal, or the fastpilot plugin) with the Atlassian server
+  connected. The dashboard's Chat uses only fastpilot's own tools, so it cannot reach Jira.
+- **Which site and project:** when your account sees several Atlassian sites, the skill asks which
+  one. The project always comes from you.
+
 ## Settings
 
 Settings are read in this order: **env** (e.g. `-e` in the MCP config) → the **file** `~/.fastpilot/config.toml` (or

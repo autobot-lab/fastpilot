@@ -6,7 +6,7 @@
     {
       "name": "fastpilot",
       "source": "./",
-      "description": "An MCP server that drives Chrome, emulators and simulators, plus 21 testing skills.",
+      "description": "An MCP server that drives Chrome, emulators and simulators, plus 24 testing skills.",
       "category": "testing"
     }
   ]

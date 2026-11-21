@@ -38,6 +38,9 @@ impl Box_ {
             .env("HOME", self.home())
             .env("FASTPILOT_CLAUDE", claude)
             .env("FAKE_CLAUDE_LOG", self.log())
+            // The stand-in Claude Code is a Python script: Apple's Python would otherwise cache its
+            // bytecode in the temp HOME (Library/Caches/com.apple.python), which "nothing written" sees.
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
             .env_remove("FASTPILOT_CONFIG")
             .env_remove("FASTPILOT_VIA_NPX")
@@ -114,7 +117,7 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
         "✓ registered (.mcp.json)",
         "3/5 Install the fastpilot Skills",
         "✓ installed (version",
-        "built into fastpilot): 21 skills",
+        "built into fastpilot): 24 skills",
         "4/5 Example test",
         "✓ created (change its target to your app's URL)",
         "5/5 Safe limits",
@@ -145,7 +148,7 @@ fn init_sets_up_a_folder_once_and_leaves_it_alone_after() {
     let before = files(&b.project());
     let (code, out) = b.init(&["--yes"], FAKE);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("✓ already registered (.mcp.json)") && out.contains("✓ already installed (21 skills, version") && out.contains("✓ tests/example.md already exists (not changed)"), "{out}");
+    assert!(out.contains("✓ already registered (.mcp.json)") && out.contains("✓ already installed (24 skills, version") && out.contains("✓ tests/example.md already exists (not changed)"), "{out}");
     assert!(!out.contains("[y/N]"), "nothing left to ask: {out}");
     assert_eq!(files(&b.project()), before, "a second run changes nothing");
     assert_eq!(b.adds().len(), 1);
