@@ -37,10 +37,47 @@ function ready() {
   }
 }
 
+// Bounded (Security review of #121, Low 4): a hung download would look like a dead MCP server.
+const LIMIT = 150 * 1024 * 1024;
+const seconds = () => Number(process.env.FASTPILOT_DOWNLOAD_TIMEOUT) || 120;
+
+/// Plain http only for this computer (a local mirror); anything else must be https.
+function checkBase(base) {
+  let u;
+  try {
+    u = new URL(base);
+  } catch (_) {
+    throw new Error(`FASTPILOT_DOWNLOAD_BASE is not a URL: ${base}`);
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) {
+    throw new Error(`FASTPILOT_DOWNLOAD_BASE must use https (plain http only for localhost): ${base}`);
+  }
+}
+
 async function get(url) {
-  const res = await fetch(url, { redirect: "follow" });
+  let res;
+  try {
+    res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(seconds() * 1000) });
+  } catch (e) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
+    throw new Error(`${url}: ${e.message}`);
+  }
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  if (Number(res.headers.get("content-length")) > LIMIT) throw new Error(`${url}: larger than ${LIMIT / 1048576} MB; refused`);
+  const chunks = [];
+  let size = 0;
+  try {
+    for await (const c of res.body) {
+      size += c.length;
+      if (size > LIMIT) throw new Error(`${url}: larger than ${LIMIT / 1048576} MB; refused`);
+      chunks.push(c);
+    }
+  } catch (e) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
+    throw e;
+  }
+  return Buffer.concat(chunks);
 }
 
 /// The words for a folder fastpilot may not write to (a global npm prefix owned by root).
@@ -51,7 +88,7 @@ function readOnly(e) {
       "  - allow fastpilot's install step, then install again:\n" +
       "      npm config set allow-scripts=fastpilot --location=user\n" +
       "      npm install -g fastpilot\n" +
-      "  - or install without npm: curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/main/scripts/install.sh | sh"
+      `  - or install without npm: curl -fsSL https://raw.githubusercontent.com/autobot-lab/fastpilot/v${version}/scripts/install.sh | sh`
   );
 }
 
@@ -76,6 +113,7 @@ async function ensure(log) {
   }
   writable(() => fs.mkdirSync(vendor, { recursive: true }));
   const base = process.env.FASTPILOT_DOWNLOAD_BASE || "https://github.com/autobot-lab/fastpilot/releases/download";
+  checkBase(base);
   const name = `fastpilot-${version}-${target}`;
   log(`fastpilot: downloading fastpilot ${version} for ${target} (once)…`);
   const archive = await get(`${base}/v${version}/${name}.tar.gz`);

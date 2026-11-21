@@ -65,6 +65,14 @@ fn serve(dir: &Path, name: &str) -> (String, Arc<AtomicUsize>) {
             }
             h.fetch_add(1, Ordering::SeqCst);
             let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+            if path.starts_with("/slow/") {
+                // A server that never answers: the shim gives up after FASTPILOT_DOWNLOAD_TIMEOUT.
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    drop(s);
+                });
+                continue;
+            }
             let body: Option<Vec<u8>> = [("good", sha.clone()), ("bad", "0".repeat(64))].iter().find_map(|(p, sum)| {
                 if path == format!("/{p}/v{VERSION}/{name}.tar.gz") {
                     Some(bytes.clone())
@@ -168,7 +176,21 @@ fn the_npm_shim_downloads_the_binary_on_the_first_run() {
         std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let err = text(&out.stderr);
         assert!(!out.status.success() && out.stdout.is_empty(), "{err}");
-        assert!(err.contains("npm config set allow-scripts=fastpilot --location=user") && err.contains("scripts/install.sh") && !err.contains("    at "), "{err}");
+        assert!(err.contains("npm config set allow-scripts=fastpilot --location=user") && err.contains(&format!("/v{VERSION}/scripts/install.sh")) && !err.contains("    at "), "{err}");
     }
+
+    // Security review of #121, Low 4: a download that hangs ends with a message, and a mirror
+    // must use https unless it is this computer.
+    let pkg = package(&dir.join("slow"));
+    let started = std::time::Instant::now();
+    let out = Command::new("node").arg(pkg.join("bin/fastpilot.js")).arg("--version").env("FASTPILOT_DOWNLOAD_BASE", format!("{url}/slow")).env("FASTPILOT_DOWNLOAD_TIMEOUT", "2").output().expect("node");
+    assert!(!out.status.success() && text(&out.stderr).contains("no answer within 2 s") && out.stdout.is_empty(), "{}", text(&out.stderr));
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "it gave up in time");
+    assert!(vendor(&pkg).iter().all(|f| f != "fastpilot"));
+    let pkg = package(&dir.join("plain-http"));
+    let before = hits.load(Ordering::SeqCst);
+    let out = shim(&pkg, "http://mirror.example.com/releases", &["--version"]);
+    assert!(!out.status.success() && text(&out.stderr).contains("must use https"), "{}", text(&out.stderr));
+    assert_eq!(hits.load(Ordering::SeqCst), before, "nothing fetched");
     let _ = std::fs::remove_dir_all(&dir);
 }
