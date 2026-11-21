@@ -69,7 +69,8 @@ certified tester and show what they covered.
 - **Memory**: one line per test (Reliable, Unstable, Failing, Set aside, New), with **Set aside** and
   **Forget**, plus **project notes** (staging address, test account names, "login uses a code") that
   agents read. Notes that look like a password or hide invisible text are refused. Notes are kept in
-  your own fastpilot folder, not in the project.
+  your own fastpilot folder, not in the project. An agent on another AI provider sends its notes to
+  that provider.
 - **Device: Fix buttons** for "Install Chrome" and "Set up an emulator" (you confirm the size and time;
   only a person can start them). Devices are named by type ("Android emulator", "iPhone simulator").
 - After `fastpilot init` and `fastpilot demo`: "Open the dashboard now? [Y/n]".
@@ -101,6 +102,12 @@ certified tester and show what they covered.
 - "Save note" works when you type into the empty form.
 
 ### Known limits
+- `fastpilot run`, schedules and Release watch read secret variables such as `${DEMO_PASS}` only from
+  the shell, not from `.mcp.json` (Chat and Claude Code do read `.mcp.json`). In the demo folder, run
+  `export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=<the demo password>` first, or a saved test fails with
+  "variable DEMO_PASS is not allowed".
+- Claude Code in the terminal reads project notes when it starts: restart it after you change a note.
+  Dashboard Chat picks up changed notes on your next message.
 - Ship check reads the page from inside the page, so a hostile page can fake its own layout and
   accessibility results (not which links are opened). Afterwards the screen size is put back from the
   page's own numbers, within safe bounds.
