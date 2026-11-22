@@ -885,7 +885,29 @@ async fn schedules_api() -> Response {
     let cwd = std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned());
     let tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
     let found: Vec<Value> = tests.as_deref().map(|d| test_files(Path::new(d))).unwrap_or_default().into_iter().map(|(path, title)| json!({ "path": path, "title": title })).collect();
-    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests, "tests": found })).into_response()
+    // S5: the three one-click schedules for all of this app's tests, and whether each is on.
+    let presets: Vec<Value> = schedule::presets()
+        .into_iter()
+        .map(|(key, title, sub, when)| {
+            let s = tests.as_deref().and_then(|t| store.schedules.iter().find(|s| s.tests == t && s.when == when && s.watch.is_none() && s.agent.is_none()));
+            json!({ "key": key, "title": title, "sub": sub, "id": s.map(|s| s.id.clone()), "on": s.is_some_and(|s| s.enabled) })
+        })
+        .collect();
+    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests, "tests": found, "presets": presets, "github_repo": github_repo() })).into_response()
+}
+
+/// A1: the GitHub repo of the current project (`origin`), offered for GitHub issues, so nobody types it.
+fn github_repo() -> Option<String> {
+    let out = std::process::Command::new("git").args(["remote", "get-url", "origin"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let rest = url.strip_prefix("git@github.com:").or_else(|| url.split_once("github.com/").map(|(_, r)| r))?;
+    let repo = rest.trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = repo.split('/');
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(o), Some(r), None) if ok(o) && ok(r) => Some(format!("{o}/{r}")),
+        _ => None,
+    }
 }
 
 /// The `.md` test cases in `dir`, with their titles (`# Title`, else the file name), by title.
@@ -953,8 +975,24 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
     use crate::schedule;
     let id = body["id"].as_str().unwrap_or("").to_owned();
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        // S5: one click on a preset: on again if it exists, else created (with a Mac notification).
+        "preset" => (|| {
+            let tests = std::env::current_dir().map(|d| d.join("tests")).ok().filter(|d| d.is_dir()).ok_or("This app has no saved tests yet. Save a test first, then schedule it.")?;
+            let tests = tests.to_string_lossy().into_owned();
+            let (s, new) = schedule::preset_on(body["preset"].as_str().unwrap_or(""), &tests, "All tests", None)?;
+            let when = match s.when.every {
+                schedule::Every::Release => "before each release".to_owned(),
+                schedule::Every::Day => format!("every night at {}", s.when.time.trim_start_matches('0')),
+                _ => schedule::describe(&s.when),
+            };
+            Ok(json!({ "id": s.id, "new": new, "text": format!("{}: {when}.", if new { "Created" } else { "Turned on" }) }))
+        })(),
         "save" => match serde_json::from_value::<schedule::Schedule>(body["schedule"].clone()) {
-            Ok(s) => (|| {
+            Ok(mut s) => (|| {
+                // A1: no name field; the name comes from what runs and when.
+                if s.name.trim().is_empty() {
+                    s.name = schedule::auto_name(&schedule::tests_label(&s.tests), &s.when);
+                }
                 let fresh = s.id.is_empty();
                 let s = schedule::with_watch(s, body["watch_hours"].as_u64())?;
                 let watch = s.watch.is_some();

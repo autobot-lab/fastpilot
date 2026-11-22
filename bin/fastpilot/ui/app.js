@@ -1216,6 +1216,8 @@ async function chatRun(id) {
   loadChat();
 }
 
+// S5: one set of schedule presets everywhere (Design Critic M1).
+const SCHED_PRESETS = [["two-hours", "Every 2 hours (8–20)"], ["night", "Every night"], ["release", "Before each release"]];
 // A test the bot wrote (D1, v7 #s1): one card, saved only when the user clicks.
 function testCard(p) {
   const ed = chatEdits[p.id];
@@ -1255,7 +1257,10 @@ function testCard(p) {
       p.schedules ? h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "schedule") }, "Save & schedule") : null,
       h("button", { class: p.schedules ? "btn" : "btn p", onclick: () => chatDecide(p.id, true, "test") }, "Save test only"),
       h("button", { class: "btn", onclick: () => { chatEdits[p.id] = JSON.parse(JSON.stringify(p.draft)); chatSig = ""; renderChat(); document.querySelector(`.prop[data-pid="${p.id}"] input`)?.focus(); } }, "Edit"),
-      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Dismiss"));
+      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Dismiss"),
+      // S5: save the test and run it by itself, in one click (a Mac notification when it fails).
+      h("div", { class: "presets-inline", role: "group", "aria-label": "Save and run it by itself" }, h("span", { class: "s" }, "Save and run it by itself:"),
+        SCHED_PRESETS.map(([k, t]) => h("button", { class: "btn sm", onclick: () => chatDecide(p.id, true, "preset:" + k) }, t))));
   } else if (p.status === "applied") {
     foot = [h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved")),
       h("div", { class: "btns" }, h("button", { class: "btn", onclick: () => chatRun(p.id) }, icon("play", "sm"), "Run now"),
@@ -1714,8 +1719,10 @@ function pageChat() {
 
 // ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
+let schedMade = null; // S5: the last preset click, for "Created · Undo": { id, new, text }
+let schedMoreOpen = false; // More options stays open after the form closes, with focus on "New schedule"
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"], ["minutes", "Release watch"]];
+const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"], ["release", "Before each release"], ["minutes", "Release watch"]];
 
 let schedTimer = null;
 async function loadSchedules() {
@@ -1844,24 +1851,16 @@ function schedPanel() {
     }
     return h("label", { class: "fld" + (cls ? " " + cls : "") }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s" }, hint) : null, err);
   };
-  // Tests: the saved tests of this project, all of them, or another path.
+  // A1: tests are picked from this app's saved tests (all of them first); nobody types a path.
+  // A schedule saved earlier with another path keeps it, shown as it is.
   const found = (schedData && schedData.tests) || [];
   const all = schedData && schedData.tests_hint;
   const options = [];
-  if (all) options.push([all, found.length === 1 ? "The 1 test in this project" : `All ${found.length} tests in this project`]);
+  if (all) options.push([all, found.length === 1 ? "The 1 test of this app" : `All ${found.length} tests of this app`]);
   found.forEach((t) => options.push([t.path, t.title]));
-  options.push(["", "Another folder or file…"]);
-  const known = options.some(([v]) => v && v === f.tests);
-  const pick = h("select", { class: "sel" }, options.map(([v, t]) => h("option", { value: v, selected: f.tests ? (known ? v === f.tests : v === "") : false }, t)));
-  const path = h("input", { type: "text", value: known ? "" : (f.tests || ""), placeholder: "/full/path/to/tests or a .md file", class: "mono" });
-  const pathWrap = field("Folder or file", path, "The full path of a folder with test cases (*.md), or one .md file.", "tests");
-  const syncPath = () => { pathWrap.hidden = pick.value !== ""; };
-  pick.addEventListener("change", () => {
-    syncPath();
-    if (!name.dataset.touched) name.value = pick.value ? pick.selectedOptions[0].textContent.replace(/ in this project$/, "") : "";
-  });
-  const name = h("input", { type: "text", maxlength: "80", value: f.name || (options.length > 1 && !f.tests ? options[0][1].replace(/ in this project$/, "") : ""), placeholder: "e.g. Checkout tests" });
-  name.addEventListener("input", () => { name.dataset.touched = "1"; });
+  if (f.tests && !options.some(([v]) => v === f.tests)) options.push([f.tests, `${f.tests} (as saved)`]);
+  const pick = h("select", { class: "sel", "aria-label": "Which tests" }, options.map(([v, t]) => h("option", { value: v, selected: f.tests ? v === f.tests : false }, t)));
+  const noTests = !options.length ? UI.notice("info", "This app has no saved tests yet. Save a test from Chat first, then schedule it.") : null;
   // Kind: a radio group shown as a segmented control.
   let kind = w.every || "day";
   const seg = h("div", { class: "seg", role: "radiogroup", "aria-label": "How often" });
@@ -1893,13 +1892,15 @@ function schedPanel() {
   const dayWrap = field("Day", day, null, "day");
   const sync = () => {
     seg.querySelectorAll("button").forEach((b) => { const on = b.dataset.v === kind; b.setAttribute("aria-checked", String(on)); b.tabIndex = on ? 0 : -1; });
-    timeWrap.hidden = kind === "hours" || kind === "minutes";
+    timeWrap.hidden = kind === "hours" || kind === "minutes" || kind === "release";
+    releaseHint.hidden = kind !== "release";
     hoursWrap.hidden = windowWrap.hidden = kind !== "hours";
     dayWrap.hidden = kind !== "week";
     watchWrap.hidden = kind !== "minutes";
     notifyLegend.textContent = kind === "minutes" ? "Notify me about a new problem (any you like)" : "Notify me when it fails (any you like)";
   };
   const notifyLegend = h("legend", { class: "l" }, "Notify me when it fails (any you like)");
+  const releaseHint = h("p", { class: "s" }, "No time: it runs when you ask Chat \u201cCan we release?\u201d, or when you press Run now.");
   KINDS.forEach(([v, t]) => seg.append(h("button", { type: "button", role: "radio", "data-v": v, onclick: () => { kind = v; sync(); },
     onkeydown: (e) => {
       const i = KINDS.findIndex(([k]) => k === kind);
@@ -1914,9 +1915,10 @@ function schedPanel() {
   const n = f.notify || {};
   const wh = h("input", { type: "checkbox", checked: !!n.webhook });
   const whUrl = h("input", { type: "password", autocomplete: "off", placeholder: f.webhook_set ? "saved · type to replace it" : "https://hooks.slack.com/services/…", class: "mono" });
-  const os = h("input", { type: "checkbox", checked: !!n.os });
+  // S5: a Mac notification by default; the GitHub repo comes from the app's own repo.
+  const os = h("input", { type: "checkbox", checked: editing ? !!n.os : true });
   const gh = h("input", { type: "checkbox", checked: !!n.github });
-  const repo = h("input", { type: "text", value: n.github || "", placeholder: "owner/repo", class: "mono" });
+  const repo = h("input", { type: "text", value: n.github || (schedData && schedData.github_repo) || "", placeholder: "owner/repo", class: "mono" });
   const whField = field("Webhook URL", whUrl, "Kept as a secret on this computer and not shown again.", "webhook");
   const repoField = field("GitHub repo", repo, h("span", {}, "Written owner/repo. Token from GITHUB_TOKEN / GH_TOKEN, or the Keychain item ", code("fastpilot-github"), "."), "repo");
   const syncNotify = () => { whField.hidden = !wh.checked; repoField.hidden = !gh.checked; };
@@ -1945,7 +1947,7 @@ function schedPanel() {
     at.input.setAttribute("aria-invalid", "true");
     at.input.focus();
   };
-  const cancel = () => { schedForm = null; clearToast(); pageSchedules(); document.querySelector(".top .btn.p")?.focus(); };
+  const cancel = () => { schedForm = null; schedMoreOpen = true; clearToast(); pageSchedules(); document.querySelector(".more-body .btn")?.focus(); };
   const save = async () => {
     const whenOut = { every: kind };
     if (kind === "minutes") {
@@ -1953,12 +1955,14 @@ function schedPanel() {
     } else if (kind === "hours") {
       whenOut.hours = Number(hours.value);
       if (from.value || to.value) { whenOut.from = from.value || undefined; whenOut.to = to.value || undefined; }
-    } else {
+    } else if (kind !== "release") {
       whenOut.time = time.value;
       if (kind === "week") whenOut.day = Number(day.value);
     }
+    // A1: the name is made by fastpilot from what runs and when; an unchanged edit keeps it.
+    const same = editing && pick.value === f.tests && JSON.stringify(whenOut) === JSON.stringify(Object.fromEntries(Object.entries(f.when || {}).filter(([, v]) => v !== null && v !== "" && v !== undefined)));
     const schedule = {
-      id: f.id || "", name: name.value, tests: pick.value || path.value, enabled: f.enabled !== false, when: whenOut, agent: f.agent || undefined,
+      id: f.id || "", name: same ? f.name : "", tests: pick.value, enabled: f.enabled !== false, when: whenOut, agent: f.agent || undefined,
       notify: { webhook: wh.checked, os: os.checked, github: gh.checked ? repo.value.trim() : undefined },
     };
     const body = { action: "save", schedule };
@@ -1972,15 +1976,15 @@ function schedPanel() {
     // Focus on the saved schedule in the list (the form and its button are gone).
     document.querySelector(`tr[data-id="${r.id}"] .row-name`)?.focus();
   };
-  syncPath();
   return h("section", { class: "grp sched-form", "aria-label": editing ? "Edit schedule" : "New schedule",
     onkeydown: (e) => { if (e.key === "Escape") { e.preventDefault(); cancel(); } } },
     h("h2", { class: "gh" }, icon("clock"), editing ? `edit schedule · ${f.name}` : "new schedule"),
     h("div", { class: "form" },
-      h("div", { class: "row2" }, field("Tests", pick, null, null), field("Name", name, null, "name")),
-      pathWrap,
+      noTests,
+      field("Tests", pick, null, "tests"),
       h("div", { class: "fld" }, h("span", { class: "l", id: "kind-l" }, "How often"), seg),
       h("div", { class: "row2" }, timeWrap, hoursWrap, windowWrap, dayWrap, watchWrap),
+      releaseHint,
       h("fieldset", { class: "fld" }, notifyLegend,
         h("label", { class: "ck" }, os, " Mac notification"),
         h("label", { class: "ck" }, wh, " Slack (webhook)"), h("div", { class: "sub-fld" }, whField),
@@ -1988,12 +1992,44 @@ function schedPanel() {
       h("div", { class: "btns" },
         h("button", { class: "btn", onclick: cancel }, "Cancel"),
         h("button", { class: "btn p", onclick: save }, editing ? "Save changes" : "Create schedule")),
-      h("p", { class: "s muted" }, "Or type it in Chat: \"run the checkout tests every 2 hours\". Escape closes this without saving.")));
+      h("p", { class: "s muted" }, "The name is made from the tests and the time. Or say it in Chat: \"run the checkout tests every 2 hours\". Escape closes this without saving.")));
+}
+
+// S5: the three one-click schedules for all of this app's tests. A preset that is on says
+// "On · Turn off" (a second click cannot make it twice); a click is answered "Created · Undo".
+function schedPresets() {
+  const list = schedData.presets || [];
+  const n = (schedData.tests || []).length;
+  if (!list.length || !n) return null;
+  const turnOn = async (p) => {
+    const r = await schedAction({ action: "preset", preset: p.key });
+    if (!r) return;
+    schedMade = r;
+    pageSchedules();
+    document.querySelector(".sched-made button")?.focus();
+  };
+  const cards = list.map((p) => h("div", { class: "preset" + (p.on ? " on" : ""), "data-preset": p.key },
+    h("div", { class: "preset-top" }, h("b", {}, p.title), p.on ? h("span", { class: "pill ok" }, "On") : null),
+    h("div", { class: "s" }, p.sub),
+    p.on ? h("button", { class: "lk", onclick: () => { schedMade = null; schedAction({ action: "disable", id: p.id }); } }, "Turn off")
+      : h("button", { class: "btn sm", onclick: () => turnOn(p) }, "Turn on")));
+  const made = schedMade ? h("div", { class: "sched-made" }, UI.notice("ok", schedMade.text, " ",
+    h("button", { class: "lk", onclick: async () => {
+      const m = schedMade;
+      schedMade = null;
+      await schedAction(m.new ? { action: "delete", id: m.id } : { action: "disable", id: m.id }, () => toast("Undone.", true));
+    } }, "Undo"))) : null;
+  return h("section", { class: "grp sched-presets", "aria-label": "Run your tests by themselves" },
+    h("div", { class: "prop-body" },
+      h("h2", {}, `Run all ${n === 1 ? "1 test" : n + " tests"} of this app by themselves`),
+      h("p", { class: "s" }, "Pick one. fastpilot runs them and tells you on this Mac only when something breaks."),
+      h("div", { class: "presets" }, cards),
+      made));
 }
 
 function pageSchedules() {
   const openForm = () => { schedForm = {}; pageSchedules(); document.querySelector(".sched-form select, .sched-form input")?.focus(); };
-  UI.pageHeader({ icon: "clock", title: "Schedules", actions: [h("button", { class: "btn sm p", onclick: openForm }, icon("plus", "sm"), "New schedule")] });
+  UI.pageHeader({ icon: "clock", title: "Schedules", sub: "Run your tests by themselves" });
   if (!schedData) {
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading schedules…")));
     if (!schedBusy) loadSchedules();
@@ -2009,7 +2045,11 @@ function pageSchedules() {
       UI.empty({ icon: "clock", title: "Nothing is scheduled",
         text: "Saved tests can run by themselves, at a fixed time or every few hours. You get a message only when something fails. Or type in Chat: \"run the checkout tests every 2 hours\".",
         action: { label: "New schedule", icon: "plus", onclick: openForm } }));
-  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedForm ? schedPanel() : null, table));
+  // A1: the full form (which tests, other times, Slack and GitHub) is under More options.
+  const more = UI.moreOptions({ label: "More options", open: !!schedForm || schedMoreOpen },
+    h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages."),
+    schedForm ? schedPanel() : h("button", { class: "btn sm", onclick: openForm }, icon("plus", "sm"), "New schedule"));
+  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), more, table));
 }
 
 // ---- router ----

@@ -361,3 +361,103 @@ fn run_now_after_its_run_was_killed_from_outside() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// A1 + S5 (v0.7): the three one-click schedules for all of an app's tests. A click creates one,
+/// with a made-up name and a Mac notification; a second click does not make it twice; Undo removes
+/// it. "Before each release" has no timer (no OS entry) and starts when Chat is asked "Can we
+/// release?".
+#[test]
+fn presets_make_one_schedule_each_and_before_each_release_starts_from_chat() {
+    let home: PathBuf = std::env::temp_dir().join(format!("fp-sched-presets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let entries = home.join("LaunchAgents");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let project = home.join("shop");
+    std::fs::create_dir_all(project.join("tests")).expect("tests");
+    for (f, t) in [("login.md", "Login"), ("cart.md", "Cart")] {
+        std::fs::write(project.join("tests").join(f), format!("# {t}\n- Open the shop\n")).expect("test");
+    }
+    let gh_port = fake_server("{}").0;
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["ui", "--no-open"]).current_dir(&project).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    env_for(&mut cmd, &home, &entries, gh_port);
+    let mut child = cmd.spawn().expect("ui");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut line).expect("link");
+    let rest = line.trim().strip_prefix("http://127.0.0.1:").expect("link").to_owned();
+    let (port, code) = rest.split_once("/?code=").expect("code");
+    let port: u16 = port.parse().expect("port");
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.write_all(format!("GET /?code={code} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).expect("write");
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).expect("read");
+    let cookie = raw.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.trim().to_owned())).and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let ui = Ui { child, port, cookie };
+    let post = |body: serde_json::Value| request(ui.port, "POST", "/api/schedules", &ui.cookie, &body.to_string(), true);
+    let list = || -> serde_json::Value { serde_json::from_str(&request(ui.port, "GET", "/api/schedules", &ui.cookie, "", false).1).expect("json") };
+
+    // The three presets, one set everywhere, none on yet.
+    let v = list();
+    let titles: Vec<&str> = v["presets"].as_array().expect("presets").iter().filter_map(|p| p["title"].as_str()).collect();
+    assert_eq!(titles, ["Every 2 hours (8–20)", "Every night", "Before each release"], "{v}");
+    assert!(v["presets"].as_array().expect("presets").iter().all(|p| p["on"] == false));
+
+    // One click: created, named by fastpilot, all tests, a Mac notification, an OS entry at 2:00.
+    let (st, body) = post(serde_json::json!({ "action": "preset", "preset": "night" }));
+    assert_eq!(st, 200, "{body}");
+    let r: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!((r["new"].as_bool(), r["text"].as_str()), (Some(true), Some("Created: every night at 2:00.")), "{r}");
+    let id = r["id"].as_str().expect("id").to_owned();
+    let v = list();
+    let s = v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == id.as_str()).cloned().expect("row");
+    assert_eq!(s["schedule"]["name"], "All tests · every night");
+    assert_eq!(s["schedule"]["notify"]["os"], true, "a Mac notification by default");
+    assert!(s["schedule"]["tests"].as_str().is_some_and(|t| t.ends_with("/shop/tests")), "{s}");
+    let plist = std::fs::read_to_string(entries.join(format!("dev.fastpilot.schedule.{id}.plist"))).expect("OS entry");
+    assert!(plist.contains("<key>Hour</key><integer>2</integer>") && plist.contains("<key>Minute</key><integer>0</integer>"), "{plist}");
+    assert!(v["presets"][1]["on"] == true && v["presets"][1]["id"] == id.as_str(), "On · Turn off: {v}");
+    // A second click makes nothing new.
+    let (_, body) = post(serde_json::json!({ "action": "preset", "preset": "night" }));
+    assert!(body.contains("\"new\":false") && body.contains(&id), "{body}");
+    assert_eq!(list()["schedules"].as_array().map(Vec::len), Some(1), "no duplicate");
+    // Undo (a new one): it is gone, OS entry too.
+    let (st, _) = post(serde_json::json!({ "action": "delete", "id": id }));
+    assert_eq!(st, 200);
+    assert!(list()["schedules"].as_array().is_some_and(|l| l.is_empty()) && !entries.join(format!("dev.fastpilot.schedule.{id}.plist")).exists());
+
+    // Every 2 hours (8–20): seven runs a day.
+    let (_, body) = post(serde_json::json!({ "action": "preset", "preset": "two-hours" }));
+    let two: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let plist = std::fs::read_to_string(entries.join(format!("dev.fastpilot.schedule.{}.plist", two["id"].as_str().expect("id")))).expect("OS entry");
+    assert_eq!(plist.matches("<key>Hour</key>").count(), 7, "{plist}");
+    assert!(list()["schedules"][0]["schedule"]["name"] == "All tests · every 2 hours");
+
+    // Before each release: no timer, so no OS entry; it says what starts it.
+    let (_, body) = post(serde_json::json!({ "action": "preset", "preset": "release" }));
+    let rel: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let rid = rel["id"].as_str().expect("id").to_owned();
+    assert!(!entries.join(format!("dev.fastpilot.schedule.{rid}.plist")).exists(), "no OS entry for a release schedule");
+    let v = list();
+    let row = v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == rid.as_str()).cloned().expect("row");
+    assert_eq!(row["when_text"], "before each release (when you ask Chat \"Can we release?\")");
+    assert!(row["last"].is_null(), "not run yet");
+    // "Can we release?" in Chat starts it.
+    let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &serde_json::json!({ "message": "Can we release?" }).to_string(), true);
+    assert_eq!(st, 200, "{body}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let v = list();
+        let row = v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == rid.as_str()).cloned().expect("row");
+        if row["last"]["started_ms"].as_u64().is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "the release schedule did not start: {row}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    // A question that is not a release check starts nothing more.
+    let two_id = two["id"].as_str().expect("id");
+    let v = list();
+    assert!(v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == two_id).is_some_and(|x| x["last"].is_null()), "the timed one did not run: {v}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}

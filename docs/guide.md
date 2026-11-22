@@ -487,6 +487,15 @@ sent to the browser.
 **Schedules** (`fastpilot ui`, Schedules menu): run tests (`fastpilot run` on the `tests/` folder or one
 `.md` file) every day, on weekdays, or weekly at a set time (this computer's time).
 
+- **One click (v0.7):** three buttons run all of the app's tests by themselves: **Every 2 hours (8–20)**,
+  **Every night** (2:00) and **Before each release**. A button that is on says **On · Turn off**, so a second
+  click never makes it twice, and a click answers **Created · Undo**. Each comes with a Mac notification
+  when something fails, and is named for you ("All tests · every night").
+- **Before each release** has no time: it runs when you ask Chat "Can we release?" (or press Run now).
+- A test card in Chat has the same three buttons: "Save and run it by itself".
+- **More options** has the full form: which tests (picked from the list, nothing to type), other times,
+  Slack and GitHub messages (the GitHub repo is filled in from the project's own repo).
+
 - Schedules are stored in `~/.fastpilot/schedules.json` and registered with the system scheduler **only when you
   save them**: a launchd LaunchAgent on macOS (`~/Library/LaunchAgents/dev.fastpilot.schedule.<id>.plist`),
   a systemd user timer on Linux, or crontab if there is no systemd. Turning off or deleting a schedule
