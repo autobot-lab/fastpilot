@@ -13,6 +13,7 @@ mod memory_api;
 mod offer;
 mod init;
 mod jira_api;
+mod jira_cli;
 mod ios_setup;
 mod github;
 mod keystore;
@@ -53,6 +54,8 @@ commands:
   schedule watch TESTS --every MIN --for HOURS [--os] [--github owner/repo]
                                      after a release: run TESTS every MIN minutes for HOURS hours, hear only
                                      about new problems (`fastpilot schedule --help`)
+  jira [status|approve]              the Jira connected in the dashboard; approve the issues and comments
+                                     Claude Code asked for (a person, in a terminal)
   ship-check [url]... [--links N] [--cookies]   one release verdict for the pages: console errors, failed
                                      requests, broken links (`fastpilot help` for the details)
   open, snapshot, click, fill, ...   shell CLI: one command per step, sessions kept by a background
@@ -377,6 +380,7 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             live(|| run::run(std::path::Path::new(path), opts), "run").await
         }
+        Some("jira") => jira_cli::run(&args[1..]).await,
         Some("ios") if args.get(1).map(String::as_str) == Some("doctor") => {
             match fastpilot_ios::device::doctor(args.get(2).map(String::as_str)).await {
                 Ok(report) => {

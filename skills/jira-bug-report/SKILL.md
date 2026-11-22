@@ -19,6 +19,17 @@ The permission is given per site. If a call says access to a site "isn't explici
 sign-in allowed another site: ask the user to sign in again (`/mcp` › atlassian › re-authenticate) and
 pick that site. Never switch to another site that happens to be allowed.
 
+
+## First choice: fastpilot's own Jira tools
+When fastpilot's `jira_create_issue` tool is available and Jira is connected in the fastpilot dashboard
+(Apps › Jira), use it instead of Atlassian's server: it creates the issue (it looks for an open duplicate first and returns it instead; then ask the user: comment on it with `jira_comment`, or create anyway with `new_anyway`) with the token the user saved there,
+so no sign-in is needed here and the token never reaches you. The steps below stay the same: the
+draft first, the user's yes in their next message, then exactly one call. The call sends nothing by
+itself: it files a request with the exact cleaned text (secrets masked, no emails, no links to other
+sites, no mentions), and the user sends it with one click on the dashboard's Apps page or with
+`fastpilot jira approve` in their own terminal. Show the user the request and say where to approve it. If the tool says Jira is not connected, or the tools are not there,
+use Atlassian's server as described below. In the dashboard's Chat, writes are cards the user clicks:
+write the card instead of calling a write tool.
 ## Steps
 1. **Write the report first** with the `bug-report` skill: reproduce once, steps, expected vs actual,
    environment, how sure we are.

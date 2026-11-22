@@ -611,7 +611,7 @@ pub fn random_id(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn write_private(path: &std::path::Path, text: &str, append: bool) -> Result<(), String> {
+pub fn write_private(path: &std::path::Path, text: &str, append: bool) -> Result<(), String> {
     use std::io::Write;
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;

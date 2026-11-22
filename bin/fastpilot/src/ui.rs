@@ -558,7 +558,9 @@ async fn apps_api() -> Response {
     let store = crate::schedule::load();
     let webhooks = store.schedules.iter().filter(|s| s.notify.webhook && crate::schedule::secret_path(&s.id).exists()).count();
     let where_kept = fastpilot_core::jira::token::kept_in();
-    axum::Json(json!({ "jira": jira, "webhook_schedules": webhooks, "token_kept": where_kept })).into_response()
+    // v0.6 (Security, Medium 1): Jira writes Claude Code asked for, waiting for a click here.
+    let requests = if jira.is_some() { crate::jira_api::requests_shown() } else { Vec::new() };
+    axum::Json(json!({ "jira": jira, "webhook_schedules": webhooks, "token_kept": where_kept, "jira_requests": requests })).into_response()
 }
 
 async fn schedules_api() -> Response {

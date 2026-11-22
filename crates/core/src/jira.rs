@@ -520,6 +520,141 @@ impl Jira {
     }
 }
 
+/// Jira writes Claude Code asked for (Security, Medium 1). In the terminal the AI does not write
+/// to Jira itself: `jira_create_issue` and `jira_comment` file a request with the exact cleaned
+/// text, and the person approves it on the dashboard's Apps page or with `fastpilot jira approve`
+/// in a terminal they type in. The file is read as untrusted input and every request is checked
+/// again before it is sent.
+pub mod requests {
+    use super::*;
+
+    /// A request waits at most this long (30 minutes).
+    pub const EXPIRY_MS: u64 = 30 * 60_000;
+    const MAX: usize = 10;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Request {
+        pub id: String,
+        /// `issue` or `comment`.
+        pub kind: String,
+        pub site: String,
+        /// `issue`: the project key.
+        #[serde(default)]
+        pub project: String,
+        /// `comment`: the issue key.
+        #[serde(default)]
+        pub key: String,
+        /// `issue`: one line.
+        #[serde(default)]
+        pub summary: String,
+        /// `issue`: the description; `comment`: the comment.
+        pub text: String,
+        pub created_ms: u64,
+    }
+
+    impl Request {
+        /// What it does, in fastpilot's words: "Create an issue in KAN" / "Comment on KAN-12".
+        pub fn title(&self) -> String {
+            if self.kind == "issue" { format!("Create a Jira issue in {}", self.project) } else { format!("Comment on {}", self.key) }
+        }
+    }
+
+    fn path() -> PathBuf {
+        crate::config::path().parent().map(std::path::Path::to_path_buf).unwrap_or_else(std::env::temp_dir).join("jira-requests.json")
+    }
+
+    /// The requests still waiting; broken, too long or expired entries are dropped.
+    pub fn list() -> Vec<Request> {
+        let p = path();
+        if std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) > 512 * 1024 {
+            return vec![];
+        }
+        let raw: Vec<serde_json::Value> = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let now = now_ms();
+        raw.into_iter()
+            .filter_map(|v| serde_json::from_value::<Request>(v).ok())
+            .filter(|r| {
+                r.id.len() <= 32
+                    && r.id.chars().all(|c| c.is_ascii_hexdigit())
+                    && now.saturating_sub(r.created_ms) < EXPIRY_MS
+                    && parse_site(&r.site).is_ok_and(|s| s == r.site)
+                    && r.summary.chars().count() <= 250
+                    && r.text.chars().count() <= 30_000
+                    && match r.kind.as_str() {
+                        "issue" => check_project(&r.project).is_ok() && !r.summary.is_empty(),
+                        "comment" => check_issue(&r.key).is_ok() && !r.text.is_empty(),
+                        _ => false,
+                    }
+            })
+            .collect()
+    }
+
+    fn save(list: &[Request]) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+        crate::change::write_private(&path(), &text, false)
+    }
+
+    /// Files a request (the text already cleaned). The same write waiting already is not filed twice.
+    pub fn add(mut r: Request) -> Result<Request, String> {
+        let mut list = list();
+        if let Some(same) = list.iter().find(|x| x.kind == r.kind && x.site == r.site && x.project == r.project && x.key == r.key && x.summary == r.summary && x.text == r.text) {
+            return Ok(same.clone());
+        }
+        if list.len() >= MAX {
+            return Err(format!("{MAX} Jira requests are already waiting for the user; nothing more is filed until they decide."));
+        }
+        r.id = crate::change::random_id(4);
+        r.created_ms = now_ms();
+        list.push(r.clone());
+        save(&list)?;
+        Ok(r)
+    }
+
+    /// Takes request `id` out of the list (approved or declined): it can be decided only once.
+    pub fn take(id: &str) -> Option<Request> {
+        let list = list();
+        let found = list.iter().find(|r| r.id == id).cloned()?;
+        let rest: Vec<Request> = list.into_iter().filter(|r| r.id != id).collect();
+        save(&rest).ok()?;
+        Some(found)
+    }
+
+    /// Sends an approved request: still connected to the same site, then one write. `channel` is
+    /// for the activity log (`dashboard`, `terminal`): site and key only, never the text.
+    pub async fn send(r: &Request, channel: &str) -> Result<(String, String), String> {
+        let j = Jira::connected().map_err(|e| e.to_string())?;
+        if j.site() != r.site {
+            return Err(format!("Jira is now connected to {}, not {}. Nothing was sent.", j.site(), r.site));
+        }
+        // Security Low 3: an answer that never came may hide a write that arrived.
+        let place = if r.kind == "issue" { r.project.clone() } else { r.key.clone() };
+        let check = j.browse(&place);
+        let fail = |e: JiraError| {
+            if e == JiraError::Refused {
+                mark(true, None);
+            }
+            if matches!(e, JiraError::Network | JiraError::Other(500..=599)) {
+                crate::change::audit("jira", None, Some(&format!("{} {place}", r.site)), channel, "no-answer");
+                return format!("Jira did not answer in time, so I cannot tell whether it got this. Check {place} in Jira before you ask again: {check}");
+            }
+            format!("{e} Nothing was sent.")
+        };
+        let key = if r.kind == "issue" {
+            let ty = j.bug_type(&r.project).await.map_err(fail)?;
+            let key = j.create_issue(&r.project, &ty, &r.summary, &r.text).await.map_err(fail)?;
+            crate::change::audit("jira", None, Some(&format!("{} {key}", r.site)), channel, "created");
+            key
+        } else {
+            j.comment(&r.key, &r.text).await.map_err(fail)?;
+            crate::change::audit("jira", None, Some(&format!("{} {}", r.site, r.key)), channel, "commented");
+            r.key.clone()
+        };
+        mark(false, None);
+        let link = j.browse(&key);
+        Ok((if r.kind == "issue" { format!("Created {key}.") } else { format!("Comment added to {key}.") }, link))
+    }
+}
+
 /// `KAN`: a Jira project key.
 pub fn check_project(key: &str) -> Result<(), JiraError> {
     let ok = (2..=10).contains(&key.len()) && key.starts_with(|c: char| c.is_ascii_uppercase()) && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
@@ -541,6 +676,57 @@ fn rejection(text: &str) -> String {
     }
     let s = plain(&parts.join("; "), 300);
     if s.is_empty() { "a required field is missing or not allowed".into() } else { s }
+}
+
+/// Text fastpilot sends to Jira, cleaned (design 03, "cleaned text"): the project's secrets as
+/// `***`, no email addresses, no links to other sites (links to `site` stay), no @mentions or
+/// `[~account]` mentions, no control characters; one line for a summary. What is shown on a card
+/// is exactly what is sent.
+pub fn clean(text: &str, site: &str, one_line: bool, max: usize) -> String {
+    let text = no_escapes(&crate::dsl::redact(text));
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_inclusive(char::is_whitespace) {
+        let (w, tail) = word.split_at(word.trim_end().len());
+        let bare = w.trim_matches(|c: char| "()[]<>\"',.;:!?".contains(c));
+        let lower = bare.to_ascii_lowercase();
+        let cleaned = if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.") {
+            let host = lower.trim_start_matches("http://").trim_start_matches("https://").split(['/', '?', '#', ':']).next().unwrap_or("").to_owned();
+            if host == site { w.to_owned() } else { w.replace(bare, "[link removed]") }
+        } else if bare.contains('@') && bare.split('@').nth(1).is_some_and(|d| d.contains('.')) && !bare.starts_with('@') {
+            w.replace(bare, "[email removed]")
+        } else if let Some(name) = bare.strip_prefix('@') {
+            w.replacen(bare, name, 1)
+        } else if bare.starts_with('~') || lower.starts_with("accountid:") {
+            String::new()
+        } else {
+            w.to_owned()
+        };
+        out.push(format!("{cleaned}{tail}"));
+    }
+    let joined = out.concat();
+    let joined: String = if one_line { joined.split_whitespace().collect::<Vec<_>>().join(" ") } else { joined };
+    plain(&joined, max)
+}
+
+/// Without terminal escape sequences (`ESC [ … letter`), so nothing is left of them but text.
+fn no_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' {
+            if it.peek() == Some(&'[') {
+                it.next();
+                for d in it.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Text without control characters (newlines kept), at most `max` characters.
@@ -603,6 +789,10 @@ mod tests {
         }
         assert!(check_issue("KAN-12").is_ok() && check_issue("kan-12").is_err() && check_issue("KAN-12/../x").is_err() && check_issue("KAN-").is_err());
         assert!(check_project("KAN").is_ok() && check_project("K").is_err() && check_project("KAN\" OR").is_err());
+        // What fastpilot sends is cleaned: no emails, no links elsewhere, no mentions.
+        let c = clean("Total is wrong @alex see https://evil.example/x and https://yourteam.atlassian.net/browse/KAN-1 mail bob@corp.com [~accountid:557058]\u{1b}[2J", "yourteam.atlassian.net", false, 500);
+        assert_eq!(c, "Total is wrong alex see [link removed] and https://yourteam.atlassian.net/browse/KAN-1 mail [email removed]");
+        assert_eq!(clean("line one\nline two", "x.atlassian.net", true, 9), "line one");
         for bad in ["jira.mycompany.com", "evil.com/x.atlassian.net", "atlassian.net", "a.b.atlassian.net", "https://user@evil.com", "", "-x.atlassian.net", "x.atlassian.net.evil.com"] {
             assert!(parse_site(bad).is_err(), "{bad}");
         }

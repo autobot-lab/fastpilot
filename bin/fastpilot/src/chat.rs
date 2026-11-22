@@ -421,7 +421,8 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
     let me = crate::agents::get_or_default(agent);
     // D10a: the agent's sessions are tagged in Live, and its own blocked words add to the global list.
-    let mut env = json!({ "FASTPILOT_AGENT": me.id, "FASTPILOT_AGENT_NAME": me.name });
+    // v0.6: Chat's Jira writes go through cards the user clicks, never the bot's own tool call.
+    let mut env = json!({ "FASTPILOT_AGENT": me.id, "FASTPILOT_AGENT_NAME": me.name, "FASTPILOT_JIRA_WRITES": "cards" });
     if let Some(b) = crate::agents::block_actions(&me) {
         env["FASTPILOT_BLOCK_ACTIONS"] = json!(b);
     }
@@ -454,8 +455,8 @@ async fn turn(agent: &str, text: &str, bot: u64, resume: Option<String>) -> Res<
         // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
         .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me))])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
-        // fastpilot only, and not its `config` tool: changes go through the cards.
-        .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--disallowedTools", "mcp__fastpilot__config", "--permission-mode", "dontAsk"]);
+        // fastpilot only, and not its `config` tool or the Jira writes: changes go through the cards.
+        .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--disallowedTools", "mcp__fastpilot__config,mcp__fastpilot__jira_read,mcp__fastpilot__jira_create_issue,mcp__fastpilot__jira_comment", "--permission-mode", "dontAsk"]);
     if let Some(id) = &resume {
         cmd.args(["--resume", id]);
     }
@@ -573,7 +574,9 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client:
         .map_err(|e| format!("fastpilot's tools could not be listed: {e}"))?
         .into_iter()
         .filter_map(|t| serde_json::to_value(t).ok())
-        .filter(|t| t["name"] != "config")
+        // Not `config`, not the Jira tools: writes go through cards the user clicks, and fastpilot
+        // reads the tickets the user names.
+        .filter(|t| !["config", "jira_read", "jira_create_issue", "jira_comment"].contains(&t["name"].as_str().unwrap_or("")))
         .collect();
     let tools = crate::provider::openai_tools(&tools);
     let http = crate::provider::Provider::client()?;
