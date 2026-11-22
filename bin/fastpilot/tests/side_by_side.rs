@@ -246,7 +246,7 @@ fn a_missing_simulator_is_a_not_run_column() {
     assert!(r.out.contains("✗ login-side-by-side-ios could not run [setup]: Not run: no iPhone simulator. Boot an iPhone simulator"), "{}", r.out);
     assert!(r.out.contains("Side by side · Login on web, Android and iPhone · 2 of 3 platforms ran"), "{}", r.out);
     assert!(r.out.contains("  iPhone simulator: Not run: No iPhone simulator"), "{}", r.out);
-    assert!(r.out.contains("  Android emulator: Differs at step 3") && r.out.contains("Step 3 · fails on Android emulator, passes on Web · Chrome: field not found."), "{}", r.out);
+    assert!(r.out.contains("  Android emulator: Failed at step 3") && r.out.contains("Step 3 · fails on Android emulator, passes on Web · Chrome: field not found."), "{}", r.out);
     // Nobody started a session for the iPhone, and nothing asked to build its runner.
     assert!(prompts(&dir.join("claude")).iter().all(|c| !c["prompt"].as_str().unwrap_or("").contains("login-side-by-side-ios")));
     let report = std::fs::read_to_string(&html).expect("report");
@@ -276,8 +276,8 @@ fn a_platform_that_does_not_start_is_not_run() {
     assert!(r.out.contains("1 of 3 platforms ran") && !r.out.contains("differs"), "{}", r.out);
     let report = std::fs::read_to_string(&html).expect("report");
     assert!(report.contains("<b>1 of 3 platforms ran</b>") && !report.contains("Differs on"), "{report}");
-    assert!(report.matches("<td class=\"cell none\"><p><b>Not run</b><br>The Android emulator session did not start").count() == 4, "{report}");
-    assert!(report.matches("<b>Not run</b><br>The iPhone simulator session did not start").count() == 4, "{report}");
+    assert!(report.matches("<td class=\"cell none\"><p><b>Could not run</b><br>The Android emulator session did not start").count() == 4, "{report}");
+    assert!(report.matches("<b>Could not run</b><br>The iPhone simulator session did not start").count() == 4, "{report}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -326,9 +326,9 @@ fn an_iphone_runner_that_never_starts_is_not_run_and_the_command_exits() {
     assert!(r.out.contains("web-and-iphone-ios: still starting the iPhone runner (1 s;"), "{}", r.out);
     assert!(r.out.contains("1 passed, 0 failed, 1 did not run"), "{}", r.out);
     assert!(r.out.contains("not a failure of your app"), "{}", r.out);
-    assert!(r.out.contains("iPhone simulator: Not run: Infrastructure: iPhone runner did not start (machine busy?)"), "{}", r.out);
+    assert!(r.out.contains("iPhone simulator: Could not run: Infrastructure: iPhone runner did not start (machine busy?)"), "{}", r.out);
     let report = std::fs::read_to_string(&html).expect("report");
-    assert!(report.contains("<b>Not run</b><br>Infrastructure: iPhone runner did not start (machine busy?)"), "{report}");
+    assert!(report.contains("<b>Could not run</b><br>Infrastructure: iPhone runner did not start (machine busy?)"), "{report}");
     // No xcodebuild left behind holding the simulator.
     let left = std::process::Command::new("pgrep").args(["-f", &format!("{}/xcodebuild", dir.display())]).output().map(|o| o.stdout.len()).unwrap_or(0);
     assert_eq!(left, 0, "the fake xcodebuild was left running");

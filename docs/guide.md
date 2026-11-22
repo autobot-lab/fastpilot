@@ -245,8 +245,10 @@ target ios: com.fastpilot.demo
   do, and the run is not a pass.
 - **The report** (`--html`, and the report in History) starts with **Side by side**: a table with the steps as
   rows and the platforms as columns; each cell has the screen after the step and Passed / Failed / Not run in
-  words. A row is marked *Differs on iPhone* when a step fails on some platforms and passes on the others, or
-  when the text a check found is not the same everywhere (letter case and spacing aside). The same text in
+  words. A row is marked *Fails on Android* when a step fails on some platforms and passes on the others (that
+  column says *Failed at step 3*), and *Differs on iPhone* when the text a check found is not the same everywhere
+  (letter case and spacing aside). A platform that could not start (its session or helper failed) says *Could not
+  run* with the reason, and is not counted as a failure of your app. The same text in
   another place is not compared. The terminal prints the same summary after the run.
 - **Live** shows one summary row per such test, with a tile per platform: waiting (and why), the step it is
   on, done, failed or not run.
