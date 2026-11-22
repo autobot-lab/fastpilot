@@ -248,3 +248,26 @@ fn a_missing_simulator_is_a_not_run_column() {
     assert!(!ios.is_empty() && ios.iter().all(|t| t["state"] == "not_run" && t["note"] == "No iPhone simulator"), "{ios:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// QA re-test Low 3: platforms whose device session does not start are "Not run" with the reason,
+/// infrastructure, and never make the passing platform "differ".
+#[test]
+fn a_platform_that_does_not_start_is_not_run() {
+    if !ready() {
+        return eprintln!("skipping: needs Chrome and python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-pf5-nostart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let html = dir.join("report.html");
+    let r = run(&dir, true, &html, &[("FAKE_CLAUDE_SIDE_NOSTART_ANDROID", "1"), ("FAKE_CLAUDE_SIDE_NOSTART_IOS", "1")]);
+    println!("{}", r.out);
+    assert!(!r.out.contains("[product]"), "a start failure is not a product failure: {}", r.out);
+    assert!(r.out.contains("[infra]: Could not run: the Android emulator session did not start") && r.out.contains("[infra]: Could not run: the iPhone simulator session did not start"), "{}", r.out);
+    assert!(r.out.contains("1 of 3 platforms ran") && !r.out.contains("differs"), "{}", r.out);
+    let report = std::fs::read_to_string(&html).expect("report");
+    assert!(report.contains("<b>1 of 3 platforms ran</b>") && !report.contains("Differs on"), "{report}");
+    assert!(report.matches("<td class=\"cell none\"><p><b>Not run</b><br>The Android emulator session did not start").count() == 4, "{report}");
+    assert!(report.matches("<b>Not run</b><br>The iPhone simulator session did not start").count() == 4, "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
