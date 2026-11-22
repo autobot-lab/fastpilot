@@ -933,6 +933,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
     Some(match path {
         "app.css" => ("text/css; charset=utf-8", include_bytes!("../ui/app.css")),
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
+        "components.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/components.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),

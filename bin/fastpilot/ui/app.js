@@ -204,7 +204,7 @@ function settingsNav(cur) {
 }
 
 function topSettings() {
-  $top().replaceChildren(icon("settings"), h("h1", { tabindex: "-1" }, "Settings"));
+  UI.pageHeader({ icon: "settings", title: "Settings" });
 }
 
 const MODELS = [
@@ -244,7 +244,7 @@ async function provAction(body) {
 
 function providerGroup() {
   if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "who runs the tests"), h("div", { class: "empty small" }, "Reading…")); }
-  if (provData.error) return h("div", { class: "err", role: "alert" }, "Cannot read the provider: " + provData.error);
+  if (provData.error) return UI.notice("error", "Cannot read the provider: " + provData.error);
   const preset0 = (n) => provData.presets.find((p) => p.name === n) || {};
   const d = provDraft || { provider: provData.provider, base_url: provData.base_url || preset0(provData.provider).base_url || "", model: provData.model || "" };
   const pick = h("select", { class: "sel", "aria-label": "Model provider for fastpilot run", disabled: provData.env.provider },
@@ -1864,8 +1864,7 @@ function schedPanel() {
 
 function pageSchedules() {
   const openForm = () => { schedForm = {}; pageSchedules(); document.querySelector(".sched-form select, .sched-form input")?.focus(); };
-  $top().replaceChildren(icon("clock"), h("h1", { tabindex: "-1" }, "Schedules"),
-    h("button", { class: "btn sm p right", onclick: openForm }, icon("plus", "sm"), "New schedule"));
+  UI.pageHeader({ icon: "clock", title: "Schedules", actions: [h("button", { class: "btn sm p", onclick: openForm }, icon("plus", "sm"), "New schedule")] });
   if (!schedData) {
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading schedules…")));
     if (!schedBusy) loadSchedules();
@@ -1878,11 +1877,10 @@ function pageSchedules() {
         h("thead", {}, h("tr", {}, ["Agent", "Name", "When", "Next", "Last", "Notify", "On", ""].map((t) => h("th", {}, t)))),
         h("tbody", {}, list.map(schedRow)))))
     : h("div", { class: "grp" }, h("div", { class: "gh" }, "schedules · empty"),
-      h("div", { class: "empty" }, icon("clock", "big"), h("b", {}, "Nothing is scheduled"),
-        h("span", {}, "Saved tests can run by themselves, at a fixed time or every few hours. You get a message only when something fails."),
-        h("div", { class: "btns" }, h("button", { class: "btn p", onclick: openForm }, icon("plus", "sm"), "New schedule"),
-          h("span", { class: "s muted" }, "or type in Chat: \"run the checkout tests every 2 hours\""))));
-  $body().replaceChildren(...(schedData.error ? [h("div", { class: "err", role: "alert" }, "Could not read the schedules: " + schedData.error)] : []), ...(schedForm ? [schedPanel()] : []), table);
+      UI.empty({ icon: "clock", title: "Nothing is scheduled",
+        text: "Saved tests can run by themselves, at a fixed time or every few hours. You get a message only when something fails. Or type in Chat: \"run the checkout tests every 2 hours\".",
+        action: { label: "New schedule", icon: "plus", onclick: openForm } }));
+  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedForm ? schedPanel() : null, table));
 }
 
 // ---- router ----
