@@ -377,6 +377,9 @@ fn presets_make_one_schedule_each_and_before_each_release_starts_from_chat() {
     for (f, t) in [("login.md", "Login"), ("cart.md", "Cart")] {
         std::fs::write(project.join("tests").join(f), format!("# {t}\n- Open the shop\n")).expect("test");
     }
+    // S7: the current app (E6), with its address.
+    std::fs::create_dir_all(home.join("fastpilot")).expect("workspace");
+    std::fs::write(home.join("fastpilot/apps.json"), serde_json::json!({ "current": "shop", "apps": [{ "id": "shop", "name": "Shop staging", "targets": { "web": "https://shop.example/" } }] }).to_string()).expect("apps");
     let gh_port = fake_server("{}").0;
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
     cmd.args(["ui", "--no-open"]).current_dir(&project).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
@@ -454,10 +457,42 @@ fn presets_make_one_schedule_each_and_before_each_release_starts_from_chat() {
         assert!(std::time::Instant::now() < until, "the release schedule did not start: {row}");
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    // S7: Chat is told the app and its address, so its ship check uses it.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let told = loop {
+        let log: String = std::fs::read_dir(home.join("claude-log")).into_iter().flatten().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+        if log.contains("App: Shop staging") || std::time::Instant::now() > until {
+            break log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert!(told.contains("App: Shop staging (website https://shop.example/). A ship check"), "the bot knows the app's address");
     // A question that is not a release check starts nothing more.
     let two_id = two["id"].as_str().expect("id");
     let v = list();
     assert!(v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == two_id).is_some_and(|x| x["last"].is_null()), "the timed one did not run: {v}");
+
+    // S7: "Watch for 2 hours after a release", one toggle: on starts a watch (every 10 minutes for
+    // 2 hours, a Mac notification, the "before" run now); on again is the same one; off stops it.
+    assert!(list()["watching"].is_null() && list()["app"]["web"] == "https://shop.example/");
+    let (st, body) = post(serde_json::json!({ "action": "watch", "on": true }));
+    assert_eq!(st, 200, "{body}");
+    let w: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let wid = w["id"].as_str().expect("id").to_owned();
+    let v = list();
+    let row = v["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["id"] == wid.as_str()).cloned().expect("row");
+    assert_eq!((row["schedule"]["name"].as_str(), row["schedule"]["when"]["minutes"].as_u64(), row["schedule"]["notify"]["os"].as_bool()), (Some("All tests · release watch"), Some(10), Some(true)), "{row}");
+    let until = row["schedule"]["watch"]["until_ms"].as_u64().unwrap_or(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as u64;
+    assert!(until > now + 7_000_000 && until < now + 7_300_000, "2 hours: {row}");
+    assert!(row["last"]["started_ms"].as_u64().is_some(), "the \"before\" run started");
+    assert_eq!(v["watching"]["id"], wid.as_str());
+    assert!(std::fs::read_to_string(entries.join(format!("dev.fastpilot.schedule.{wid}.plist"))).expect("OS entry").contains("<integer>600</integer>"));
+    let (_, body) = post(serde_json::json!({ "action": "watch", "on": true }));
+    assert!(body.contains(&wid), "the same watch, not a second one: {body}");
+    let (_, body) = post(serde_json::json!({ "action": "watch", "on": false }));
+    assert!(body.contains("\"on\":false"), "{body}");
+    assert!(list()["watching"].is_null() && !entries.join(format!("dev.fastpilot.schedule.{wid}.plist")).exists(), "off");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

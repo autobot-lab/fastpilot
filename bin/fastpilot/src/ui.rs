@@ -931,7 +931,10 @@ async fn schedules_api() -> Response {
             json!({ "key": key, "title": title, "sub": sub, "id": s.map(|s| s.id.clone()), "on": s.is_some_and(|s| s.enabled) })
         })
         .collect();
-    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests, "tests": found, "presets": presets, "github_repo": github_repo() })).into_response()
+    // S7: the release watch that is on now (one toggle), and the app's address for the ship check.
+    let watching = tests.as_deref().and_then(|t| store.schedules.iter().find(|s| s.tests == t && s.enabled && s.watch.as_ref().is_some_and(|w| !w.ended && w.until_ms > schedule::now_ms()))).map(|s| json!({ "id": s.id, "until_ms": s.watch.as_ref().map(|w| w.until_ms) }));
+    let app = crate::apps::current().map(|a| json!({ "name": a.name, "web": a.targets.web }));
+    axum::Json(json!({ "schedules": list, "backend": schedule::backend().name(), "cwd": cwd, "tests_hint": tests, "tests": found, "presets": presets, "github_repo": github_repo(), "watching": watching, "app": app })).into_response()
 }
 
 /// A1: the GitHub repo of the current project (`origin`), offered for GitHub issues, so nobody types it.
@@ -1013,6 +1016,13 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
     use crate::schedule;
     let id = body["id"].as_str().unwrap_or("").to_owned();
     let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        // S7: "Watch for 2 hours after a release": one toggle.
+        "watch" => (|| {
+            let tests = std::env::current_dir().map(|d| d.join("tests")).ok().filter(|d| d.is_dir()).ok_or("This app has no saved tests yet. Save a test first, then watch a release.")?;
+            let on = body["on"].as_bool().unwrap_or(false);
+            let s = schedule::release_watch(&tests.to_string_lossy(), on)?;
+            Ok(json!({ "on": s.is_some(), "id": s.map(|s| s.id) }))
+        })(),
         // S5: one click on a preset: on again if it exists, else created (with a Mac notification).
         "preset" => (|| {
             let tests = std::env::current_dir().map(|d| d.join("tests")).ok().filter(|d| d.is_dir()).ok_or("This app has no saved tests yet. Save a test first, then schedule it.")?;

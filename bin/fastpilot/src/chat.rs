@@ -478,8 +478,17 @@ fn context() -> String {
         Some(j) => format!("\nJira: connected to {}, default project {} ({}).", j.site, j.project_key, if j.project_name.is_empty() { &j.project_key } else { &j.project_name }),
         None => "\nJira: not connected (the user connects it in Integrations › Connect Jira; until then a Jira card can only show its text).".to_owned(),
     };
+    // S7: the current app and its address: a ship check or a first test uses it, nothing is asked.
+    let app = match crate::apps::current() {
+        Some(a) => {
+            let t = &a.targets;
+            let parts: Vec<String> = [("website", &t.web), ("Android app", &t.android), ("iPhone app", &t.ios)].into_iter().filter_map(|(k, v)| v.as_ref().map(|v| format!("{k} {v}"))).collect();
+            format!("\nApp: {} ({}). A ship check (\"Can we release?\") checks the website address unless the user names other pages.", a.name, parts.join(", "))
+        }
+        None => String::new(),
+    };
     format!(
-        "\n\nNow: project folder {}; test cases: {}.{jira}\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.{demo}\nLimits (settings):\n{}\nSchedules:\n{}",
+        "\n\nNow: project folder {}; test cases: {}.{app}{jira}\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.{demo}\nLimits (settings):\n{}\nSchedules:\n{}",
         cwd.display(),
         if tests.is_empty() { "none in ./tests".to_owned() } else { tests.join(", ") },
         if secrets.is_empty() { "none saved yet (the user adds them in Settings › Secrets)".to_owned() } else { secrets.join(", ") },

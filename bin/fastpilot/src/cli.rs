@@ -388,9 +388,18 @@ fn ship_check(ctx: &Ctx, urls: &[String], links: Option<&str>, cookies: bool) ->
         None => 20,
     };
     let step = if links == 20 && !cookies { "- shipCheck\n".to_owned() } else { format!("- shipCheck: {{ links: {links}, cookies: {cookies} }}\n") };
-    let urls: Vec<String> = urls.iter().map(|u| abs_if_file(u)).collect();
+    let mut urls: Vec<String> = urls.iter().map(|u| abs_if_file(u)).collect();
+    // S7 (v0.7): with no page given, the current app's own address (nothing to type).
     if urls.is_empty() && !ctx.has_session()? {
-        return Err("give the pages to check: fastpilot ship-check https://staging.example.com [more pages], or `fastpilot open <url>` first".into());
+        match crate::apps::current().and_then(|a| a.targets.web.clone().map(|w| (a.name, w))) {
+            Some((name, web)) => {
+                eprintln!("Checking {name} at its address, {web}.");
+                urls.push(web);
+            }
+            None => {
+                return Err("give the pages to check: fastpilot ship-check https://staging.example.com [more pages], or add your app's website in the dashboard (Add app) and its address is used".into());
+            }
+        }
     }
     let mut reports = Vec::new();
     let pages: Vec<Option<&String>> = if urls.is_empty() { vec![None] } else { urls.iter().map(Some).collect() };

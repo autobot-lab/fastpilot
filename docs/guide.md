@@ -493,6 +493,10 @@ sent to the browser.
   when something fails, and is named for you ("All tests · every night").
 - **Before each release** has no time: it runs when you ask Chat "Can we release?" (or press Run now).
 - A test card in Chat has the same three buttons: "Save and run it by itself".
+- **Before and after a release (v0.7):** **Check before release** asks Chat "Can we release?", which runs the
+  tests and a ship check of the app's own address. **Watch for 2 hours after a release** is one switch: every
+  10 minutes for 2 hours, the first run is the "before", and you hear only about a problem that is new since then.
+- `fastpilot ship-check` with no page checks the current app's address (Add app in the dashboard).
 - **More options** has the full form: which tests (picked from the list, nothing to type), other times,
   Slack and GitHub messages (the GitHub repo is filled in from the project's own repo).
 
