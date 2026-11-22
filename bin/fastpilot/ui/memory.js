@@ -80,7 +80,7 @@ function doctorPanel(t) {
   const stepPart = d.step ? (d.step.includes('"') ? ` at the step ${d.step}` : ` at the step "${d.step}"`) : "";
   const fix = () => askChat(`Fix the test "${t.title}". It is unstable: it fails${stepPart}. ${d.todo || ""}`.trim());
   const bug = () => askChat(`Write a bug report for the test "${t.title}": it fails${stepPart}.`);
-  const aside = () => { if (confirm(`Set aside "${t.title}"?\n\nIt will still run and be shown, but a failure will not turn the run red. You can bring it back at any time.`)) act("set_aside", t); };
+  const aside = async () => { if (await UI.confirmDialog({ title: `Set aside "${t.title}"?`, text: "It will still run and be shown, but a failure will not turn the run red. You can bring it back at any time.", verb: "Set aside", danger: false })) act("set_aside", t); };
   const all = { chat: ["Ask Chat to fix this test", fix], bug: ["Make a bug report", bug], set_aside: ["Set aside", aside] };
   const order = [d.main, "chat", "bug", "set_aside"].filter((k, i, a) => k && all[k] && a.indexOf(k) === i);
   // No cause: only the evidence and the safe actions.

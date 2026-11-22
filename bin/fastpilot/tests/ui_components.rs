@@ -60,17 +60,26 @@ impl Drop for Dash {
     }
 }
 
-/// `fastpilot ui` in a temp HOME, opened in a Chrome session called "viewer".
-async fn dashboard(name: &str) -> Dash {
+/// `fastpilot ui` in a temp HOME, opened in a Chrome session called "viewer". `seed` writes the
+/// project's files first (`<home>/tests`, and fastpilot's folder `<home>/project-fastpilot`). Keys go
+/// to a file in the temp HOME, schedules to a stand-in LaunchAgents folder: nothing reaches this Mac.
+async fn dashboard(name: &str, seed: fn(&Path)) -> Dash {
     let home = std::env::temp_dir().join(format!("fp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join("viewer")).expect("home");
+    std::fs::create_dir_all(home.join("project-fastpilot/memory")).expect("fastpilot dir");
+    std::fs::create_dir_all(home.join("tests")).expect("tests");
+    seed(&home);
     let mut ui = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
         .args(["ui", "--no-open"])
         .current_dir(&home)
         .env("HOME", &home)
         .env_remove("FASTPILOT_CONFIG")
-        .env_remove("FASTPILOT_DIR")
+        .env("FASTPILOT_DIR", home.join("project-fastpilot"))
+        .env_remove("FASTPILOT_MEMORY")
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_SCHEDULER", "launchd")
+        .env("FASTPILOT_SCHEDULER_DIR", home.join("LaunchAgents"))
         .env("FASTPILOT_LIVE_DIR", home.join("live"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -100,7 +109,7 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
     if !chrome_available() {
         return eprintln!("skipping: no Chrome");
     }
-    let d = dashboard("ui-components").await;
+    let d = dashboard("ui-components", |_| {}).await;
     let c = &d.client;
 
     // L062-9: the Map header with no map yet said "null".
@@ -148,4 +157,88 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
     assert_eq!(eval(c, "document.querySelector('#top .ph-title h1').textContent").await, "\"Settings\"");
     open(c, "#/map", "Which parts of your app have a test").await;
     assert_eq!(eval(c, "document.querySelector('#top .ph-title h1').textContent").await, "\"Map\"");
+}
+
+/// UXA1 (v0.7): the four browser confirm() boxes (delete an agent, delete the API key, delete a
+/// schedule, set a test aside) are the in-page ConfirmDialog: no browser box, the safe button first
+/// and focused, Esc changes nothing, the named verb does it.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_confirmation_is_in_the_page_and_esc_changes_nothing() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-confirm", |home| {
+        std::fs::write(home.join("tests/export.md"), "# Admin export\nid: export\nplatform: web\ntarget: https://shop.example\n- Open the shop\n").expect("test");
+        // A test that failed its last 4 runs at the same step: Memory offers "Set aside".
+        let fp = home.join("project-fastpilot");
+        let history = [true, true, false, false, false, false];
+        let m = json!({ "test_id": "export", "flow": "- tapOn: Download\n", "start": "https://shop.example", "screens": [], "duration_ms": 1200, "pass_count": 2, "fail_count": 4,
+            "last_pass": "2026-11-20 07:02:00", "failed_at": [], "history": history, "consecutive_failures": 4, "stale": true, "classes": [] });
+        std::fs::write(fp.join("memory/export.json"), m.to_string()).expect("memory");
+        for (i, passed) in history.iter().enumerate() {
+            let dir = fp.join(format!("runs/20261120-{:06}-export", 100 + i));
+            std::fs::create_dir_all(&dir).expect("run");
+            let step = (!passed).then_some("tapOn \"Download\"");
+            let o = json!({ "test_id": "export", "passed": passed, "passed_on_retry": false, "could_not_run": false, "started_ms": 1_795_000_000_000u64 + i as u64 * 3_600_000, "finished_ms": 1_795_000_060_000u64 + i as u64 * 3_600_000,
+                "platforms": ["web"], "failed_step": step, "reason": step.map(|_| "not_found"), "category": step.map(|_| "product"), "error": step.map(|_| "not visible yet") });
+            std::fs::write(dir.join("outcome.json"), o.to_string()).expect("outcome");
+        }
+    })
+    .await;
+    let c = &d.client;
+    let tests = d.home.join("tests").display().to_string();
+
+    // What there is to delete, made through the page's own API calls.
+    let made = eval(c, &format!(r#"(async () => {{
+        const a = await api('/api/agents', {{ action: 'create', agent: {{ id: '', name: 'QA Checkout', job: 'Keep the checkout working', devices: ['web'], app: 'https://shop.example', instructions: [], blocked: [] }} }});
+        const s = await api('/api/schedules', {{ action: 'save', schedule: {{ id: '', name: 'Night run', tests: {tests:?}, when: {{ every: 'day', time: '02:00' }}, notify: {{ os: true }}, enabled: true }} }});
+        await api('/api/provider', {{ action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }});
+        await loadSettings();
+        window.confirm = () => {{ window.__native = (window.__native || 0) + 1; return false; }};
+        return a.agent.id + '|' + s.id;
+    }})()"#)).await;
+    let made = made.trim_matches('"').to_owned();
+    let (agent, schedule) = made.split_once('|').expect("ids");
+    let state = |what: &str| -> String {
+        match what {
+            "agent" => format!("(async () => String((await api('/api/agents')).agents.some((x) => (x.agent || x).id === '{agent}')))()"),
+            "key" => "(async () => String(!!(await api('/api/provider')).key.has))()".to_owned(),
+            "schedule" => format!("(async () => String((await api('/api/schedules')).schedules.some((x) => x.id === '{schedule}')))()"),
+            _ => "(async () => (await api('/api/memory')).tests.find((t) => t.id === 'export').status)()".to_owned(),
+        }
+    };
+    for (what, hash, sees, opener, verb, after) in [
+        ("agent", format!("#/agents/{agent}/settings"), "Delete agent", "Delete agent", "Delete agent", "\"false\""),
+        ("key", "#/settings/model".to_owned(), "Delete the key", "Delete the key", "Delete key", "\"false\""),
+        ("schedule", "#/schedules".to_owned(), "Night run", "Delete", "Delete schedule", "\"false\""),
+        ("aside", "#/memory".to_owned(), "Why failing?", "Set aside", "Set aside", "\"set_aside\""),
+    ] {
+        open(c, &hash, sees).await;
+        let before = eval(c, &state(what)).await;
+        // Memory: the "Why failing?" panel's Set aside is the one that asks (the row's acts at once
+        // and is undone with Bring back).
+        let scope = if what == "aside" { "#body .mem-doctor button" } else { "#body button" };
+        let click = format!("[...document.querySelectorAll('{scope}')].find((b) => b.textContent.trim() === {opener:?}).click()");
+        let shown = eval(c, &format!("(() => {{ window.__native = 0; {click}; const d = document.querySelector('dialog.cdlg'); return [window.__native, d ? d.getAttribute('role') : 'none', d ? [...d.querySelectorAll('button')].map((b) => b.textContent).join('/') : '', document.activeElement.textContent].join('|'); }})()")).await;
+        assert_eq!(shown, format!("\"0|alertdialog|Keep it/{verb}|Keep it\""), "{what}: an in-page dialog, not the browser's");
+        key(c, "Escape").await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(eval(c, "String(!!document.querySelector('dialog.cdlg'))").await, "\"false\"", "{what}: Esc closes it");
+        assert_eq!(eval(c, &state(what)).await, before, "{what}: Esc changes nothing");
+        eval(c, &format!("(() => {{ {click}; [...document.querySelectorAll('dialog.cdlg button')].find((b) => b.textContent === {verb:?}).click(); return 'ok'; }})()")).await;
+        let mut now = String::new();
+        for _ in 0..40 {
+            now = eval(c, &state(what)).await;
+            if now == after {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        assert_eq!(now, after, "{what}: the verb does it");
+    }
+    // No browser confirm() is left in the dashboard's code.
+    for f in ["app.js", "agents.js", "memory.js", "history.js", "apps.js", "map.js", "fix.js"] {
+        let js = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(f)).expect("js");
+        assert!(!js.contains("confirm("), "{f} still calls confirm()");
+    }
 }
