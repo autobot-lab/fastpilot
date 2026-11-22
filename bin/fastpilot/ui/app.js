@@ -350,11 +350,52 @@ function limitsTestsAtOnce() {
   return holder;
 }
 
+// A2 (v0.7): what protects the user, in one statement worked out from the settings in force
+// (never a claim the settings do not back: no "only your app's pages" while every domain is
+// allowed), three example sentences that only make things stricter or show something, and every
+// limit under More options. A sentence goes to Chat, where its card gates the change.
+const LIMIT_EXAMPLES = ["Also block the word \"Refund\"", "Ask me before pressing \"Log out\"", "Show me what is blocked"];
+function limitsSummary() {
+  const words = (key) => {
+    const s = get(key);
+    const dflt = (S.defaults && S.defaults[key]) || [];
+    if (!s || s.value === null || s.value === undefined) return [...dflt];
+    const v = Array.isArray(s.value) ? s.value : [];
+    return v.flatMap((w) => (w === "default" ? dflt : [w]));
+  };
+  const blocked = words("block_actions");
+  const confirm = words("confirm_actions");
+  const quote = (w) => `"${w.charAt(0).toUpperCase()}${w.slice(1)}"`;
+  // The best-known words first ("Pay", "Delete account", "Delete"), then the rest as listed.
+  const pick = (list, first, n) => first.filter((w) => list.includes(w)).concat(list).filter((w, i, a) => a.indexOf(w) === i).slice(0, n);
+  const steps = (get("max_steps") && get("max_steps").value) || S.defaults.max_steps || 30;
+  const mins = (get("test_timeout") && get("test_timeout").value) || S.defaults.test_timeout || 30;
+  const domains = (get("allowed_domains") && get("allowed_domains").value) || [];
+  const parts = [];
+  if (blocked.length) parts.push(`Buttons like ${pick(blocked, ["pay", "delete account", "buy", "checkout"], 2).map(quote).join(" and ")} are never pressed.`);
+  if (confirm.length) parts.push(`Buttons like ${pick(confirm, ["delete", "remove"], 1).map(quote).join("")} are only pressed with a confirmation.`);
+  if (domains.length) parts.push(`Tests only open ${domains.slice(0, 3).join(", ")}${domains.length > 3 ? " and more" : ""}.`);
+  parts.push(`Every test stops after ${mins} minutes and ${steps} AI steps.`);
+  const head = blocked.length
+    ? h("div", { class: "protect ok", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "✓"), h("div", {}, h("b", {}, "You are protected"), h("p", {}, parts.join(" "))))
+    : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, "Less protected: no button is blocked"), h("p", {}, parts.join(" "), " Turn the built-in list back on under More options.")));
+  const say = (t) => async () => { location.hash = "#/chat"; await chatSend(t); };
+  return [head,
+    h("section", { class: "grp limit-say", "aria-label": "Change something in Chat" },
+      h("div", { class: "gh" }, "want to change something? just say it in chat"),
+      h("div", { class: "prop-body" },
+        LIMIT_EXAMPLES.map((t) => h("button", { class: "say-row", onclick: say(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→"))),
+        h("p", { class: "s muted" }, "One click sends it to Chat. Nothing changes before you decide on the card there; anything that loosens a rule shows a red card and needs your own words."))) ];
+}
+
 function pageLimits() {
   const confirmShow = (w) => (w === "default" ? "default (delete, pay, buy, …)" : w);
   const emptied = (key) => { const s = get(key); return s && s.source !== "default" && Array.isArray(s.value) && !s.value.length; };
   return h("section", { class: "panel" },
     h("h2", {}, "Limits & permissions", savedNote()),
+    limitsSummary(),
+    UI.moreOptions({ label: "More options", changed: S.settings.filter((s) => ["allowed_domains", "block_actions", "confirm_actions", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script", "allow_takeover", "upload_dirs", "state_expire_days", "max_steps", "test_timeout"].includes(s.key) && s.source === "file").length },
+    h("p", { class: "s muted" }, "See and change every limit by hand."),
     h("p", { class: "sub" }, "These rules apply to every test: from Claude Code, Cursor, the CLI, or ", code("fastpilot run"), "."),
     h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, a looser rule needs your own words and your typed confirmation on its red card. Saved in ", code(S.path), ".")),
     h("div", { class: "grp" },
@@ -393,7 +434,7 @@ function pageLimits() {
       // UXA5: "Tests at once" lives here (advanced), with its default marked; not on the Live header.
       opt("Tests at once", "How many tests may run at the same time on this computer, for all agents together. One device always runs one test.", limitsTestsAtOnce()),
       opt("Longest time per test", "The test stops and fails when it goes over",
-        select("test_timeout", [["", "30 minutes (built in)"], ["5", "5 minutes"], ["10", "10 minutes"], ["15", "15 minutes"], ["60", "60 minutes"]], "Longest time"), get("test_timeout"))));
+        select("test_timeout", [["", "30 minutes (built in)"], ["5", "5 minutes"], ["10", "10 minutes"], ["15", "15 minutes"], ["60", "60 minutes"]], "Longest time"), get("test_timeout")))));
 }
 
 function pageSecret() {
