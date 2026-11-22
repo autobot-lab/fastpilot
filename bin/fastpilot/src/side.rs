@@ -372,6 +372,8 @@ impl Comparison {
                 e(&self.title.to_lowercase())
             );
         }
+        // Security review, Low 4: at most 40 MB of pictures in one report.
+        let mut left = MAX_REPORT_PICTURES;
         let _ = write!(b, "<table class=\"sbs-t\"><caption>Each step of the test on {}</caption><thead><tr><th scope=\"col\">Step</th>", e(&and_list(&names)));
         for col in &self.columns {
             let _ = write!(b, "<th scope=\"col\">{}</th>", e(&col.name));
@@ -415,7 +417,11 @@ impl Comparison {
                     Cell::NoResult { .. } => "no step result",
                 };
                 let alt = format!("{}, step {}: {state}{}", col.name, row.n, cell.found().map(|f| format!(", \"{f}\" found")).unwrap_or_default());
-                let img = col.shots[i].as_ref().and_then(|p| picture(p)).map(|data| format!("<img alt=\"{}\" src=\"data:image/jpeg;base64,{data}\">", e(&alt))).unwrap_or_default();
+                let img = match col.shots[i].as_ref().map(|p| picture(p, &mut left)) {
+                    Some(Picture::Data(data)) => format!("<img alt=\"{}\" src=\"data:image/jpeg;base64,{data}\">", e(&alt)),
+                    Some(Picture::Cut) => "<p class=\"meta\">No picture here: the report is at its size limit.</p>".to_owned(),
+                    Some(Picture::None) | None => String::new(),
+                };
                 let _ = write!(b, "<td class=\"cell {cls}\">{img}<p>{words}</p></td>");
             }
             b.push_str("</tr>");
@@ -432,20 +438,42 @@ impl Comparison {
         }
         b.push_str(
             "<p class=\"meta\">Differences are marked when a step fails on one platform and passes on the others, or when the text a \
-             check found is not the same on every platform (letter case and spacing aside). Pictures are scaled to the same width.</p></div></section>",
+             check found is not the same on every platform (letter case and spacing aside). Step results are reported by the AI that \
+             ran the test; the picture next to each one is what the screen showed. Pictures show the app as it looked (names and \
+             numbers on the screen are not masked) and are scaled to the same width.</p></div></section>",
         );
         b
     }
 }
 
-/// The picture of a cell, inlined (the report is one file); at most 4 MB.
-fn picture(p: &std::path::Path) -> Option<String> {
+/// Pictures in one report, in bytes before encoding (Security review, Low 4).
+const MAX_REPORT_PICTURES: u64 = 40 * 1024 * 1024;
+
+enum Picture {
+    Data(String),
+    /// Left out: the report reached its size limit.
+    Cut,
+    None,
+}
+
+/// The picture of a cell, inlined (the report is one file); at most 4 MB each, and at most `left`
+/// bytes in the whole report (counted down).
+fn picture(p: &std::path::Path, left: &mut u64) -> Picture {
     use base64::Engine;
-    let meta = std::fs::metadata(p).ok()?;
+    let Ok(meta) = std::fs::metadata(p) else { return Picture::None };
     if meta.len() > 4 * 1024 * 1024 {
-        return None;
+        return Picture::None;
     }
-    Some(base64::engine::general_purpose::STANDARD.encode(std::fs::read(p).ok()?))
+    if meta.len() > *left {
+        return Picture::Cut;
+    }
+    match std::fs::read(p) {
+        Ok(bytes) => {
+            *left -= meta.len();
+            Picture::Data(base64::engine::general_purpose::STANDARD.encode(bytes))
+        }
+        Err(_) => Picture::None,
+    }
 }
 
 fn esc(s: &str) -> String {
@@ -588,4 +616,18 @@ mod tests {
         assert_eq!(c.rows[0].differs, vec![0, 1]);
         assert!(c.html().contains("This test only lists web and iPhone."), "{}", c.html());
     }
+
+    #[test]
+    fn the_report_has_a_size_limit_for_pictures() {
+        let dir = std::env::temp_dir().join(format!("fp-side-pics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let p = dir.join("a.jpg");
+        std::fs::write(&p, vec![0xffu8; 1000]).expect("write");
+        let mut left = 2500u64;
+        let kinds: Vec<&str> = (0..3).map(|_| match picture(&p, &mut left) { Picture::Data(_) => "data", Picture::Cut => "cut", Picture::None => "none" }).collect();
+        assert_eq!(kinds, ["data", "data", "cut"]);
+        assert!(matches!(picture(&dir.join("missing.jpg"), &mut left), Picture::None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
