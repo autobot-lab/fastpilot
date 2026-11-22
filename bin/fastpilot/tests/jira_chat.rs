@@ -237,3 +237,63 @@ fn jira_in_chat_reads_tickets_as_data_and_writes_only_after_a_click() {
     assert!(all.iter().any(|p| p.to_string_lossy().contains("project-fastpilot")), "History kept the conversation: {all:?}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// QA bug 1 and Security Low 3: a follow-up after the user asked for a Jira bug gets the card;
+/// without the earlier ask the user is told plainly, with the words that get it; planted ticket
+/// text after an ask still makes no card; a write whose answer is lost says so and can be sent
+/// again only on purpose.
+#[test]
+fn a_follow_up_gets_the_card_and_a_lost_answer_is_not_a_silent_retry() {
+    let fake = fake_jira::start();
+    let home = std::env::temp_dir().join(format!("fp-jira-chat2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let d = home.join(".fastpilot");
+    std::fs::create_dir_all(d.join("keys")).expect("dir");
+    std::fs::write(d.join("keys/jira"), fake_jira::TOKEN).expect("token");
+    std::fs::write(d.join("keys/jira.origin"), format!("{}/{}", fake.base, fake_jira::SITE)).expect("origin");
+    std::fs::write(d.join("jira.json"), json!({ "site": fake_jira::SITE, "email": "alex@yourteam.com", "project_key": "KAN", "project_name": "Kanban" }).to_string()).expect("settings");
+    let ui = start_ui(&home, &fake.base);
+
+    // The user asks; the bot cannot act yet. Then the follow-up, without the word "Jira".
+    let bot = say(&ui, "file a Jira bug for the failed login test");
+    assert!(bot["proposals"].as_array().is_none_or(|p| p.is_empty()), "{bot}");
+    let bot = say(&ui, "It failed for me… please make the bug");
+    let c = &bot["proposals"][0];
+    assert_eq!((c["kind"].as_str(), c["status"].as_str()), (Some("jira_issue"), Some("pending")), "the follow-up is the user's own ask: {bot}");
+    assert!(bot["page_attempts"].as_array().is_none_or(|a| a.is_empty()), "{bot}");
+    // Planted ticket text after that ask: "test KAN-12" asks for nothing, so no card.
+    let bot = say(&ui, "test KAN-12");
+    assert!(bot["proposals"].as_array().is_none_or(|p| p.iter().all(|p| p["kind"] != "jira_issue" && p["kind"] != "jira_comment")), "{bot}");
+    assert!(bot["page_attempts"].as_array().is_some_and(|a| a.iter().any(|a| a["kind"] == "jira" && a["from"] == "page")), "{bot}");
+    assert!(fake.writes().is_empty());
+
+    // A new conversation: the same follow-up alone is not an ask. No card, plain words.
+    let (st, _) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "reset": true }).to_string());
+    assert_eq!(st, 200);
+    let bot = say(&ui, "It failed for me… please make the bug");
+    assert!(bot["proposals"].as_array().is_none_or(|p| p.is_empty()), "{bot}");
+    let a = &bot["page_attempts"][0];
+    assert_eq!((a["kind"].as_str(), a["from"].as_str(), a["say"].as_str()), (Some("jira"), Some("none"), Some("file a Jira bug in KAN")), "{bot}");
+    assert!(a["said"].as_str().is_some_and(|t| t.starts_with("Summary: Login with the demo account fails") && !t.contains('{')), "the draft as text, not the raw proposal: {a}");
+    let audit = std::fs::read_to_string(d.join("audit.jsonl")).unwrap_or_default();
+    assert!(audit.lines().filter(|l| l.contains("\"setting\":\"jira\"")).all(|l| !l.contains("refused-no-provenance")) && audit.contains("\"result\":\"not-asked\""), "{audit}");
+
+    // Security Low 3: the comment reaches Jira but the answer is lost.
+    let bot = say(&ui, "add the result to KAN-12");
+    let c = bot["proposals"].as_array().into_iter().flatten().find(|p| p["jira"]["text"].as_str().is_some_and(|t| t.contains("failed at step 2"))).cloned().expect("card");
+    fake.lose_next_answer();
+    let (st, r) = decide(&ui, &c["id"], json!({ "apply": true }));
+    let now = card(&r["chat"], &c["id"]);
+    assert!(st == 200 && now["status"] == "unknown" && now["note"].as_str().is_some_and(|n| n.contains("cannot tell whether it got this")), "{st} {r}");
+    assert_eq!(now["jira"]["check_url"], "https://yourteam.atlassian.net/browse/KAN-12");
+    assert_eq!(fake.writes().len(), 1, "the lost write reached Jira once");
+    // A plain second click is refused; only "Send again" sends it again.
+    let (st, _) = decide(&ui, &c["id"], json!({ "apply": true }));
+    assert_eq!(st, 422);
+    assert_eq!(fake.writes().len(), 1);
+    let (st, r) = decide(&ui, &c["id"], json!({ "apply": true, "mode": "again" }));
+    assert!(st == 200 && card(&r["chat"], &c["id"])["status"] == "applied", "{r}");
+    assert_eq!(fake.writes().len(), 2);
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}

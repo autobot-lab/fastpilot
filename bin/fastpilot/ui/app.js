@@ -1200,9 +1200,17 @@ function pageAttempts(list) {
   // One box per kind of attempt: a rule (note), a Jira write, a limit.
   const groups = [
     [page.filter((a) => a.kind === "note"), [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]],
-    [page.filter((a) => a.kind === "jira"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
+    [page.filter((a) => a.kind === "jira" && a.from !== "none"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
     [page.filter((a) => a.kind !== "note" && a.kind !== "jira"), [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."]],
   ];
+  // QA bug 1: the bot drafted a Jira write the user's message did not ask for in so many words.
+  // No card was made: say so plainly, with the words that get the card. The draft is plain text.
+  page.filter((a) => a.kind === "jira" && a.from === "none").forEach((a) => {
+    out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
+      h("div", {}, h("b", {}, "No Jira card was made. "), "Your message did not ask for one in your own words, so nothing was sent. ",
+        a.say ? ["Say “", a.say, "” to get the card."] : null,
+        h("details", {}, h("summary", {}, "See the bot's draft"), h("pre", {}, a.said)))));
+  });
   groups.forEach(([list, words]) => {
     if (!list.length) return;
     out.push(h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
@@ -1312,6 +1320,14 @@ function jiraCard(p) {
       h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, issue ? "Create issue" : "Add comment"),
       h("button", { class: "btn", onclick: () => { chatEdits[p.id] = issue ? { summary: j.summary || "", description: j.description || "" } : { text: j.text || "" }; chatSig = ""; renderChat(); } }, "Edit first"),
       h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Cancel"));
+  } else if (p.status === "unknown") {
+    // Security Low 3: sent, but no answer from Jira: check before sending again.
+    const check = jiraLink(j, j.check_url, "Check in Jira");
+    foot = h("div", {},
+      h("div", { class: "jira-dup", role: "alert", tabindex: "-1" }, icon("alert", "sm"), h("div", {}, h("b", {}, "No answer from Jira. "), rich(p.note || ""), " ", check)),
+      h("div", { class: "btns" },
+        h("button", { class: "btn", onclick: () => chatDecide(p.id, true, "again") }, "Send again"),
+        h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Cancel")));
   } else if (p.status === "sending") {
     foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Sending to Jira…");
   } else if (done) {
