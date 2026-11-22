@@ -675,9 +675,18 @@ fn chat_saves_a_test_and_its_schedule_only_after_a_click() {
     // ... saved under another name with Edit; a dangerous name typed there is refused too.
     let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "test", "edit": { "id": "../escape" } }));
     assert!(st == 422 && body.contains("file name"), "{st} {body}");
-    let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "test", "edit": { "title": "Login, second account", "id": "" } }));
+    // S5: the card's "Before each release" button saves it and schedules it in one click: named by
+    // fastpilot, a Mac notification, no OS entry (it starts when Chat is asked "Can we release?").
+    let (st, body) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "preset:release", "edit": { "title": "Login, second account", "id": "" } }));
     assert_eq!(st, 200, "{body}");
+    assert!(body.contains("It runs before each release"), "{body}");
     assert!(project.join("tests/login-second-account.md").exists());
+    let sched = get("/api/schedules");
+    let rel = sched["schedules"].as_array().expect("list").iter().find(|x| x["schedule"]["when"]["every"] == "release").cloned().expect("release schedule");
+    assert_eq!((rel["schedule"]["name"].as_str(), rel["schedule"]["notify"]["os"].as_bool()), (Some("Login, second account · before each release"), Some(true)), "{rel}");
+    assert!(!home.join(format!("LaunchAgents/dev.fastpilot.schedule.{}.plist", rel["schedule"]["id"].as_str().unwrap_or("x"))).exists(), "no timer");
+    let (st, _) = post("/api/chat/decide", json!({ "id": again["id"], "apply": true, "mode": "preset:hourly" }));
+    assert_eq!(st, 422, "an unknown preset is refused");
 
     // Dangerous file names from the bot: refused cards; nothing outside the tests folder.
     let (st, _) = post("/api/chat", json!({ "message": "save tests named ../ and /tmp" }));

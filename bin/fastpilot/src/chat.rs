@@ -235,6 +235,17 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
                 [Some(OFFER_TAKEN), t].into_iter().flatten().collect::<Vec<_>>().join("\n\n"),
             ),
         };
+        // S5: "Can we release?" starts this agent's "before each release" schedules; the bot is told.
+        let released = if asks_release(&text) { schedule::start_release(&agent) } else { Vec::new() };
+        let before = if released.is_empty() {
+            before
+        } else {
+            let note = format!(
+                "[fastpilot started the \"before each release\" schedule {} for the user: it runs these tests in the background, and the result shows on the Schedules page. Say so in one sentence.]",
+                released.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+            );
+            Some([Some(note.as_str()), before.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n\n"))
+        };
         let error = turn(&agent, &text, before.as_deref(), bot, resume).await.err();
         let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has());
         let mut c = chat_of(&agent);
@@ -361,8 +372,8 @@ You cannot change settings or schedules yourself. To propose one, end your reply
 computer. After a release, to watch the app for a while and hear only about new problems, propose a release \
 watch: {\"every\":\"minutes\",\"minutes\":10,\"for_hours\":2} with no time; minutes is 5, 10, 15, 20, 30 or 60 and \
 for_hours 1 to 24; its first run is the \"before\". For every N hours use {\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\"} with no time; \
-hours is 1-24, and from/to (the active window) are optional but go together. tests is a folder of *.md test cases or \
-one .md file)
+hours is 1-24, and from/to (the active window) are optional but go together. Before each release: {\"every\":\"release\"} with no \
+time; it runs when the user asks you \"Can we release?\". tests is a folder of *.md test cases or one .md file)
 To change a setting, propose it; fastpilot words the card itself and the user decides:
 ```fastpilot-proposal
 {\"kind\":\"settings\",\"changes\":[{\"setting\":\"block_actions\",\"add\":[\"refund\"]},{\"setting\":\"model_replay\",\"set\":\"claude-haiku-5-5\"},{\"setting\":\"vars\",\"add\":[\"STAGING_PASSWORD\"]},{\"setting\":\"block_actions\",\"remove\":[\"pay\"]}]}
@@ -1136,6 +1147,16 @@ fn drop_card_claims(text: &str, bug_card: bool, created: &[String]) -> (String, 
     (kept.trim().to_owned(), removed)
 }
 
+/// S5: the user's message asks whether a release can go out ("Can we release?", "release check",
+/// "ready to release?"); a release watch or a question about one is not.
+pub(crate) fn asks_release(user: &str) -> bool {
+    let w = words_of(user);
+    let has = |x: &str| w.iter().any(|y| y == x);
+    let release = has("release") || has("rilis") || has("releasing");
+    let ask = has("can") || has("ready") || has("check") || has("before") || has("ok") || has("okay") || has("boleh") || has("siap") || has("bisa") || has("ship");
+    release && ask && !has("watch") && !has("after") && !has("notes")
+}
+
 const OFFER_TAKEN: &str = "[fastpilot: the user's message accepts the Jira issue draft from your last answer. fastpilot shows its card below your answer itself, with the exact text the user saw; the user clicks Create issue to send it. Do not write a jira_issue proposal again and do not say you cannot create it: say in one short sentence that the card is below to check and click.]";
 
 /// The signature of an offered draft (its summary, as the card cleans it).
@@ -1808,10 +1829,16 @@ fn looks_like_a_secret(text: &str) -> bool {
 fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
     let (when, notify) = when_of(v)?;
     let is_watch = when.every == schedule::Every::Minutes;
+    let tests = v["tests"].as_str().unwrap_or("").trim().to_owned();
+    // A1: a name is made from what runs and when when the bot gives none.
+    let name = match v["name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_owned(),
+        None => schedule::auto_name(&schedule::tests_label(&tests), &when),
+    };
     let s = schedule::Schedule {
         id: String::new(),
-        name: v["name"].as_str().unwrap_or("").trim().to_owned(),
-        tests: v["tests"].as_str().unwrap_or("").trim().to_owned(),
+        name,
+        tests,
         when,
         notify,
         enabled: true,
@@ -1840,7 +1867,8 @@ fn when_of(v: &Value) -> Res<(schedule::When, schedule::Notify)> {
         Some("week") => schedule::Every::Week,
         Some("hours") => schedule::Every::Hours,
         Some("minutes") => schedule::Every::Minutes,
-        _ => return Err("The schedule's timing is unclear (daily, weekdays, weekly, every N hours, or a release watch every N minutes)".into()),
+        Some("release") => schedule::Every::Release,
+        _ => return Err("The schedule's timing is unclear (daily, weekdays, weekly, every N hours, before each release, or a release watch every N minutes)".into()),
     };
     let text = |k: &str| v[k].as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
     let hours = every == schedule::Every::Hours;
@@ -1848,7 +1876,7 @@ fn when_of(v: &Value) -> Res<(schedule::When, schedule::Notify)> {
     let when = schedule::When {
         every,
         minutes: minutes.then(|| v["minutes"].as_u64().and_then(|n| u16::try_from(n).ok()).unwrap_or(0)),
-        time: if hours || minutes { String::new() } else { v["time"].as_str().unwrap_or("").to_owned() },
+        time: if hours || minutes || every == schedule::Every::Release { String::new() } else { v["time"].as_str().unwrap_or("").to_owned() },
         day: (every == schedule::Every::Week).then(|| v["day"].as_u64().and_then(|d| u8::try_from(d).ok()).unwrap_or(0)),
         hours: hours.then(|| v["hours"].as_u64().and_then(|n| u8::try_from(n).ok()).unwrap_or(0)),
         from: if hours { text("from") } else { None },
@@ -2308,12 +2336,15 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
     if let Some(why) = missing_secrets(&t) {
         return Err(why);
     }
-    let with_schedule = match mode {
-        Some("schedule") => true,
-        Some("test") | None => false,
-        Some(_) => return Err("Unknown choice".into()),
+    // S5: the card's three one-click schedules ("preset:night" …), with a Mac notification.
+    let preset = mode.and_then(|m| m.strip_prefix("preset:")).map(|k| schedule::presets().into_iter().find(|p| p.0 == k).map(|p| p.3).ok_or("Unknown choice")).transpose()?;
+    let from_preset = preset.is_some();
+    let sched = match (mode, preset) {
+        (_, Some(when)) => Some((when, schedule::Notify { os: true, ..Default::default() })),
+        (Some("schedule"), _) => Some(when_of(v.get("schedule").filter(|x| !x.is_null()).ok_or("This card has no schedule: use Save test only")?)?),
+        (Some("test") | None, _) => None,
+        (Some(_), _) => return Err("Unknown choice".into()),
     };
-    let sched = if with_schedule { Some(when_of(v.get("schedule").filter(|x| !x.is_null()).ok_or("This card has no schedule: use Save test only")?)?) } else { None };
     let path = write_test(&tests_dir(), &t)?;
     let mut saved = json!({ "title": t.title, "test": t.id });
     let msg = match sched {
@@ -2323,7 +2354,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
             notify.webhook = false;
             let s = schedule::Schedule {
                 id: String::new(),
-                name: t.title.clone(),
+                name: if from_preset { schedule::auto_name(&t.title, &when) } else { t.title.clone() },
                 tests: path.to_string_lossy().into_owned(),
                 when,
                 notify,
@@ -2332,6 +2363,10 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
                 watch: None,
             };
             match schedule::save(s, None) {
+                Ok(s) if s.when.every == schedule::Every::Release => {
+                    saved["schedule"] = json!(s.id);
+                    "Saved. It runs before each release: when you ask me \"Can we release?\", or with Run now on the Schedules page.".to_owned()
+                }
                 Ok(s) => {
                     saved["schedule"] = json!(s.id);
                     let first = match schedule::start_now(&s.id) {
@@ -2782,6 +2817,17 @@ mod tests {
         assert!(drop_card_claims("KAN-123 was created in Shop (KAN).", false, &["KAN-123".into()]).1.is_empty());
         assert!(drop_card_claims("Here is the bug with the updated numbers.", true, &[]).1.is_empty());
         assert_eq!(drop_card_claims("I've filed the Jira issue.", true, &[]).1.len(), 1, "a bug preview card is not a Jira card");
+    }
+
+    /// S5: what counts as asking whether a release can go out (it starts "before each release").
+    #[test]
+    fn a_release_question_is_told_apart() {
+        for s in ["Can we release?", "release check please", "Are we ready to release?", "boleh rilis?", "ok to release today?", "Can we ship this release?"] {
+            assert!(asks_release(s), "{s}");
+        }
+        for s in ["watch the release every 10 minutes for 2 hours", "write the release notes", "after the release, check the login", "run the login test", "release"] {
+            assert!(!asks_release(s), "{s}");
+        }
     }
 
     fn turn(user: &str) -> Turn {

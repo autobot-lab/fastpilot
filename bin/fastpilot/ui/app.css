@@ -672,3 +672,13 @@ dialog.appdlg .seg [aria-checked="true"]{border:var(--bw) solid var(--ink);backg
 dialog.appdlg fieldset{border:0;padding:0;margin:0 0 12px}
 dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .err-line{color:var(--bad);font-size:13px;margin:2px 0 0}
+
+/* S5: Schedules presets (seamless-v13 s4a) */
+.sched-presets h2{font:600 17px var(--sans);margin:0 0 4px}
+.presets{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:12px 0}
+.preset{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.preset.on{border:2px solid var(--ink)}
+.preset-top{display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px}
+.pill.ok{font:500 11px var(--mono);background:var(--ok-soft,#e3f4e8);color:var(--ok,#1d6b36);padding:3px 9px;border-radius:6px}
+.sched-made .notice{margin-top:4px}
+.presets-inline{display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;margin-top:6px}

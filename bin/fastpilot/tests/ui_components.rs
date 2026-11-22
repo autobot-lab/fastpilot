@@ -150,8 +150,9 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
 
     // Schedules and Settings draw their headers with PageHeader too.
     open(c, "#/schedules", "Nothing is scheduled").await;
-    let top = eval(c, "[document.querySelector('#top .ph-title h1').textContent, document.querySelector('#top .right button').textContent, /null/.test(document.getElementById('top').textContent)].join('|')").await;
-    assert_eq!(top, "\"Schedules|New schedule|false\"");
+    // S5/A1 (seamless-v13 s4a): title and subtitle; "New schedule" lives under More options.
+    let top = eval(c, "[document.querySelector('#top .ph-title h1').textContent, document.querySelector('#top .ph-title .s').textContent, !!document.querySelector('#top .right'), /null/.test(document.getElementById('top').textContent)].join('|')").await;
+    assert_eq!(top, "\"Schedules|Run your tests by themselves|false|false\"");
     assert_eq!(eval(c, "document.querySelectorAll('#body .empty button.p').length").await, "1", "one main button in the empty state");
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "document.querySelector('#top .ph-title h1').textContent").await, "\"Settings\"");
@@ -291,7 +292,7 @@ async fn buttons_use_one_set_of_words() {
     // Schedules: a new one is "Create schedule"; editing it is "Save changes".
     eval(c, &format!("(async () => {{ await api('/api/schedules', {{ action: 'save', schedule: {{ id: '', name: 'Night run', tests: {tests:?}, when: {{ every: 'day', time: '02:00' }}, notify: {{ os: true }}, enabled: true }} }}); return 'ok'; }})()")).await;
     open(c, "#/schedules", "Night run").await;
-    eval(c, "([...document.querySelectorAll('#top button')].find((b) => b.textContent.includes('New schedule')).click(), 'ok')").await;
+    eval(c, "([...document.querySelectorAll('#body .more button')].find((b) => b.textContent.includes('New schedule')).click(), 'ok')").await;
     assert!(eval(c, main_button).await.contains("Create schedule"), "a new schedule");
     eval(c, "(() => { schedForm = null; pageSchedules(); [...document.querySelectorAll('#body button')].find((b) => b.textContent.trim() === 'Edit').click(); return 'ok'; })()").await;
     let edit = eval(c, main_button).await;

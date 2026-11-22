@@ -31,6 +31,8 @@ pub enum Every {
     Hours,
     /// R1: every `minutes` minutes (5, 10, 15, 20, 30 or 60); only for a release watch.
     Minutes,
+    /// S5 (v0.7): no timer. It runs when someone asks Chat "Can we release?" (or presses Run now).
+    Release,
 }
 
 /// How long a release watch may last.
@@ -331,6 +333,12 @@ pub fn validate(s: &Schedule) -> Res<()> {
 
 /// Whether the time part of a schedule makes sense; the reason in the user's words if not.
 pub fn check_when(w: &When) -> Res<()> {
+    if w.every == Every::Release {
+        if w.day.is_some() || w.hours.is_some() || w.minutes.is_some() || w.from.is_some() || w.to.is_some() || !w.time.is_empty() {
+            return Err("\"Before each release\" has no time: it runs when you ask Chat \"Can we release?\"".into());
+        }
+        return Ok(());
+    }
     if w.every == Every::Minutes {
         if w.day.is_some() || w.hours.is_some() || w.from.is_some() || w.to.is_some() || !w.time.is_empty() {
             return Err("A release watch has only its minutes and how long it watches".into());
@@ -375,7 +383,7 @@ pub fn check_when(w: &When) -> Res<()> {
 
 /// The times of day a schedule runs (local time), in order.
 pub fn slots(w: &When) -> Vec<(u8, u8)> {
-    if w.every == Every::Minutes {
+    if matches!(w.every, Every::Minutes | Every::Release) {
         return Vec::new();
     }
     if w.every != Every::Hours {
@@ -391,7 +399,7 @@ pub fn slots(w: &When) -> Vec<(u8, u8)> {
 /// The days a schedule runs: `None` = every day, else 1 = Monday ... 7 = Sunday.
 pub fn run_days(w: &When) -> Option<Vec<u8>> {
     match w.every {
-        Every::Day | Every::Hours | Every::Minutes => None,
+        Every::Day | Every::Hours | Every::Minutes | Every::Release => None,
         Every::Weekday => Some((1..=5).collect()),
         Every::Week => Some(vec![w.day.unwrap_or(1).clamp(1, 7)]),
     }
@@ -405,6 +413,7 @@ pub fn describe(w: &When) -> String {
         Every::Weekday => format!("weekdays {}", w.time),
         Every::Week => format!("{} {}", DAYS.get(usize::from(w.day.unwrap_or(1).clamp(1, 7)) - 1).unwrap_or(&"Monday"), w.time),
         Every::Minutes => format!("every {} minutes", w.minutes.unwrap_or(10)),
+        Every::Release => "before each release (when you ask Chat \"Can we release?\")".to_owned(),
         Every::Hours => {
             let every = match w.hours.unwrap_or(1) {
                 1 => "every hour".to_owned(),
@@ -527,7 +536,7 @@ fn systemd_word(s: &str) -> String {
 pub fn systemd_units(s: &Schedule, exe: &str, path: &str) -> (String, String) {
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let days = match s.when.every {
-        Every::Day | Every::Hours | Every::Minutes => String::new(),
+        Every::Day | Every::Hours | Every::Minutes | Every::Release => String::new(),
         Every::Weekday => "Mon..Fri ".into(),
         Every::Week => format!("{} ", DAYS[usize::from(s.when.day.unwrap_or(1).clamp(1, 7)) - 1]),
     };
@@ -559,7 +568,7 @@ fn shell_quote(s: &str) -> String {
 /// One crontab line per minute-of-the-hour (every N hours from 08:30 is `30 8,10,12 ...`).
 pub fn cron_lines(s: &Schedule, exe: &str, path: &str) -> Vec<String> {
     let dow = match s.when.every {
-        Every::Day | Every::Hours | Every::Minutes => "*".to_owned(),
+        Every::Day | Every::Hours | Every::Minutes | Every::Release => "*".to_owned(),
         Every::Weekday => "1-5".to_owned(),
         Every::Week => (s.when.day.unwrap_or(1) % 7).to_string(),
     };
@@ -724,7 +733,8 @@ fn save_in(store: &mut Store, mut s: Schedule, webhook: Option<&str>) -> Res<Sch
     if s.notify.webhook && !has_webhook(&s.id) {
         return Err("Enter the webhook URL first, or turn off the webhook notification".into());
     }
-    if s.enabled {
+    // A "before each release" schedule has no timer, so no OS entry.
+    if s.enabled && s.when.every != Every::Release {
         install(&s)?;
     } else {
         uninstall(&s.id)?;
@@ -773,8 +783,83 @@ pub fn set_enabled(id: &str, on: bool) -> Res<()> {
     update(|store| {
         let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;
         s.enabled = on;
-        if on { install(s) } else { uninstall(id) }
+        if on && s.when.every != Every::Release { install(s) } else { uninstall(id) }
     })
+}
+
+/// S5 (v0.7): the three one-click schedules for the current app's tests, one set everywhere
+/// (Design Critic M1): `(key, title, what it means, when)`.
+pub fn presets() -> [(&'static str, &'static str, &'static str, When); 3] {
+    [
+        ("two-hours", "Every 2 hours (8–20)", "Between 8:00 and 20:00", When { every: Every::Hours, hours: Some(2), from: Some("08:00".into()), to: Some("20:00".into()), ..Default::default() }),
+        ("night", "Every night", "At 2:00", When { every: Every::Day, time: "02:00".into(), ..Default::default() }),
+        ("release", "Before each release", "When you ask Chat \"Can we release?\"", When { every: Every::Release, ..Default::default() }),
+    ]
+}
+
+/// What a schedule runs, in words: "All tests" for a folder, the test's title for one file.
+pub fn tests_label(tests: &str) -> String {
+    let p = Path::new(tests);
+    if !p.is_file() {
+        return "All tests".into();
+    }
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("# ").map(|x| x.trim().to_owned())).filter(|x| !x.is_empty()))
+        .unwrap_or_else(|| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+/// A name made from what runs and when (A1: no name field), e.g. "All tests · every 2 hours".
+pub fn auto_name(tests_label: &str, w: &When) -> String {
+    let when = match (w.every, w.hours, w.from.as_deref(), w.time.as_str()) {
+        (Every::Hours, Some(2), Some("08:00"), _) if w.to.as_deref() == Some("20:00") => "every 2 hours".to_owned(),
+        (Every::Day, _, _, "02:00") => "every night".to_owned(),
+        (Every::Release, ..) => "before each release".to_owned(),
+        _ => describe(w),
+    };
+    let mut first = tests_label.trim().to_owned();
+    if let Some(c) = first.get(..1) {
+        first = c.to_uppercase() + &first[1..];
+    }
+    let name = format!("{first} · {when}");
+    name.chars().take(80).collect()
+}
+
+/// S5: a preset for `tests` (owner `agent`): an existing schedule with the same tests and timing is
+/// turned on again rather than made twice; otherwise a new one, with a Mac notification. Returns
+/// the schedule and whether it is new.
+pub fn preset_on(key: &str, tests: &str, tests_label: &str, agent: Option<String>) -> Res<(Schedule, bool)> {
+    let (_, _, _, when) = presets().into_iter().find(|p| p.0 == key).ok_or("Unknown preset")?;
+    if let Some(s) = load().schedules.into_iter().find(|s| s.tests == tests && s.when == when && s.watch.is_none() && s.agent == agent) {
+        if !s.enabled {
+            set_enabled(&s.id, true)?;
+        }
+        return Ok((Schedule { enabled: true, ..s }, false));
+    }
+    let s = Schedule {
+        id: String::new(),
+        name: auto_name(tests_label, &when),
+        tests: tests.to_owned(),
+        when,
+        notify: Notify { os: true, ..Default::default() },
+        enabled: true,
+        agent,
+        watch: None,
+    };
+    Ok((save(s, None)?, true))
+}
+
+/// S5: someone asked Chat "Can we release?": start agent `agent`'s "before each release"
+/// schedules that are on. The names of those started.
+pub fn start_release(agent: &str) -> Vec<String> {
+    let mine = |s: &Schedule| s.agent.as_deref().unwrap_or(crate::agents::DEFAULT) == agent;
+    load()
+        .schedules
+        .into_iter()
+        .filter(|s| s.enabled && s.when.every == Every::Release && mine(s))
+        .filter(|s| start_now(&s.id).is_ok())
+        .map(|s| s.name)
+        .collect()
 }
 
 pub fn delete(id: &str) -> Res<()> {
@@ -1330,6 +1415,23 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S5 + A1: the one preset set, names made from what runs and when, and a release schedule
+    /// with no timer (so no OS entry).
+    #[test]
+    fn presets_names_and_the_release_kind() {
+        let p = presets();
+        assert_eq!(p.clone().map(|x| x.1), ["Every 2 hours (8–20)", "Every night", "Before each release"]);
+        assert_eq!(p.clone().map(|x| auto_name("All tests", &x.3)), ["All tests · every 2 hours", "All tests · every night", "All tests · before each release"]);
+        assert_eq!(auto_name("login works", &When { every: Every::Weekday, time: "09:00".into(), ..Default::default() }), "Login works · weekdays 09:00");
+        assert_eq!(slots(&p[0].3).len(), 7);
+        assert_eq!(slots(&p[1].3), [(2, 0)]);
+        let rel = &p[2].3;
+        assert!(check_when(rel).is_ok() && slots(rel).is_empty() && run_days(rel).is_none());
+        assert!(check_when(&When { every: Every::Release, time: "09:00".into(), ..Default::default() }).unwrap_err().contains("Can we release?"));
+        assert_eq!(describe(rel), "before each release (when you ask Chat \"Can we release?\")");
+        assert_eq!(tests_label("/nowhere/tests"), "All tests");
+    }
 
     /// R1: the first run is "before"; later only failures that are new and not sent yet count.
     #[test]
