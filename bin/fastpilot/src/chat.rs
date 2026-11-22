@@ -269,10 +269,18 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
         // An offer lasts as long as a card does (10 minutes).
         let offered_draft = c.jira_offered.take().filter(|d| now.saturating_sub(d["offered_ms"].as_u64().unwrap_or(0)) < change::EXPIRY_MS);
         let jira_offered = offered_draft.as_ref().map(offer_sig);
+        // Issues fastpilot created in this conversation (a click on a card): the bot may name them.
+        let created: Vec<String> = c
+            .msgs
+            .iter()
+            .flat_map(|m| &m.proposals)
+            .filter(|p| p.status == "applied" && p.kind.starts_with("jira_"))
+            .filter_map(|p| p.jira.as_ref().and_then(|j| j["result"]["key"].as_str()).map(str::to_owned))
+            .collect();
         let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None, taking_offer: false, from_kept: false };
         if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
             t.read_app = !m.tools.is_empty();
-            let (clean, proposals, attempts) = proposals_in(&m.text, &mut t);
+            let (clean, proposals, mut attempts) = proposals_in(&m.text, &mut t);
             m.text = clean.trim().to_owned();
             // S8: the release verdict and a bug report as cards, built from their fields.
             if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
@@ -282,6 +290,14 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             if let Some((card, rest)) = crate::report_cards::bug(&m.text) {
                 m.bug = Some(card);
                 m.text = rest.trim().to_owned();
+            }
+            // L061-1/2: the bot's words never claim a Jira card fastpilot did not make.
+            if !proposals.iter().any(|p| p.kind.starts_with("jira_") && p.status == "pending") {
+                let (kept, removed) = drop_card_claims(&m.text, m.bug.is_some(), &created);
+                if !removed.is_empty() {
+                    m.text = kept;
+                    attempts.push(json!({ "kind": "jira", "from": "claim", "what": "A claim that a Jira card was made", "said": clip(&removed.join(" "), 600) }));
+                }
             }
             m.proposals = proposals;
             m.page_attempts = attempts;
@@ -1064,6 +1080,59 @@ pub(crate) fn takes_offer(user: &str) -> bool {
 }
 
 /// The bot is told this in the turn where the user's "yes" takes the draft shown last time.
+/// L061-1/2 (QA): with no card, the bot wrote "I've filed it as described" or "Here is the bug
+/// with the updated numbers. It replaces the earlier version". In an answer where fastpilot made no
+/// Jira card, such sentences are removed (the page says so instead). Kept: offers and questions
+/// ("I can file it"), and sentences naming an issue fastpilot created (`created`). With a bug-report
+/// preview card in the answer, "here is the bug" is about that card and is kept.
+fn drop_card_claims(text: &str, bug_card: bool, created: &[String]) -> (String, Vec<String>) {
+    const MODAL: &[&str] = &["can", "could", "would", "will", "shall", "should", "may", "might", "want", "wants", "if", "not", "no", "never", "cannot", "can't", "won't", "don't", "didn't", "isn't", "wasn't", "hasn't", "haven't", "nothing"];
+    const STRONG: &[&str] = &["filed", "submitted", "logged", "raised", "posted", "created", "sent", "reported", "recreated"];
+    const WEAK: &[&str] = &["updated", "replaced", "replaces", "added", "opened", "made", "changed", "edited", "fixed"];
+    const PLACE: &[&str] = &["jira", "issue", "issues", "ticket", "tickets", "card", "cards"];
+    const PHRASES: &[&str] = &["updated numbers", "updated version", "replaces the earlier", "replaced the earlier", "replaces the old", "replaced the old", "new version of the bug"];
+    let claim = |s: &str| {
+        let low = s.to_lowercase();
+        if low.contains('?') || created.iter().any(|k| s.contains(k.as_str())) {
+            return false;
+        }
+        let w: Vec<&str> = low.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect();
+        if w.iter().any(|x| MODAL.contains(x) || x.ends_with("n't")) {
+            return false;
+        }
+        let has = |set: &[&str]| w.iter().any(|x| set.contains(x));
+        let thing = has(PLACE) || (!bug_card && w.iter().any(|x| matches!(*x, "it" | "bug" | "bugs" | "report")));
+        (has(STRONG) && thing) || (has(WEAK) && has(PLACE)) || (!bug_card && PHRASES.iter().any(|p| low.contains(p)))
+    };
+    // Sentences: up to a `.` or `!` before a space or the end, or a line end.
+    let mut parts: Vec<&str> = Vec::new();
+    let (b, mut start) = (text.as_bytes(), 0);
+    for i in 0..b.len() {
+        let end = b[i] == b'\n' || (matches!(b[i], b'.' | b'!') && b.get(i + 1).is_none_or(|n| n.is_ascii_whitespace()));
+        if end {
+            parts.push(&text[start..=i]);
+            start = i + 1;
+        }
+    }
+    parts.push(&text[start..]);
+    let (mut kept, mut removed) = (String::new(), Vec::new());
+    for p in parts {
+        if claim(p) {
+            removed.push(p.trim().to_owned());
+            if p.ends_with('\n') {
+                kept.push('\n');
+            }
+        } else {
+            kept.push_str(p);
+        }
+    }
+    let mut kept = kept.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+    while kept.contains("\n\n\n") {
+        kept = kept.replace("\n\n\n", "\n\n");
+    }
+    (kept.trim().to_owned(), removed)
+}
+
 const OFFER_TAKEN: &str = "[fastpilot: the user's message accepts the Jira issue draft from your last answer. fastpilot shows its card below your answer itself, with the exact text the user saw; the user clicks Create issue to send it. Do not write a jira_issue proposal again and do not say you cannot create it: say in one short sentence that the card is below to check and click.]";
 
 /// The signature of an offered draft (its summary, as the card cleans it).
@@ -2681,6 +2750,35 @@ mod tests {
         t.open_notes = (0..5).map(|i| format!("note {i}")).collect();
         let p = note_card(&v, "", &mut t, &mut Vec::new());
         assert!(p.is_some_and(|p| p.status == "refused"), "6th open card");
+    }
+
+    /// L061-1/2 (QA, v0.6.0 final re-test Lows 1 and 2): the bot's words never claim a Jira card
+    /// fastpilot did not make; offers, questions and issues fastpilot created stay.
+    #[test]
+    fn no_claim_of_a_card_fastpilot_did_not_make() {
+        let (t, r) = drop_card_claims("I've filed it as described. The login test fails at step 3.", false, &[]);
+        assert_eq!((t.as_str(), r.as_slice()), ("The login test fails at step 3.", &["I've filed it as described.".to_owned()][..]));
+        let (t, r) = drop_card_claims("I ran it 5 more times.\n\nHere is the bug with the updated numbers. It replaces the earlier version.\n\nTotal is 0.5 s slower.", false, &[]);
+        assert_eq!(t, "I ran it 5 more times.\n\nTotal is 0.5 s slower.");
+        assert_eq!(r.len(), 2, "{r:?}");
+        for s in ["The Jira issue has been created.", "Done: the ticket was updated with the new steps.", "Sent it to Jira."] {
+            assert_eq!(drop_card_claims(s, false, &[]).1.len(), 1, "{s}");
+        }
+        // Not claims: offers, questions, refusals, results of the test itself.
+        for s in [
+            "I can file it in KAN if you say so.",
+            "Do you want me to create a Jira issue?",
+            "Nothing was sent to Jira.",
+            "The login test passed 5 of 5 times. The page was updated after the click.",
+            "I opened the login page and typed the password.",
+            "The card below shows the exact text. Click Create issue to send it.",
+        ] {
+            assert_eq!(drop_card_claims(s, false, &[]), (s.to_owned(), vec![]), "{s}");
+        }
+        // An issue fastpilot created, by its key; and the bug-report preview card of this answer.
+        assert!(drop_card_claims("KAN-123 was created in Shop (KAN).", false, &["KAN-123".into()]).1.is_empty());
+        assert!(drop_card_claims("Here is the bug with the updated numbers.", true, &[]).1.is_empty());
+        assert_eq!(drop_card_claims("I've filed the Jira issue.", true, &[]).1.len(), 1, "a bug preview card is not a Jira card");
     }
 
     fn turn(user: &str) -> Turn {

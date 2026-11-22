@@ -287,6 +287,14 @@ fn a_follow_up_gets_the_card_and_a_lost_answer_is_not_a_silent_retry() {
     assert!(bot["proposals"].as_array().is_none_or(|p| p.is_empty()), "{bot}");
     let audit = std::fs::read_to_string(d.join("audit.jsonl")).unwrap_or_default();
     assert!(audit.lines().filter(|l| l.contains("\"setting\":\"jira\"")).all(|l| !l.contains("refused-no-provenance")) && audit.contains("\"result\":\"not-asked\""), "{audit}");
+    // L061-1/2 (QA v0.6.0 Lows 1 and 2): no new card, so the bot's "I've filed it" and "It
+    // replaces the earlier version" are taken out, and the page says no card was made.
+    let bot = say(&ui, "run it again with the new numbers");
+    assert!(bot["proposals"].as_array().is_none_or(|p| p.is_empty()), "{bot}");
+    assert_eq!(bot["text"], "I ran the login test 5 more times.", "{bot}");
+    let a = bot["page_attempts"].as_array().and_then(|a| a.iter().find(|a| a["from"] == "claim")).cloned().unwrap_or_default();
+    assert!(a["kind"] == "jira" && a["said"].as_str().is_some_and(|s| s.contains("I've filed it as described.") && s.contains("It replaces the earlier version.")), "{bot}");
+    assert!(fake.writes().is_empty(), "nothing was sent");
 
     // Security Low 3: the comment reaches Jira but the answer is lost.
     let bot = say(&ui, "add the result to KAN-12");

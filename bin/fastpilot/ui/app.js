@@ -1236,7 +1236,7 @@ function pageAttempts(list) {
   // One box per kind of attempt: a rule (note), a Jira write, a limit.
   const groups = [
     [page.filter((a) => a.kind === "note"), [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]],
-    [page.filter((a) => a.kind === "jira" && a.from !== "none"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
+    [page.filter((a) => a.kind === "jira" && a.from !== "none" && a.from !== "claim"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
     [page.filter((a) => a.kind !== "note" && a.kind !== "jira"), [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."]],
   ];
   // QA bug 1: the bot drafted a Jira write the user's message did not ask for in so many words.
@@ -1246,6 +1246,12 @@ function pageAttempts(list) {
       h("div", {}, h("b", {}, "No Jira card was made. "), "Your message did not ask for one in your own words, so nothing was sent. ",
         a.say ? ["Say “", a.say, "” to get the card", a.offer ? ", or reply “yes” to get a card for this draft." : "."] : null,
         h("details", {}, h("summary", {}, "See the bot's draft"), h("pre", {}, a.said)))));
+  });
+  // L061-1/2: the bot wrote that it filed or changed a Jira card, but fastpilot made none.
+  page.filter((a) => a.kind === "jira" && a.from === "claim").forEach((a) => {
+    out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
+      h("div", {}, h("b", {}, "No Jira card was made in this answer. "), "The bot wrote that it filed or changed one, which was not true, so those words were taken out. Nothing was sent to Jira.",
+        h("details", {}, h("summary", {}, "See the words taken out"), h("pre", {}, a.said)))));
   });
   groups.forEach(([list, words]) => {
     if (!list.length) return;
