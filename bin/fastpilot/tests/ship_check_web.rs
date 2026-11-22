@@ -287,10 +287,13 @@ async fn ship_check_measures_speed_and_flags_a_slower_page() {
     // One second slower.
     delay.store(1200, std::sync::atomic::Ordering::SeqCst);
     let slow = check(&client, &url).await;
-    println!("{slow}");
-    assert!(slow.contains("✗ Speed") && slow.contains("% slower") && slow.contains("Loads in ") && slow.contains("Compared with the check of "), "{slow}");
+    assert!(slow.contains("✗ Speed") && slow.contains("slower") && slow.contains("Loads in ") && slow.contains("Compared with the check of "), "{slow}");
     assert!(slow.contains("Verdict: SHIP WITH FIXES") && !slow.contains("DO NOT SHIP"), "speed alone is a fix, never DO NOT SHIP: {slow}");
-    assert!(slow.contains("Details: LCP ") && slow.contains("CLS "), "{slow}");
+    assert!(slow.contains("Details: main content shown = LCP ") && slow.contains("layout shift = CLS "), "{slow}");
+    // QA (v0.6 Low 7): plain words in the row, and a big change in words with both values.
+    let row = slow.lines().find(|l| l.contains("✗ Speed")).expect("speed row");
+    assert!(row.contains("Main content shown ") && row.contains("Layout shift ") && !row.contains("LCP") && !row.contains("CLS"), "{row}");
+    assert!(row.contains("▲ much slower (0.") && row.contains(" s → 1.") && !row.contains("% slower"), "1.2 s instead of 0.04 s is much slower, not 3000%: {row}");
     // Stored per site on this computer (fastpilot's folder, by project), never in the project.
     let real = std::fs::canonicalize(&dir).expect("real");
     let hex: String = ring::digest::digest(&ring::digest::SHA256, real.to_string_lossy().as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
@@ -299,7 +302,7 @@ async fn ship_check_measures_speed_and_flags_a_slower_page() {
     let stored: Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("ship file")).expect("json");
     let samples = stored.as_array().expect("samples");
     assert_eq!(samples.len(), 2, "{stored}");
-    assert!(samples[1]["flags"].as_array().is_some_and(|f| f.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Loads in ") && t.contains("% slower)")))), "{stored}");
+    assert!(samples[1]["flags"].as_array().is_some_and(|f| f.iter().any(|x| x.as_str().is_some_and(|t| t.starts_with("Loads in ") && t.contains("(much slower)")))), "{stored}");
     assert!(samples[0]["load_ms"].as_u64().is_some() && samples[1]["load_ms"].as_u64() > samples[0]["load_ms"].as_u64(), "{stored}");
     assert_eq!((samples[1]["viewport"].as_str(), samples[1]["connection"].as_str()), (Some("1280x800"), Some("normal")));
     // A one-time link is never opened again; speed not measured is not INCONCLUSIVE by itself.

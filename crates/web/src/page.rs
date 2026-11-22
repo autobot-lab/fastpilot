@@ -1517,6 +1517,13 @@ impl Driver for WebPage {
         let (mut doc_ts, mut doc_wall, mut load_ts, mut lcp_at) = (None::<f64>, None::<f64>, None::<f64>, None::<f64>);
         let mut cls = 0.0f64;
         let mut urls: HashMap<String, String> = HashMap::new();
+        // Page text is kept short while it comes in (Security re-review Low 1): at most 50 of each,
+        // 300 characters each.
+        fn keep(list: &mut Vec<String>, t: String) {
+            if list.len() < 50 {
+                list.push(if t.chars().count() > 300 { t.chars().take(300).collect::<String>() + "…" } else { t });
+            }
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut settle: Option<tokio::time::Instant> = None;
         loop {
@@ -1548,13 +1555,13 @@ impl Driver for WebPage {
                 "Network.loadingFinished" => s.bytes += p["encodedDataLength"].as_f64().unwrap_or(0.0).max(0.0) as u64,
                 "Network.loadingFailed" if p["canceled"].as_bool() != Some(true) && p["errorText"] != "net::ERR_ABORTED" => {
                     let u = p["requestId"].as_str().and_then(|id| urls.get(id)).cloned().unwrap_or_default();
-                    s.failed.push(format!("{} {u}", p["errorText"].as_str().unwrap_or("failed")));
+                    keep(&mut s.failed, format!("{} {u}", p["errorText"].as_str().unwrap_or("failed")));
                 }
                 "Network.responseReceived" => {
                     let status = p["response"]["status"].as_u64().unwrap_or(0);
                     let u = p["response"]["url"].as_str().unwrap_or("");
                     if status >= 400 && !u.ends_with("/favicon.ico") {
-                        s.failed.push(format!("HTTP {status} {u}"));
+                        keep(&mut s.failed, format!("HTTP {status} {u}"));
                     }
                 }
                 "Page.loadEventFired" if load_ts.is_none() => {
@@ -1577,26 +1584,17 @@ impl Driver for WebPage {
                 }
                 "Runtime.exceptionThrown" => {
                     let d = &p["exceptionDetails"];
-                    s.errors.push(format!("exception: {}", d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("")));
+                    keep(&mut s.errors, format!("exception: {}", d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("")));
                 }
                 "Runtime.consoleAPICalled" if matches!(p["type"].as_str(), Some("error" | "assert")) => {
                     let a = &p["args"][0];
-                    s.errors.push(format!("console.error: {}", a["value"].as_str().or(a["description"].as_str()).unwrap_or("")));
+                    keep(&mut s.errors, format!("console.error: {}", a["value"].as_str().or(a["description"].as_str()).unwrap_or("")));
                 }
                 _ => {}
             }
         }
         if timeline {
             let _ = self.call("PerformanceTimeline.enable", json!({ "eventTypes": [] })).await;
-        }
-        // Page text is kept short: at most 50 of each, 300 characters each.
-        for list in [&mut s.errors, &mut s.failed] {
-            list.truncate(50);
-            for t in list.iter_mut() {
-                if t.chars().count() > 300 {
-                    *t = t.chars().take(300).collect::<String>() + "…";
-                }
-            }
         }
         let ms = |secs: f64| (secs.is_finite() && (0.0..600.0).contains(&secs)).then(|| (secs * 1000.0).round() as u64);
         s.load_ms = match (doc_ts, load_ts) {

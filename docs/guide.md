@@ -699,7 +699,7 @@ For each page, fastpilot opens it in Chrome and checks six things:
 - **Accessibility basics**: page language and title, images without `alt`, fields, buttons and links
   without a name, and repeated ids.
 - **Speed**, measured last, from Chrome itself (DevTools events; nothing is added to the page):
-  - **Loads in** (load time), **Main content appears** (LCP), **Layout jumps** (CLS), requests and
+  - **Loads in** (load time), **Main content shown** (LCP), **Layout shift** (CLS), requests and
     their size, and page errors. Always at 1280 × 800 on a normal connection.
   - A value Chrome does not give is "not measured", never estimated.
   - The page is opened once more with a plain `GET`. A page that came from a form, or whose address
@@ -712,7 +712,10 @@ For each page, fastpilot opens it in Chrome and checks six things:
     addresses, test variables, and the values of code or key parameters are masked; in page errors and
     failed requests every parameter value is. It is compared
     with the previous check of the same page. Flagged: more than 20% **and** more than 0.3 s slower,
-    layout jumps up by more than 0.1, a new page error or a new failed request. Within 10% is "no change".
+    layout shift up by more than 0.1, a new page error or a new failed request. Within 10% is "no change";
+    more than twice as slow is "much slower (0.2 s → 3.4 s)" and a quarter of the time or less is
+    "much faster", never a huge percentage. LCP and CLS appear only in the Details line and in a
+    tooltip on the dashboard's release card.
   - Speed alone gives at most SHIP WITH FIXES, never DO NOT SHIP, and "not measured" does not change
     the verdict.
 

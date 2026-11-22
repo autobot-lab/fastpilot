@@ -1298,10 +1298,15 @@ const mdText = (t) => plainText(t).replace(/[\\`*_[\]()<>!#|~]/g, (c) => "\\" + 
 async function copyText(text, what) {
   try { await navigator.clipboard.writeText(plainText(text)); toast(what + " copied", true); } catch (e) { toast("Could not copy: " + e.message); }
 }
+// PF4: the Speed row says it in plain words; the technical names are in a tooltip.
+const SPEED_TERMS = [["Main content shown", "Main content shown = LCP (Largest Contentful Paint)"], ["Layout shift", "Layout shift = CLS (Cumulative Layout Shift)"], ["Loads in", "Loads in = time until the page's load event"]];
+function speedTerms(detail) {
+  return SPEED_TERMS.filter(([w]) => String(detail || "").includes(w)).map(([, d]) => d).join(" · ") || null;
+}
 function verdictCard(v) {
   const [cls, mark, fallback] = VERDICT_LOOK[v.verdict] || VERDICT_LOOK.INCONCLUSIVE;
   const rows = (v.evidence || []).map((e) => h("div", { class: "vrow" },
-    h("span", { class: "vname" }, e.name), h("span", { class: "vdetail" }, e.detail || ""),
+    h("span", { class: "vname" }, e.name), h("span", { class: "vdetail", title: speedTerms(e.detail) }, e.detail || ""),
     h("span", { class: "vstate " + e.state.replace(/ /g, "-") }, e.state)));
   const fixes = (v.fixes || []).length
     ? h("div", { class: "vfix" }, h("b", {}, "Fix before, or soon after, release"), h("ol", {}, v.fixes.map((f) => h("li", {}, f))))
