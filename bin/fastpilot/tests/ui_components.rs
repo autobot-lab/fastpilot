@@ -149,11 +149,16 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
     assert_eq!(notes, "\"status:Done: it|status:Note: it|alert:Warning: it|alert:Error: it\"");
 
     // Schedules and Settings draw their headers with PageHeader too.
-    open(c, "#/schedules", "Nothing is scheduled").await;
+    // L07-1: no saved test yet: one empty state with one way to Chat, no form with an empty list.
+    open(c, "#/schedules", "No saved test yet").await;
+    let first = eval(c, "[document.querySelectorAll('#body .empty button.p').length, document.querySelector('#body .empty button.p').textContent, !!document.querySelector('.sched-form, .more, .presets'), [...document.querySelectorAll('#body button')].some((b) => b.textContent.includes('New schedule'))].join('|')").await;
+    assert_eq!(first, "\"1|Make a test first in Chat|false|false\"");
     // S5/A1 (seamless-v13 s4a): title and subtitle; "New schedule" lives under More options.
     let top = eval(c, "[document.querySelector('#top .ph-title h1').textContent, document.querySelector('#top .ph-title .s').textContent, !!document.querySelector('#top .right'), /null/.test(document.getElementById('top').textContent)].join('|')").await;
     assert_eq!(top, "\"Schedules|Run your tests by themselves|false|false\"");
     assert_eq!(eval(c, "document.querySelectorAll('#body .empty button.p').length").await, "1", "one main button in the empty state");
+    eval(c, "document.querySelector('#body .empty button.p').click(), 'ok'").await;
+    assert!(eval(c, "location.hash").await.starts_with("\"#/agents"), "it opens Chat");
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "document.querySelector('#top .ph-title h1').textContent").await, "\"Settings\"");
     open(c, "#/map", "Which parts of your app have a test").await;
@@ -284,7 +289,7 @@ async fn buttons_use_one_set_of_words() {
             assert!(!js.contains(old), "{f} still has the button {old}");
         }
     }
-    let d = dashboard("ui-verbs", |_| {}).await;
+    let d = dashboard("ui-verbs", |home| std::fs::write(home.join("tests/login.md"), "# Login\n- Open the shop\n").expect("test")).await;
     let c = &d.client;
     let tests = d.home.join("tests").display().to_string();
     let main_button = "[...document.querySelectorAll('#body button.p, #top button.p')].map((b) => b.textContent.trim()).join('|')";

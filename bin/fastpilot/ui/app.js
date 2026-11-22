@@ -2073,7 +2073,8 @@ function schedRelease() {
     h("div", { class: "prop-body" },
       h("h2", {}, "Before and after a release"),
       h("div", { class: "rel-row" },
-        h("div", {}, h("b", {}, "Check before release"),
+        // L07-1: the row says what happens; the button is the action.
+        h("div", {}, h("b", {}, "Tests and a ship check"),
           h("div", { class: "s" }, app.web ? `Runs the tests and a ship check of ${app.name ? app.name + " at " : ""}${app.web}, then says Ship or Do not ship.` : "Runs the tests and a ship check, then says Ship or Do not ship.")),
         check),
       h("div", { class: "rel-row" },
@@ -2096,10 +2097,20 @@ function pageSchedules() {
       h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" },
         h("thead", {}, h("tr", {}, ["Agent", "Name", "When", "Next", "Last", "Notify", "On", ""].map((t) => h("th", {}, t)))),
         h("tbody", {}, list.map(schedRow)))))
+    // L07-1: one way in. With saved tests the presets above (and More options) make a schedule, so
+    // the empty list has no button of its own.
     : h("div", { class: "grp" }, h("div", { class: "gh" }, "schedules · empty"),
-      UI.empty({ icon: "clock", title: "Nothing is scheduled",
-        text: "Saved tests can run by themselves, at a fixed time or every few hours. You get a message only when something fails. Or type in Chat: \"run the checkout tests every 2 hours\".",
-        action: { label: "New schedule", icon: "plus", onclick: openForm } }));
+      UI.empty({ icon: "clock", title: "Nothing is scheduled yet",
+        text: "Turn on one of the buttons above, or say it in Chat: \"run the checkout tests every 2 hours\". You get a message only when something fails." }));
+  // L07-1: no saved test yet: nothing to schedule, so no form with an empty list; one way to Chat.
+  if (!(schedData.tests || []).length) {
+    const first = h("div", { class: "grp sched-first" },
+      UI.empty({ icon: "tests", title: "No saved test yet",
+        text: "A schedule runs your saved tests by themselves. Make your first test in Chat, then come back here.",
+        action: { label: "Make a test first in Chat", icon: "chat", onclick: () => { location.hash = "#/agents"; } } }));
+    $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, first, list.length ? table : null));
+    return;
+  }
   // A1: the full form (which tests, other times, Slack and GitHub) is under More options.
   const more = UI.moreOptions({ label: "More options", open: !!schedForm || schedMoreOpen },
     h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages."),
