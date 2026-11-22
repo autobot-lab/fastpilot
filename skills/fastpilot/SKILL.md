@@ -119,6 +119,10 @@ on, do not undo what they entered, and mention the takeover when you report the 
   thing that must be visible and one that must not. "Create a test for … and save it": show it first,
   save only after the user agrees, never overwrite an existing file (pick a new id), secrets as
   `${NAME}`.
+- **Side by side** ("run the login test on all three"): `platform: web, android, ios` (or `all`) with one
+  `target web: …`, `target android: …`, `target ios: …` line each. `fastpilot run` runs it once per
+  platform and its report compares the steps side by side. `sessions: web (…), android (…)` is different:
+  one run that uses several devices at once.
 - **"Run a regression" / "run all tests"**: follow the `regression` skill. It runs every saved test and
   reports **Newly failing** (New since last run) first, then still failing, flaky, blocked, passed.
 - **"Run the Android tests only"**: the saved tests with `platform: android` (or the ones the user names).

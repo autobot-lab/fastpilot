@@ -126,6 +126,11 @@ impl Pool {
         format!("{}{note}", parts.join(", "))
     }
 
+    /// PF5: a healthy device of `p` is known to the pool (web always: each test launches Chrome).
+    pub fn has(&self, p: Platform) -> bool {
+        p == Platform::Web || lock(&self.all).iter().any(|d| d.platform == p)
+    }
+
     /// One device per mobile platform in `need`, preferring ones not in `avoid` (a retry
     /// moves to another device when there is one). Waits while they are all leased; fails
     /// when no healthy device of a needed platform is left.
@@ -207,6 +212,7 @@ mod tests {
             Box::new(|d| Box::pin(async move { d.id != "sick" })),
         ));
         assert!(pool.lease(&[Platform::Web], &[]).await.expect("web").is_empty());
+        assert!(pool.has(Platform::Web) && pool.has(Platform::Ios) && !Pool::new(vec![], Box::new(|_| Box::pin(async { true }))).has(Platform::Ios));
         // A retry after a failure on a1 gets another device.
         let a = pool.lease(&[Platform::Android], &["a1".into()]).await.expect("lease");
         assert_eq!(a, vec![dev(Platform::Android, "a2")]);

@@ -504,6 +504,17 @@ pre.code-block{white-space:pre-wrap;font:12.5px var(--mono)}
 .q-rows li{grid-template-columns:minmax(0,1.6fr) minmax(0,.8fr) minmax(0,2fr)}
 .top .pill.warn{background:var(--warn-soft);color:#8a520a}
 .ag-st.queued{background:var(--warn-soft);color:#8a520a}
+/* PF5 Live summary row: one tile per platform (v11 f4b) */
+.sbs-live{grid-column:1/-1}
+.sbs-live .gh{text-transform:none;font:500 14px var(--sans);color:var(--ink)}.sbs-live .gh .right{margin-left:auto}
+.sbs-tiles{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:12px;padding:12px 16px}
+.sbs-tile{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.sbs-tile.waiting,.sbs-tile.not_run{border-style:dashed}
+.sbs-tile progress{width:100%;height:8px;accent-color:var(--acc)}
+.sbs-tile .s,.sbs-foot{color:var(--muted);font-size:12.5px}.sbs-foot{padding:0 16px 12px}
+.sbs-chip{display:inline-block;font:500 11.5px var(--mono);padding:1px 7px;border-radius:6px;margin-right:4px}
+.sbs-chip.ok{background:var(--acc-soft);color:var(--acc-ink)}.sbs-chip.bad{background:var(--bad-soft);color:var(--bad)}
+.sbs-chip.warn{background:var(--warn-soft);color:#8a520a}.sbs-chip.grey{background:var(--soft);color:var(--muted);border:1px solid var(--line)}
 
 /* S8 release verdict and bug report preview */
 .verdict,.bugcard{max-width:620px}

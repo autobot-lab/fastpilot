@@ -143,40 +143,137 @@ pub struct Case {
     pub platform: String,
     pub text: String,
     pub path: PathBuf,
+    /// PF5: set on the run of one platform of a side-by-side test.
+    pub side: Option<Side>,
+}
+
+/// PF5: which side-by-side test a case is one platform of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Side {
+    /// The test's own id (`login-side-by-side`); each platform's run has `<id>-<platform>`.
+    pub group: String,
+    /// Every platform the test lists, in column order (web, Android, iPhone).
+    pub platforms: Vec<Platform>,
+    /// The test's numbered steps (its `- ` lines): the rows of the side-by-side report.
+    pub steps: Vec<String>,
+}
+
+/// The platforms named in `words`, in column order: web, Android, iPhone. With `all_word`, the
+/// word `all` names all three (only on a `platform:` line: a `sessions:` line holds addresses).
+fn named_platforms(words: &str, all_word: bool) -> Vec<Platform> {
+    let words: Vec<String> = words.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).map(str::to_owned).collect();
+    let all = all_word && words.iter().any(|w| w == "all");
+    [Platform::Web, Platform::Android, Platform::Ios].into_iter().filter(|p| all || words.iter().any(|w| *w == p.to_string())).collect()
+}
+
+/// `target web: …` / `target android: …` / `target ios: …` (PF5): `(platform, target)`.
+fn platform_target(line: &str) -> Option<(Platform, String)> {
+    let rest = line.trim().strip_prefix("target ")?;
+    let (name, value) = rest.split_once(':')?;
+    let p = match name.trim().to_ascii_lowercase().as_str() {
+        "web" => Platform::Web,
+        "android" => Platform::Android,
+        "ios" => Platform::Ios,
+        _ => return None,
+    };
+    Some((p, value.trim().to_owned()))
 }
 
 impl Case {
     fn parse(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let field = |k: &str| text.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim().to_owned()));
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Self {
-            id: field("id:").unwrap_or(stem),
+        Ok(Self::of_text(text, path, &stem))
+    }
+
+    fn of_text(text: String, path: &Path, stem: &str) -> Self {
+        let field = |k: &str| text.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim().to_owned()));
+        Self {
+            id: field("id:").unwrap_or_else(|| stem.to_owned()),
             title: text.lines().find_map(|l| l.strip_prefix("# ").map(str::to_owned)).unwrap_or_default(),
             platform: field("platform:").unwrap_or_else(|| "web".into()),
             text,
             path: path.to_owned(),
-        })
+            side: None,
+        }
     }
 
     /// Platforms the test uses (`platform:` and `sessions:` lines); web when none is named.
     pub fn platforms(&self) -> Vec<Platform> {
-        let lines: String = self
-            .text
-            .lines()
-            .filter(|l| l.trim_start().starts_with("platform:") || l.trim_start().starts_with("sessions:"))
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase();
-        let mut out: Vec<Platform> = [Platform::Web, Platform::Android, Platform::Ios]
-            .into_iter()
-            .filter(|p| lines.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == p.to_string()))
-            .collect();
+        let lines = |k: &str| self.text.lines().filter_map(|l| l.trim_start().strip_prefix(k)).collect::<Vec<_>>().join(" ");
+        let (listed, sessions) = (named_platforms(&lines("platform:"), true), named_platforms(&lines("sessions:"), false));
+        let mut out: Vec<Platform> = [Platform::Web, Platform::Android, Platform::Ios].into_iter().filter(|p| listed.contains(p) || sessions.contains(p)).collect();
         if out.is_empty() {
             out.push(Platform::Web);
         }
         out
     }
+
+    /// The numbered steps: the test's `- ` (or `* `) lines, in order.
+    pub fn steps(&self) -> Vec<String> {
+        self.text
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("- ").or_else(|| l.trim_start().strip_prefix("* ")))
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// PF5: a `platform:` line with two or more platforms (or `all`) means "run it once on each".
+    /// A `sessions:` line keeps its meaning (one run that uses several devices at once).
+    pub fn side_by_side(&self) -> Option<Vec<Platform>> {
+        if self.side.is_some() || self.text.lines().any(|l| l.trim_start().starts_with("sessions:")) {
+            return None;
+        }
+        let line = self.text.lines().find_map(|l| l.trim_start().strip_prefix("platform:"))?;
+        let ps = named_platforms(line, true);
+        (ps.len() >= 2).then_some(ps)
+    }
+
+    /// PF5: the test as it runs on `p` alone: `platform: <p>` and that platform's target as its
+    /// `target:` (the other platforms' target lines left out).
+    fn on(&self, p: Platform, all: &[Platform]) -> Self {
+        let own = self.text.lines().any(|l| platform_target(l).is_some_and(|(q, _)| q == p));
+        let text: String = self
+            .text
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim_start();
+                if t.starts_with("platform:") {
+                    return Some(format!("platform: {p}"));
+                }
+                if let Some((q, value)) = platform_target(l) {
+                    return (q == p).then(|| format!("target: {value}"));
+                }
+                if t.starts_with("target:") && own {
+                    return None;
+                }
+                Some(l.to_owned())
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
+        Self {
+            id: format!("{}-{p}", self.id),
+            title: self.title.clone(),
+            platform: p.to_string(),
+            text,
+            path: self.path.clone(),
+            side: Some(Side { group: self.id.clone(), platforms: all.to_vec(), steps: self.steps() }),
+        }
+    }
+
+    /// The runs this test makes: one per platform for a side-by-side test, else itself.
+    pub fn per_platform(self) -> Vec<Case> {
+        match self.side_by_side() {
+            Some(ps) => ps.iter().map(|p| self.on(*p, &ps)).collect(),
+            None => vec![self],
+        }
+    }
+}
+
+/// Every run of `cases`: side-by-side tests become one run per platform (PF5), next to each other.
+pub fn expand(cases: Vec<Case>) -> Vec<Case> {
+    cases.into_iter().flat_map(Case::per_platform).collect()
 }
 
 /// A secret a test names as `${NAME}` that this run cannot give it.
@@ -255,9 +352,30 @@ pub struct CaseResult {
     pub earlier_reports: Vec<PathBuf>,
     /// Devices of the last attempt.
     pub devices: Vec<String>,
+    /// PF5: the numbered steps the last attempt reported (side-by-side runs), by step number.
+    pub steps: Vec<StepResult>,
+}
+
+/// PF5: what one platform's run reported for one numbered step of the test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepResult {
+    /// 1-based, as numbered in the test.
+    pub step: usize,
+    pub passed: bool,
+    /// The text on the screen the step's check or tap matched (page text: data, shown as text only).
+    pub found: Option<String>,
+    pub notes: String,
+    /// The screen after the step (`step-<n>.jpg` in the run's folder).
+    pub shot: Option<PathBuf>,
 }
 
 impl CaseResult {
+    /// It never started (no device, a missing secret or setup, the breaker): nothing it says is
+    /// about the test itself.
+    pub fn not_run(&self) -> bool {
+        !self.passed && self.turns == 0 && matches!(self.class, Some(Class::Infra | Class::Setup))
+    }
+
     /// V042: a test that needs a secret this run does not have: not started, never retried.
     fn needs_secrets(case: &Case, missing: &[MissingSecret]) -> Self {
         let names: Vec<&str> = missing.iter().map(|m| m.name.as_str()).collect();
@@ -287,6 +405,7 @@ impl CaseResult {
             report: None,
             earlier_reports: Vec::new(),
             devices: Vec::new(),
+            steps: Vec::new(),
         }
     }
 }
@@ -305,6 +424,74 @@ fn finish_tool() -> Value {
             "additionalProperties": false
         }
     })
+}
+
+/// PF5: offered only in a side-by-side run, where each numbered step is compared across platforms.
+fn step_tool(steps: usize) -> Value {
+    json!({
+        "name": "step",
+        "description": "Side-by-side run: call once after each numbered step of the test case (in order), with whether it \
+passed and the exact text on the screen its check or tap matched, as this platform shows it. fastpilot keeps a \
+picture of the screen for the step.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "step": { "type": "integer", "minimum": 1, "maximum": steps },
+                "status": { "type": "string", "enum": ["pass", "fail"] },
+                "found": { "type": "string", "description": "The text the step's check or tap matched on the screen, copied exactly (empty when the step checks no text)." },
+                "notes": { "type": "string", "description": "For a failure: expected vs actual." }
+            },
+            "required": ["step", "status"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The Live tile and report name of a platform before a device is known.
+pub fn platform_name(p: Platform) -> &'static str {
+    match p {
+        Platform::Web => "Web · Chrome",
+        Platform::Android => "Android emulator",
+        Platform::Ios => "iPhone simulator",
+    }
+}
+
+/// PF5: why a platform's column has no run.
+pub fn no_device(p: Platform) -> &'static str {
+    match p {
+        Platform::Web => "no Chrome",
+        Platform::Android => "no Android emulator or phone",
+        Platform::Ios => "no iPhone simulator",
+    }
+}
+
+/// PF5: the next step for a platform without a device.
+pub fn set_up(p: Platform) -> &'static str {
+    match p {
+        Platform::Web => "Install Chrome (fastpilot doctor web), then run again.",
+        Platform::Android => "Start an Android emulator or connect a phone (set up in Device: fastpilot ui › Device), then run again.",
+        Platform::Ios => "Boot an iPhone simulator (set up in Device: fastpilot ui › Device), then run again.",
+    }
+}
+
+/// "No iPhone simulator" from "Not run: no iPhone simulator. Boot …": the reason alone, as a
+/// column or tile shows it.
+pub fn why_not_run(notes: &str) -> String {
+    let t = ["Not run: ", "Could not run: ", "skipped: "].iter().fold(notes.trim(), |t, p| t.strip_prefix(p).unwrap_or(t));
+    let first = t.split_once(". ").map(|(a, _)| a).unwrap_or(t).trim_end_matches('.');
+    let mut c = first.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// The name of the device a run used: "Android phone (physical)" for a phone's serial, "iPhone
+/// (physical)" for a phone's UDID (simulators have the 8-4-4-4-12 form).
+pub fn device_name(p: Platform, device: Option<&str>) -> &'static str {
+    use fastpilot_core::DeviceKind;
+    match (p, device) {
+        (Platform::Android, Some(id)) => DeviceKind::of_android_serial(id).label(),
+        (Platform::Ios, Some(id)) if !(id.len() == 36 && id.matches('-').count() == 4) => DeviceKind::IosDevice.label(),
+        _ => platform_name(p),
+    }
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -364,24 +551,74 @@ struct Agent {
     transcript: Mutex<Vec<String>>,
     steps: std::sync::atomic::AtomicUsize,
     replay_failed: std::sync::atomic::AtomicBool,
+    /// PF5: the side-by-side test this run is one platform of, and what it reported per step.
+    side: Option<(Side, Platform)>,
+    reported: Mutex<Vec<StepResult>>,
 }
 
 impl Agent {
-    /// MCP `tools/list`: the server's tools (without `report`: the runner closes the run) plus `finish`.
-    fn tools() -> Vec<Value> {
+    /// MCP `tools/list`: the server's tools (without `report`: the runner closes the run) plus
+    /// `finish`, and in a side-by-side run `step`.
+    fn tools(side: Option<&Side>) -> Vec<Value> {
         let mut tools: Vec<Value> = FastPilot::api_tools()
             .into_iter()
             .filter(|t| t["name"] != "report" && t["name"] != "config")
             .map(|t| json!({ "name": t["name"], "description": t["description"], "inputSchema": t["input_schema"] }))
             .collect();
         tools.push(finish_tool());
+        if let Some(s) = side {
+            tools.push(step_tool(s.steps.len().max(1)));
+        }
         tools
+    }
+
+    /// PF5 `step`: one numbered step's result, the screen after it, and the Live tile.
+    async fn step(&self, input: &Value) -> Result<String, String> {
+        let Some((side, platform)) = &self.side else { return Err("`step` is only for side-by-side runs".into()) };
+        if lock(&self.verdict).is_some() {
+            return Err("the test already has a verdict (finish was called); stop here".into());
+        }
+        let n = input["step"].as_u64().unwrap_or(0) as usize;
+        if n == 0 || n > side.steps.len() {
+            return Err(format!("step must be a step number from 1 to {}", side.steps.len()));
+        }
+        let passed = input["status"] == "pass";
+        // Page text: one line, no control characters (it is printed in the terminal too), no secret.
+        let text = |k: &str, max: usize| {
+            let t: String = input[k].as_str().unwrap_or("").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            clip(&fastpilot_core::redact(t.trim()), max)
+        };
+        let found = Some(text("found", 200)).filter(|f| !f.is_empty());
+        let notes = text("notes", 300);
+        let shot = self.fp.step_screenshot(&self.case_id, n).await;
+        lock(&self.transcript).push(format!("step {n} {}{}", if passed { "pass" } else { "fail" }, found.as_deref().map(|f| format!(", found \"{f}\"")).unwrap_or_default()));
+        {
+            let mut reported = lock(&self.reported);
+            reported.retain(|r| r.step != n);
+            reported.push(StepResult { step: n, passed, found, notes, shot });
+            reported.sort_by_key(|r| r.step);
+        }
+        let label = side.steps[n - 1].clone();
+        fastpilot_core::live::side_tile(&side.group, &platform.to_string(), |t| {
+            t.step = n;
+            t.label = label;
+            if !passed {
+                t.note = format!("step {n} failed");
+            }
+        });
+        Ok(format!("step {n} recorded"))
     }
 
     async fn call(&self, name: &str, mut input: Value) -> Value {
         let text = |t: String, err: bool| json!({ "content": [{ "type": "text", "text": t }], "isError": err });
         if name == "config" {
             return text("settings are not changed during an unattended run".into(), true);
+        }
+        if name == "step" {
+            return match self.step(&input).await {
+                Ok(t) => text(t, false),
+                Err(e) => text(e, true),
+            };
         }
         if name == "finish" {
             let pass = input["status"] == "pass";
@@ -421,7 +658,7 @@ impl Agent {
                 "serverInfo": { "name": "fastpilot", "version": env!("CARGO_PKG_VERSION") },
             }),
             "ping" => json!({}),
-            "tools/list" => json!({ "tools": Self::tools() }),
+            "tools/list" => json!({ "tools": Self::tools(self.side.as_ref().map(|s| &s.0)) }),
             "tools/call" => {
                 let p = &msg["params"];
                 self.call(p["name"].as_str().unwrap_or(""), p["arguments"].clone()).await
@@ -568,12 +805,27 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
             None => format!("{p}: {}", if *p == Platform::Web { "your own Chrome" } else { "default device" }),
         })
         .collect();
+    let side = case.side.as_ref().map(|s| {
+        let p = case.platforms().first().copied().unwrap_or(Platform::Web);
+        let names: Vec<&str> = s.platforms.iter().map(|q| platform_name(*q)).collect();
+        let steps: String = s.steps.iter().enumerate().map(|(i, t)| format!("{}. {}\n", i + 1, fastpilot_core::to_vars(t))).collect();
+        let text = format!(
+            "\n\nSide by side: this test runs on {} separately, and this run is the {} one. Its steps are compared \
+             across the platforms, so after each numbered step below call `step` with its number, pass or fail, and \
+             `found`: the exact text on the screen that the step's check or tap matched, as this platform shows it \
+             (it may be worded differently from the test). Prefer one run_flow per step.\n{steps}",
+            names.join(", "),
+            device_name(p, pick(p).as_deref())
+        );
+        ((s.clone(), p), text)
+    });
     let intro = format!(
-        "Test case `{}` (file {}):\n\n{}\n\nSession plan: {}.\n\n{}{}",
+        "Test case `{}` (file {}):\n\n{}\n\nSession plan: {}.{}\n\n{}{}",
         case.id,
         case.path.display(),
         fastpilot_core::to_vars(case.text.trim()),
         plan.join("; "),
+        side.as_ref().map(|s| s.1.as_str()).unwrap_or(""),
         hint.as_deref().unwrap_or("No path memory for this test yet: explore."),
         project_notes().map(|n| format!("\n\n{n}")).unwrap_or_default()
     );
@@ -585,6 +837,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         transcript: Mutex::new(Vec::new()),
         steps: std::sync::atomic::AtomicUsize::new(0),
         replay_failed: std::sync::atomic::AtomicBool::new(false),
+        side: side.map(|s| s.0),
+        reported: Mutex::new(Vec::new()),
     });
     // Only this test's Claude Code may connect: a random token it passes to the bridge.
     let token: String = (0..2)
@@ -618,7 +872,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         let task = crate::provider::Task {
             system: SYSTEM,
             prompt: &intro,
-            tools: crate::provider::openai_tools(&Agent::tools()),
+            tools: crate::provider::openai_tools(&Agent::tools(case.side.as_ref())),
             max_turns: opts.max_steps + 5,
             limit: case_timeout(),
         };
@@ -718,6 +972,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         report,
         earlier_reports: Vec::new(),
         devices: devices.iter().map(|d| d.id.clone()).collect(),
+        steps: std::mem::take(&mut *lock(&agent.reported)),
     }
 }
 
@@ -725,10 +980,36 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
 /// budget lasts; a rerun that passes makes the test flaky.
 /// Lease devices, run, release; `avoid` steers a retry to other devices.
 async fn attempt(case: &Case, opts: &Options, pool: &Pool, retry: bool, avoid: &[String]) -> CaseResult {
-    let devices = match pool.lease(&case.platforms(), avoid).await {
+    let platform = case.platforms().first().copied().unwrap_or(Platform::Web);
+    let tile = |f: &dyn Fn(&mut fastpilot_core::live::SideTile)| {
+        if let Some(s) = &case.side {
+            fastpilot_core::live::side_tile(&s.group, &platform.to_string(), f);
+        }
+    };
+    let need = case.platforms();
+    let lease = pool.lease(&need, avoid);
+    tokio::pin!(lease);
+    let leased = match tokio::time::timeout(Duration::from_millis(300), &mut lease).await {
+        Ok(r) => r,
+        Err(_) => {
+            // PF5: one device runs one test at a time; the other platforms keep going.
+            tile(&|t| {
+                t.state = fastpilot_core::live::TileState::Waiting;
+                t.note = format!("{} is busy with another test. This platform starts when it is free.", t.name);
+            });
+            lease.await
+        }
+    };
+    let devices = match leased {
         Ok(d) => d,
         Err(e) => return CaseResult::skipped(case, &format!("skipped: {e}")),
     };
+    let device = devices.iter().find(|d| d.platform == platform).map(|d| d.id.clone());
+    tile(&|t| {
+        t.state = fastpilot_core::live::TileState::Running;
+        t.name = device_name(platform, device.as_deref()).to_owned();
+        t.note.clear();
+    });
     let result = run_case(case, opts, retry, &devices).await;
     pool.release(devices);
     result
@@ -801,6 +1082,8 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
         Some(base) => plan_changed(cases, target, base.as_deref(), opts.all_after),
         None => (cases, None),
     };
+    // PF5: a test that lists several platforms runs once on each.
+    let cases = expand(cases);
     // The user's own Claude Code does the thinking (no API key, their login and plan), unless an
     // OpenAI-compatible provider is configured (B2).
     let provider = crate::provider::Provider::configured().transpose()?;
@@ -821,13 +1104,36 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let pool = Arc::new(Pool::discover(&need).await);
     println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary(&need));
     // V042: the first iPhone test builds the runner once (a person's run), or says what to do (a schedule).
-    let ios_blocked: Option<String> = (need.contains(&Platform::Ios) && fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator).is_none())
+    // PF5: the iPhone column of a side-by-side test without a simulator is "not run", no build.
+    let ios_runs = cases.iter().any(|c| c.platforms().contains(&Platform::Ios) && (c.side.is_none() || pool.has(Platform::Ios)));
+    let ios_blocked: Option<String> = (ios_runs && fastpilot_ios::runner::xctestrun(fastpilot_ios::runner::Target::Simulator).is_none())
         .then(|| {
             let scheduled = std::env::var_os("FASTPILOT_SCHEDULED_AS").is_some();
             let by_person = std::env::var("FASTPILOT_RUN_BY_PERSON").is_ok_and(|v| v == "1");
             crate::ios_setup::first_test_build(!scheduled || by_person).err()
         })
         .flatten();
+    // PF5: the Live summary row, one tile per platform. A platform without a device is not run,
+    // and says so, never skipped in silence.
+    for c in &cases {
+        let Some(s) = c.side.as_ref().filter(|s| cases.iter().find(|x| x.side.as_ref().is_some_and(|y| y.group == s.group)).is_some_and(|first| first.id == c.id)) else {
+            continue;
+        };
+        let tiles = s
+            .platforms
+            .iter()
+            .map(|p| fastpilot_core::live::SideTile {
+                platform: p.to_string(),
+                name: platform_name(*p).to_owned(),
+                state: if pool.has(*p) { fastpilot_core::live::TileState::Waiting } else { fastpilot_core::live::TileState::NotRun },
+                step: 0,
+                steps: s.steps.len(),
+                label: String::new(),
+                note: if pool.has(*p) { "in the queue".to_owned() } else { why_not_run(no_device(*p)) },
+            })
+            .collect();
+        fastpilot_core::live::side_started(&s.group, &c.title, tiles);
+    }
     let github = crate::github::Reporter::new(opts.report_github);
     if opts.report_github == crate::github::Mode::Live {
         github.send(&crate::github::running_body(cases.len(), &github.target_or_local())).await;
@@ -846,11 +1152,29 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
                     let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     let Some(i) = next else { break };
                     let (opts, budget, breaker) = &*shared;
+                    let platform = cases[i].platforms().first().copied().unwrap_or(Platform::Web);
                     let r = match &ios_blocked {
+                        // PF5: this platform has no device: its column says so.
+                        _ if cases[i].side.is_some() && !pool.has(platform) => CaseResult::setup_problem(&cases[i], &format!("Not run: {}. {}", no_device(platform), set_up(platform))),
                         Some(why) if cases[i].platforms().contains(&Platform::Ios) => CaseResult::setup_problem(&cases[i], &format!("Could not run: {why}")),
                         _ => run_with_retries(&cases[i], opts, budget, breaker, &pool).await,
                     };
-                    match reasons.get(&r.case.id) {
+                    if let Some(s) = &r.case.side {
+                        let state = match (r.passed, r.not_run()) {
+                            (true, _) => fastpilot_core::live::TileState::Passed,
+                            (false, true) => fastpilot_core::live::TileState::NotRun,
+                            (false, false) => fastpilot_core::live::TileState::Failed,
+                        };
+                        let note = if r.not_run() { why_not_run(&r.notes) } else { String::new() };
+                        fastpilot_core::live::side_tile(&s.group, &platform.to_string(), |t| {
+                            t.state = state;
+                            if !note.is_empty() {
+                                t.note = note;
+                            }
+                        });
+                    }
+                    let group = r.case.side.as_ref().map(|s| s.group.clone()).unwrap_or_default();
+                    match reasons.get(&r.case.id).or_else(|| reasons.get(&group)) {
                         Some(why) => println!("{}\n    chosen because: {why}", summary_line(&r)),
                         None => println!("{}", summary_line(&r)),
                     }
@@ -865,6 +1189,9 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let mut results = std::mem::take(&mut *results.lock().unwrap_or_else(|p| p.into_inner()));
     results.sort_by_key(|(i, _)| *i);
     let results: Vec<CaseResult> = results.into_iter().map(|(_, r)| r).collect();
+    for c in crate::side::of_results(&results) {
+        println!("\n{}", c.terminal());
+    }
     if opts.report_github != crate::github::Mode::Off {
         let mut body = crate::github::results_body(&results, started.elapsed(), &github.target_or_local());
         if let Some(c) = &changed
@@ -1014,9 +1341,13 @@ fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> 
     // The suite is written below; the folder exists by then on any later run.
     let _ignore = Defer(fastpilot_core::config::keep_out_of_git);
     let id = history.new_suite_id();
-    let not_run = |r: &&CaseResult| !r.passed && r.turns == 0 && matches!(r.class, Some(Class::Infra | Class::Setup));
+    let not_run = |r: &&CaseResult| r.not_run();
+    let groups: Vec<&str> = results.iter().filter_map(|r| r.case.side.as_ref().map(|s| s.group.as_str())).collect();
+    let one_side = !groups.is_empty() && groups.len() == results.len() && groups.iter().all(|g| *g == groups[0]);
     let title = fastpilot_core::config::var("FASTPILOT_RUN_TITLE").ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| match results {
         [one] => one.case.title.clone(),
+        // PF5: one test on several platforms.
+        [first, ..] if one_side => format!("{} · on {} platforms", first.case.title, results.len()),
         _ => {
             let folder = results.first().and_then(|r| r.case.path.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             format!("{} tests in {folder}", results.len())
@@ -1076,6 +1407,85 @@ mod tests {
         assert_eq!(claude_too_old("2.2.0 (Claude Code)"), None);
         assert_eq!(claude_too_old("10.0.0 (Claude Code)"), None);
         assert_eq!(claude_too_old("something else"), None, "an unknown format is not called old");
+    }
+
+    fn case(text: &str) -> Case {
+        Case::of_text(text.to_owned(), Path::new("tests/x.md"), "x")
+    }
+
+    /// PF5: `platform: web, android, ios` (or `all`) runs the test once per platform, each with its
+    /// own target; `sessions:` keeps meaning one run with several devices at once.
+    #[test]
+    fn a_test_listing_several_platforms_runs_once_on_each() {
+        let t = "# Login on all three\nid: login-all\nplatform: web, android, ios\ntarget web: examples/demo/login.html\ntarget android: com.fastpilot.demo/.LoginActivity\ntarget ios: com.fastpilot.demo\n- Open the app\n- Sign in with a@b.com / ${DEMO_PASS}\n";
+        let runs = expand(vec![case(t)]);
+        let ids: Vec<(&str, &str)> = runs.iter().map(|c| (c.id.as_str(), c.platform.as_str())).collect();
+        assert_eq!(ids, [("login-all-web", "web"), ("login-all-android", "android"), ("login-all-ios", "ios")]);
+        let side = runs[1].side.clone().expect("side");
+        assert_eq!((side.group.as_str(), side.platforms.len()), ("login-all", 3));
+        assert_eq!(side.steps, ["Open the app", "Sign in with a@b.com / ${DEMO_PASS}"]);
+        // Each run sees one platform and its own target only.
+        assert_eq!(runs[1].text, "# Login on all three\nid: login-all\nplatform: android\ntarget: com.fastpilot.demo/.LoginActivity\n- Open the app\n- Sign in with a@b.com / ${DEMO_PASS}\n");
+        assert_eq!(runs[1].platforms(), [Platform::Android]);
+        assert!(runs[2].text.contains("target: com.fastpilot.demo\n") && !runs[2].text.contains("login.html"), "{}", runs[2].text);
+        assert_eq!(runs[0].title, "Login on all three");
+        // `all` is all three; a plain `target:` is for the platforms without their own line.
+        let all = expand(vec![case("# A\nid: a\nplatform: all\ntarget: https://shop.example\ntarget android: com.shop/.Main\n- Open it\n")]);
+        assert_eq!(all.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a-web", "a-android", "a-ios"]);
+        assert!(all[0].text.contains("target: https://shop.example") && all[1].text.contains("target: com.shop/.Main") && !all[1].text.contains("shop.example"), "{:?}", all[1].text);
+        // Not side by side: one platform, the cross-platform `sessions:` test, an address with "all" in it.
+        for one in [
+            "# W\nid: w\nplatform: web\n- a\n",
+            "# X\nid: x\nsessions: web (examples/demo/login.html), android (com.fastpilot.demo/.LoginActivity)\n- a\n",
+            "# Y\nid: y\nplatform: web\nsessions: web (examples/all.html), android (x)\n- a\n",
+        ] {
+            let c = case(one);
+            assert!(c.side_by_side().is_none(), "{one}");
+            assert_eq!(expand(vec![c.clone()]).len(), 1);
+            assert!(!c.platforms().contains(&Platform::Ios), "{one}");
+        }
+        assert_eq!(case(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/login-cross-platform.md")).expect("case")).side_by_side(), None);
+        let demo = load(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/login-side-by-side.md"))).expect("demo");
+        assert_eq!(expand(demo).iter().map(|c| c.platform.as_str()).collect::<Vec<_>>(), ["web", "android", "ios"]);
+        assert_eq!(why_not_run("Not run: no iPhone simulator. Boot one."), "No iPhone simulator");
+        assert_eq!(why_not_run("Could not run: needs the secret A, and it is not set."), "Needs the secret A, and it is not set");
+        assert_eq!((device_name(Platform::Android, Some("emulator-5556")), device_name(Platform::Android, Some("R58M123"))), ("Android emulator", "Android phone (physical)"));
+        assert_eq!(device_name(Platform::Ios, Some("4EC14901-A03A-4E6A-9871-75AC65840702")), "iPhone simulator");
+    }
+
+    /// PF5 `step`: only in a side-by-side run, only for a step the test has, only before the
+    /// verdict; the found text is kept as one line of plain text (it is printed in the terminal).
+    #[tokio::test]
+    async fn step_reports_are_checked_and_kept_as_plain_text() {
+        let side = Side { group: "login".into(), platforms: vec![Platform::Web, Platform::Ios], steps: vec!["Open".into(), "Check the link".into()] };
+        let agent = |side: Option<(Side, Platform)>| Agent {
+            fp: FastPilot::with_devices(LaunchOptions::default(), Devices::default()),
+            case_id: "login-ios".into(),
+            max_steps: 5,
+            verdict: Mutex::new(None),
+            transcript: Mutex::new(Vec::new()),
+            steps: std::sync::atomic::AtomicUsize::new(0),
+            replay_failed: std::sync::atomic::AtomicBool::new(false),
+            side,
+            reported: Mutex::new(Vec::new()),
+        };
+        let names = |tools: Vec<Value>| tools.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+        assert!(names(Agent::tools(Some(&side))).contains(&"step".to_owned()) && !names(Agent::tools(None)).contains(&"step".to_owned()));
+        assert_eq!(Agent::tools(Some(&side)).last().map(|t| t["inputSchema"]["properties"]["step"]["maximum"].clone()), Some(json!(2)));
+        let plain = agent(None);
+        assert_eq!(plain.call("step", json!({ "step": 1, "status": "pass" })).await["isError"], true);
+        let a = agent(Some((side, Platform::Ios)));
+        for bad in [json!({ "step": 0, "status": "pass" }), json!({ "step": 3, "status": "pass" })] {
+            assert_eq!(a.call("step", bad).await["isError"], true);
+        }
+        let ok = a.call("step", json!({ "step": 2, "status": "pass", "found": "Lupa\u{1b}[31m kata\nsandi?" })).await;
+        assert_eq!(ok["isError"], false, "{ok}");
+        assert_eq!(lock(&a.reported)[0].found.as_deref(), Some("Lupa [31m kata sandi?"));
+        // Reported again: the new result replaces the old one.
+        a.call("step", json!({ "step": 2, "status": "fail", "notes": "no link" })).await;
+        assert_eq!(lock(&a.reported).iter().map(|r| (r.step, r.passed, r.notes.clone())).collect::<Vec<_>>(), [(2, false, "no link".to_owned())]);
+        a.call("finish", json!({ "status": "fail", "notes": "x" })).await;
+        assert_eq!(a.call("step", json!({ "step": 1, "status": "pass" })).await["isError"], true, "no step after the verdict");
     }
 
     #[test]

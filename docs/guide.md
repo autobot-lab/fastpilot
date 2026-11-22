@@ -218,6 +218,47 @@ Store secrets in the MCP configuration (`-e NAMA=nilai`, then add `NAMA` to `FAS
 config file. If you run the same test twice, the second time `session start` returns a *hint* from the
 previous run, so the test can finish in a single `run_flow`.
 
+### One test on web, Android and iPhone, side by side
+
+A test whose `platform:` line names two or more platforms (or `all`) runs once on **each** platform, and
+`fastpilot run` compares the runs step by step ([tests/login-side-by-side.md](../tests/login-side-by-side.md)):
+
+```markdown
+# Login on web, Android and iPhone
+id: login-side-by-side
+platform: web, android, ios
+target web: examples/demo/login.html
+target android: com.fastpilot.demo/.LoginActivity
+target ios: com.fastpilot.demo
+- Open the login screen and check that "Masuk ke Akun" shows
+- Check that there is a link for a forgotten password, and note its exact text
+- Sign in with a@b.com / ${DEMO_PASS} and tap "Masuk"
+- Check that the Dashboard shows "Selamat datang, Budi"
+```
+
+- **Targets per platform:** `target web:`, `target android:` and `target ios:` lines. A plain `target:` line
+  is used for every platform without its own line.
+- **One run per platform:** each runs as `<id>-web`, `<id>-android`, `<id>-ios` (its own path memory and
+  report) on a device from the device queue: one device runs one test at a time, the other platforms go on.
+  `--workers 3` runs the three at once.
+- **A platform without a device is not skipped:** its column says *Not run: no iPhone simulator* with what to
+  do, and the run is not a pass.
+- **The report** (`--html`, and the report in History) starts with **Side by side**: a table with the steps as
+  rows and the platforms as columns; each cell has the screen after the step and Passed / Failed / Not run in
+  words. A row is marked *Differs on iPhone* when a step fails on some platforms and passes on the others, or
+  when the text a check found is not the same everywhere (letter case and spacing aside). The same text in
+  another place is not compared. The terminal prints the same summary after the run.
+- **Live** shows one summary row per such test, with a tile per platform: waiting (and why), the step it is
+  on, done, failed or not run.
+- **Chat:** "run the login test on all three" proposes the same kind of test in the "Save test & schedule"
+  card.
+- This is different from `sessions: web (…), android (…)` ([tests/login-cross-platform.md](../tests/login-cross-platform.md)):
+  that is **one** run that uses several devices at the same time.
+
+The iOS demo app has one label planted on purpose for this example: its link says "Lupa kata sandi?" where the
+web page and the Android app say "Lupa password?", so the side-by-side report of the demo login shows one
+difference.
+
 ## Features
 
 - **Web:** CDP directly over one WebSocket (no Node/chromedriver). *Launch* mode (Chrome owned by

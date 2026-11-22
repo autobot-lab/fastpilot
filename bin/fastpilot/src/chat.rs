@@ -348,7 +348,10 @@ To save a new test case, propose it as structured data; the user saves it with o
 ```fastpilot-proposal
 {\"kind\":\"test\",\"title\":\"Checkout with voucher SAVE10\",\"platform\":\"web\",\"target\":\"https://staging.example.com/cart\",\"steps\":[\"Add one product to the cart\",\"Enter the voucher SAVE10\",\"Check that the 10% discount shows in the summary\",\"Do not press Pay\"],\"schedule\":{\"every\":\"hours\",\"hours\":2,\"from\":\"08:00\",\"to\":\"20:00\",\"notify\":{\"os\":true}}}
 ```
-(platform: web, android or ios; target: the page address or the app to open; steps: 1-30 plain sentences, one \
+(platform: web, android or ios; target: the page address or the app to open. To run one test on several platforms \
+and compare them side by side, e.g. when the user says \"run the login test on all three\", give platform \
+\"web, android, ios\" and targets instead of target: {\"web\":\"https://...\",\"android\":\"com.app/.Main\",\"ios\":\"com.app\"}, \
+with the same steps worded so they fit every platform; for an existing test, copy its steps into a new card. steps: 1-30 plain sentences, one \
 action or check each, as the user would say them; secrets only as ${NAME}; schedule is optional and has the same \
 fields as a schedule proposal without name and tests. When you can, open the app first so the steps match the \
 screen.) Never propose a schedule for a test that is not saved yet: put the schedule in the test card instead.
@@ -1765,8 +1768,12 @@ fn notify_text(n: &schedule::Notify) -> String {
 pub struct TestDraft {
     pub title: String,
     pub id: String,
+    /// `web`, or several (`web, android, ios`): PF5, run once on each and compared side by side.
     pub platform: String,
+    /// The target of a one-platform test.
     pub target: String,
+    /// PF5: the target per platform `(platform, target)` of a test on several platforms.
+    pub targets: Vec<(String, String)>,
     pub steps: Vec<String>,
 }
 
@@ -1778,8 +1785,64 @@ impl TestDraft {
     /// The file, in the format of `tests/*.md` (title, id, platform, target, one step per line).
     pub fn text(&self) -> String {
         let steps: String = self.steps.iter().map(|s| format!("- {s}\n")).collect();
-        format!("# {}\nid: {}\nplatform: {}\ntarget: {}\n{steps}", self.title, self.id, self.platform, self.target)
+        if self.targets.is_empty() {
+            return format!("# {}\nid: {}\nplatform: {}\ntarget: {}\n{steps}", self.title, self.id, self.platform, self.target);
+        }
+        let targets: String = self.targets.iter().map(|(p, t)| format!("target {p}: {t}\n")).collect();
+        format!("# {}\nid: {}\nplatform: {}\n{targets}{steps}", self.title, self.id, self.platform)
     }
+
+    /// "examples/demo/login.html", or "x on web, y on Android and z on iPhone".
+    pub fn opens(&self) -> String {
+        if self.targets.is_empty() {
+            return self.target.clone();
+        }
+        let each: Vec<String> = self.targets.iter().map(|(p, t)| format!("{t} on {}", platform_word(p))).collect();
+        match each.as_slice() {
+            [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+            _ => each.join(""),
+        }
+    }
+
+    /// For the card's Edit: the fields the person may change.
+    fn draft(&self) -> Value {
+        let mut d = json!({ "title": self.title, "id": self.id, "target": self.target, "steps": self.steps });
+        if !self.targets.is_empty() {
+            d["targets"] = Value::Object(self.targets.iter().map(|(p, t)| (p.clone(), json!(t))).collect());
+        }
+        d
+    }
+}
+
+/// "web", "Android", "iPhone".
+fn platform_word(p: &str) -> &'static str {
+    match p {
+        "android" => "Android",
+        "ios" => "iPhone",
+        _ => "web",
+    }
+}
+
+/// PF5: `web`, `web, android, ios`, `all` (all three) or a list: the platforms in column order.
+fn platforms_of(v: &Value) -> Res<Vec<&'static str>> {
+    const ALL: [&str; 3] = ["web", "android", "ios"];
+    let words: Vec<String> = match v {
+        Value::Null => vec!["web".into()],
+        Value::String(t) => t
+            .to_ascii_lowercase()
+            .split(|c: char| c == ',' || c == '/' || c.is_whitespace())
+            .filter(|w| !w.is_empty() && *w != "and" && *w != "three")
+            .map(str::to_owned)
+            .collect(),
+        Value::Array(a) => a.iter().map(|x| x.as_str().unwrap_or("?").trim().to_ascii_lowercase()).collect(),
+        _ => vec!["?".into()],
+    };
+    let wrong = || "The platform must be web, android or ios, or several of them (web, android, ios) to compare them side by side".to_owned();
+    if words.is_empty() || words.iter().any(|w| w != "all" && !ALL.contains(&w.as_str())) {
+        return Err(wrong());
+    }
+    let all = words.iter().any(|w| w == "all");
+    Ok(ALL.into_iter().filter(|p| all || words.iter().any(|w| w == p)).collect())
 }
 
 /// One line of plain text: no line breaks or other control characters.
@@ -1834,11 +1897,22 @@ pub fn test_of(v: &Value) -> Res<TestDraft> {
         }
         None => slug(&title),
     };
-    let platform = match v["platform"].as_str().unwrap_or("web") {
-        p @ ("web" | "android" | "ios") => p.to_owned(),
-        _ => return Err("The platform must be web, android or ios".into()),
+    let platforms = platforms_of(&v["platform"])?;
+    let platform = platforms.join(", ");
+    // PF5: several platforms: a target for each (`targets`), `target` for the ones without.
+    let (target, targets) = if platforms.len() > 1 {
+        let mut targets = Vec::new();
+        for p in &platforms {
+            let t = v["targets"][*p].as_str().filter(|t| !t.trim().is_empty()).or_else(|| v["target"].as_str()).unwrap_or("");
+            let t = one_line(&format!("The app or address to open on {}", platform_word(p)), t, 500)?;
+            check_secrets(0, &t).map_err(|_| "The address has a secret value in it. Write it as ${NAME} instead.".to_owned())?;
+            targets.push(((*p).to_owned(), t));
+        }
+        (String::new(), targets)
+    } else {
+        let t = v["target"].as_str().filter(|t| !t.trim().is_empty()).or_else(|| v["targets"][platforms[0]].as_str()).unwrap_or("");
+        (one_line("The app or address to open", t, 500)?, Vec::new())
     };
-    let target = one_line("The app or address to open", v["target"].as_str().unwrap_or(""), 500)?;
     let raw = v["steps"].as_array().ok_or("The test needs its steps, one sentence each")?;
     if raw.is_empty() || raw.len() > MAX_TEST_STEPS {
         return Err(format!("A test has 1–{MAX_TEST_STEPS} steps"));
@@ -1851,7 +1925,7 @@ pub fn test_of(v: &Value) -> Res<TestDraft> {
     }
     check_secrets(0, &title).map_err(|_| "The title has a secret value in it".to_owned())?;
     check_secrets(0, &target).map_err(|_| "The address has a secret value in it. Write it as ${NAME} instead.".to_owned())?;
-    let t = TestDraft { title, id, platform, target, steps };
+    let t = TestDraft { title, id, platform, target, targets, steps };
     if t.text().len() > MAX_TEST_BYTES {
         return Err("This test is too long to save (8 KB at most)".into());
     }
@@ -1903,7 +1977,7 @@ pub fn project_secrets() -> Vec<(String, bool)> {
 /// The `${NAME}`s of a test.
 fn secret_names(t: &TestDraft) -> Vec<String> {
     let mut names = Vec::new();
-    for text in std::iter::once(&t.title).chain(std::iter::once(&t.target)).chain(t.steps.iter()) {
+    for text in std::iter::once(&t.title).chain(std::iter::once(&t.target)).chain(t.targets.iter().map(|(_, x)| x)).chain(t.steps.iter()) {
         let mut rest = text.as_str();
         while let Some(at) = rest.find("${") {
             let after = &rest[at + 2..];
@@ -2017,8 +2091,8 @@ fn test_card(id: String, v: &Value) -> Res<Proposal> {
         status: "pending".into(),
         note,
         steps: t.steps.clone(),
-        detail: Some(format!("Saved as tests/{}.md · {} · opens {}", t.id, t.platform, t.target)),
-        draft: Some(json!({ "title": t.title, "id": t.id, "target": t.target, "steps": t.steps })),
+        detail: Some(format!("Saved as tests/{}.md · {} · opens {}", t.id, t.platform, t.opens())),
+        draft: Some(t.draft()),
         schedules: sched.is_some(),
         data: v.clone(),
         ..Default::default()
@@ -2105,7 +2179,7 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
 fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Option<&Value>) -> Res<String> {
     let mut v = data.clone();
     if let Some(e) = edit {
-        for k in ["title", "id", "target", "steps"] {
+        for k in ["title", "id", "target", "targets", "steps"] {
             if !e[k].is_null() {
                 v[k] = e[k].clone();
             }
@@ -2158,7 +2232,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
         p.note = Some(msg.clone());
         p.title = t.title.clone();
         p.steps = t.steps.clone();
-        p.detail = Some(format!("Saved as tests/{}.md · {} · opens {}", t.id, t.platform, t.target));
+        p.detail = Some(format!("Saved as tests/{}.md · {} · opens {}", t.id, t.platform, t.opens()));
         p.saved = Some(saved);
     }
     Ok(msg)
@@ -2776,6 +2850,49 @@ mod tests {
             v["id"] = json!(id);
         }
         v
+    }
+
+    /// PF5: "run the login test on all three": the card takes several platforms with a target each
+    /// and writes the side-by-side form the runner runs once per platform.
+    #[test]
+    fn a_test_card_can_run_on_all_three_platforms() {
+        let targets = json!({ "web": "examples/demo/login.html", "android": "com.fastpilot.demo/.LoginActivity", "ios": "com.fastpilot.demo" });
+        for platform in [json!("web, android, ios"), json!("all"), json!("Web, Android and iOS"), json!(["ios", "web", "android"])] {
+            let mut v = draft(None);
+            v["platform"] = platform.clone();
+            v["targets"] = targets.clone();
+            let t = test_of(&v).unwrap_or_else(|e| panic!("{platform}: {e}"));
+            assert_eq!(
+                t.text(),
+                "# Login with the demo account\nid: login-with-the-demo-account\nplatform: web, android, ios\ntarget web: examples/demo/login.html\n\
+                 target android: com.fastpilot.demo/.LoginActivity\ntarget ios: com.fastpilot.demo\n- Sign in as a@b.com with ${DEMO_PASS}\n- Check that the Dashboard shows Budi\n"
+            );
+            assert_eq!(t.opens(), "examples/demo/login.html on web, com.fastpilot.demo/.LoginActivity on Android and com.fastpilot.demo on iPhone");
+            assert_eq!(t.draft()["targets"]["ios"], "com.fastpilot.demo");
+        }
+        // The runner reads the saved file as one run per platform, each with its own target.
+        let dir = std::env::temp_dir().join(format!("fp-chat-pf5-{}", std::process::id()));
+        let mut v = draft(None);
+        v["platform"] = json!("web, android, ios");
+        v["targets"] = targets.clone();
+        let path = write_test(&dir, &test_of(&v).expect("valid")).expect("written");
+        let runs = crate::run::expand(crate::run::load(&path).expect("load"));
+        assert_eq!(runs.iter().map(|c| (c.id.as_str(), c.text.lines().nth(3).unwrap_or(""))).collect::<Vec<_>>(), [
+            ("login-with-the-demo-account-web", "target: examples/demo/login.html"),
+            ("login-with-the-demo-account-android", "target: com.fastpilot.demo/.LoginActivity"),
+            ("login-with-the-demo-account-ios", "target: com.fastpilot.demo"),
+        ]);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Each platform needs its target; each target is one line, without a secret value.
+        let mut v = draft(None);
+        v["platform"] = json!("web, ios");
+        v["target"] = json!("");
+        v["targets"] = json!({ "web": "examples/demo/login.html" });
+        assert!(test_of(&v).expect_err("no iPhone app").contains("on iPhone"));
+        v["targets"] = json!({ "web": "x", "ios": "com.app\nplatform: android" });
+        assert!(test_of(&v).expect_err("two lines").contains("one line"));
+        v["platform"] = json!("web, desktop");
+        assert!(test_of(&v).expect_err("desktop").contains("web, android or ios"));
     }
 
     /// D1: what the server writes comes from checked, structured data, in the tests/*.md format.

@@ -106,6 +106,9 @@ pub struct LiveProcess {
     pub scheduled: Option<String>,
     pub sessions: Vec<LiveSession>,
     pub flows: Vec<LiveFlow>,
+    /// PF5: tests of this run that run once per platform, with each platform's progress.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub side_by_side: Vec<SideRun>,
 }
 
 struct State {
@@ -294,6 +297,66 @@ pub fn flow_finished(flow: Option<u64>) {
                     step.state = StepState::Skipped;
                 }
             }
+        }
+    });
+}
+
+// ---- PF5: side-by-side runs ---------------------------------------------------------------
+
+/// Where one platform of a side-by-side test is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TileState {
+    /// In the queue, or waiting for its device ("one device runs one test at a time").
+    Waiting,
+    Running,
+    Passed,
+    Failed,
+    /// Never started: no device for it, or something it needs is not set up (`note` says what).
+    NotRun,
+}
+
+/// One platform's tile in the Live summary row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideTile {
+    /// `web`, `android` or `ios`.
+    pub platform: String,
+    /// "Web · Chrome", "Android emulator", "iPhone simulator", ...
+    pub name: String,
+    pub state: TileState,
+    /// The last numbered step it reported (0: none yet) of `steps`.
+    pub step: usize,
+    pub steps: usize,
+    /// That step's words from the test (test text: shown as text only).
+    #[serde(default)]
+    pub label: String,
+    /// Why it waits or did not run.
+    #[serde(default)]
+    pub note: String,
+}
+
+/// A test running once per platform (PF5): its summary row on the Live page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideRun {
+    pub id: String,
+    pub title: String,
+    pub started_ms: u64,
+    pub tiles: Vec<SideTile>,
+}
+
+/// A side-by-side test starts: one tile per platform.
+pub fn side_started(id: &str, title: &str, tiles: Vec<SideTile>) {
+    update(|s| {
+        s.proc.side_by_side.retain(|r| r.id != id);
+        s.proc.side_by_side.push(SideRun { id: id.to_owned(), title: title.to_owned(), started_ms: now_ms(), tiles });
+    });
+}
+
+/// Change the tile of `platform` in side-by-side test `id`.
+pub fn side_tile(id: &str, platform: &str, f: impl FnOnce(&mut SideTile)) {
+    update(|s| {
+        if let Some(t) = s.proc.side_by_side.iter_mut().find(|r| r.id == id).and_then(|r| r.tiles.iter_mut().find(|t| t.platform == platform)) {
+            f(t);
         }
     });
 }
@@ -787,6 +850,21 @@ mod tests {
         let stale = d.join("1.json");
         std::fs::write(&stale, r#"{"pid":1,"kind":"mcp","updated_ms":1,"sessions":[],"flows":[]}"#).expect("stale");
         assert!(read_all().iter().all(|p| p.pid != 1) && !stale.exists());
+        // PF5: a side-by-side test publishes one tile per platform, each with its own state.
+        let tile = |p: &str, name: &str| SideTile { platform: p.into(), name: name.into(), state: TileState::Waiting, step: 0, steps: 5, label: String::new(), note: String::new() };
+        side_started("login-all", "Login", vec![tile("web", "Web · Chrome"), tile("ios", "iPhone simulator")]);
+        side_tile("login-all", "web", |t| {
+            t.state = TileState::Running;
+            t.step = 3;
+            t.label = "Enter the email".into();
+        });
+        side_tile("login-all", "ios", |t| t.note = "after Android finishes".into());
+        side_tile("nope", "web", |t| t.step = 9);
+        let me = read_all().into_iter().find(|p| p.pid == std::process::id()).expect("own file");
+        let run = &me.side_by_side[0];
+        assert_eq!((run.id.as_str(), run.tiles.len()), ("login-all", 2));
+        assert_eq!((run.tiles[0].state, run.tiles[0].step, run.tiles[0].label.as_str()), (TileState::Running, 3, "Enter the email"));
+        assert_eq!((run.tiles[1].state, run.tiles[1].note.as_str()), (TileState::Waiting, "after Android finishes"));
         session_ended("w");
         disable();
         assert!(read_all().iter().all(|p| p.pid != std::process::id()));

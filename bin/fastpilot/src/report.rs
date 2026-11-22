@@ -67,6 +67,15 @@ fn html_escape(s: &str) -> String {
 pub fn html(results: &[CaseResult], elapsed: Duration) -> String {
     let passed = results.iter().filter(|r| r.passed).count();
     let mut body = String::new();
+    // PF5: a test run on several platforms first, side by side; then every run in one list.
+    let side = crate::side::of_results(results);
+    if !side.is_empty() {
+        body.push_str("<nav class=\"views\"><a href=\"#side\">Side by side</a> · <a href=\"#list\">One list</a></nav><div id=\"side\">");
+        for c in &side {
+            body.push_str(&c.html());
+        }
+        body.push_str("</div><h2 id=\"list\">One list</h2>\n");
+    }
     for r in results {
         let (badge, cls) = match (r.passed, r.quarantined) {
             (true, _) => ("pass", "pass"),
@@ -113,7 +122,8 @@ body {{ font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var
 .meta, .notes {{ color: var(--muted); }} pre {{ white-space: pre-wrap; word-break: break-word; margin: 4px 0; }}
 img {{ max-width: 360px; border: 1px solid var(--line); }}
 iframe.run {{ width: 100%; height: 720px; border: 1px solid var(--line); border-radius: 6px; }}
-</style></head><body><h1>fastpilot report</h1><p>{} tests · {passed} passed · {} failed · {:.1}s</p>\n{body}</body></html>\n",
+{}</style></head><body><h1>fastpilot report</h1><p>{} tests · {passed} passed · {} failed · {:.1}s</p>\n{body}</body></html>\n",
+        if side.is_empty() { "" } else { crate::side::CSS },
         results.len(),
         results.len() - passed,
         elapsed.as_secs_f64()

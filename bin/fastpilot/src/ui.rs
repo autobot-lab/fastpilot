@@ -1178,7 +1178,15 @@ async fn live_api() -> Response {
         .map(|(id, u)| json!({ "agent": named(Some(&id)).map(|n| n.0).unwrap_or(id), "turns": u.turns, "tokens": u.input + u.output }))
         .collect();
     let running = claims.iter().filter(|e| !e.waiting).count();
-    axum::Json(json!({ "sessions": sessions, "queue": queue, "running": running, "limit": fastpilot_core::claim::max_parallel(), "usage": usage })).into_response()
+    // PF5: tests running once per platform, a summary row each with one tile per platform.
+    let side: Vec<Value> = fastpilot_core::live::read_all()
+        .into_iter()
+        .flat_map(|p| {
+            let (pid, kind, scheduled) = (p.pid, p.kind, p.scheduled);
+            p.side_by_side.into_iter().map(move |r| json!({ "pid": pid, "kind": kind, "scheduled": scheduled, "id": r.id, "title": r.title, "started_ms": r.started_ms, "tiles": r.tiles }))
+        })
+        .collect();
+    axum::Json(json!({ "sessions": sessions, "queue": queue, "running": running, "limit": fastpilot_core::claim::max_parallel(), "usage": usage, "side_by_side": side })).into_response()
 }
 
 /// `{limit}`: how many tests may run at once (D10d, `max_parallel`), set on the Live page.

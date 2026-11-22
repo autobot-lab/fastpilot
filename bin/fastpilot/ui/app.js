@@ -841,14 +841,43 @@ function livePill(sessions) {
 
 // D10d (v7 #s2): every agent side by side; the queue with its reasons; the parallel limit and
 // today's usage per agent.
+// PF5 (v11 f4b): a test running once per platform: its summary row, one tile per platform with its
+// own state (one device runs one test at a time, so a platform may wait while the others go on).
+// Test words and notes are set as text.
+function sideRow(r) {
+  const tiles = r.tiles || [];
+  const finished = tiles.length && tiles.every((t) => ["passed", "failed", "not_run"].includes(t.state));
+  const at = new Date(r.started_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const tile = (t) => {
+    const n = t.state === "passed" ? t.steps : Math.min(t.step, t.steps);
+    let state;
+    if (t.state === "passed") state = [h("span", { class: "sbs-chip ok" }, t.step === t.steps ? `✓ Done · ${t.steps} of ${t.steps}` : "✓ Passed")];
+    else if (t.state === "failed") state = [h("span", { class: "sbs-chip bad" }, "✗ Failed"), t.note ? " " + t.note : null];
+    else if (t.state === "not_run") state = [h("span", { class: "sbs-chip grey" }, "Not run"), " ", t.note || ""];
+    else if (t.state === "waiting") state = [h("span", { class: "sbs-chip warn" }, "waiting"), " ", t.note || ""];
+    else state = [h("span", { class: "sbs-chip ok" }, t.step ? `Step ${t.step} of ${t.steps}` : "Starting"), t.label ? " " + t.label : null];
+    return h("li", { class: "sbs-tile " + t.state },
+      h("b", {}, t.name),
+      h("progress", { max: String(Math.max(1, t.steps)), value: String(n), "aria-label": `${t.name}: ${n} of ${t.steps} steps` }),
+      h("span", { class: "s" }, ...state));
+  };
+  return h("section", { class: "grp sbs-live", "aria-label": `${r.title} on ${tiles.length} platforms` },
+    h("div", { class: "gh" }, h("b", {}, `${r.title} · on ${tiles.length} platforms`),
+      h("span", { class: "sbs-chip " + (finished ? "grey" : "ok") }, finished ? "done" : "running"), h("span", { class: "right s" }, `started ${at}`)),
+    h("ul", { class: "sbs-tiles" }, tiles.map(tile)),
+    h("p", { class: "s sbs-foot" }, "The side by side report opens when all platforms are done: find it in ", h("a", { href: "#/history" }, "History"), "."));
+}
+
 function liveExtras(data) {
   const box = document.getElementById("live-extra") || h("div", { id: "live-extra", class: "live-extra" });
   const q = data.queue || [];
   const u = data.usage || [];
-  const sig = JSON.stringify([q, u]);
+  const side = data.side_by_side || [];
+  const sig = JSON.stringify([q, u, side]);
   if (box.dataset.sig === sig) return box;
   box.dataset.sig = sig;
   box.replaceChildren(...[
+    ...side.map(sideRow),
     q.length ? h("section", { class: "grp" }, h("div", { class: "gh" }, `queue · ${q.length} waiting`),
       h("ul", { class: "ag-rows q-rows" }, q.map((e) => h("li", {}, h("b", {}, e.agent || "—", h("span", { class: "s" }, ` · ${e.platform}${e.device && e.device !== "default" ? " · " + e.device : ""}${e.session !== "default" ? " · " + e.session : ""}`)),
         h("span", { class: "s" }, `waiting ${Math.max(1, Math.round((Date.now() - e.since_ms) / 60000))} min`), h("span", {}, e.reason))))) : null,
@@ -1074,14 +1103,18 @@ function testCard(p) {
     const title = h("input", { type: "text", maxlength: "80", value: ed.title, "aria-label": "Test title" });
     const steps = h("textarea", { rows: String(Math.max(3, ed.steps.length + 1)), "aria-label": "Steps, one per line" }, ed.steps.join("\n"));
     const target = h("input", { type: "text", maxlength: "500", value: ed.target, "aria-label": "Address or app" });
+    // PF5: a test on several platforms has an address or app per platform.
+    const names = { web: "Address on web", android: "App on Android", ios: "App on iPhone" };
+    const per = ed.targets ? Object.keys(names).filter((k) => k in ed.targets).map((k) => [k, h("input", { type: "text", maxlength: "500", value: ed.targets[k], "aria-label": names[k] })]) : [];
     const file = h("input", { type: "text", maxlength: "48", value: ed.id, class: "mono", "aria-label": "File name" });
-    const read = () => ({ title: title.value, target: target.value, id: file.value, steps: steps.value.split("\n").map((x) => x.trim()).filter(Boolean) });
+    const read = () => Object.assign({ title: title.value, target: target.value, id: file.value, steps: steps.value.split("\n").map((x) => x.trim()).filter(Boolean) },
+      per.length ? { targets: Object.fromEntries(per.map(([k, el]) => [k, el.value])) } : {});
     // Typed text survives a refresh of the conversation while the bot answers.
-    [title, steps, target, file].forEach((el) => el.addEventListener("input", () => { chatEdits[p.id] = read(); }));
+    [title, steps, target, file, ...per.map((x) => x[1])].forEach((el) => el.addEventListener("input", () => { chatEdits[p.id] = read(); }));
     body = h("div", { class: "form t-edit" },
       h("label", { class: "fld" }, h("span", { class: "l" }, "Title"), title),
       h("label", { class: "fld" }, h("span", { class: "l" }, "Steps"), steps, h("span", { class: "s" }, "One step per line, in plain words. Secrets only as ${NAME}.")),
-      h("label", { class: "fld" }, h("span", { class: "l" }, "Address or app"), target),
+      per.length ? per.map(([k, el]) => h("label", { class: "fld" }, h("span", { class: "l" }, names[k]), el)) : h("label", { class: "fld" }, h("span", { class: "l" }, "Address or app"), target),
       h("label", { class: "fld" }, h("span", { class: "l" }, "File name"), file),
       h("div", { class: "btns" },
         p.schedules ? h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "schedule", read()) }, "Save & schedule") : null,
