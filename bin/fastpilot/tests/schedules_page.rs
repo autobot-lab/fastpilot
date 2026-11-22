@@ -93,7 +93,7 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     assert!(eval(&client, "document.querySelector('[data-preset=release] .s').textContent").await.contains("Can we release?"), "the release trigger is explained");
     // S7: one button before a release, one toggle after it.
     let rel = eval(&client, "(() => { const s = document.querySelector('.sched-release'); return [s.querySelector('h2').textContent, [...s.querySelectorAll('.rel-row b')].map(b => b.textContent).join('+'), s.querySelector('button.p').textContent, s.querySelector('[role=switch]').getAttribute('aria-label') + ':' + s.querySelector('[role=switch]').getAttribute('aria-checked')].join('|'); })()").await;
-    assert_eq!(rel, "\"Before and after a release|Check before release+Watch for 2 hours after a release|Check before release|Watch for 2 hours after a release:false\"");
+    assert_eq!(rel, "\"Before and after a release|Tests and a ship check+Watch for 2 hours after a release|Check before release|Watch for 2 hours after a release:false\"");
     eval(&client, "document.querySelector('[data-preset=night] button').click(), 'ok'").await;
     see(&client, "Created: every night at 2:00.").await;
     assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Undo\"", "focus on Undo");
@@ -104,7 +104,10 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     see(&client, "Nothing is scheduled").await;
     assert_eq!(eval(&client, "document.querySelector('[data-preset=night] button').textContent").await, "\"Turn on\"", "Undo removed it");
 
-    // Escape closes the panel and gives focus back to "New schedule".
+    // L07-1: one way in: the empty list has no "New schedule" button of its own.
+    assert_eq!(eval(&client, "document.querySelectorAll('.grp .empty button').length").await, "0", "no second entry point");
+    // Escape closes the panel and gives focus back to "New schedule" (under More options).
+    eval(&client, "document.querySelector('#body .more-btn').click(), 'ok'").await;
     eval(&client, &format!("{}.click(), 'ok'", btn("New schedule"))).await;
     see(&client, "Create schedule").await;
     assert_eq!(eval(&client, "document.activeElement.closest('.sched-form') ? 'in' : 'out'").await, "\"in\"");
