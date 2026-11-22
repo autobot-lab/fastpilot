@@ -206,7 +206,7 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"));
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"), item("apps", "Your apps"));
 }
 
 function topSettings() {
@@ -403,11 +403,11 @@ function pageSettings(sub) {
   if (sub === "secret") sub = "secrets"; // links made before v0.7
   topSettings();
   if (S.error) {
-    $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), pageBroken()));
+    $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security", "apps"].includes(sub) ? sub : "limits"), pageBroken()));
     return;
   }
-  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : pageLimits();
-  $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), page));
+  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : sub === "apps" ? Apps.page() : pageLimits();
+  $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security", "apps"].includes(sub) ? sub : "limits"), page));
   if (sub === "model" && !doctorCache) loadDoctor(false);
 }
 
@@ -1435,7 +1435,7 @@ function jiraCard(p) {
   if (j.not_connected) {
     parts.push(jiraText(j.text));
     parts.push(h("div", { class: "prop-state bad", role: "status", tabindex: "-1" }, rich(p.note || "Jira is not connected."), " ",
-      h("a", { class: "lk", href: "#/apps/jira" }, "Connect Jira in Apps"), " ", copy));
+      h("a", { class: "lk", href: "#/integrations/jira" }, "Connect Jira in Integrations"), " ", copy));
     return h("section", { class: "grp prop jira " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, parts));
   }
   if (p.status === "refused") {
@@ -2018,7 +2018,15 @@ const PAGES = {};
 function render() {
   if (!S) return;
   const hash = location.hash || "#/live";
+  // E6: "Apps" (Jira and the rest) is now Integrations; old links still land there.
+  if (hash === "#/apps" || hash.startsWith("#/apps/jira")) { location.replace(hash.replace("#/apps", "#/integrations")); return; }
   const [, page, sub] = hash.split("/");
+  if (window.Apps) Apps.bar();
+  if (page === "apps" && (sub || "").startsWith("add")) {
+    pageSettings("apps");
+    Apps.route();
+    return;
+  }
   if (page !== "live") stopLive();
   document.querySelectorAll(".rail a").forEach((a) => {
     const on = a.dataset.nav === page;

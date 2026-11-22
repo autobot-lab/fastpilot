@@ -465,7 +465,7 @@ fn context() -> String {
     let jira = match fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()) {
         Some(j) if j.project_key.is_empty() => format!("\nJira: connected to {} (no default project chosen yet).", j.site),
         Some(j) => format!("\nJira: connected to {}, default project {} ({}).", j.site, j.project_key, if j.project_name.is_empty() { &j.project_key } else { &j.project_name }),
-        None => "\nJira: not connected (the user connects it in Apps › Connect Jira; until then a Jira card can only show its text).".to_owned(),
+        None => "\nJira: not connected (the user connects it in Integrations › Connect Jira; until then a Jira card can only show its text).".to_owned(),
     };
     format!(
         "\n\nNow: project folder {}; test cases: {}.{jira}\nSecrets you can use in tests (write them as ${{NAME}}, never the value): {}. Write anything else, like an email or a user name, as plain text; never invent a ${{NAME}}.{demo}\nLimits (settings):\n{}\nSchedules:\n{}",
@@ -1287,7 +1287,7 @@ fn jira_card(v: &Value, _body: &str, t: &mut Turn, attempts: &mut Vec<Value>) ->
     let mut data = if issue {
         let project = v["project"].as_str().map(|p| p.trim().to_ascii_uppercase()).filter(|p| !p.is_empty()).unwrap_or_else(|| s.project_key.clone());
         if jira::check_project(&project).is_err() {
-            return refuse("This is not a Jira project key. Choose the project in Apps › Jira › Manage, or name it in your message.");
+            return refuse("This is not a Jira project key. Choose the project in Integrations › Jira › Manage, or name it in your message.");
         }
         // Security Low 6: another project than the default only when the user's message names it.
         if project != s.project_key && !words_of(&t.user).contains(&project.to_lowercase()) {

@@ -1,4 +1,4 @@
-//! v0.6 1.2 Connect Jira: the dashboard's Apps › Jira page (design apps-jira-v10, sheet 02). Only
+//! v0.6 1.2 Connect Jira: the dashboard's Integrations › Jira page (design apps-jira-v10, sheet 02). Only
 //! this page connects, changes or disconnects Jira, by a person's click (the dashboard guard: our
 //! own page, cookie, JSON). Chat, the AI and the MCP `config` tool have no way here.
 //!
@@ -69,7 +69,7 @@ pub async fn change(axum::Json(body): axum::Json<Value>) -> Response {
     }
 }
 
-/// The Jira writes Claude Code asked for, as the Apps page shows them (fastpilot's words and the
+/// The Jira writes Claude Code asked for, as the Integrations page shows them (fastpilot's words and the
 /// exact text that is sent).
 pub fn requests_shown() -> Vec<Value> {
     jira::requests::list()

@@ -4,7 +4,7 @@
 //! - `~/.fastpilot/jira.json` (owner-only): the site, the email, the default project, the QA
 //!   status and the last check. No secret. It is not part of `config.toml`, so neither the MCP
 //!   `config` tool nor Chat can read or change it: connecting, changing and disconnecting happen
-//!   only by a click on the dashboard's Apps page.
+//!   only by a click on the dashboard's Integrations page.
 //! - The API token: the OS key store (see [`token`]), never in a file the AI can read, a log, a
 //!   report, Chat or the audit log.
 
@@ -31,7 +31,7 @@ pub struct Settings {
     /// When the connection last answered (ms since 1970).
     #[serde(default)]
     pub checked_ms: u64,
-    /// Jira refused the saved token on the last call: the Apps page says "Needs attention".
+    /// Jira refused the saved token on the last call: the Integrations page says "Needs attention".
     #[serde(default)]
     pub needs_attention: bool,
 }
@@ -308,7 +308,7 @@ impl std::fmt::Display for JiraError {
             Self::Network => write!(f, "Could not reach Jira. Check your internet connection, or your company network, then try again."),
             Self::Busy(s) => write!(f, "Jira asked us to wait. Try again in {s} seconds."),
             Self::NotCloud => write!(f, "fastpilot works with Jira Cloud addresses that end in .atlassian.net. Jira Server and Data Center are not supported yet."),
-            Self::NotConnected => write!(f, "Jira is not connected. Connect it in the dashboard: Apps › Connect Jira."),
+            Self::NotConnected => write!(f, "Jira is not connected. Connect it in the dashboard: Integrations › Connect Jira."),
             Self::NotFound(what) => write!(f, "I could not find {what}. Check the number, or that your Jira account can see that project."),
             Self::Rejected(why) => write!(f, "Jira did not accept it: {why}"),
             Self::Other(code) => write!(f, "Jira answered with an unexpected error ({code}). Nothing was changed."),
@@ -522,7 +522,7 @@ impl Jira {
 
 /// Jira writes Claude Code asked for (Security, Medium 1). In the terminal the AI does not write
 /// to Jira itself: `jira_create_issue` and `jira_comment` file a request with the exact cleaned
-/// text, and the person approves it on the dashboard's Apps page or with `fastpilot jira approve`
+/// text, and the person approves it on the dashboard's Integrations page or with `fastpilot jira approve`
 /// in a terminal they type in. The file is read as untrusted input and every request is checked
 /// again before it is sent.
 pub mod requests {

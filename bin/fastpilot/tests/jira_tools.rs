@@ -111,7 +111,7 @@ async fn jira_tools_file_requests_the_person_sends_and_read_only_the_default_pro
     // Not connected yet.
     let c = mcp(&home, &fake.base, None).await;
     let (ok, out) = call(&c, "jira_read", json!({ "key": "KAN-12" })).await;
-    assert!(!ok && out.contains("Jira is not connected") && out.contains("Apps › Connect Jira"), "{out}");
+    assert!(!ok && out.contains("Jira is not connected") && out.contains("Integrations › Connect Jira"), "{out}");
     c.cancel().await.ok();
 
     connect(&home, &fake.base);
@@ -165,7 +165,7 @@ async fn jira_tools_file_requests_the_person_sends_and_read_only_the_default_pro
     assert!(status.contains("connected to yourteam.atlassian.net") && status.contains("2 requests from Claude Code are waiting") && !status.contains(fake_jira::TOKEN), "{status}");
     assert!(fake.writes().is_empty());
 
-    // The person sends one from the Apps page and drops the other.
+    // The person sends one from the Integrations page and drops the other.
     let ui = Ui::start(&home, &fake.base);
     let (st, apps) = ui.call("GET", "/api/integrations", Value::Null);
     let reqs = apps["jira_requests"].as_array().cloned().unwrap_or_default();

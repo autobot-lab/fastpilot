@@ -470,7 +470,7 @@ fn the_dashboard_and_readme_words_are_current() {
     assert!(readme.contains("add its **name** in\n> `fastpilot ui` › Settings › Secrets") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
 }
 
-/// v0.6 1.1: the Apps page. A new menu item between Device and Settings; `/api/integrations` says what is
+/// v0.6 1.1: the Integrations page. A new menu item between Device and Settings; `/api/integrations` says what is
 /// connected (Jira: site, project, email, never a token; the schedules' webhooks); the bug card
 /// no longer has a disabled "Send to Jira" button but says to ask the bot or Claude Code.
 #[test]
@@ -482,11 +482,11 @@ fn the_apps_page_shows_what_is_connected() {
     let get = |path: &str| http(p, "GET", path, &[("Cookie", session.clone())], "");
 
     let page = get("/").text();
-    let (device, apps, settings) = (page.find("data-nav=\"device\"").expect("device"), page.find("data-nav=\"apps\"").expect("apps"), page.find("data-nav=\"settings\"").expect("settings"));
-    assert!(device < apps && apps < settings, "Apps sits between Device and Settings");
+    let (device, apps, settings) = (page.find("data-nav=\"device\"").expect("device"), page.find("data-nav=\"integrations\"").expect("integrations"), page.find("data-nav=\"settings\"").expect("settings"));
+    assert!(device < apps && apps < settings, "Integrations sits between Device and Settings");
     assert!(page.contains("/assets/apps.js"));
     let js = get("/assets/apps.js");
-    assert!(js.status == 200 && js.text().contains("PAGES.apps") && js.text().contains("Connect Jira"));
+    assert!(js.status == 200 && js.text().contains("PAGES.integrations") && js.text().contains("Connect Jira"));
     let app = get("/assets/app.js").text();
     assert!(app.contains("Ask the bot or Claude Code to file it in Jira") && !app.contains("\"Send to Jira\""), "the dashboard only connects Jira");
 
