@@ -166,3 +166,78 @@ async fn ios_launch_app_arguments_and_env() {
     assert!(!ok && out.contains("DYLD_INSERT_LIBRARIES") && out.contains("refused"), "{out}");
     client.cancel().await.expect("shutdown");
 }
+
+/// D061-2 (PF5 on a real simulator): `fastpilot run` of a web + iPhone side-by-side test, on the
+/// booted simulator with the demo app as `ios-runner/build.sh` builds it, flags the planted
+/// iPhone-only label at step 2: web "Lupa password?", iPhone "Lupa kata sandi?"
+/// (examples/demo-ios/DemoApp.swift). The steps run for real (web in Chrome, iPhone through the
+/// runner) with the stand-in Claude Code, so no model is needed. It fails when the installed demo
+/// app lacks the planted label. Uses the booted simulator only; never boots or shuts one down.
+#[test]
+fn side_by_side_flags_the_planted_iphone_label_on_a_real_simulator() {
+    let _sim = SIMULATOR.blocking_lock();
+    let Some(app) = demo_app() else {
+        return eprintln!("skipping: run ios-runner/build.sh first");
+    };
+    let booted = std::process::Command::new("xcrun").args(["simctl", "list", "devices", "booted"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains("(Booted)")).unwrap_or(false);
+    if !booted {
+        return eprintln!("skipping: no booted iPhone simulator (this test never boots one)");
+    }
+    let python = std::process::Command::new("python3").arg("--version").output().is_ok_and(|o| o.status.success());
+    let chrome = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome"].iter().any(|p| std::path::Path::new(p).exists());
+    if !python || !chrome {
+        return eprintln!("skipping: needs python3 and Chrome");
+    }
+    let out = std::process::Command::new("xcrun").args(["simctl", "install", "booted", &app]).output().expect("simctl");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let dir = std::env::temp_dir().join(format!("fastpilot-ios-side-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("home")).expect("dir");
+    std::fs::create_dir_all(dir.join("claude")).expect("log dir");
+    let case = dir.join("web-and-iphone.md");
+    let text = std::fs::read_to_string(format!("{ROOT}/tests/login-side-by-side.md")).expect("case");
+    let text: String = text
+        .lines()
+        .filter(|l| !l.starts_with("target android"))
+        .map(|l| match l {
+            l if l.starts_with("platform:") => "platform: web, ios".to_owned(),
+            l if l.starts_with("id:") => "id: web-and-iphone".to_owned(),
+            l => l.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&case, text).expect("case");
+    let html = dir.join("report.html");
+    // `--reset`: the demo app remembers a sign-in from an earlier test; each run starts at its login.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["run", case.to_str().unwrap_or(""), "--workers", "2", "--reset", "--html", html.to_str().unwrap_or("")])
+        .current_dir(ROOT)
+        .env("HOME", dir.join("home"))
+        .env("FASTPILOT_CONFIG", dir.join("home/config.toml"))
+        .env("FASTPILOT_DIR", dir.join("fp"))
+        .env("FASTPILOT_IOS_RUNNER", format!("{ROOT}/ios-runner/build"))
+        .env("FASTPILOT_CLAUDE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude"))
+        .env("FAKE_CLAUDE_LOG", dir.join("claude"))
+        .env("FAKE_CLAUDE_SIDE_REAL", "1")
+        // Never a real adb server: this test is web and iPhone only.
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .env("FASTPILOT_RETRY_BUDGET", "0")
+        .env("DEMO_PASS", "rahasia123")
+        .env("FASTPILOT_VARS", "DEMO_PASS")
+        .env_remove("FASTPILOT_SCHEDULED_AS")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("run");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    println!("{text}");
+    assert!(out.status.success(), "both platforms pass the login: {text}");
+    assert!(text.lines().any(|l| l.starts_with("✓ web-and-iphone-ios ")), "{text}");
+    assert!(
+        text.contains("Step 2 · the platforms show different text: Web · Chrome \"Lupa password?\" and iPhone simulator \"Lupa kata sandi?\"."),
+        "the planted iPhone-only label is flagged: {text}"
+    );
+    let report = std::fs::read_to_string(&html).expect("report");
+    assert!(report.contains("<span class=\"lbl\">Differs on web and iPhone</span>"), "{report}");
+    assert!(report.contains("<img alt=\"iPhone simulator, step 2: passed, &quot;Lupa kata sandi?&quot; found\" src=\"data:image/jpeg;base64,"), "a real iPhone picture at step 2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
