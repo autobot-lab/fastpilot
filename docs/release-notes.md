@@ -1,3 +1,77 @@
+## What's new in 0.6.0
+
+Connect Jira, see which screens have a test, compare one test across web, Android and iPhone, run only the
+tests your change touches, and find out why a test is unstable.
+
+### Apps and Jira
+- **Apps › Connect Jira** in the dashboard: your Jira address, Atlassian email and an API token, then
+  **Test connection**, choose the default project, and **Save**. The token goes to the Keychain and is never
+  shown again or given to the AI, Chat, logs or reports. **Manage** has Replace token and Disconnect.
+- The dashboard only connects. Issues and comments come from the **Chat bot** or **Claude Code**, always as a
+  draft you approve:
+  - **In Chat**, ask in your own words ("make a Jira ticket for the voucher bug", "add the result to
+    KAN-12"). A card shows the site, the project or ticket and the exact text. Nothing is sent before you
+    click **Create issue** or **Add comment**. A short "yes" to a draft the bot offered gives the same card.
+  - **From Claude Code**, nothing is sent by the AI: each issue or comment waits under **Apps › Waiting for
+    your OK**, and you send it with one click there or with `fastpilot jira approve` in your own terminal.
+  - Name a ticket ("test KAN-12") and fastpilot reads it as information, never as instructions. A ticket,
+    page or file can never make a card, and no card changes a ticket's status.
+
+### App map
+- **Map** (dashboard, or `fastpilot map`) walks through your app like a visitor, draws every screen it finds,
+  and colours each one: **Has a test**, **Test failing** or **No test yet**. Click a screen for **Make a test
+  for this screen**.
+- It is read-only: on the web it refuses form posts and background saves before they are sent, and it never
+  presses Pay, Delete, Sign out and similar words. Every button it skipped is named.
+
+### One test on web, Android and iPhone, side by side
+- A test whose `platform:` line names several platforms (or `all`) runs once on each, and the report starts
+  with a **Side by side** table: steps as rows, platforms as columns, with the screen after each step. A row
+  is marked when a step passes on one platform and fails on another, or when the text it found differs.
+- A platform without a device, or one that does not start, says **Not run** with the reason. It is never
+  counted as a pass or as a bug in your app.
+
+### Run only what you changed
+- `fastpilot run tests/ --changed` (or "test what I changed" in Chat) reads the files you changed with git and
+  runs the related tests first, each with one plain reason ("chosen because: you changed the login page").
+  New files that git does not track yet count too. Without git, or with no changes, it runs every test.
+
+### Ship check speed
+- Ship check now measures page speed from Chrome itself (nothing is added to the page) and compares it with
+  the previous check of the same page: "Loads in 2.8 s, up from 2.0 s". Big changes are said in words ("much
+  slower"), never as huge percentages. Release watch tells you when a page gets slower.
+- Results are kept on this computer, not in the project, and code or key values in addresses are masked.
+
+### Why is this test unstable?
+- **Memory › Why unstable?** shows the evidence first (which step, which error, how often it passes on a
+  retry), then the likely cause and a suggestion. A test that also passes in some runs is called "flaky, not
+  broken"; "a real problem" only when every recent run failed the same way.
+
+### Other changes
+- `fastpilot run` no longer hangs when the iPhone helper cannot start: it says "Not run" with the reason
+  ("iPhone runner did not start (machine busy?)"), prints progress every 30 seconds, and waits at most
+  5 minutes (`FASTPILOT_IOS_START_TIMEOUT`, up to 15).
+- Clear message when the Android helper is missing, and every published program is checked to carry it.
+- A closed pipe (`fastpilot … | head`) stops quietly instead of crashing.
+- The README starts with a 60-second demo.
+- The MCP Registry listing now waits until npm shows the new version.
+
+### Known limits
+- **Jira Cloud only** (addresses ending in `.atlassian.net`); Jira Server and Data Center are not supported.
+  There is no automatic QA queue yet. Jira was tested against a stand-in Jira server, not a real Jira site.
+- **App map:** one map per app (the latest is shown). On a phone there is no network guard, only the button
+  rules. A plain page load that changes data on the server looks like any other read and still goes through,
+  so map a staging or test copy of your app, not production. Map on a phone was not tested with a test
+  account.
+- **Side by side:** the same text in a different place is not flagged, and the step results come from the
+  AI. With two platforms that differ on one step, both columns say "Differs", even if only one is wrong.
+- **iPhone:** iPhone sessions started from Claude Code or dashboard Chat still need **Set up iPhone testing**
+  (or `fastpilot setup ios`) once. The iOS demo app with the planted label difference must be built from a
+  checkout (`ios-runner/build.sh`).
+- Chat can say it filed a bug when it only described one in words; the notice under it says correctly that no
+  card was made.
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
+
 ## What's new in 0.5.1
 
 Small fixes after the 0.5.0 checks.
