@@ -172,20 +172,34 @@ check_unit() {
   judge 1 $?
 }
 
-# Every suite in bin/fastpilot/tests except the device ones. The Android demo test in demo_cli
-# needs an emulator, so it runs with the Android check instead.
+# Every suite in bin/fastpilot/tests except the device ones. The Android demo test in demo_cli and
+# the Android app map (map_android) need an emulator, so they run with the Android check instead.
+# Suites that talk to the fake Jira (support/fake_jira.rs) run in a debug build: a release build
+# never sends a token to a local port (crates/core/src/jira.rs, Security Low 8), so there they
+# could only fail. The rest of the web suites still test the release build.
 ANDROID_DEMO=demo_android_installs_the_app_and_its_login_runs
 WEB_SUITES=""
+JIRA_SUITES=""
 for f in bin/fastpilot/tests/*.rs; do
   s="$(basename "$f" .rs)"
-  case "$s" in android|ios|real_android|real_ios|ui_takeover_device) ;; *) WEB_SUITES="$WEB_SUITES $s" ;; esac
+  case "$s" in
+    android|ios|real_android|real_ios|ui_takeover_device|map_android) ;;
+    *) if grep -q '^#\[path = "support/fake_jira.rs"\]' "$f"; then JIRA_SUITES="$JIRA_SUITES $s"; else WEB_SUITES="$WEB_SUITES $s"; fi ;;
+  esac
 done
 
 check_web() {
-  local args=() s
+  local args=() jira=() s rc
   for s in $WEB_SUITES; do args+=(--test "$s"); done
+  for s in $JIRA_SUITES; do jira+=(--test "$s"); done
   noandroid cargo test --release --locked -p fastpilot --no-fail-fast "${args[@]}" -- --nocapture --skip "$ANDROID_DEMO"
-  judge 2 $?
+  rc=$?
+  if [ ${#jira[@]} -gt 0 ]; then
+    echo "== fake-Jira suites (debug build):$JIRA_SUITES" >>"$LOG"
+    noandroid cargo test --locked -p fastpilot --no-fail-fast "${jira[@]}" -- --nocapture
+    [ $? -ne 0 ] && rc=1
+  fi
+  judge 2 "$rc"
 }
 
 check_android() {
@@ -205,6 +219,9 @@ check_android() {
   [ $? -ne 0 ] && rc=1
   tenv env FASTPILOT_ANDROID_SERIAL="$SERIAL" ANDROID_SERIAL="$SERIAL" \
     cargo test --release --locked -p fastpilot --test demo_cli -- --exact "$ANDROID_DEMO" --nocapture
+  [ $? -ne 0 ] && rc=1
+  tenv env FASTPILOT_ANDROID_SERIAL="$SERIAL" ANDROID_SERIAL="$SERIAL" \
+    cargo test --release --locked -p fastpilot --test map_android -- --nocapture
   [ $? -ne 0 ] && rc=1
   judge 3 "$rc" 1
 }
@@ -267,10 +284,11 @@ else READY=1; RESULT="READY TO RELEASE."
 fi
 
 # Evidence for the summary: no log but the Android one names an emulator, and that one names only
-# $SERIAL. A line, not a result: it tells whether the run kept to its devices.
+# $SERIAL. A line, not a result: it tells whether the run kept to its devices. emulator-5590 is
+# not a device: it is the one emulator listed by the fake adb server inside tests/side_by_side.rs.
 OTHER_LOGS=""
 for k in code unit web ios; do
-  grep -qE 'emulator-[0-9]+' "$OUT/$k.log" 2>/dev/null && OTHER_LOGS="$OTHER_LOGS${OTHER_LOGS:+, }$k.log"
+  grep -oE 'emulator-[0-9]+' "$OUT/$k.log" 2>/dev/null | grep -qvx emulator-5590 && OTHER_LOGS="$OTHER_LOGS${OTHER_LOGS:+, }$k.log"
 done
 OTHER_SERIALS="$(grep -oE 'emulator-[0-9]+' "$OUT/android.log" 2>/dev/null | grep -vx "$SERIAL" | sort -u | paste -sd, -)"
 if [ -n "$OTHER_LOGS" ] || [ -n "$OTHER_SERIALS" ]; then
