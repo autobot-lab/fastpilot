@@ -23,6 +23,7 @@ mod pool;
 mod report;
 mod report_cards;
 mod run;
+mod side;
 mod schedule;
 mod skills_catalog;
 mod stability;

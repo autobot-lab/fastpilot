@@ -88,8 +88,10 @@ final class LoginViewController: UIViewController {
         error.isHidden = true
         submit.addTarget(self, action: #selector(login), for: .touchUpInside)
 
+        // PF5: a planted iOS-only label difference. The web page and the Android app say "Lupa
+        // password?"; tests/login-side-by-side.md shows it highlighted in the side-by-side report.
         stack([label("Masuk ke Akun", font: .preferredFont(forTextStyle: .title1)),
-               email, password, rememberRow, submit, error, button("Lupa password?")] + launch, in: self)
+               email, password, rememberRow, submit, error, button("Lupa kata sandi?")] + launch, in: self)
     }
 
     override func viewWillAppear(_ animated: Bool) {

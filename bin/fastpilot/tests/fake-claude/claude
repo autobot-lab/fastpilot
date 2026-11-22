@@ -108,7 +108,52 @@ rpc("notifications/initialized", notify=True)
 entry["tools"] = [t["name"] for t in rpc("tools/list")["tools"]]
 
 plan = next((l for l in prompt.splitlines() if l.startswith("Session plan:")), "")
-if "android" in plan:
+
+def side_by_side():
+    """PF5: one platform of a side-by-side run of tests/login-side-by-side.md. Reports each numbered
+    step with `step` and the text it found. Web runs real flows in Chrome; Android and iOS run real
+    flows only with FAKE_CLAUDE_SIDE_REAL=1 (a device the test may use), else they report
+    FAKE_CLAUDE_SIDE_FOUND_<PLATFORM> ("|"-separated found texts) without touching a device.
+    FAKE_CLAUDE_SIDE_FAIL_<PLATFORM>=<n> fails step n there."""
+    import re
+    platform = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("platform:")), "web")
+    target = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target:")), "")
+    n_steps = len([l for l in prompt.split("Side by side:", 1)[1].splitlines() if re.match(r"^\d+\. ", l)])
+    key = platform.upper()
+    fail_at = int(os.environ.get(f"FAKE_CLAUDE_SIDE_FAIL_{key}", "0"))
+    real = platform == "web" or os.environ.get("FAKE_CLAUDE_SIDE_REAL") == "1"
+    canned = os.environ.get(f"FAKE_CLAUDE_SIDE_FOUND_{key}", "Masuk ke Akun|Lupa password?|Masuk|Budi").split("|")
+    flows = ["- assertVisible: \"Masuk ke Akun\"\n", None,
+             "- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n",
+             "- assertVisible: Budi\n"]
+    if real:
+        r = call("session", {"action": "start", "id": platform[:3] + "1", "platform": platform, "target": target})
+        if r.get("isError"):
+            call("finish", {"status": "fail", "notes": "could not start: " + entry["calls"][-1]["text"][:200]})
+            return
+    passed = True
+    for n in range(1, n_steps + 1):
+        found, ok, notes = canned[n - 1] if n - 1 < len(canned) else "", True, ""
+        if real and n - 1 < len(flows):
+            if flows[n - 1] is None:
+                # The link's own words, read from the screen.
+                r = call("snapshot", {"filter": "Lupa"})
+                m = re.search(r'"([^"]*Lupa[^"]*)"', entry["calls"][-1]["text"])
+                ok, found = m is not None, (m.group(1) if m else "")
+            else:
+                r = call("run_flow", {"flow": flows[n - 1]})
+                ok = not r.get("isError")
+        if n == fail_at:
+            ok, notes = False, "field not found"
+        call("step", {"step": n, "status": "pass" if ok else "fail", "found": found if ok else "", "notes": notes})
+        if not ok:
+            passed = False
+            break
+    call("finish", {"status": "pass" if passed else "fail", "notes": "side by side on " + platform if passed else "field not found"})
+
+if "Side by side:" in prompt and "step" in entry["tools"]:
+    side_by_side()
+elif "android" in plan:
     call("finish", {"status": "pass", "notes": plan})
 else:
     call("session", {"action": "start", "id": "w", "target": "examples/demo/login.html"})

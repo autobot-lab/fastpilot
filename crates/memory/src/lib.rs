@@ -440,6 +440,17 @@ impl Run {
         self.shots.push((label.to_owned(), jpeg));
     }
 
+    /// PF5: the screen after numbered test step `step` (side-by-side runs), saved as `step-<n>.jpg`
+    /// and shown with the other screenshots. A step reported again replaces its picture.
+    pub fn add_step_shot(&mut self, step: usize, jpeg: Vec<u8>) -> Result<PathBuf> {
+        let path = self.dir.join(format!("step-{step}.jpg"));
+        fs::write(&path, &jpeg).map_err(io(&path))?;
+        let label = format!("step {step}");
+        self.shots.retain(|(l, _)| *l != label);
+        self.shots.push((label, jpeg));
+        Ok(path)
+    }
+
     /// A session's screen recording: saved as `recording-<session>.mp4|html` and embedded, with
     /// the steps on its timeline when `started` (when the recording began) is known.
     pub fn add_recording(&mut self, session: &str, rec: Recording, started: Option<SystemTime>) -> Result<()> {

@@ -604,6 +604,24 @@ impl FastPilot {
         run.finish(&self.state.memory, passed, notes).map_err(|e| e.to_string())
     }
 
+    /// PF5: the active session's screen after numbered test step `step`, kept in the test's run
+    /// (`step-<n>.jpg`, also in its report). `None` when there is no session or no picture.
+    pub async fn step_screenshot(&self, test_id: &str, step: usize) -> Option<std::path::PathBuf> {
+        let jpeg = {
+            let (_, driver, _busy) = self.session_driver(None).await.ok()?;
+            driver.screenshot().await.ok()?
+        };
+        let mut runs = self.state.runs.lock().await;
+        let run = match runs.get_mut(test_id) {
+            Some(r) => r,
+            None => {
+                let r = self.state.memory.begin_run(test_id).ok()?;
+                runs.entry(test_id.to_owned()).or_insert(r)
+            }
+        };
+        run.add_step_shot(step, jpeg).ok()
+    }
+
     /// Path-memory hint for a test (headless runner: picks the replay model).
     pub fn hint(&self, test_id: &str) -> Option<String> {
         self.state.memory.hint(test_id, None)

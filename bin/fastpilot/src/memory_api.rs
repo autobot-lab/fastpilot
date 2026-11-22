@@ -147,7 +147,8 @@ pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Opt
 
 /// Every test of the project (`tests/*.md`) and every test something is remembered for.
 pub fn rows(memory: &Memory) -> Vec<Row> {
-    let cases = crate::run::load(&crate::chat::tests_dir()).unwrap_or_default();
+    // PF5: a side-by-side test is remembered per platform (`<id>-web`, `<id>-android`, ...).
+    let cases = crate::run::expand(crate::run::load(&crate::chat::tests_dir()).unwrap_or_default());
     let remembered = memory.remembered();
     let quarantined = memory.quarantined();
     let mut out: Vec<Row> = cases
