@@ -397,3 +397,39 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     }
     see(c, "Connect Jira").await;
 }
+
+/// S6 (v0.7): Settings › AI model says in one line what runs the tests (the signed-in Claude Code,
+/// found by itself); the models and other providers are under More options, closed. A new install
+/// explores with Sonnet, not Opus (DC7). Another provider shows on that line, and More options
+/// counts it as changed.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_ai_model_page_says_what_runs_the_tests_in_one_line() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-model", |_| {}).await;
+    let c = &d.client;
+    open(c, "#/settings/model", "AI model").await;
+    // The line: Claude Code found (this Mac) or not (a CI runner without it); never a form first.
+    // The machine check (doctor) can take a while; the line waits for it, never guessing.
+    let mut line = String::new();
+    for _ in 0..120 {
+        line = eval(c, "(() => { const u = document.querySelector('.using.ok') || document.querySelector('#body .notice'); return u ? u.textContent : document.querySelector('.using') ? document.querySelector('.using').textContent : 'none'; })()").await;
+        if !line.contains("Looking for Claude Code") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(line.starts_with("\"Using Claude Code ✓") || line.contains("Claude Code is not on this computer yet"), "{line}");
+    let shut = eval(c, "(() => { const b = document.querySelector('#body .more-btn'); const sel = document.querySelector('select[aria-label=\"Exploring model\"]'); return [b.textContent, b.getAttribute('aria-expanded'), !!sel.closest('[hidden]')].join('|'); })()").await;
+    assert_eq!(shut, "\"More options|false|true\"", "the models are under More options, closed");
+    // DC7: the built-in exploring model is Sonnet.
+    let built_in = eval(c, "document.querySelector('select[aria-label=\"Exploring model\"]').options[0].textContent").await;
+    assert_eq!(built_in, "\"Built in · Claude Code · Sonnet 5.5\"");
+    // Another provider: said on the line, and counted under More options.
+    eval(c, "(async () => { await api('/api/provider', { action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }); provData = null; await loadProvider(); return 'ok'; })()").await;
+    open(c, "#/settings/model", "Using OpenAI").await;
+    let other = eval(c, "document.querySelector('.using').textContent + '|' + document.querySelector('#body .more-btn').textContent").await;
+    assert!(other.contains("Using OpenAI · gpt-4.1-mini") && other.contains("More options · 1 changed"), "{other}");
+    assert_eq!(eval(c, "document.querySelector('#body .more-btn').getAttribute('aria-expanded')").await, "\"true\"", "open while another provider is in use");
+}

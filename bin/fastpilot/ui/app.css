@@ -682,3 +682,6 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .pill.ok{font:500 11px var(--mono);background:var(--ok-soft,#e3f4e8);color:var(--ok,#1d6b36);padding:3px 9px;border-radius:6px}
 .sched-made .notice{margin-top:4px}
 .presets-inline{display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;margin-top:6px}
+/* S6: what runs the tests, in one line */
+.using{font:500 15px var(--sans);margin:8px 0 12px}
+.using.ok{color:var(--ink)}

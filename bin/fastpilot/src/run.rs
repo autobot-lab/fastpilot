@@ -23,8 +23,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::pool::{Device, Pool};
 
-/// Exploration / judgment (PRD §12.5: the larger model); `model_explore` setting overrides.
-pub const DEFAULT_EXPLORE: &str = "claude-opus-5-5";
+/// Exploration / judgment; `model_explore` setting overrides. S6 (Design Critic DC7): a new install
+/// does not start on the most expensive model, so the balanced one; Opus is a choice.
+pub const DEFAULT_EXPLORE: &str = "claude-sonnet-5-5";
 pub const DEFAULT_REPLAY: &str = "claude-haiku-5-5";
 
 pub fn model_explore() -> String {

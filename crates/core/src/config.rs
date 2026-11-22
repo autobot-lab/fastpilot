@@ -56,7 +56,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "headful", help: "show the browser window (default false: headless, never in the way)", rule: Rule::Free },
     Setting { key: "model", help: "`fastpilot run`: pin one Claude model for every test", rule: Rule::Free },
     Setting { key: "model_replay", help: "`fastpilot run`: model that replays path memory (default claude-haiku-5-5)", rule: Rule::Free },
-    Setting { key: "model_explore", help: "`fastpilot run`: model that explores (default claude-opus-5-5)", rule: Rule::Free },
+    Setting { key: "model_explore", help: "`fastpilot run`: model that explores (default claude-sonnet-5-5)", rule: Rule::Free },
     Setting { key: "flow_timeout", help: "seconds one run_flow may take (default 300)", rule: Rule::Free },
     Setting { key: "action_timeout", help: "seconds one action (tap, type, select, scroll) may take (default 5); typing on a phone gets three times that for the keyboard", rule: Rule::Free },
     Setting { key: "retry_budget", help: "`fastpilot run`: reruns of failed tests per suite (default 3)", rule: Rule::Free },
