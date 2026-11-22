@@ -179,6 +179,8 @@ pub async fn ui(args: &[String]) -> Res<()> {
             other => fail_args(&format!("unknown option `{other}`")),
         }
     }
+    // E6: work in the current app's folder (or this project folder, listed as a Repo app).
+    crate::apps::enter(true);
     // E3: the port of the last start, so a bookmark keeps working; a free one if it is taken now.
     let saved = std::fs::read_to_string(crate::browsers::dir().join("port")).ok().and_then(|p| p.trim().parse::<u16>().ok()).filter(|p| *p >= 1024);
     let mut moved = None;
@@ -822,6 +824,9 @@ fn app_json(a: &crate::apps::App) -> Value {
     json!({ "id": a.id, "name": a.name, "targets": a.targets, "kinds": a.kinds(), "repo": a.repo.as_ref().map(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), "created_ms": a.created_ms })
 }
 
+/// What the last "Look for older fastpilot folders" found; `add_found` takes only these.
+static FOUND: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// `{ current, apps }`. A repo app shows only its folder's name, never the full path.
 async fn apps_list() -> Response {
     let apps: Vec<Value> = crate::apps::list().iter().map(app_json).collect();
@@ -842,8 +847,32 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
         })(),
         "remove" => apps::remove(id).map(|()| json!({ "removed": id })),
         "use" => apps::set_current(id).map(|a| json!({ "app": app_json(&a) })),
+        // Older fastpilot folders: searched only on this click; only what the search found can be
+        // added (a page never names a folder itself).
+        "find_older" => {
+            let found = apps::find_older();
+            *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = found.clone();
+            let shown: Vec<Value> = found.iter().map(|p| json!({ "path": p.to_string_lossy(), "name": p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() })).collect();
+            Ok(json!({ "found": shown }))
+        }
+        "add_found" => (|| {
+            let found = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let wanted: Vec<String> = body["paths"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+            let mut added = Vec::new();
+            for p in found.iter().filter(|p| wanted.iter().any(|w| *w == p.to_string_lossy())) {
+                added.push(app_json(&apps::add_repo(p)?));
+            }
+            Ok(json!({ "added": added }))
+        })(),
         _ => Err("unknown action".into()),
     };
+    // The dashboard now works in the current app's folder (unless FASTPILOT_DIR pins one).
+    if result.is_ok()
+        && std::env::var_os("FASTPILOT_DIR").is_none()
+        && let Some(app) = apps::current()
+    {
+        apps::go(&app);
+    }
     match result {
         Ok(v) => axum::Json(v).into_response(),
         Err(e) => refuse(StatusCode::BAD_REQUEST, &e),

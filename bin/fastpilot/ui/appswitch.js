@@ -163,7 +163,28 @@ function page() {
       ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Your apps"),
         h("thead", {}, h("tr", {}, ["App", "Kind", "Where its tests are saved", ""].map((t) => h("th", { scope: "col" }, t)))), h("tbody", {}, rows)))
       : UI.empty({ icon: "tests", title: "No app yet", text: "Add the website or phone app you want to test. fastpilot keeps its tests, schedules and results under it.", action: { label: "Add app", icon: "plus", onclick: () => addDialog({}) } }),
+    older(),
     data.apps.some((a) => a.repo) ? UI.notice("info", "\"Repo\" is an app in a code folder you set up with fastpilot init. Its tests are files next to your code, so your team can review them in git. fastpilot never deletes a repo's files.") : null);
+}
+
+/// "Look for older fastpilot folders?": searched only on the click; shown, then added with one more
+/// click. Nothing is moved, copied or changed.
+let found = null;
+function older() {
+  if (found && found.length) {
+    return h("section", { class: "grp", "aria-label": "Older fastpilot folders" },
+      h("div", { class: "gh" }, `older fastpilot folders · ${found.length}`),
+      h("ul", { class: "s" }, found.map((f) => h("li", {}, h("b", {}, f.name), " ", h("span", { class: "muted" }, f.path)))),
+      h("div", { class: "btns" }, h("button", { type: "button", class: "btn p", onclick: async () => {
+        try { const r = await api("/api/apps", { action: "add_found", paths: found.map((f) => f.path) }); toast(`${r.added.length === 1 ? "1 folder is" : `${r.added.length} folders are`} now in your apps. Nothing was moved.`, true); } catch (e) { toast(e.message); }
+        found = null; data = null; await load(); render();
+      } }, "Show them as apps"), h("button", { type: "button", class: "btn", onclick: () => { found = null; render(); } }, "Not now")),
+      h("p", { class: "s muted" }, "Nothing is moved, copied or changed: they are listed as Repo apps."));
+  }
+  return h("div", { class: "btns" }, h("button", { type: "button", class: "btn", onclick: async () => {
+    try { const r = await api("/api/apps", { action: "find_older" }); found = r.found; if (!found.length) toast("No older fastpilot folders were found in your home folder.", true); } catch (e) { toast(e.message); }
+    render();
+  } }, "Look for older fastpilot folders"), h("span", { class: "s muted" }, "Searches your home folder for folders set up before. Nothing is moved."));
 }
 
 async function rename(a) {
