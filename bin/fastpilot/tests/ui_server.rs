@@ -498,6 +498,10 @@ fn the_apps_page_shows_what_is_connected() {
     // A saved connection: shown without any secret.
     let dir = ui.home.join(".fastpilot");
     std::fs::create_dir_all(&dir).expect("dir");
+    // Connected = settings and a stored token (the file key store of tests).
+    std::fs::create_dir_all(dir.join("keys")).expect("keys");
+    std::fs::write(dir.join("keys/jira"), "test-token").expect("token");
+    std::fs::write(dir.join("keys/jira.origin"), "https://yourteam.atlassian.net").expect("origin");
     std::fs::write(dir.join("jira.json"), r#"{"site":"yourteam.atlassian.net","email":"alex@yourteam.com","project_key":"KAN","project_name":"Kanban","checked_ms":1,"needs_attention":true}"#).expect("jira.json");
     let v: serde_json::Value = serde_json::from_str(&get("/api/apps").text()).expect("json");
     assert_eq!((v["jira"]["site"].as_str(), v["jira"]["project_key"].as_str(), v["jira"]["needs_attention"].as_bool()), (Some("yourteam.atlassian.net"), Some("KAN"), Some(true)), "{v}");

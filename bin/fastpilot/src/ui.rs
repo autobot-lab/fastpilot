@@ -170,6 +170,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/doctor", get(doctor_api))
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/apps", get(apps_api))
+        .route("/api/jira", get(crate::jira_api::state).post(crate::jira_api::change))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
@@ -550,17 +551,13 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
 /// v0.6 Apps page: what is connected. Jira shows the site, project and email, never the token;
 /// Slack/webhook is the schedules' own notification (how many schedules use one).
 async fn apps_api() -> Response {
-    let jira = fastpilot_core::jira::settings().map(|s| {
+    let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()).map(|s| {
         json!({ "site": s.site, "email": s.email, "project_key": s.project_key, "project_name": s.project_name,
                 "checked_ms": s.checked_ms, "needs_attention": s.needs_attention })
     });
     let store = crate::schedule::load();
     let webhooks = store.schedules.iter().filter(|s| s.notify.webhook && crate::schedule::secret_path(&s.id).exists()).count();
-    let where_kept = match crate::keystore::backend() {
-        crate::keystore::Backend::Keychain => "this Mac's Keychain",
-        crate::keystore::Backend::SecretService => "this computer's secret store",
-        crate::keystore::Backend::File => "a file only you can read",
-    };
+    let where_kept = fastpilot_core::jira::token::kept_in();
     axum::Json(json!({ "jira": jira, "webhook_schedules": webhooks, "token_kept": where_kept })).into_response()
 }
 

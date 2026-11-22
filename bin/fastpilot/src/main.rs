@@ -12,6 +12,7 @@ mod history_api;
 mod memory_api;
 mod offer;
 mod init;
+mod jira_api;
 mod ios_setup;
 mod github;
 mod keystore;

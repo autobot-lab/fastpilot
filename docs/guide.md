@@ -240,6 +240,25 @@ Specification: [docs/PRD.md](PRD.md). Improvement research: [docs/research-impro
 
 ## Jira
 
+### Connect Jira in the dashboard (fastpilot 0.6)
+
+Open the dashboard, choose **Apps › Connect Jira**, and enter your Jira address (`yourteam` or
+`yourteam.atlassian.net`; you can paste the whole address), your Atlassian email and an
+[API token](https://id.atlassian.com/manage-profile/security/api-tokens). **Test connection** shows
+"Connected as …" and your projects; choose the default project (and, optionally, the QA status for
+later), then **Save**.
+
+- **Jira Cloud only** (addresses that end in `.atlassian.net`). Jira Server and Data Center are not
+  supported yet.
+- **The token** goes to this Mac's Keychain (Linux: the secret service), bound to your site. It is never
+  shown again, never sent anywhere else, and never reaches the AI, Chat, logs, reports or the activity
+  log. **Manage** has Replace token and Disconnect.
+- **Only this page** connects, changes or disconnects Jira: Chat and the AI cannot.
+- Issues and comments are filed by the dashboard's **Chat bot** or by **Claude Code**, always as a draft
+  you approve first. The dashboard has no "send" form of its own.
+
+### With Atlassian's MCP server
+
 Three skills work with Jira through **Atlassian's own MCP server** (Rovo MCP) in Claude Code:
 
 | Skill | What it does | Writes to Jira |
