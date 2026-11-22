@@ -71,6 +71,8 @@ tests your change touches, and find out why a test is unstable.
 - Chat can say it filed a bug when it only described one in words; the notice under it says correctly that no
   card was made.
 - Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
+- Small fixes planned for 0.6.1: Chat wording when no card was made or a card was not updated, a run that
+  passed after a retry shown as Failing in Memory, and two side-by-side wording points.
 
 ## What's new in 0.5.1
 
