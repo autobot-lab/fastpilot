@@ -623,6 +623,8 @@ fn a_run_leaves_its_outcome_for_the_doctor() {
     assert_eq!(runs.len(), 1, "{out}");
     let o: Value = serde_json::from_str(&std::fs::read_to_string(&runs[0]).expect("outcome")).expect("json");
     assert_eq!((o["test_id"].as_str(), o["passed"].as_bool(), o["passed_on_retry"].as_bool()), (Some("login-ok"), Some(false), Some(false)), "{o}");
+    // QA v0.6 Low 5: the same "clean" the Memory table counts.
+    assert_eq!(o["clean"].as_bool(), Some(false), "{o}");
     assert!(o["failed_step"].as_str().is_some_and(|s| s.starts_with("assertVisible")), "{o}");
     assert_eq!(o["platforms"], json!(["web"]), "{o}");
     assert!(o["started_ms"].as_u64().unwrap_or(0) > 0 && o["finished_ms"].as_u64() >= o["started_ms"].as_u64(), "{o}");

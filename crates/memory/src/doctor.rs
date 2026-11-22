@@ -15,6 +15,10 @@ pub struct Outcome {
     /// A pass that came from a retry of a failed attempt.
     #[serde(default)]
     pub passed_on_retry: bool,
+    /// Passed with nothing failing on the way (no retry, no failed attempt): what the Memory table
+    /// counts as a pass. Older files do not have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean: Option<bool>,
     #[serde(default)]
     pub could_not_run: bool,
     pub started_ms: u64,
@@ -36,6 +40,11 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// A pass with nothing failing on the way, as the table counts it.
+    pub fn is_clean(&self) -> bool {
+        self.clean.unwrap_or(self.passed && !self.passed_on_retry)
+    }
+
     fn network(&self) -> bool {
         let e = self.error.as_deref().unwrap_or("").to_lowercase();
         self.category.as_deref() == Some("infra")
@@ -115,19 +124,36 @@ fn times(n: usize) -> String {
 /// The doctor for one test: `runs` are its outcomes (any order), `all` every test's outcomes (to see
 /// what ran at the same time). Looks at the last 10 runs that could run.
 pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
+    diagnose_with(runs, all, None)
+}
+
+/// The doctor with the runs the Memory table counts (`history`: clean or not, oldest first, up to
+/// 10): the panel then shows and counts exactly those, and a run that passed only after a retry is
+/// counted as a failure in both (QA v0.6 Low 5). The details come from the outcomes.
+pub fn diagnose_with(runs: &[Outcome], all: &[Outcome], history: Option<&[bool]>) -> Diagnosis {
     let mut mine: Vec<&Outcome> = runs.iter().filter(|o| !o.could_not_run).collect();
     mine.sort_by_key(|o| o.started_ms);
     let mine: Vec<&Outcome> = mine.iter().rev().take(10).rev().copied().collect();
     let n = mine.len();
+    // Hard failures (the step evidence comes from these) and every run that was not clean.
     let fails: Vec<&Outcome> = mine.iter().filter(|o| !o.passed).copied().collect();
     let f = fails.len();
-    let strip: Vec<bool> = mine.iter().map(|o| o.passed).collect();
+    let not_clean = mine.iter().filter(|o| !o.is_clean()).count();
+    let strip: Vec<bool> = match history {
+        Some(h) if !h.is_empty() => h.iter().rev().take(10).rev().copied().collect(),
+        _ => mine.iter().map(|o| o.is_clean()).collect(),
+    };
+    let (hn, hf) = (strip.len(), strip.iter().filter(|p| !**p).count());
     let mut d = Diagnosis { cause: Cause::NotEnough, runs: strip, evidence: vec![], text: String::new(), todo: None, main: None, step: None };
-    if n < 3 || f == 0 {
-        d.text = format!(
-            "Not enough runs yet. This test has run {} since fastpilot started recording the details. fastpilot needs at least 3 runs, with a failure among them, to say what might be wrong. It will show here after the next run.",
-            times(n)
-        );
+    let details = (n < hn).then(|| format!("fastpilot has the details of {} of them (it records them from version 0.6 on)", if n == 0 { "none".to_owned() } else { n.to_string() }));
+    if n < 3 || not_clean == 0 {
+        d.text = match &details {
+            Some(det) if hf > 0 => format!("Not enough runs yet. It failed {hf} of the last {hn} runs, but {det}. fastpilot needs at least 3 runs with details, with a failure among them, to say what might be wrong. It will show here after the next run."),
+            _ => format!(
+                "Not enough runs yet. This test has run {} since fastpilot started recording the details. fastpilot needs at least 3 runs, with a failure among them, to say what might be wrong. It will show here after the next run.",
+                times(n)
+            ),
+        };
         return d;
     }
     // Evidence.
@@ -143,7 +169,7 @@ pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
     let (top_step, top_n) = steps[0].clone();
     let real_step = fails.iter().any(|o| o.failed_step.as_deref() == Some(top_step.as_str()));
     d.step = real_step.then(|| top_step.clone());
-    let retried = mine.iter().filter(|o| o.passed && o.passed_on_retry).count();
+    let retried = mine.iter().filter(|o| o.passed && !o.is_clean()).count();
     let network = fails.iter().filter(|o| o.network()).count();
     let evening = fails.iter().filter(|o| { let h = hour(o.started_ms); !(6..18).contains(&h) }).count();
     let overlap = |o: &Outcome| all.iter().any(|x| x.test_id != o.test_id && x.started_ms < o.finished_ms && o.started_ms < x.finished_ms);
@@ -155,7 +181,10 @@ pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
     platforms.dedup();
     let same_way = fails.iter().all(|o| o.failed_step.as_deref() == Some(top_step.as_str()) && o.reason == fails[0].reason);
     let how = fails.iter().find(|o| o.failed_step.as_deref() == Some(top_step.as_str())).and_then(|o| o.error.clone()).map(|e| e.chars().take(160).collect::<String>());
-    d.evidence.push(("What happened".into(), format!("Failed {f} of the last {n} runs (oldest → newest)")));
+    d.evidence.push(("What happened".into(), format!("Failed {hf} of the last {hn} runs (oldest → newest)")));
+    if let Some(det) = &details {
+        d.evidence.push(("Details".into(), format!("{}{}", det[..1].to_uppercase(), &det[1..])));
+    }
     if real_step {
         let all_of = if top_n == f { if f == 2 { "both failures".into() } else { format!("all {f} failures") } } else { format!("{top_n} of {f} failures") };
         d.evidence.push(("Which step".into(), format!("{} · {all_of}", quoted(&top_step))));
@@ -170,7 +199,7 @@ pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
         let names: Vec<&str> = platforms.iter().map(|p| platform_name(p)).collect();
         d.evidence.push(("Where".into(), if names.len() == 1 { format!("{} only", names[0].replace("web", "Web")) } else { names.join(" and ") }));
     }
-    d.evidence.push(("Passes on retry".into(), format!("{retried} of {f} times")));
+    d.evidence.push(("Passes on retry".into(), format!("{retried} of {not_clean} times")));
     if busy_fails > 0 {
         d.evidence.push(("Other tests at the same time".into(), format!("during {busy_fails} of {f} failures")));
     }
@@ -185,10 +214,17 @@ pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
         d.main = Some("bug");
     } else if retried >= 2 || (retried >= 1 && retried * 2 >= f) {
         d.cause = Cause::Timing;
-        d.text = format!("Likely cause: timing. The step fails now and then, and passes when the test waits or tries again.{based}");
-        d.todo = Some(match &d.step {
-            Some(s) => format!("Make the test wait at {} until the screen has finished updating, before it checks. It is a small change to the test, not to your app.", quoted(s)),
-            None => "Make the test wait for what it needs before it checks. It is a small change to the test, not to your app.".into(),
+        // A concrete example of what timing means (QA v0.6: "timing" alone says too little).
+        let target = d.step.as_deref().and_then(|s| s.split_once('"').and_then(|(_, r)| r.rsplit_once('"')).map(|(t, _)| t.to_owned())).filter(|t| !t.is_empty());
+        let example = match &target {
+            Some(t) => format!(" For example: the test looks for \"{t}\" a moment before the page has finished showing it, so it fails, and on the next try it is there."),
+            None => " For example: the test checks the screen a moment before the page has finished loading, so it fails, and on the next try it works.".to_owned(),
+        };
+        d.text = format!("Likely cause: timing. The step fails now and then, and passes when the test waits or tries again.{example}{based}");
+        d.todo = Some(match (&d.step, &target) {
+            (Some(s), Some(t)) => format!("Make the test wait until \"{t}\" is on the screen before {}, for example with the step `extendedWaitUntil: {{ visible: \"{t}\", timeout: 10000 }}`. It is a small change to the test, not to your app.", quoted(s)),
+            (Some(s), None) => format!("Make the test wait at {} until the screen has finished updating, before it checks. It is a small change to the test, not to your app.", quoted(s)),
+            _ => "Make the test wait for what it needs before it checks. It is a small change to the test, not to your app.".into(),
         });
         d.main = Some("chat");
     } else if network >= 2 && network * 5 >= f * 3 {
@@ -242,7 +278,7 @@ pub fn diagnose(runs: &[Outcome], all: &[Outcome]) -> Diagnosis {
         d.main = Some("chat");
     } else {
         d.cause = Cause::Unknown;
-        d.text = format!("I cannot tell why. It failed {f} of {n} times, at different steps and with no pattern in the time, the device or the network. Here are the runs, so you can look.");
+        d.text = format!("I cannot tell why. It failed {not_clean} of {n} times, at different steps and with no pattern in the time, the device or the network. Here are the runs, so you can look.");
     }
     d
 }

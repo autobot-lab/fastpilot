@@ -347,6 +347,8 @@ impl Run {
             test_id: self.test_id.clone(),
             passed,
             passed_on_retry: passed && self.passed_on_retry,
+            // The same rule as the history the Memory table counts.
+            clean: Some(passed && self.failures == 0),
             could_not_run: self.could_not_run,
             started_ms: self.started_ms,
             finished_ms: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
