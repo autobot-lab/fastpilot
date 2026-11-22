@@ -63,6 +63,11 @@ pub struct PathMemory {
     /// Pass/fail of the last 20 runs, newest last (flake statistics).
     #[serde(default)]
     pub history: Vec<bool>,
+    /// Whether each of those runs passed at all, newest last (aligned with the end of `history`;
+    /// older files have fewer). A pass after a retried step is `false` in `history` (not clean) and
+    /// `true` here, so the Memory page never calls it Failing (L061-3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed: Vec<bool>,
     #[serde(default)]
     pub consecutive_failures: u32,
     /// Three failed runs in a row: the hint is withheld until a run passes again.
@@ -487,9 +492,12 @@ impl Run {
         let clean = passed && self.failures == 0;
         if !self.could_not_run {
             updated.history.push(clean);
+            updated.passed.push(passed);
         }
         let extra = updated.history.len().saturating_sub(20);
         updated.history.drain(..extra);
+        let extra = updated.passed.len().saturating_sub(20);
+        updated.passed.drain(..extra);
         let mut quarantine = memory.quarantined();
         if memory.mode == Mode::ReadWrite && !self.could_not_run {
             let recent_clean = updated.history.len() >= 10 && updated.history.iter().rev().take(10).all(|p| *p);
@@ -894,6 +902,9 @@ mod tests {
         let report = run.finish(&mem, true, "recovered").expect("finish");
         let md = std::fs::read_to_string(&report.report).expect("report.md");
         assert!(md.contains("passed after 1 failed flow(s): not a clean pass"), "{md}");
+        // L061-3: the memory keeps that it passed, next to "not clean".
+        let m = mem.load("login-ok").expect("memory");
+        assert_eq!((m.history.last(), m.passed.last()), (Some(&false), Some(&true)), "{m:?}");
         let clean = mem.begin_run("login-ok").expect("run");
         assert!(clean.not_clean(true).is_none());
         let _ = std::fs::remove_dir_all(dir);
