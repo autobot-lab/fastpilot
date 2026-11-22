@@ -166,7 +166,7 @@ fn gap(c: &Check) -> String {
     match c.name.as_str() {
         "device" => "no device".into(),
         "adb" => "adb is missing or cannot be reached".into(),
-        "agent" => "this build has no Android agent".into(),
+        "agent" => "this build of fastpilot has no Android helper".into(),
         "Chrome" => "Chrome does not start yet".into(),
         "Xcode" => "Xcode is missing".into(),
         "simulator" => "no iPhone simulator".into(),

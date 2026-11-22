@@ -163,8 +163,8 @@ pub async fn android() -> Vec<Check> {
     out.push(if fastpilot_android::agent_embedded() {
         check("android", "agent", Status::Ok, "UiAutomation agent built in")
     } else {
-        check("android", "agent", Status::Fail, "this fastpilot build has no Android agent")
-            .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
+        check("android", "agent", Status::Fail, "this build of fastpilot has no Android helper")
+            .hint("install fastpilot from npm or the release, or build the helper first (agent-android/build.sh) and then build fastpilot again")
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
     let ready: Vec<_> = devices.iter().filter(|d| d.state == "device").collect();
@@ -213,8 +213,8 @@ async fn android_remote(server: Result<String, String>) -> Vec<Check> {
     out.push(if fastpilot_android::agent_embedded() {
         check("android", "agent", Status::Ok, "UiAutomation agent built in")
     } else {
-        check("android", "agent", Status::Fail, "this fastpilot build has no Android agent")
-            .hint("use a release build (npm / install.sh), or from a checkout run agent-android/build.sh and rebuild")
+        check("android", "agent", Status::Fail, "this build of fastpilot has no Android helper")
+            .hint("install fastpilot from npm or the release, or build the helper first (agent-android/build.sh) and then build fastpilot again")
     });
     let devices = fastpilot_android::device::list().await.unwrap_or_default();
     let ready: Vec<String> = devices.iter().filter(|d| d.state == "device").map(|d| d.id.clone()).collect();

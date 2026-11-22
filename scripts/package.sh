@@ -2,6 +2,7 @@
 # Build a release archive: dist/fastpilot-<version>-<target>.tar.gz (+ .sha256).
 #   scripts/package.sh                  host target
 #   scripts/package.sh --target x86_64-apple-darwin
+#   scripts/package.sh --target … --require-android   (the release: stop when the Android helper is missing)
 # The archive holds the binary, README.md, LICENSE, THIRD_PARTY_NOTICES and the licenses of the fonts built into
 # `fastpilot ui` (SIL OFL 1.1, under licenses/). Android support is embedded when
 # agent-android/out/fastpilot-agent.apk exists (run agent-android/build.sh first); the iOS
@@ -10,13 +11,24 @@ set -eu
 cd "$(dirname "$0")/.."
 
 target=""
-if [ "${1:-}" = "--target" ]; then target="${2:?--target needs a triple}"; fi
+require_android=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target) target="${2:?--target needs a triple}"; shift 2 ;;
+    --require-android) require_android=1; shift ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
 [ -n "$target" ] || target="$(rustc -vV | sed -n 's/^host: //p')"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 [ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
 
 if [ ! -s agent-android/out/fastpilot-agent.apk ]; then
-  echo "warning: agent-android/out/fastpilot-agent.apk missing: this build has no Android support" >&2
+  if [ -n "$require_android" ]; then
+    echo "error: agent-android/out/fastpilot-agent.apk is missing, so this release would have no Android helper. Run agent-android/build.sh first." >&2
+    exit 1
+  fi
+  echo "warning: agent-android/out/fastpilot-agent.apk missing: this build has no Android helper" >&2
 fi
 cargo build --release --locked -p fastpilot --target "$target"
 

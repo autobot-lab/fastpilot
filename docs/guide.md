@@ -44,7 +44,7 @@ Run `fastpilot doctor` first. It usually shows the cause and the fix right away.
 | `blocked: … (the built-in blocked list)` / "Blocked by Limits" in Live | on purpose: payment and delete-account buttons are blocked by the built-in limits. Change this in `fastpilot ui` → Settings › Limits & permissions |
 | `evalScript is off while buttons are blocked` | the "Run any JavaScript" toggle in Limits & permissions, or `fastpilot config set allow_eval_script true` |
 | `looks like a risky action … confirm_actions` | a delete/remove button: write that step with `confirm: true` if you really mean it |
-| `this fastpilot build has no Android agent` / `agent APK not embedded` | use a release binary (npm/curl), or run `agent-android/build.sh` and build again |
+| `This build of fastpilot has no Android helper` | install fastpilot from npm or the release (they include it), or run `agent-android/build.sh` and build fastpilot again |
 | `runner not built` | `ios-runner/build.sh` from a checkout (iOS, see below) |
 | `variable X is not allowed` | add `X` to `FASTPILOT_VARS` in the MCP configuration |
 | Detailed log | add `-e FASTPILOT_LOG=debug` (logs go to the MCP server's stderr) |
