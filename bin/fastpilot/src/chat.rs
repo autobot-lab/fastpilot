@@ -2312,7 +2312,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
     };
     let sched = if with_schedule { Some(when_of(v.get("schedule").filter(|x| !x.is_null()).ok_or("This card has no schedule: use Save test only")?)?) } else { None };
     let path = write_test(&tests_dir(), &t)?;
-    let mut saved = json!({ "title": t.title });
+    let mut saved = json!({ "title": t.title, "test": t.id });
     let msg = match sched {
         Some((when, mut notify)) => {
             // The webhook URL is never in chat: it is filled in on the Schedules page.

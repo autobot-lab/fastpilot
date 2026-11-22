@@ -106,7 +106,7 @@ fn run_target(dir: &Path, booted: bool, target: &str, html: &Path, env: &[(&str,
     std::fs::create_dir_all(&log).expect("log");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
-    cmd.args(["run", target, "--workers", "3", "--html", html.to_str().unwrap_or("")])
+    cmd.args(["run", target, "--workers", "3"]).args(env.iter().filter(|(k, _)| *k == "--flag").map(|(_, v)| *v)).args([ "--html", html.to_str().unwrap_or("")])
         .current_dir(ROOT)
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANDROID_SERIAL")
@@ -126,7 +126,7 @@ fn run_target(dir: &Path, booted: bool, target: &str, html: &Path, env: &[(&str,
         .env("FAKE_CLAUDE_DELAY_MS", "150")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    for (k, v) in env {
+    for (k, v) in env.iter().filter(|(k, _)| *k != "--flag") {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().expect("run");
@@ -376,5 +376,61 @@ fn a_busy_simulator_gets_three_tries_and_then_says_so() {
     assert!(ios.contains("Infrastructure: iPhone runner did not start (machine busy?)") && !ios.contains("[product]"), "{ios}");
     assert_eq!(std::fs::read_to_string(&calls).unwrap_or_default().lines().count(), 3, "three tries, not more");
     assert!(r.out.contains("1 did not run"), "{}", r.out);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// S8 "Run on all platforms": a saved test written for the website only runs on every platform its
+/// app has (E6 `targets`), side by side, without editing the file. An app without an iPhone app
+/// compares web and Android and says how to add the iPhone one. Stand-in Claude, adb and simctl.
+#[test]
+fn a_saved_test_runs_on_all_platforms_of_its_app() {
+    if !ready() {
+        return eprintln!("skipping: needs Chrome and python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-s8-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    let tests = home.join("fastpilot/apps/demo/tests");
+    std::fs::create_dir_all(&tests).expect("dir");
+    let apps = |ios: bool| {
+        let ios = if ios { r#", "ios": "com.fastpilot.demo""# } else { "" };
+        format!(r#"{{ "current": "demo", "apps": [ {{ "id": "demo", "name": "Demo shop", "targets": {{ "web": "examples/demo/login.html", "android": "com.fastpilot.demo/.LoginActivity"{ios} }}, "repo": null, "created_ms": 1 }} ] }}"#)
+    };
+    std::fs::write(home.join("fastpilot/apps.json"), apps(true)).expect("apps");
+    // As Chat saves a website test: one platform, one target, no platform list.
+    let side = std::fs::read_to_string(format!("{ROOT}/tests/login-side-by-side.md")).expect("case");
+    let saved: String = side
+        .lines()
+        .filter(|l| !l.starts_with("platform:") && !l.starts_with("target "))
+        .map(|l| if l.starts_with("id:") { "id: login-saved\ntarget: examples/demo/login.html".to_owned() } else { l.to_owned() })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let file = tests.join("login-saved.md");
+    std::fs::write(&file, &saved).expect("test");
+    let html = dir.join("report.html");
+    let home_s = home.display().to_string();
+    let env = [("HOME", home_s.as_str()), ("--flag", "--all-platforms"), ("FAKE_CLAUDE_SIDE_FOUND_IOS", "Masuk ke Akun|Lupa kata sandi?|Masuk|Budi")];
+    let r = run_case_file(&dir, &file, &html, &env);
+    println!("{}", r.out);
+    assert!(r.ok, "{}", r.out);
+    for id in ["login-saved-web", "login-saved-android", "login-saved-ios"] {
+        assert!(r.out.lines().any(|l| l.starts_with(&format!("✓ {id} "))), "{id}: {}", r.out);
+    }
+    assert!(r.out.contains("2 of 3 platforms match (1 platform differs · 4 steps)") && r.out.contains("iPhone simulator shows \"Lupa kata sandi?\""), "{}", r.out);
+    assert_eq!(std::fs::read_to_string(&file).expect("test"), saved, "the saved file is not edited");
+    let report = std::fs::read_to_string(&html).expect("report");
+    assert!(report.contains("<th scope=\"col\">Web · Chrome</th><th scope=\"col\">Android emulator</th><th scope=\"col\">iPhone simulator</th>"), "{report}");
+
+    // The app has no iPhone app: web and Android only, and the run says what to add.
+    std::fs::write(home.join("fastpilot/apps.json"), apps(false)).expect("apps");
+    let r = run_case_file(&dir, &file, &html, &env);
+    println!("{}", r.out);
+    assert!(r.out.contains("iPhone simulator is not in this comparison: Demo shop has no iPhone yet (Add iPhone app)."), "{}", r.out);
+    assert!(r.out.contains("2 tests: 2 passed") && !r.out.contains("login-saved-ios"), "{}", r.out);
+
+    // Without an app: a plain message, nothing runs.
+    std::fs::remove_file(home.join("fastpilot/apps.json")).expect("rm");
+    let r = run_case_file(&dir, &file, &html, &env);
+    assert!(!r.ok && r.out.contains("Run on all platforms needs an app: add one with the App switcher"), "{}", r.out);
     let _ = std::fs::remove_dir_all(&dir);
 }
