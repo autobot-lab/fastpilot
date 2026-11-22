@@ -354,7 +354,9 @@ function limitsTestsAtOnce() {
 // (never a claim the settings do not back: no "only your app's pages" while every domain is
 // allowed), three example sentences that only make things stricter or show something, and every
 // limit under More options. A sentence goes to Chat, where its card gates the change.
-const LIMIT_EXAMPLES = ["Also block the word \"Refund\"", "Ask me before pressing \"Log out\"", "Show me what is blocked"];
+// "Never press" (a blocked word, refused even with confirm: true), not "ask me": nothing asks the
+// person before a confirm-listed button (Security, #187 M1).
+const LIMIT_EXAMPLES = ["Also block the word \"Refund\"", "Never press \"Log out\"", "Show me what is blocked"];
 function limitsSummary() {
   const words = (key) => {
     const s = get(key);
@@ -371,21 +373,24 @@ function limitsSummary() {
   const steps = (get("max_steps") && get("max_steps").value) || S.defaults.max_steps || 30;
   const mins = (get("test_timeout") && get("test_timeout").value) || S.defaults.test_timeout || 30;
   const domains = (get("allowed_domains") && get("allowed_domains").value) || [];
+  // A page script could press any button (the setting's own help), so "never pressed" does not hold then.
+  const scripts = get("allow_eval_script") && get("allow_eval_script").value === true;
+  const named = pick(blocked, ["pay", "delete account", "buy", "checkout"], 2).map(quote).join(" and ");
   const parts = [];
-  if (blocked.length) parts.push(`Buttons like ${pick(blocked, ["pay", "delete account", "buy", "checkout"], 2).map(quote).join(" and ")} are never pressed.`);
-  if (confirm.length) parts.push(`Buttons like ${pick(confirm, ["delete", "remove"], 1).map(quote).join("")} are only pressed with a confirmation.`);
+  if (blocked.length) parts.push(scripts ? `Test steps never press buttons like ${named}, but page scripts may run, and a script can press any button.` : `Buttons like ${named} are never pressed.`);
+  if (confirm.length) parts.push(`Buttons like ${pick(confirm, ["delete", "remove"], 1).map(quote).join("")} are only pressed when the test step says it means it.`);
   if (domains.length) parts.push(`Tests only open ${domains.slice(0, 3).join(", ")}${domains.length > 3 ? " and more" : ""}.`);
-  parts.push(`Every test stops after ${mins} minutes and ${steps} AI steps.`);
-  const head = blocked.length
+  parts.push(`Every test fastpilot runs (Run, schedules) stops after ${mins} minutes and ${steps} AI steps.`);
+  const head = blocked.length && !scripts
     ? h("div", { class: "protect ok", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "✓"), h("div", {}, h("b", {}, "You are protected"), h("p", {}, parts.join(" "))))
-    : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, "Less protected: no button is blocked"), h("p", {}, parts.join(" "), " Turn the built-in list back on under More options.")));
+    : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, blocked.length ? "Less protected: page scripts may run" : "Less protected: no button is blocked"), h("p", {}, parts.join(" "), blocked.length ? " Turn \"Run any JavaScript\" off under More options." : " Turn the built-in list back on under More options.")));
   const say = (t) => async () => { location.hash = "#/chat"; await chatSend(t); };
   return [head,
     h("section", { class: "grp limit-say", "aria-label": "Change something in Chat" },
       h("div", { class: "gh" }, "want to change something? just say it in chat"),
       h("div", { class: "prop-body" },
         LIMIT_EXAMPLES.map((t) => h("button", { class: "say-row", onclick: say(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→"))),
-        h("p", { class: "s muted" }, "One click sends it to Chat. Nothing changes before you decide on the card there; anything that loosens a rule shows a red card and needs your own words."))) ];
+        h("p", { class: "s muted" }, "One click sends it to Chat. Stricter changes apply at once, with Undo; anything that loosens a rule shows a red card and needs your own words."))) ];
 }
 
 function pageLimits() {
