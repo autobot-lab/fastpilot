@@ -63,18 +63,7 @@ function visibleChats() {
 
 // A confirmation with the safe button focused first. Resolves true only on the red button.
 function histConfirm(title, text, okLabel) {
-  return new Promise((resolve) => {
-    const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
-    const keep = h("button", { class: "btn", onclick: () => done(false) }, "Keep them");
-    const dlg = h("dialog", { class: "hist-dlg", "aria-labelledby": "hist-dlg-t" },
-      h("h2", { id: "hist-dlg-t" }, title),
-      h("p", {}, text),
-      h("div", { class: "btns tight" }, keep, h("button", { class: "btn p danger-fill", onclick: () => done(true) }, okLabel)));
-    dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
-    document.body.append(dlg);
-    dlg.showModal();
-    keep.focus();
-  });
+  return UI.confirmDialog({ title, text, verb: okLabel, keep: "Keep them" });
 }
 
 async function histChange(body, okText) {

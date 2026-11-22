@@ -263,15 +263,14 @@ function list(m) {
 }
 
 function draw() {
-  const top = $top();
   const m = data && data.map;
   const viewBtn = (k, label) => h("button", { class: "btn sm" + (view === k ? " p" : ""), "aria-pressed": String(view === k), onclick: () => { view = k; draw(); } }, label);
-  top.replaceChildren(icon("map"), h("div", {}, h("h1", { tabindex: "-1" }, "Map"), h("span", { class: "s muted" }, "Which parts of your app have a test")),
-    m && m.screens.length && !data.mapping ? h("span", { class: "right btns tight" }, viewBtn("graph", "Graph"), viewBtn("list", "List"),
+  UI.pageHeader({ icon: "map", title: "Map", sub: "Which parts of your app have a test",
+    actions: m && m.screens.length && !data.mapping ? [viewBtn("graph", "Graph"), viewBtn("list", "List"),
       h("button", { class: "btn", onclick: () => { form.target = m.target; form.platform = m.platform; startMap(); } }, "Re-map the whole app"),
-      h("button", { class: "btn quiet", onclick: () => { data = { ...data, map: null }; draw(); } }, "Map another app")) : null);
+      h("button", { class: "btn quiet", onclick: () => { data = { ...data, map: null }; draw(); } }, "Map another app")] : null });
   if (!data) { $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading the map…"))); load(); return; }
-  if (data.error) { $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Could not read the map: " + data.error)); return; }
+  if (data.error) { $body().replaceChildren(UI.notice("error", "Could not read the map: " + data.error)); return; }
   if (data.mapping) { $body().replaceChildren(progress(m)); return; }
   if (!m || !m.screens.length) { $body().replaceChildren(startForm(m ? outcome(m) : null)); return; }
   const c = data.coverage || { tested: 0, failing: 0, total: m.screens.length };
