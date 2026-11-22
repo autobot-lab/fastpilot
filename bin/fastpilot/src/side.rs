@@ -268,6 +268,9 @@ impl Comparison {
         let passed = self.columns.iter().filter(|c| c.passed).count();
         let head = if ran < total {
             format!("{ran} of {total} platforms ran")
+        } else if differ > 0 && total - differ < 2 {
+            // L061-4: no two platforms agree, so "0 of 2 platforms match" says nothing. Name them.
+            return (self.who_differs(), steps);
         } else if differ > 0 {
             format!("{} of {total} platforms match", total - differ)
         } else if passed == total {
@@ -294,6 +297,29 @@ impl Comparison {
         parts.push(steps);
         let sub = parts.join(" · ");
         (head, sub)
+    }
+
+    /// "Web and iPhone differ at step 2", "Android fails at step 1": the headline when no two
+    /// platforms agree (L061-4).
+    fn who_differs(&self) -> String {
+        let differing = self.differing();
+        let names = |cols: &[usize]| and_list(&cols.iter().map(|c| short(self.columns[*c].platform).to_owned()).collect::<Vec<_>>());
+        let at = |ns: &mut Vec<usize>| {
+            ns.sort_unstable();
+            ns.dedup();
+            let list: Vec<String> = ns.iter().map(usize::to_string).collect();
+            format!("{} {}", if ns.len() == 1 { "step" } else { "steps" }, and_list(&list))
+        };
+        let fails: Vec<usize> = differing.iter().copied().filter(|c| self.failed_at(*c).is_some()).collect();
+        let text = if fails.is_empty() {
+            let mut ns: Vec<usize> = self.rows.iter().filter(|r| !r.differs.is_empty()).map(|r| r.n).collect();
+            format!("{} differ at {}", names(&differing), at(&mut ns))
+        } else {
+            let mut ns: Vec<usize> = fails.iter().filter_map(|c| self.failed_at(*c)).collect();
+            format!("{} {} at {}", names(&fails), if fails.len() == 1 { "fails" } else { "fail" }, at(&mut ns))
+        };
+        let mut c = text.chars();
+        c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
     }
 
     /// The step number where column `c` failed, if it did.
@@ -640,7 +666,8 @@ mod tests {
             vec![column(Platform::Web, "Web · Chrome", 4, &all_pass("Lupa password?")), column(Platform::Android, "Android emulator", 4, &launch)],
         );
         assert_eq!(c.state(1), ("bad", "Failed at step 1".into()));
-        assert_eq!(c.summary().1, "1 platform fails · 4 steps");
+        // Two platforms, one failing: the headline names it (L061-4), so the sub-line is the steps.
+        assert_eq!(c.summary(), ("Android fails at step 1".to_owned(), "4 steps".to_owned()));
         let html = c.html();
         assert!(html.contains("<span class=\"lbl\">Fails on Android</span>") && !html.contains("Differs on") && !html.contains("Differs at"), "{html}");
         let t = c.terminal();
@@ -655,6 +682,27 @@ mod tests {
         assert_eq!(c.state(1), ("none", "Could not run".into()));
         assert!(c.terminal().contains("iPhone simulator: Could not run: The iPhone simulator session did not start"), "{}", c.terminal());
         assert_eq!(c.html().matches("<b>Could not run</b><br>The iPhone simulator session did not start").count(), 4);
+    }
+
+    /// L061-4 (QA, v0.6.0 Low 4): two platforms that both differ at step 2 read "Web and iPhone
+    /// differ at step 2", not "0 of 2 platforms match"; one of two failing reads "Android fails at step 1".
+    /// With three platforms and a majority, the count stays.
+    #[test]
+    fn the_headline_names_the_platforms_when_none_agree() {
+        let two = |a: Outcome, b: (Platform, &str, Outcome)| {
+            compare("login", "Login", &steps(), vec![column(Platform::Web, "Web · Chrome", 4, &a), column(b.0, b.1, 4, &b.2)])
+        };
+        let c = two(all_pass("Lupa password?"), (Platform::Ios, "iPhone simulator", all_pass("Lupa kata sandi?")));
+        assert_eq!(c.summary(), ("Web and iPhone differ at step 2".to_owned(), "4 steps".to_owned()));
+        assert!(c.terminal().starts_with("Side by side · Login · Web and iPhone differ at step 2 (4 steps)"), "{}", c.terminal());
+        assert!(c.html().contains("<b>Web and iPhone differ at step 2</b>"), "{}", c.html());
+        let launch = ran(false, vec![StepResult { notes: "the app did not launch".into(), ..step(1, false, None) }]);
+        let c = two(all_pass("Lupa password?"), (Platform::Android, "Android emulator", launch));
+        assert_eq!(c.summary().0, "Android fails at step 1");
+        let c = three(all_pass("Lupa password?"), all_pass("Lupa password?"), all_pass("Lupa kata sandi?"));
+        assert_eq!(c.summary().0, "2 of 3 platforms match");
+        let c = three(all_pass("A"), all_pass("B"), all_pass("C"));
+        assert_eq!(c.summary().0, "Web, Android and iPhone differ at step 2");
     }
 
     /// Page text is data: a label or found text with markup is shown as text, never as HTML.
