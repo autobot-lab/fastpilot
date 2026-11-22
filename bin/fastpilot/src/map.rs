@@ -732,12 +732,14 @@ pub async fn explore(opts: Options, progress: Arc<Mutex<AppMap>>, stop: Arc<Atom
         Err(e) if e.starts_with("could_not_open") => "could_not_open".into(),
         Err(_) => "failed".into(),
     };
-    let skipped = m.skipped.iter().filter(|s| s.why.starts_with("blocked") || s.why.starts_with("asks")).count();
+    // QA re-test Low 5: the count is the named list, all of it.
+    let skipped = m.skipped.len();
     m.message = match m.state.as_str() {
         "finished" => format!(
-            "Mapped {n} screen{} in {}. {skipped} button{} not pressed because limits block them. {}.",
+            "Mapped {n} screen{} in {}. {skipped} button{} and link{} not pressed (each is named, with why). {}.",
             if n == 1 { "" } else { "s" },
             minutes(m.finished_ms.saturating_sub(started)),
+            if skipped == 1 { "" } else { "s" },
             if skipped == 1 { " was" } else { "s were" },
             if m.signed_in { format!("It signed in with the test account from your project notes. {tested_note}") } else { tested_note }
         ),
