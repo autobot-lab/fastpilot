@@ -172,7 +172,9 @@ async fn live_page_works_with_the_keyboard() {
     eval(&client, "location.hash = '#/settings/limits', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Limits & permissions\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    // UXA5: "Tests at once" is in Settings › Limits, with its default marked.
+    // UXA5: "Tests at once" is in Settings › Limits, with its default marked. A2: every limit
+    // is under More options, below the one-line summary.
+    eval(&client, "document.querySelector('#body .more-btn').click(), 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Tests at once\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let mut picked = String::new();

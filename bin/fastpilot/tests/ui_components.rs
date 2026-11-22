@@ -438,3 +438,48 @@ async fn the_ai_model_page_says_what_runs_the_tests_in_one_line() {
     assert!(other.contains("Using OpenAI · gpt-4.1-mini") && other.contains("More options · 1 changed"), "{other}");
     assert_eq!(eval(c, "document.querySelector('#body .more-btn').getAttribute('aria-expanded')").await, "\"true\"", "open while another provider is in use");
 }
+
+/// A2 (v0.7): Settings › Limits starts with one protection statement worked out from the settings
+/// in force (never "only your app's pages" while every domain is allowed), three example sentences
+/// that only tighten or show something and go to Chat, and every limit under More options, closed.
+/// With the block list emptied it says so instead of "You are protected".
+#[tokio::test(flavor = "multi_thread")]
+async fn the_limits_page_says_what_protects_you_and_changes_go_through_chat() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-limits", |_| {}).await;
+    let c = &d.client;
+    open(c, "#/settings/limits", "You are protected").await;
+    let said = eval(c, "document.querySelector('.protect').textContent").await;
+    // The page text is long; checked in parts (the tool shortens long values).
+    let part = |js: &str| js.to_owned();
+    for (k, want) in [
+        ("0", "You are protected"),
+        ("1", "Buttons like \\\"Pay\\\" and \\\"Delete account\\\" are never pressed."),
+        ("2", "Buttons like \\\"Delete\\\" are only pressed when the test step says it means it."),
+        ("3", "Every test fastpilot runs (Run, schedules) stops after 30 minutes and 30 AI steps."),
+    ] {
+        let got = eval(c, &part(&format!("(() => {{ const p = document.querySelector('.protect'); const t = p.querySelector('p').textContent.split(/(?<=\\.) /); return {k} === 0 ? p.querySelector('b').textContent : t[{k} - 1]; }})()"))).await;
+        assert_eq!(got, format!("\"{want}\""), "statement part {k}");
+    }
+    assert!(!said.contains("only open") && !said.contains("your app's pages"), "no domain claim while every domain is allowed");
+    let examples = eval(c, "[...document.querySelectorAll('.say-row')].map((b) => b.textContent).join('|')").await;
+    assert_eq!(examples, "\"Also block the word \\\"Refund\\\"→|Never press \\\"Log out\\\"→|Show me what is blocked→\"");
+    let more = eval(c, "(() => { const b = document.querySelector('#body .more-btn'); const chips = document.querySelector('[aria-label=\"Add a blocked word\"]') || document.querySelector('.panel .grp .opt'); return b.getAttribute('aria-expanded') + '|' + !!chips.closest('[hidden]'); })()").await;
+    assert_eq!(more, "\"false|true\"", "every limit is under More options, closed");
+    // A sentence goes to Chat (sending is caught here: no real Claude in this test).
+    eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.querySelectorAll('.say-row')[1].click(); return 'ok'; })()").await;
+    assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/chat|Never press \\\"Log out\\\"\"");
+    // Security #187 L1: page scripts allowed means a script can press any button: not "protected".
+    eval(c, "(async () => { await api('/api/settings', { key: 'allow_eval_script', value: true }); await loadSettings(); location.hash = '#/settings/limits'; render(); return 'ok'; })()").await;
+    open(c, "#/settings/limits", "Less protected").await;
+    let scripts = eval(c, "document.querySelector('.protect b').textContent + '|' + document.querySelector('.protect p').textContent.split('. ')[0]").await;
+    assert_eq!(scripts, "\"Less protected: page scripts may run|Test steps never press buttons like \\\"Pay\\\" and \\\"Delete account\\\", but page scripts may run, and a script can press any button\"");
+    eval(c, "(async () => { await api('/api/settings', { key: 'allow_eval_script', value: null }); return 'ok'; })()").await;
+    // Domains set: then it says so. Block list emptied: not "You are protected".
+    eval(c, "(async () => { await api('/api/settings', { key: 'allowed_domains', value: ['shop.example'] }); await api('/api/settings', { key: 'block_actions', value: [] }); await loadSettings(); location.hash = '#/settings/limits'; render(); return 'ok'; })()").await;
+    open(c, "#/settings/limits", "Less protected").await;
+    let less = eval(c, "document.querySelector('.protect').textContent").await;
+    assert!(less.contains("Less protected: no button is blocked") && less.contains("Tests only open shop.example.") && !less.contains("never pressed"), "{less}");
+}

@@ -690,3 +690,13 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .sched-release h2{font:600 17px var(--sans);margin:0 0 8px}
 .rel-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0;border-top:1px solid var(--line)}
 .rel-row:first-of-type{border-top:0}
+/* A2: the protection statement (seamless-v13 s5a) */
+.protect{display:flex;gap:14px;align-items:flex-start;border-radius:12px;padding:16px 18px;margin:8px 0 14px;border:1px solid var(--line)}
+.protect b{font:700 19px var(--sans)}
+.protect p{margin:4px 0 0}
+.protect.ok{background:var(--ok-soft,#e3f4e8);border-color:#9ccfaa}
+.protect.warn{background:var(--warn-soft);border-color:#e3b261}
+.protect-mark{display:inline-flex;width:34px;height:34px;border-radius:8px;align-items:center;justify-content:center;font-weight:700;color:#fff;background:#1d6b36;flex:none}
+.protect.warn .protect-mark{background:#8a520a}
+.say-row{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;padding:12px 14px;margin:0 0 8px;border:1px solid var(--line);border-radius:10px;background:var(--card);font:inherit;color:var(--ink);cursor:pointer}
+.say-row:focus-visible{outline:2px solid var(--blue);outline-offset:2px}

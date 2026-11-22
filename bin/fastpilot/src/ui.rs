@@ -1356,6 +1356,7 @@ async fn settings() -> Response {
         "model_replay": crate::run::DEFAULT_REPLAY,
         "model_explore": crate::run::DEFAULT_EXPLORE,
         "max_steps": 30,
+        "test_timeout": 30,
         "state_expire_days": 30,
         // v0.3.2: the lists in force while the key is not set (`default` in block_actions too).
         "block_actions": fastpilot_core::policy::DEFAULT_BLOCKED,
