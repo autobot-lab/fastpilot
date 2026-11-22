@@ -102,7 +102,24 @@ function requestCard(r) {
       h("button", { class: "btn", onclick: () => decideRequest(r.id, false) }, "Don't send")));
 }
 
+// QA re-test Low 8: requests can be sent or dropped elsewhere (the terminal, another tab): while
+// Apps is open, the list is read again every few seconds and redrawn when it changed.
+let appsPoll = null;
+function pollApps() {
+  clearTimeout(appsPoll);
+  appsPoll = setTimeout(async () => {
+    if ((location.hash || "") !== "#/apps") return;
+    try {
+      const fresh = await api("/api/apps");
+      const ids = (d) => JSON.stringify(((d && d.jira_requests) || []).map((r) => r.id));
+      if (ids(fresh) !== ids(appsData)) { appsData = fresh; render(); return; }
+    } catch (_) { /* the next try */ }
+    pollApps();
+  }, 3000);
+}
+
 function pageApps() {
+  pollApps();
   $top().replaceChildren(icon("plug"), h("h1", { tabindex: "-1" }, "Apps"), h("span", { class: "s muted" }, "Connect fastpilot to the tools your team already uses"));
   if (!appsData) {
     if (!appsBusy) loadApps();
