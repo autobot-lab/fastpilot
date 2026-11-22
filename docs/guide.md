@@ -260,6 +260,12 @@ readers.
   delete or one-time link is not opened). Every button and link it skipped is named. It stays inside
   your app (the same site or folder; on a phone, the app itself: a system dialog is closed with Back,
   never explored). On a phone there is no network guard: only the button rules apply.
+- **What the guard cannot tell apart.** Read-only means no request that changes data *by its method*:
+  a plain page load (GET) that changes something on the server (a link such as `/api/touch-me`, a
+  tracking pixel) looks like any other read and still goes through; the address rules catch the usual
+  ones (leave, sign out, delete, one-time codes). The app's own scripts can also open WebSocket
+  connections and use service workers, which the guard does not see. Map a staging or test copy of
+  your app, not production.
 - **Sign-in.** A sign-in screen (a password field, or only "Sign in with…" buttons) is a wall: nothing
   else on it is pressed. With a test account in **Project notes** (an email and a `${SECRET}` name
   whose value fastpilot has, for example "Test account: qa@shop.test, password in ${STAGING_PASS}"),
