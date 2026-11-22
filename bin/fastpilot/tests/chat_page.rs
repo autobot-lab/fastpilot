@@ -1,5 +1,7 @@
 //! FastTest M3 in Chat: "Save test only" on a test card whose file name is already taken said
-//! nothing where the person clicked. The refusal now stays in the card. Driven by fastpilot in
+//! nothing where the person clicked. The refusal now stays in the card. Then (L062-13) the card's
+//! Edit path: after that refusal, Edit opens the form with the bot's draft, the person changes the
+//! title, a step and the file name, and "Save test only" saves exactly that. Driven by fastpilot in
 //! Chrome against `fastpilot ui` with the stand-in Claude; skips without Chrome.
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -96,6 +98,29 @@ async fn a_refused_save_says_why_in_the_card() {
     let said = eval(&client, "(() => { const r = document.querySelector('.prop-refused'); return r ? r.textContent + '|' + r.getAttribute('role') + '|' + (document.activeElement === r) : 'none'; })()").await;
     assert!(said.contains("already saved") && said.contains("|alert|true"), "{said}");
     assert_eq!(std::fs::read_to_string(project.join("tests/login-demo.md")).expect("kept"), "# Login\n", "the existing test is kept");
+
+    // L062-13: Edit after the refused click. The form holds the bot's draft.
+    eval(&client, "[...document.querySelectorAll('.prop.test button')].find((b) => b.textContent.trim() === 'Edit').click(), 'ok'").await;
+    see(&client, "Cancel edit").await;
+    let form = eval(&client, "(() => { const q = (l) => document.querySelector(`.t-edit [aria-label=\"${l}\"]`); return [q('Test title').value, q('File name').value, q('Steps, one per line').value.split('\\n').length > 0].join('|'); })()").await.trim_matches('"').to_owned();
+    assert!(form.ends_with("|login-demo|true") && !form.starts_with('|'), "the draft is in the form: {form}");
+    // Cancel edit goes back to the card, untouched; Edit again, then change it and save.
+    eval(&client, "[...document.querySelectorAll('.prop.test button')].find((b) => b.textContent.trim() === 'Cancel edit').click(), 'ok'").await;
+    see(&client, "Save test only").await;
+    assert_eq!(eval(&client, "String(!!document.querySelector('.t-edit'))").await.trim_matches('"'), "false", "Cancel edit closes the form");
+    eval(&client, "[...document.querySelectorAll('.prop.test button')].find((b) => b.textContent.trim() === 'Edit').click(), 'ok'").await;
+    see(&client, "Cancel edit").await;
+    let set = "(() => { const put = (l, v) => { const e = document.querySelector(`.t-edit [aria-label=\"${l}\"]`); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }; \
+        put('Test title', 'Login with the second account'); put('File name', 'login-second'); \
+        put('Steps, one per line', 'Open the login page\\nSign in with b@b.com / ' + '$' + '{DEMO_PASS}\\nCheck that the Dashboard shows'); return 'ok'; })()";
+    eval(&client, set).await;
+    eval(&client, "[...document.querySelectorAll('.t-edit button')].find((b) => b.textContent.trim() === 'Save test only').click(), 'ok'").await;
+    see(&client, "Test saved.").await;
+    let saved = std::fs::read_to_string(project.join("tests/login-second.md")).expect("saved under the edited file name");
+    assert!(saved.contains("Login with the second account") && saved.contains("Sign in with b@b.com / ${DEMO_PASS}") && saved.contains("Check that the Dashboard shows"), "{saved}");
+    assert_eq!(std::fs::read_to_string(project.join("tests/login-demo.md")).expect("kept"), "# Login\n", "the other test is still untouched");
+    let card = eval(&client, "(() => { const c = document.querySelector('.prop.test'); return c.className + '|' + c.textContent; })()").await;
+    assert!(card.contains("applied") && card.contains("Login with the second account") && card.contains("Saved as tests/login-second.md") && !card.contains("Cancel edit"), "the card shows what was saved: {card}");
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }
