@@ -254,7 +254,7 @@ async fn settings_menu_says_secrets() {
     let c = &d.client;
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
-        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security\"");
+        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
         open(c, hash, "Only the name is saved here").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
@@ -307,4 +307,92 @@ async fn buttons_use_one_set_of_words() {
     // A confirmation's safe button is "Keep it" (History's "Keep them" is gone: see the scan above).
     let keep = eval(c, "(async () => { const p = UI.confirmDialog({ title: 't', text: 'x', verb: 'Delete' }); const k = document.querySelector('dialog.cdlg button').textContent; document.querySelector('dialog.cdlg button').click(); await p; return k; })()").await;
     assert_eq!(keep, "\"Keep it\"");
+}
+
+/// E6b (v0.7): the menu in its locked order (Chat first, Integrations for Jira and the rest), the App
+/// switcher above every page, the Add app dialog (name taken from the address), adding a platform to
+/// an app from #/apps/add (S1 and S8 link there), switching, and Settings › Your apps, where
+/// removing an app keeps its folder. Old #/apps links land on Integrations.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_app_switcher_adds_switches_and_removes_apps() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-apps", |_| {}).await;
+    let c = &d.client;
+    let menu = eval(c, "[...document.querySelectorAll('.rail a small')].map((t) => t.textContent).join('|')").await;
+    assert_eq!(menu, "\"Chat|Live|Schedules|Map|Memory|History|Device|Integrations|Settings\"", "the locked menu (s6a)");
+
+    // No app yet: one button. The dialog takes the name from the address.
+    see(c, "Add your app").await;
+    eval(c, "(document.querySelector('#appbar button').click(), 'ok')").await;
+    see(c, "What do you want to test?").await;
+    let kinds = eval(c, "[...document.querySelectorAll('dialog.appdlg [role=radio]')].map((b) => b.dataset.v + ':' + b.getAttribute('aria-checked')).join('|')").await;
+    assert_eq!(kinds, "\"web:true|android:false|ios:false\"");
+    let typed = "(v) => { const w = document.getElementById('app-where'); w.value = v; w.dispatchEvent(new Event('input')); const n = document.getElementById('app-name'); return n ? n.value : ''; }";
+    assert_eq!(eval(c, &format!("({typed})('https://staging.shop.example')")).await, "\"Shop staging\"", "the name comes from the address");
+    // A wrong address is said under the field, and the dialog stays.
+    eval(c, &format!("(({typed})('staging shop'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
+    see(c, "is not a website address").await;
+    assert_eq!(eval(c, "String(!!document.querySelector('dialog.appdlg'))").await, "\"true\"");
+    eval(c, &format!("(({typed})('https://staging.shop.example'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
+    see(c, "Shop staging was added").await;
+    let bar = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
+    assert!(bar.contains("Shop staging") && bar.contains("Website"), "{bar}");
+
+    // Add an Android app from the switcher; the first app stays current.
+    eval(c, "(document.querySelector('#appbar .appbtn').click(), [...document.querySelectorAll('.appmenu button')].find((b) => b.textContent.includes('Add app')).click(), 'ok')").await;
+    see(c, "What do you want to test?").await;
+    eval(c, "(document.querySelector('dialog.appdlg [data-v=android]').click(), 'ok')").await;
+    assert_eq!(eval(c, &format!("({typed})('com.fastpilot.demo')")).await, "\"Demo\"");
+    eval(c, "(document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')").await;
+    see(c, "Demo was added").await;
+    let cur = eval(c, "(async () => (await api('/api/apps')).current)()").await;
+    assert_eq!(cur, "\"shop-staging\"");
+
+    // Switch.
+    eval(c, "(document.querySelector('#appbar .appbtn').click(), [...document.querySelectorAll('.appmenu [role=menuitemradio]')].find((b) => b.textContent.includes('Demo')).click(), 'ok')").await;
+    let mut now = String::new();
+    for _ in 0..40 {
+        now = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
+        if now.contains("Demo") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert!(now.contains("Demo") && now.contains("Android app"), "{now}");
+
+    // From a "Add iPhone app" button (S1, S8): a platform for an existing app.
+    open(c, "#/apps/add?app=shop-staging&kind=ios", "Add to Shop staging").await;
+    let offered = eval(c, "[...document.querySelectorAll('dialog.appdlg [role=radio]')].map((b) => b.dataset.v).join('|')").await;
+    assert_eq!(offered, "\"android|ios\"", "the website it has is not offered again");
+    eval(c, &format!("(({typed})('com.shop.app'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
+    see(c, "iPhone app added to Shop staging").await;
+    let shop = eval(c, "(async () => JSON.stringify((await api('/api/apps')).apps.find((a) => a.id === 'shop-staging').kinds))()").await;
+    assert_eq!(shop, r#""[\"web\",\"ios\"]""#);
+
+    // Settings › Your apps: Remove keeps the folder.
+    open(c, "#/settings/apps", "Where its tests are saved").await;
+    assert_eq!(eval(c, "document.querySelectorAll('tbody tr').length").await, "2");
+    eval(c, "([...document.querySelectorAll('tr[data-id=demo] button')].find((b) => b.textContent.startsWith('Remove')).click(), 'ok')").await;
+    see(c, "Remove Demo?").await;
+    eval(c, "([...document.querySelectorAll('dialog.cdlg button')].find((b) => b.textContent === 'Remove from list').click(), 'ok')").await;
+    see(c, "Demo was removed from the list").await;
+    assert_eq!(eval(c, "(async () => String((await api('/api/apps')).apps.length))()").await, "\"1\"");
+    assert!(d.home.join("fastpilot/apps/demo").is_dir(), "its folder stays");
+
+    // Old links to the integrations page.
+    for (old, new) in [("#/apps", "#/integrations"), ("#/apps/jira", "#/integrations/jira")] {
+        eval(c, &format!("(location.hash = '{old}', 'ok')")).await;
+        let mut at = String::new();
+        for _ in 0..40 {
+            at = eval(c, "location.hash").await;
+            if at.trim_matches('"') == new {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(at.trim_matches('"'), new, "{old}");
+    }
+    see(c, "Connect Jira").await;
 }

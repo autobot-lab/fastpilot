@@ -13,7 +13,7 @@ use fastpilot_core::jira::{self, requests};
 
 type Res<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const USAGE: &str = "usage: fastpilot jira [status | approve]\n  status    the Jira connected in the dashboard (Apps › Jira)\n  approve   approve the Jira issues and comments Claude Code asked for (in your own terminal)";
+const USAGE: &str = "usage: fastpilot jira [status | approve]\n  status    the Jira connected in the dashboard (Integrations › Jira)\n  approve   approve the Jira issues and comments Claude Code asked for (in your own terminal)";
 
 pub async fn run(args: &[String]) -> Res<()> {
     match args.first().map(String::as_str).unwrap_or("status") {
@@ -23,10 +23,10 @@ pub async fn run(args: &[String]) -> Res<()> {
                     println!("Jira: connected to {} as {}", s.site, s.email);
                     println!("Default project: {}", if s.project_key.is_empty() { "(none chosen)".to_owned() } else { format!("{} ({})", s.project_key, s.project_name) });
                     if s.needs_attention {
-                        println!("Needs attention: Jira refused the saved token. Reconnect in the dashboard: Apps › Jira.");
+                        println!("Needs attention: Jira refused the saved token. Reconnect in the dashboard: Integrations › Jira.");
                     }
                 }
-                None => println!("Jira is not connected. Connect it in the dashboard: Apps › Connect Jira."),
+                None => println!("Jira is not connected. Connect it in the dashboard: Integrations › Connect Jira."),
             }
             let n = requests::list().len();
             if n > 0 {

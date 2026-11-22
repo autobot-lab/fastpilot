@@ -762,7 +762,7 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
 // ---- Schedules (C3) --------------------------------------------------------------------------
 
 /// Schedules with their last run; a webhook is shown only as its host.
-/// v0.6 Apps page: what is connected. Jira shows the site, project and email, never the token;
+/// v0.6 Integrations page: what is connected. Jira shows the site, project and email, never the token;
 /// Slack/webhook is the schedules' own notification (how many schedules use one).
 /// PF1: the map being made or the latest one, with which screens have a test.
 async fn map_api() -> Response {
@@ -1196,6 +1196,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
         "unlock.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/unlock.js")),
         "components.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/components.js")),
+        "appswitch.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/appswitch.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),

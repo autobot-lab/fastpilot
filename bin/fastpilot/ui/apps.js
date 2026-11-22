@@ -2,7 +2,7 @@
 // connected to: Jira (connected only from this page, by a click), the schedules' Slack/webhook
 // notifications, GitHub pull request comments, and what comes later. Uses h(), icon(), api(),
 // toast() from app.js. Values from the server are set as text, never as HTML. Everything is inside
-// one function; only PAGES.apps is shared.
+// one function; only PAGES.integrations is shared.
 (() => {
 "use strict";
 
@@ -19,7 +19,7 @@ async function loadApps() {
     appsData = { error: e.message };
   }
   appsBusy = false;
-  if ((location.hash || "").startsWith("#/apps")) render();
+  if ((location.hash || "").startsWith("#/integrations")) render();
 }
 
 const badge = (letter, kind) => h("span", { class: "app-badge " + kind, "aria-hidden": "true" }, letter);
@@ -30,7 +30,7 @@ function jiraCard(j) {
     return h("div", { class: "app-card wide", "data-app": "jira" },
       h("div", { class: "app-head" }, badge("J", "jira"), h("div", {}, h("b", {}, "Jira"),
         h("p", {}, "Turn failed tests into Jira issues, add results to a ticket, and write tests from a ticket. You approve everything first."))),
-      h("div", { class: "app-acts" }, h("a", { class: "btn p", href: "#/apps/jira" }, "Connect Jira")),
+      h("div", { class: "app-acts" }, h("a", { class: "btn p", href: "#/integrations/jira" }, "Connect Jira")),
       h("p", { class: "s" }, "Works with Jira Cloud addresses that end in .atlassian.net. Jira Server and Data Center are not supported yet."));
   }
   const project = j.project_name ? `Project ${j.project_name}${j.project_key ? ` (${j.project_key})` : ""}` : "";
@@ -40,8 +40,8 @@ function jiraCard(j) {
       j.needs_attention ? pill("Needs attention", "bad") : pill("Connected", "ok")),
     h("p", { class: "s" }, [j.site, project, j.email].filter(Boolean).join(" · ")),
     h("div", { class: "app-acts" },
-      j.needs_attention ? h("a", { class: "btn p", href: "#/apps/jira" }, "Reconnect") : null,
-      h("a", { class: "btn", href: "#/apps/jira" }, "Manage"),
+      j.needs_attention ? h("a", { class: "btn p", href: "#/integrations/jira" }, "Reconnect") : null,
+      h("a", { class: "btn", href: "#/integrations/jira" }, "Manage"),
       j.checked_ms ? h("span", { class: "s" }, "Last checked " + when(j.checked_ms)) : null));
 }
 
@@ -108,7 +108,7 @@ let appsPoll = null;
 function pollApps() {
   clearTimeout(appsPoll);
   appsPoll = setTimeout(async () => {
-    if ((location.hash || "") !== "#/apps") return;
+    if ((location.hash || "") !== "#/integrations") return;
     try {
       const fresh = await api("/api/integrations");
       const ids = (d) => JSON.stringify(((d && d.jira_requests) || []).map((r) => r.id));
@@ -120,7 +120,7 @@ function pollApps() {
 
 function pageApps() {
   pollApps();
-  $top().replaceChildren(icon("plug"), h("h1", { tabindex: "-1" }, "Apps"), h("span", { class: "s muted" }, "Connect fastpilot to the tools your team already uses"));
+  $top().replaceChildren(icon("plug"), h("h1", { tabindex: "-1" }, "Integrations"), h("span", { class: "s muted" }, "Connect fastpilot to the tools your team already uses"));
   if (!appsData) {
     if (!appsBusy) loadApps();
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading apps…")));
@@ -178,7 +178,7 @@ async function loadJira() {
   jf = { site: s.site || "", email: s.email || "", token: "", project: s.project_key || "", qa: s.qa_status || "", replacing: false };
   jt = jiraState.connected && s.display_name ? { ok: true, name: s.display_name, projects: null, saved: true } : null;
   jStatuses = s.qa_status ? [s.qa_status] : [];
-  if ((location.hash || "").startsWith("#/apps/jira")) PAGES.appsJira();
+  if ((location.hash || "").startsWith("#/integrations/jira")) PAGES.appsJira();
 }
 
 const creds = () => ({ site: jf.site, email: jf.email, token: jf.replacing || !(jiraState && jiraState.connected) ? jf.token : "" });
@@ -226,12 +226,12 @@ async function saveJira() {
     toast(r.ok, true);
     PAGES.appsReload();
     jiraState = null;
-    location.hash = "#/apps";
+    location.hash = "#/integrations";
   } catch (e) {
     jt = { kind: e.kind || "other", message: e.message };
   }
   jBusy = false;
-  if ((location.hash || "").startsWith("#/apps/jira")) PAGES.appsJira();
+  if ((location.hash || "").startsWith("#/integrations/jira")) PAGES.appsJira();
 }
 
 function confirmDisconnect() {
@@ -255,7 +255,7 @@ async function disconnectJira() {
   try { toast((await jiraPost({ action: "disconnect" })).ok, true); } catch (e) { toast(e.message); }
   PAGES.appsReload();
   jiraState = null;
-  location.hash = "#/apps";
+  location.hash = "#/integrations";
 }
 
 const RED = ["refused", "no_access"];
@@ -325,9 +325,9 @@ function pageJira() {
   const saveBtn = h("button", { class: "btn p", disabled: !canSave, onclick: saveJira }, connected ? "Save changes" : "Connect Jira");
   const pastedText = () => (/^https?:\/\//i.test(jf.site) || jf.site.includes("/") ? "We use only the address and ignore the rest of what you paste." : "");
   const pasted = h("span", { class: "s", id: "jira-site-paste" }, pastedText());
-  $top().replaceChildren(icon("plug"), h("div", {}, h("a", { class: "lk s", href: "#/apps" }, "Apps /"), h("h1", { tabindex: "-1" }, connected ? "Jira · Manage" : "Connect Jira")),
+  $top().replaceChildren(icon("plug"), h("div", {}, h("a", { class: "lk s", href: "#/integrations" }, "Integrations /"), h("h1", { tabindex: "-1" }, connected ? "Jira · Manage" : "Connect Jira")),
     h("span", { class: "s muted" }, connected ? "Connected" : "about 2 minutes"),
-    h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/apps" }, connected ? "Back to Apps" : "Cancel"), saveBtn));
+    h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/integrations" }, connected ? "Back to Integrations" : "Cancel"), saveBtn));
   function redrawControls() {
     const ok = jf.site.trim() && jf.email.trim() && (!tokenNeeded() || jf.token.trim());
     testBtn.disabled = !ok || jBusy;
@@ -363,7 +363,7 @@ function pageJira() {
       h("div", { class: "app-note info" }, h("b", {}, "Save is off until the test passes"), " and a project is chosen. Change any field after testing and the test result clears."))));
 }
 
-PAGES.apps = (sub) => {
+PAGES.integrations = (sub) => {
   if (sub === "jira") return pageJira();
   pageApps();
 };
@@ -371,7 +371,7 @@ PAGES.appsReload = () => { appsData = null; };
 PAGES.appsJira = () => pageJira();
 // Read again on every visit: a schedule or the connection may have changed meanwhile.
 window.addEventListener("hashchange", () => {
-  if (location.hash === "#/apps") { appsData = null; loadApps(); }
-  if (location.hash === "#/apps/jira") { jiraState = null; clearTimeout(jWaitTimer); }
+  if (location.hash === "#/integrations") { appsData = null; loadApps(); }
+  if (location.hash === "#/integrations/jira") { jiraState = null; clearTimeout(jWaitTimer); }
 });
 })();

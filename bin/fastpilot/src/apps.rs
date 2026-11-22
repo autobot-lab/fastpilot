@@ -100,8 +100,9 @@ pub fn get(id: &str) -> Option<App> {
 
 /// Add an app; the first one becomes the current one.
 pub fn add(name: &str, targets: Targets) -> Result<App, String> {
-    let name = check_name(name)?;
+    // The address first: it is what the person typed (the name is suggested from it).
     let targets = check_targets(targets)?;
+    let name = check_name(name)?;
     let _held = hold();
     let mut s = load();
     if s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
