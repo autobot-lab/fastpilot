@@ -187,8 +187,9 @@ fn a_remembered_browser_opens_the_dashboard_without_a_new_link() {
         }
         std::fs::write(file(&home), s.to_string()).expect("write");
         assert_eq!(post(p, "/api/unlock", None, json!({ "key": k })).status == 200, works, "created {} days ago, used {} days ago", (now - created) / day, (now - last) / day);
-        // The next one is a new browser: forget this one from the session's point of view.
-        let _ = post(p, "/api/browsers", Some(&fresh), json!({ "action": "forget_all" }));
+        // The next one is a new browser (taken out of the file, so this session may remember again;
+        // Forget would sign this session out, as it should).
+        std::fs::write(file(&home), json!({ "browsers": [] }).to_string()).expect("clear");
     }
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
@@ -268,6 +269,73 @@ async fn chrome_remembers_after_asking_and_forgets_on_request() {
     assert_eq!(eval(c, "String(localStorage.getItem('fastpilot.browser'))").await, "\"null\"");
     assert!(std::fs::read_to_string(file(&home)).is_ok_and(|s| !s.contains("\"id\"")), "forgotten on the server too");
     client.cancel().await.expect("shutdown");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn sha256(key: &str) -> String {
+    ring::digest::digest(&ring::digest::SHA256, key.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Security, #178 M1: Forget must win over a holder of the key who keeps /api/unlock busy; L1: a key
+/// is never traded or handed out under localhost; L2: a squatted saved port ends the keys.
+#[test]
+fn forget_wins_over_parallel_unlocks_and_keys_stay_on_127_0_0_1() {
+    let home = std::env::temp_dir().join(format!("fp-remember-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot/ui")).expect("home");
+    let ui = start(&home);
+    let p = ui.port;
+    let session = http(p, "GET", &format!("/?code={}", ui.code), &[], "").cookie().expect("session");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as u64;
+    let other = "b".repeat(64);
+    for round in 0..5 {
+        let key = format!("{:064x}", 0xa000 + round);
+        let entry = |id: &str, k: &str| json!({ "id": id, "label": "Chrome on this Mac", "hash": sha256(k), "created_ms": now, "last_ms": now });
+        std::fs::write(file(&home), json!({ "browsers": [entry(&format!("a{round}"), &key), entry("b", &other)] }).to_string()).expect("store");
+        let storm: Vec<_> = (0..30)
+            .map(|_| {
+                let k = key.clone();
+                std::thread::spawn(move || post(p, "/api/unlock", None, json!({ "key": k })).status)
+            })
+            .collect();
+        let gone = post(p, "/api/browsers", Some(&session), json!({ "action": "forget", "id": format!("a{round}") }));
+        for t in storm {
+            let _ = t.join();
+        }
+        let gone: Value = serde_json::from_str(&gone.body).unwrap_or_else(|_| panic!("round {round}: forget failed: {}", gone.body));
+        assert_eq!(gone["forgotten"], 1, "round {round}: {gone}");
+        assert_eq!(post(p, "/api/unlock", None, json!({ "key": key })).status, 401, "round {round}: the forgotten key must not work");
+        assert_eq!(post(p, "/api/unlock", None, json!({ "key": other })).status, 200, "round {round}: the other browser stays remembered");
+    }
+    let tmp = std::fs::read_dir(home.join(".fastpilot/ui")).expect("dir").flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+    assert_eq!(tmp, 0, "no temp files left");
+
+    // localhost: the page moves to 127.0.0.1; a key is never traded or handed out there.
+    let lh = http(p, "GET", "/", &[("Host", format!("localhost:{p}"))], "");
+    assert!(lh.status == 303 && lh.head.contains(&format!("http://127.0.0.1:{p}/")), "{} {}", lh.status, lh.head);
+    let h = [("Host", format!("localhost:{p}")), ("Origin", format!("http://localhost:{p}")), ("Content-Type", "application/json".to_owned())];
+    assert_eq!(http(p, "POST", "/api/unlock", &h, &json!({ "key": other }).to_string()).status, 421, "no unlock under localhost");
+    let mut h = h.to_vec();
+    h.push(("Cookie", session.clone()));
+    assert_ne!(http(p, "POST", "/api/browsers", &h, &json!({ "action": "remember" }).to_string()).status, 200, "no key handed out under localhost");
+
+    // The saved port is taken while fastpilot is stopped: the keys stop working.
+    drop(ui);
+    let squatter = std::net::TcpListener::bind(("127.0.0.1", p)).expect("squat");
+    let ui = start(&home);
+    assert_ne!(ui.port, p);
+    let mut left = String::new();
+    for _ in 0..40 {
+        left = std::fs::read_to_string(file(&home)).unwrap_or_default();
+        if !left.contains("\"id\"") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!left.contains("\"id\""), "every remembered browser is forgotten: {left}");
+    assert_eq!(post(ui.port, "/api/unlock", None, json!({ "key": other })).status, 401);
+    drop(squatter);
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }
