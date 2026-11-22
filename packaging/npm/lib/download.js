@@ -55,13 +55,43 @@ function checkBase(base) {
   }
 }
 
-async function get(url) {
+// A connection cut on the way (ECONNRESET, ETIMEDOUT, "fetch failed", a body cut short) is tried
+// again, TRIES times in all, after a short pause. Some IPv6 paths (NAT64) reset Node's download
+// from GitHub about half the time while IPv4 works (v0.6.0, the user's Mac), so after the first
+// cut every later connection of this process looks up IPv4 addresses first. Not tried again: an
+// HTTP error, a file over LIMIT, or the overall timeout (a hung download stays bounded).
+const TRIES = 3;
+const pause = (n) => new Promise((r) => setTimeout(r, 1000 * n));
+
+/// A network error, marked to be tried again, with its plain reason ("ECONNRESET", …).
+function cut(e) {
+  const c = e && e.cause;
+  return Object.assign(new Error(e.message), { cut: (c && (c.code || c.message)) || e.code || e.message });
+}
+
+async function get(url, log) {
+  for (let n = 1; ; n++) {
+    try {
+      return await getOnce(url);
+    } catch (e) {
+      if (!e.cut) throw e;
+      if (n >= TRIES) {
+        throw new Error(`could not download ${url} (${e.cut}, ${TRIES} tries). Check the network connection and try again: npm install -g fastpilot, or run fastpilot again`);
+      }
+      require("dns").setDefaultResultOrder("ipv4first");
+      log(`fastpilot: the download was cut (${e.cut}); trying again over IPv4 (${n + 1} of ${TRIES})…`);
+      await pause(n);
+    }
+  }
+}
+
+async function getOnce(url) {
   let res;
   try {
     res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(seconds() * 1000) });
   } catch (e) {
     if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
-    throw new Error(`${url}: ${e.message}`);
+    throw cut(e);
   }
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   if (Number(res.headers.get("content-length")) > LIMIT) throw new Error(`${url}: larger than ${LIMIT / 1048576} MB; refused`);
@@ -75,7 +105,8 @@ async function get(url) {
     }
   } catch (e) {
     if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
-    throw e;
+    if (size > LIMIT) throw e;
+    throw cut(e);
   }
   return Buffer.concat(chunks);
 }
@@ -116,8 +147,8 @@ async function ensure(log) {
   checkBase(base);
   const name = `fastpilot-${version}-${target}`;
   log(`fastpilot: downloading fastpilot ${version} for ${target} (once)…`);
-  const archive = await get(`${base}/v${version}/${name}.tar.gz`);
-  const want = (await get(`${base}/v${version}/${name}.tar.gz.sha256`)).toString().split(/\s+/)[0];
+  const archive = await get(`${base}/v${version}/${name}.tar.gz`, log);
+  const want = (await get(`${base}/v${version}/${name}.tar.gz.sha256`, log)).toString().split(/\s+/)[0];
   const got = crypto.createHash("sha256").update(archive).digest("hex");
   if (want !== got) throw new Error(`checksum mismatch for ${name}.tar.gz (expected ${want}, got ${got}); nothing was installed`);
   if (ready()) return bin; // another first run finished meanwhile

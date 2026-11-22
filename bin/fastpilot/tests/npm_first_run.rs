@@ -26,9 +26,9 @@ fn target() -> Option<&'static str> {
     }
 }
 
-/// The release a stand-in server serves: `/good/v<ver>/<name>.tar.gz(.sha256)`; under `/bad/`
-/// the checksum is wrong. Returns the base URL and the request counter.
-fn serve(dir: &Path, name: &str) -> (String, Arc<AtomicUsize>) {
+/// A stand-in release archive `<name>.tar.gz` holding a small script as the "binary", and its
+/// SHA-256.
+fn release(dir: &Path, name: &str) -> (Vec<u8>, String) {
     let stage = dir.join("stage").join(name);
     std::fs::create_dir_all(&stage).expect("stage");
     let fake = format!("#!/bin/sh\nif [ \"$1\" = mcp ]; then echo MCP-OUT; else echo \"fastpilot {VERSION}\"; fi\n");
@@ -45,6 +45,13 @@ fn serve(dir: &Path, name: &str) -> (String, Arc<AtomicUsize>) {
         let out = Command::new("shasum").args(["-a", "256"]).arg(&archive).output().or_else(|_| Command::new("sha256sum").arg(&archive).output()).expect("sha");
         String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_owned()
     };
+    (bytes, sha)
+}
+
+/// The release a stand-in server serves: `/good/v<ver>/<name>.tar.gz(.sha256)`; under `/bad/`
+/// the checksum is wrong. Returns the base URL and the request counter.
+fn serve(dir: &Path, name: &str) -> (String, Arc<AtomicUsize>) {
+    let (bytes, sha) = release(dir, name);
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let hits = Arc::new(AtomicUsize::new(0));
@@ -108,7 +115,21 @@ fn package(at: &Path) -> PathBuf {
 }
 
 fn shim(pkg: &Path, base: &str, args: &[&str]) -> std::process::Output {
-    Command::new("node").arg(pkg.join("bin/fastpilot.js")).args(args).env("FASTPILOT_DOWNLOAD_BASE", base).env_remove("FASTPILOT_SKIP_DOWNLOAD").output().expect("node")
+    node(pkg, "bin/fastpilot.js", base, args)
+}
+
+/// `node <pkg>/<script>` with a throwaway HOME and no NODE_OPTIONS: no ~/.npmrc or
+/// `--dns-result-order` from this computer changes how the download connects.
+fn node(pkg: &Path, script: &str, base: &str, args: &[&str]) -> std::process::Output {
+    Command::new("node")
+        .arg(pkg.join(script))
+        .args(args)
+        .env("HOME", pkg.parent().expect("parent"))
+        .env_remove("NODE_OPTIONS")
+        .env("FASTPILOT_DOWNLOAD_BASE", base)
+        .env_remove("FASTPILOT_SKIP_DOWNLOAD")
+        .output()
+        .expect("node")
 }
 
 fn vendor(pkg: &Path) -> Vec<String> {
@@ -192,5 +213,152 @@ fn the_npm_shim_downloads_the_binary_on_the_first_run() {
     let out = shim(&pkg, "http://mirror.example.com/releases", &["--version"]);
     assert!(!out.status.success() && text(&out.stderr).contains("must use https"), "{}", text(&out.stderr));
     assert_eq!(hits.load(Ordering::SeqCst), before, "nothing fetched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in GitHub on a path that cuts downloads. On 127.0.0.1 the first `cuts` requests end in
+/// a TCP reset: the first before any answer, the next ones halfway through the file. Later
+/// requests get `/v<ver>/<name>.tar.gz` and its `.sha256` (`sha`). With `v6`, [::1] on the same
+/// port resets every request: an IPv6 path that cuts every download while IPv4 works (NAT64 on
+/// the user's Mac, v0.6.0). Returns the port and the request counts on IPv4 and IPv6 (`None`
+/// when [::1] is not available here).
+fn serve_cutting(bytes: Vec<u8>, sha: String, name: String, cuts: usize, v6: bool) -> (u16, Arc<AtomicUsize>, Option<Arc<AtomicUsize>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn path(s: &mut tokio::net::TcpStream) -> String {
+        let mut head = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => head.extend_from_slice(&buf[..n]),
+            }
+        }
+        String::from_utf8_lossy(&head).split_whitespace().nth(1).unwrap_or("").to_owned()
+    }
+    fn reset(s: tokio::net::TcpStream) {
+        s.set_zero_linger().expect("linger");
+        drop(s);
+    }
+    let v4 = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = v4.local_addr().expect("addr").port();
+    let v6 = if v6 { TcpListener::bind(("::1", port)).ok() } else { None };
+    let hits4 = Arc::new(AtomicUsize::new(0));
+    let hits6 = v6.as_ref().map(|_| Arc::new(AtomicUsize::new(0)));
+    let (h4, h6) = (hits4.clone(), hits6.clone());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        rt.block_on(async move {
+            if let (Some(l), Some(h6)) = (v6, h6) {
+                l.set_nonblocking(true).expect("nonblocking");
+                let l = tokio::net::TcpListener::from_std(l).expect("listener");
+                tokio::spawn(async move {
+                    while let Ok((mut s, _)) = l.accept().await {
+                        path(&mut s).await;
+                        h6.fetch_add(1, Ordering::SeqCst);
+                        reset(s);
+                    }
+                });
+            }
+            v4.set_nonblocking(true).expect("nonblocking");
+            let v4 = tokio::net::TcpListener::from_std(v4).expect("listener");
+            while let Ok((mut s, _)) = v4.accept().await {
+                let p = path(&mut s).await;
+                let n = h4.fetch_add(1, Ordering::SeqCst) + 1;
+                let body = if p == format!("/v{VERSION}/{name}.tar.gz") {
+                    Some(bytes.clone())
+                } else if p == format!("/v{VERSION}/{name}.tar.gz.sha256") {
+                    Some(format!("{sha}  {name}.tar.gz\n").into_bytes())
+                } else {
+                    None
+                };
+                let Some(body) = body else {
+                    let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    continue;
+                };
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                if n > cuts {
+                    let _ = s.write_all(head.as_bytes()).await;
+                    let _ = s.write_all(&body).await;
+                    continue;
+                }
+                if n > 1 {
+                    // A body cut short: the answer starts, then the connection is reset.
+                    let _ = s.write_all(head.as_bytes()).await;
+                    let _ = s.write_all(&body[..body.len() / 2]).await;
+                    let _ = s.flush().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                reset(s);
+            }
+        });
+    });
+    (port, hits4, hits6)
+}
+
+/// v0.6.1 hotfix: `npm install -g fastpilot` ended in "fetch failed" on an IPv6 (NAT64) network
+/// that reset Node's download from GitHub about half the time, while IPv4 worked. A cut download
+/// is now tried again (3 tries), over IPv4 after the first cut; the checksum is still checked; a
+/// path that always cuts ends with plain words and leaves nothing in vendor/.
+#[test]
+fn a_cut_download_is_tried_again_over_ipv4_and_then_explained() {
+    let (Some(target), true) = (target(), Command::new("node").arg("--version").output().is_ok()) else {
+        return eprintln!("skipping: no node, or no prebuilt binary for this platform");
+    };
+    let dir = std::env::temp_dir().join(format!("fp-npm-cut-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let name = format!("fastpilot-{VERSION}-{target}");
+    let (bytes, sha) = release(&dir, &name);
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+
+    // Cut twice (a reset, then a body cut short), then served: postinstall installs it, checked.
+    let (port, hits, _) = serve_cutting(bytes.clone(), sha.clone(), name.clone(), 2, false);
+    let base = format!("http://127.0.0.1:{port}");
+    let pkg = package(&dir.join("cut-twice"));
+    let out = node(&pkg, "install.js", &base, &[]);
+    let err = text(&out.stderr);
+    assert!(out.status.success(), "installed after two cuts: {err}");
+    assert!(err.contains("trying again over IPv4 (2 of 3)") && err.contains("trying again over IPv4 (3 of 3)") && err.contains("installed"), "{err}");
+    assert!(out.stdout.is_empty(), "stdout stays clean: {}", text(&out.stdout));
+    assert_eq!(hits.load(Ordering::SeqCst), 4, "archive 3 tries, checksum once");
+    assert_eq!(vendor(&pkg), ["VERSION", "fastpilot"], "no temp files left");
+    assert_eq!(std::fs::read(pkg.join("vendor/fastpilot")).expect("binary"), std::fs::read(dir.join("stage").join(&name).join("fastpilot")).expect("staged"), "the checked file is the one installed");
+    let out = shim(&pkg, &base, &["--version"]);
+    assert_eq!(text(&out.stdout), format!("fastpilot {VERSION}\n"));
+    assert_eq!(hits.load(Ordering::SeqCst), 4, "no network on later runs");
+
+    // A retry is checked like a first try: a wrong checksum after a cut installs nothing.
+    let (port, _, _) = serve_cutting(bytes.clone(), "0".repeat(64), name.clone(), 1, false);
+    let pkg = package(&dir.join("cut-bad-sum"));
+    let out = shim(&pkg, &format!("http://127.0.0.1:{port}"), &["--version"]);
+    assert!(!out.status.success() && text(&out.stderr).contains("checksum mismatch") && out.stdout.is_empty(), "{}", text(&out.stderr));
+    assert!(vendor(&pkg).is_empty(), "{:?}", vendor(&pkg));
+
+    // Always cut (first run of the npm shim): three tries, then plain words; nothing installed.
+    let (port, hits, _) = serve_cutting(bytes.clone(), sha.clone(), name.clone(), usize::MAX, false);
+    let pkg = package(&dir.join("always-cut"));
+    let started = std::time::Instant::now();
+    let out = shim(&pkg, &format!("http://127.0.0.1:{port}"), &["--version"]);
+    let err = text(&out.stderr);
+    assert!(!out.status.success() && out.stdout.is_empty(), "{err}");
+    assert!(err.contains("could not download") && err.contains("3 tries") && err.contains("Check the network connection and try again"), "{err}");
+    assert!(!err.contains("    at ") && !err.contains("TypeError"), "no stack trace: {err}");
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "a short pause between tries");
+    assert!(vendor(&pkg).is_empty(), "nothing in vendor/: {:?}", vendor(&pkg));
+
+    // IPv6 cuts every download, IPv4 works (the user's Mac): the IPv4 retry gets the file.
+    let (port, hits, hits6) = serve_cutting(bytes, sha, name, 0, true);
+    if let Some(hits6) = hits6 {
+        let pkg = package(&dir.join("v6-cuts"));
+        let out = shim(&pkg, &format!("http://localhost:{port}"), &["--version"]);
+        let err = text(&out.stderr);
+        assert!(out.status.success(), "IPv4 after the IPv6 cut: {err}");
+        assert_eq!(text(&out.stdout), format!("fastpilot {VERSION}\n"));
+        assert!(hits6.load(Ordering::SeqCst) <= 1, "after the first cut, IPv4 first: {err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "{err}");
+        eprintln!("IPv6 cuts: {} (localhost tried IPv6 first: {})", hits6.load(Ordering::SeqCst), err.contains("over IPv4"));
+    } else {
+        eprintln!("skipping the IPv6 part: [::1] is not available here");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
