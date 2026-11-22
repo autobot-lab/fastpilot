@@ -1489,6 +1489,128 @@ impl Driver for WebPage {
         Ok(fastpilot_core::Recording::Frames(frames.into_iter().filter_map(|(t, d)| b64.decode(d).ok().map(|j| (t, j))).collect()))
     }
 
+    /// PF4: a fresh load of the current address, measured only from CDP events (Network, Page,
+    /// PerformanceTimeline, Runtime); no script is evaluated in the page.
+    async fn measure_speed(&self) -> Result<fastpilot_core::Speed> {
+        let err = |e: Error| CoreError::Driver(e.to_string());
+        let tab = self.tab();
+        let history = self.call("Page.getNavigationHistory", json!({})).await.map_err(err)?;
+        let i = history["currentIndex"].as_u64().unwrap_or(0) as usize;
+        let url = history["entries"][i]["url"].as_str().unwrap_or("").to_owned();
+        // A page that came from a form is never opened again (it could send the form again).
+        if history["entries"][i]["transitionType"] == "form_submit" {
+            return Err(CoreError::Unsupported("the page came from a form, so it is not opened again".into()));
+        }
+        // The address the page ended on (after redirects) gets the same rules as the one asked for.
+        if let Some(why) = fastpilot_core::ship::reopen_refusal(&url) {
+            return Err(CoreError::Unsupported(format!("{why}, so it is not opened again")));
+        }
+        let mut rx = self.browser.cdp.subscribe();
+        // LCP and layout shifts come from the PerformanceTimeline domain (experimental): without
+        // it they are "not measured".
+        let timeline = self.call("PerformanceTimeline.enable", json!({ "eventTypes": ["largest-contentful-paint", "layout-shift"] })).await.is_ok();
+        let nav = self.call("Page.navigate", json!({ "url": url })).await.map_err(err)?;
+        if let Some(e) = nav["errorText"].as_str().filter(|e| !e.is_empty()) {
+            return Err(CoreError::Driver(format!("the page did not load again: {e}")));
+        }
+        let mut s = fastpilot_core::Speed { url: url.clone(), ..Default::default() };
+        let (mut doc_ts, mut doc_wall, mut load_ts, mut lcp_at) = (None::<f64>, None::<f64>, None::<f64>, None::<f64>);
+        let mut cls = 0.0f64;
+        let mut urls: HashMap<String, String> = HashMap::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut settle: Option<tokio::time::Instant> = None;
+        loop {
+            let until = settle.unwrap_or(deadline).min(deadline);
+            let ev = match tokio::time::timeout_at(until, rx.recv()).await {
+                Ok(Ok(ev)) => ev,
+                Ok(Err(RecvError::Lagged(_))) => continue,
+                Ok(Err(RecvError::Closed)) | Err(_) => break,
+            };
+            if ev.session != tab.session {
+                continue;
+            }
+            let p = &ev.params;
+            match ev.method.as_str() {
+                "Network.requestWillBeSent" => {
+                    let u = p["request"]["url"].as_str().unwrap_or("");
+                    if u.starts_with("data:") || u.starts_with("blob:") {
+                        continue;
+                    }
+                    s.requests += 1;
+                    if let Some(id) = p["requestId"].as_str().filter(|_| urls.len() < 5_000) {
+                        urls.insert(id.to_owned(), u.to_owned());
+                    }
+                    if doc_ts.is_none() && p["type"] == "Document" && p["frameId"].as_str() == Some(tab.target.as_str()) {
+                        doc_ts = p["timestamp"].as_f64();
+                        doc_wall = p["wallTime"].as_f64();
+                    }
+                }
+                "Network.loadingFinished" => s.bytes += p["encodedDataLength"].as_f64().unwrap_or(0.0).max(0.0) as u64,
+                "Network.loadingFailed" if p["canceled"].as_bool() != Some(true) && p["errorText"] != "net::ERR_ABORTED" => {
+                    let u = p["requestId"].as_str().and_then(|id| urls.get(id)).cloned().unwrap_or_default();
+                    s.failed.push(format!("{} {u}", p["errorText"].as_str().unwrap_or("failed")));
+                }
+                "Network.responseReceived" => {
+                    let status = p["response"]["status"].as_u64().unwrap_or(0);
+                    let u = p["response"]["url"].as_str().unwrap_or("");
+                    if status >= 400 && !u.ends_with("/favicon.ico") {
+                        s.failed.push(format!("HTTP {status} {u}"));
+                    }
+                }
+                "Page.loadEventFired" if load_ts.is_none() => {
+                    load_ts = p["timestamp"].as_f64();
+                    // Late paints, layout shifts and requests right after the load still count.
+                    settle = Some(tokio::time::Instant::now() + Duration::from_millis(1500));
+                }
+                "PerformanceTimeline.timelineEventAdded" => {
+                    let e = &p["event"];
+                    match e["type"].as_str() {
+                        Some("largest-contentful-paint") => {
+                            let d = &e["lcpDetails"];
+                            lcp_at = d["renderTime"].as_f64().filter(|t| *t > 0.0).or_else(|| d["loadTime"].as_f64().filter(|t| *t > 0.0)).or(lcp_at);
+                        }
+                        Some("layout-shift") if e["layoutShiftDetails"]["hadRecentInput"].as_bool() != Some(true) => {
+                            cls += e["layoutShiftDetails"]["value"].as_f64().unwrap_or(0.0);
+                        }
+                        _ => {}
+                    }
+                }
+                "Runtime.exceptionThrown" => {
+                    let d = &p["exceptionDetails"];
+                    s.errors.push(format!("exception: {}", d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("")));
+                }
+                "Runtime.consoleAPICalled" if matches!(p["type"].as_str(), Some("error" | "assert")) => {
+                    let a = &p["args"][0];
+                    s.errors.push(format!("console.error: {}", a["value"].as_str().or(a["description"].as_str()).unwrap_or("")));
+                }
+                _ => {}
+            }
+        }
+        if timeline {
+            let _ = self.call("PerformanceTimeline.enable", json!({ "eventTypes": [] })).await;
+        }
+        // Page text is kept short: at most 50 of each, 300 characters each.
+        for list in [&mut s.errors, &mut s.failed] {
+            list.truncate(50);
+            for t in list.iter_mut() {
+                if t.chars().count() > 300 {
+                    *t = t.chars().take(300).collect::<String>() + "…";
+                }
+            }
+        }
+        let ms = |secs: f64| (secs.is_finite() && (0.0..600.0).contains(&secs)).then(|| (secs * 1000.0).round() as u64);
+        s.load_ms = match (doc_ts, load_ts) {
+            (Some(a), Some(b)) => ms(b - a),
+            _ => None,
+        };
+        s.lcp_ms = match (doc_wall, lcp_at) {
+            (Some(a), Some(b)) => ms(b - a),
+            _ => None,
+        };
+        s.cls = (timeline && load_ts.is_some()).then_some((cls * 1000.0).round() / 1000.0);
+        Ok(s)
+    }
+
     /// Device metrics, touch and user agent (a mobile layout of a site); `None` resets them.
     async fn set_viewport(&self, v: Option<&fastpilot_core::Viewport>) -> Result<()> {
         let Some(v) = v else {

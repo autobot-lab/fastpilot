@@ -132,6 +132,24 @@ pub enum Grant {
     Unset,
 }
 
+/// PF4: one fresh load of a page, measured from the browser's own reports (CDP events; nothing is
+/// run in the page). `None` is "not measured": a value the browser did not give is never guessed.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Speed {
+    pub url: String,
+    /// Until the load event (ms from the document request).
+    pub load_ms: Option<u64>,
+    /// Largest contentful paint (ms from the document request).
+    pub lcp_ms: Option<u64>,
+    /// Layout shifts not caused by input, summed.
+    pub cls: Option<f64>,
+    pub requests: u64,
+    pub bytes: u64,
+    /// Page errors (exceptions, console.error) and failed requests during the load.
+    pub errors: Vec<String>,
+    pub failed: Vec<String>,
+}
+
 /// `setViewport` (web): a device preset or explicit metrics; `None` from `preset("desktop")`
 /// means back to the normal window.
 #[derive(Debug, Clone, PartialEq)]
@@ -245,6 +263,11 @@ pub trait Driver: Send + Sync {
     /// Console errors, failed requests and similar, newest last (attached to failures).
     async fn diagnostics(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// PF4: open the current page's address again (a GET) and measure that load from the
+    /// browser's own reports only. Web only.
+    async fn measure_speed(&self) -> Result<Speed> {
+        Err(Error::Unsupported("speed is measured on web pages".into()))
     }
     /// Maestro `launchApp`: package / package/activity / bundleId.
     async fn launch_app(&self, app: &str) -> Result<()> {
