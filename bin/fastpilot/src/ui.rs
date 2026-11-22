@@ -723,7 +723,10 @@ async fn agents_api() -> Response {
         })
         .collect();
     let claude: Vec<Value> = agents::CLAUDE_MODELS.iter().map(|(id, n, d)| json!({ "id": id, "name": n, "about": d })).collect();
-    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore() })).into_response()
+    // S4: New agent in one click (a focus), or the form filled in from the current app.
+    let focuses: Vec<Value> = agents::FOCUSES.iter().map(|(k, label, ..)| json!({ "id": k, "label": label })).collect();
+    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
+        "focuses": focuses, "new_defaults": agents::new_defaults() })).into_response()
 }
 
 /// D10c: the skill library (packs, skills, community); `?id=NAME`: one skill's full text.
@@ -744,6 +747,7 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
     let parse = || serde_json::from_value::<agents::Agent>(body["agent"].clone()).map_err(|e| format!("The agent is incomplete ({e})"));
     let r: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
         "create" => parse().and_then(agents::create).map(|a| json!({ "agent": a })),
+        "create_focus" => agents::create_focus(body["focus"].as_str().unwrap_or("")).map(|a| json!({ "agent": a })),
         "update" => parse().and_then(agents::update).map(|a| json!({ "agent": a })),
         "delete" => agents::delete(body["id"].as_str().unwrap_or("")).map(|()| json!({})),
         // D10c: the skills to tick for a new agent, each with its reason.

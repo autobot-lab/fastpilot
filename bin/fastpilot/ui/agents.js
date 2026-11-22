@@ -97,9 +97,11 @@ function list(current) {
       avatar(x),
       h("span", { class: "ag-txt" }, h("b", {}, x.agent.name), h("span", { class: "s" }, summary(x)), h("span", { class: "s" }, modelLabel(x), " ", untested(x))),
       h("span", { class: "ag-st " + (x.queued ? "queued" : x.busy ? "run" : "ready") }, x.queued ? "queued" : x.busy ? "running" : "ready"))));
+  // S4: each app already has its tester, so another agent is under More.
   return h("nav", { class: "ag-col", "aria-label": "Agents" },
-    h("div", { class: "ag-col-head" }, h("h2", {}, "Agents"), h("a", { class: "btn sm p", href: "#/agents/new" }, icon("plus", "sm"), "New agent")),
-    h("ul", { class: "ag-list" }, items));
+    h("div", { class: "ag-col-head" }, h("h2", {}, "Agents")),
+    h("ul", { class: "ag-list" }, items),
+    UI.moreOptions({ label: "More" }, h("a", { class: "btn sm", href: "#/agents/new" }, icon("plus", "sm"), "New agent")));
 }
 
 // ---- one agent ----
@@ -302,9 +304,24 @@ function page(id, tab) {
 
 // ---- Create agent (v7 #s4) ----
 
+// S4: one click makes an agent with a focus; where it tests, the app and its skills come from the
+// current app. Describing one yourself (the full form, filled in from the app) is under More options.
+async function createFocus(id, btn) {
+  btn.disabled = true;
+  try {
+    const r = await api("/api/agents", { action: "create_focus", focus: id });
+    agDraft = null;
+    await loadAgents();
+    toast(`"${r.agent.name}" is ready.`, true);
+    location.hash = `#/agents/${r.agent.id}/chat`;
+  } catch (e) { btn.disabled = false; toast(e.message); }
+}
+
 function pageNew() {
   chatHost = null;
-  const d = agDraft || (agDraft = { name: "", job: "", devices: ["web"], app: "", instructions: [], blocked: "", ai: { provider: "claude", model: null } });
+  const nd = agData.new_defaults || {};
+  const opened = !!agDraft; // Edit on a Chat card, or a form the user already started
+  const d = agDraft || (agDraft = { name: "", job: "", devices: (nd.devices && nd.devices.length ? nd.devices : ["web"]).slice(), app: nd.app || "", instructions: [], blocked: "", ai: { provider: "claude", model: null } });
   d.ai = d.ai || { provider: "claude", model: null };
   const errs = h("p", { class: "fld-err", role: "alert", hidden: true });
   const name = h("input", { type: "text", maxlength: "40", value: d.name, placeholder: "e.g. Mobile Payments", "aria-label": "Name" });
@@ -362,25 +379,37 @@ function pageNew() {
       location.hash = `#/agents/${r.agent.id}/chat`;
     } catch (e) { errs.textContent = e.message; errs.hidden = false; errs.focus(); }
   };
-  $top().replaceChildren(icon("plus"), h("h1", { tabindex: "-1" }, "New agent"), h("span", { class: "s muted" }, "steps 1–3 are enough to start · or just describe it in Chat"),
-    h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/agents" }, "Cancel"), h("button", { class: "btn p", onclick: create }, "Create agent")));
+  const forApp = nd.app_name ? `New agent for ${nd.app_name}` : "New agent";
+  $top().replaceChildren(icon("plus"), h("h1", { tabindex: "-1" }, forApp),
+    h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/agents" }, "Cancel")));
   const sec = (n, title, opt, ...kids) => h("section", { class: "grp ag-sec" }, h("h2", { class: "gh" }, `${n} · ${title}`, opt ? h("span", { class: "opt" }, " · optional") : null), h("div", { class: "ag-pad" }, ...kids));
   const toChat = h("button", { class: "btn", onclick: () => {
     location.hash = "#/agents/default/chat";
-    setTimeout(() => { const box = document.getElementById("chat-input"); if (box) { box.value = "Create an agent \"Mobile Payments\" for the Android emulator and the iPhone simulator that keeps the cart and payment working, and never presses Pay"; box.focus(); } }, 300);
+    setTimeout(() => { const box = document.getElementById("chat-input"); if (box) { box.value = "Create an agent for checkout that never presses Pay"; box.focus(); } }, 300);
   } }, icon("chat", "sm"), "Describe it in Chat");
+  const focuses = h("div", { class: "prop-body ag-focus" }, (agData.focuses || []).map((f) => {
+    const b = h("button", { class: "say-row", "data-focus": f.id }, h("span", {}, f.label), h("span", { class: "arrow", "aria-hidden": "true" }, "→"));
+    b.addEventListener("click", () => createFocus(f.id, b));
+    return b;
+  }));
   $body().replaceChildren(h("div", { class: "ag-new" },
-    h("div", { class: "ag-form" }, errs,
-      sec(1, "who", false, h("label", { class: "fld" }, h("span", { class: "l" }, "Name"), name), h("label", { class: "fld" }, h("span", { class: "l" }, "What it does"), job)),
-      sec(2, "where", false, devs, app),
-      sec(3, "instructions (how this agent should work)", false, rules, h("div", { class: "add-row" }, rule, h("button", { type: "button", class: "btn", onclick: addRule }, icon("plus", "sm"), "Add")), sugs),
-      sec(4, "skills", true, skillStep),
-      sec(5, "this agent's AI model", true, modelPicker(d.ai)),
-      sec(6, "this agent's limits", true, h("p", { class: "s" }, "It follows your global limits (pay, checkout and delete account are blocked). An agent can only be stricter."),
-        h("label", { class: "fld" }, h("span", { class: "l" }, "Extra blocked words for this agent"), blocked))),
-    h("aside", { class: "grp ag-side" }, h("h2", { class: "gh" }, "or create it in chat"),
-      h("div", { class: "ag-pad" }, h("p", {}, "Tell fastpilot in one sentence what the agent should do. It prepares a card; nothing is created until you click Create."), toChat))));
-  name.focus();
+    h("section", { class: "grp ag-sec ag-quick" },
+      h("div", { class: "ag-pad" }, h("p", {}, "Most apps need only the tester fastpilot already made. Add another with a focus:"), focuses,
+        h("p", { class: "s muted" }, "Where it tests, the app and its skills come from ", nd.app_name ? `${nd.app_name}` : "this app", "; change them later in Agent settings."))),
+    UI.moreOptions({ label: "Describe it yourself", open: opened },
+      h("div", { class: "ag-form" }, errs,
+        sec(1, "who", false, h("label", { class: "fld" }, h("span", { class: "l" }, "Name"), name), h("label", { class: "fld" }, h("span", { class: "l" }, "What it does"), job)),
+        sec(2, "where", false, devs, app),
+        sec(3, "instructions (how this agent should work)", true, rules, h("div", { class: "add-row" }, rule, h("button", { type: "button", class: "btn", onclick: addRule }, icon("plus", "sm"), "Add")), sugs),
+        sec(4, "skills", true, skillStep),
+        sec(5, "this agent's AI model", true, modelPicker(d.ai)),
+        sec(6, "this agent's limits", true, h("p", { class: "s" }, "It follows your global limits (pay, checkout and delete account are blocked). An agent can only be stricter."),
+          h("label", { class: "fld" }, h("span", { class: "l" }, "Extra blocked words for this agent"), blocked)),
+        h("div", { class: "btns" }, h("button", { class: "btn p", onclick: create }, "Create agent"))),
+      h("section", { class: "grp ag-side" }, h("h2", { class: "gh" }, "or in chat"),
+        h("div", { class: "ag-pad" }, h("p", {}, "Tell fastpilot in one sentence what the agent should do. It prepares a card; nothing is created until you click Create."), toChat)))));
+  const first = opened ? name : focuses.querySelector("button");
+  if (first) first.focus();
 }
 
 async function route() {
