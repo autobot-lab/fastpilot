@@ -52,7 +52,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "allow_takeover", help: "the user may take sessions over in `fastpilot ui` (Take over); off for agents with a shell (default true)", rule: Rule::TightenOnly },
     Setting { key: "upload_dirs", help: "uploadFile only takes files inside these folders; empty = any", rule: Rule::TightenOnly },
     Setting { key: "max_steps", help: "`fastpilot run`: tool calls the AI may make per test (default 30)", rule: Rule::TightenOnly },
-    Setting { key: "test_timeout", help: "`fastpilot run`: minutes one test may take before it is stopped and failed (default: no limit)", rule: Rule::TightenOnly },
+    Setting { key: "test_timeout", help: "`fastpilot run`: minutes one test may take before it is stopped and failed (default: 30)", rule: Rule::TightenOnly },
     Setting { key: "headful", help: "show the browser window (default false: headless, never in the way)", rule: Rule::Free },
     Setting { key: "model", help: "`fastpilot run`: pin one Claude model for every test", rule: Rule::Free },
     Setting { key: "model_replay", help: "`fastpilot run`: model that replays path memory (default claude-haiku-5-5)", rule: Rule::Free },
@@ -507,14 +507,10 @@ pub fn tightens(key: &str, old: Option<&str>, new: Option<&str>) -> bool {
             let n_ = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok());
             matches!((n_(old).or(Some(30)), n_(new)), (Some(a), Some(b)) if b <= a)
         }
-        // No value = no limit.
+        // No value (or 0) = the built-in 30 minutes `fastpilot run` uses (L062-11), not "no limit".
         "test_timeout" => {
-            let m = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok()).filter(|m| *m > 0);
-            match (m(old), m(new)) {
-                (_, None) => m(old).is_none(),
-                (None, Some(_)) => true,
-                (Some(a), Some(b)) => b <= a,
-            }
+            let m = |v: Option<&str>| v.and_then(|d| d.trim().parse::<u64>().ok()).filter(|m| *m > 0).unwrap_or(30);
+            m(new) <= m(old)
         }
         _ => false,
     }
@@ -1030,6 +1026,10 @@ mod tests {
         assert!(tightens("max_steps", None, Some("20")) && !tightens("max_steps", Some("20"), Some("40")) && !tightens("max_steps", None, Some("31")));
         assert!(tightens("test_timeout", None, Some("10")) && tightens("test_timeout", Some("10"), Some("5")));
         assert!(!tightens("test_timeout", Some("10"), Some("30")) && !tightens("test_timeout", Some("10"), None));
+        // L062-11: an empty value is the built-in 30 minutes, so 60 is looser, not stricter.
+        assert!(!tightens("test_timeout", None, Some("60")) && !tightens("test_timeout", None, Some("31")) && tightens("test_timeout", None, Some("30")) && tightens("test_timeout", Some("60"), None));
+        let help = SETTINGS.iter().find(|s| s.key == "test_timeout").map(|s| s.help).unwrap_or("");
+        assert!(help.ends_with("(default: 30)") && !help.contains("no limit"), "{help}");
         // Values are checked; words keep their case in the file.
         assert!(invalid("allow_eval_script", "maybe").is_some() && invalid("allow_eval_script", "off").is_none());
         assert!(invalid("test_timeout", "10m").is_some());

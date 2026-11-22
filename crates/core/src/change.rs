@@ -373,7 +373,7 @@ fn shown(key: &str, v: Option<&str>) -> String {
         ("vars", None | Some("")) => "none".into(),
         ("max_steps", None) => "30 steps (default)".into(),
         ("max_steps", Some(n)) => format!("{n} steps"),
-        ("test_timeout", None | Some("0")) => "no limit".into(),
+        ("test_timeout", None | Some("0")) => "30 minutes (default)".into(),
         ("test_timeout", Some(n)) => format!("{n} minutes"),
         ("state_expire_days", None) => "30 days (default)".into(),
         ("state_expire_days", Some(n)) => format!("{n} days"),
@@ -762,6 +762,9 @@ mod tests {
         assert_eq!(level(&ch("max_steps", None, Some("20"))), Level::Ok);
         assert_eq!(level(&ch("model_replay", None, Some("claude-haiku-5-5"))), Level::Ok);
         assert_eq!(level(&ch("max_steps", Some("20"), Some("500"))), Level::Loosen);
+        // L062-11: the built-in test time is 30 minutes, so 60 loosens it and the card says so.
+        assert_eq!(level(&ch("test_timeout", None, Some("60"))), Level::Loosen);
+        assert_eq!(shown("test_timeout", None), "30 minutes (default)");
     }
 
     #[test]
