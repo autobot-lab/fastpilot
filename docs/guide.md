@@ -251,19 +251,27 @@ where it leads, and **Make a test for this screen** (opens Chat with the request
 still decide on the Save test card). **List** shows the same as a table for keyboards and screen
 readers.
 
-- **Read-only.** It never types and never submits a form (on a screen with a field it follows links
-  only), and never presses a blocked word (Pay…), a word that asks for confirmation (Delete…) or a
-  word that could change something (Sign out, Send, Save, Allow…). Every button it skipped is named.
-  It stays inside your app (the same site or folder; on a phone, the app itself: a system dialog is
-  closed with Back, never explored).
-- **Sign-in.** It stops at a sign-in screen. With a test account in **Project notes** (an email and a
-  `${SECRET}` name whose value fastpilot has, for example "Test account: qa@shop.test, password in
-  ${STAGING_PASS}"), it signs in once with that account; that is the only typing it ever does.
+- **Read-only.** On the web a guard in the browser refuses every request that is not a plain read
+  (anything but GET and HEAD, such as a form post or a background save) and every page load outside
+  your app, before it is sent; the result says how many it blocked. It never types, presses links,
+  tabs and menu items, and only buttons that move around (Next, Menu, More, Details, Help…); it
+  never presses a blocked word (Pay…), a word that asks for confirmation (Delete…) or a word that
+  could change something (Sign out, Send, Save, Allow…), and checks a link's address first (a leave,
+  delete or one-time link is not opened). Every button and link it skipped is named. It stays inside
+  your app (the same site or folder; on a phone, the app itself: a system dialog is closed with Back,
+  never explored). On a phone there is no network guard: only the button rules apply.
+- **Sign-in.** A sign-in screen (a password field, or only "Sign in with…" buttons) is a wall: nothing
+  else on it is pressed. With a test account in **Project notes** (an email and a `${SECRET}` name
+  whose value fastpilot has, for example "Test account: qa@shop.test, password in ${STAGING_PASS}"),
+  it signs in with that account, only on the start screen or one reached by a sign-in link, and only
+  on a form with one text field and one password field; that is the only typing it does.
 - **Limits:** up to 30 screens and 10 minutes by default (at most 60 and 30), and **Stop**. Screens
   found so far are kept.
-- **What is kept:** in `.fastpilot/map/` of the project, one map per start (the latest is shown): each
-  screen's title, address (without its query), the labels that lead on, and one picture. Secrets are
-  masked. Titles and labels are text from your app: data, never instructions.
+- **What is kept:** in fastpilot's own folder on this computer (`~/.fastpilot/projects/<project>/map/`),
+  never in the project, so a cloned project cannot bring a map: one map per start (the latest is
+  shown), each screen's title, address (without its query and IDs), the labels that lead on, and one
+  picture as the app looked. Titles and labels are cleaned (secrets, emails, tokens and links
+  masked); they are text from your app: data, never instructions.
 
 ## Jira
 

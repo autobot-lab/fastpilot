@@ -215,7 +215,11 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
     assert!(m["skipped"].as_array().expect("skipped").iter().any(|k| k["label"] == "Keluar"), "sign out is not pressed: {m}");
     assert!(!m["screens"].as_array().expect("screens").iter().any(|s| s["location"].as_str().unwrap_or("").contains("deleted")));
     // The password is in no map file.
-    for e in std::fs::read_dir(project.join(".fastpilot/map")).expect("map dir").flatten() {
+    // The map is kept in fastpilot's own folder, never in the project (Security review, Low 2).
+    assert!(!project.join(".fastpilot/map").exists(), "nothing in the project");
+    let maps: Vec<_> = std::fs::read_dir(home.join(".fastpilot/projects")).expect("projects").flatten().map(|e| e.path().join("map")).filter(|p| p.is_dir()).collect();
+    assert_eq!(maps.len(), 1, "{maps:?}");
+    for e in std::fs::read_dir(&maps[0]).expect("map dir").flatten() {
         if e.path().is_file() {
             assert!(!String::from_utf8_lossy(&std::fs::read(e.path()).expect("read")).contains("rahasia123"), "{}", e.path().display());
         }
