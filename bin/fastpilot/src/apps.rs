@@ -99,16 +99,20 @@ pub fn get(id: &str) -> Option<App> {
     load().apps.into_iter().find(|a| a.id == id)
 }
 
-/// Add an app; the first one becomes the current one.
+/// Add an app; the first one becomes the current one. With no name, it is made from the address
+/// (seamless-v13: paste the address only), kept apart from other apps' names with " (2)".
 pub fn add(name: &str, targets: Targets) -> Result<App, String> {
-    // The address first: it is what the person typed (the name is suggested from it).
+    // The address first: it is what the person typed (the name is made from it).
     let targets = check_targets(targets)?;
-    let name = check_name(name)?;
+    let given = !name.trim().is_empty();
+    let name = check_name(if given { name.to_owned() } else { name_from(&targets) }.as_str())?;
     let _held = hold();
     let mut s = load();
-    if s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
+    let taken = |n: &str| s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(n));
+    if given && taken(&name) {
         return Err(format!("there is already an app called \"{name}\": pick another name"));
     }
+    let name = (1..).map(|n| if n == 1 { name.clone() } else { format!("{name} ({n})") }).find(|n| !taken(n)).unwrap_or(name);
     let base = slug(&name);
     // A fresh id: not in use, not retired, and no folder of that name left on disk.
     let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
@@ -283,6 +287,55 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// A name for an app from its address: "https://staging.shop.example" → "Shop staging",
+/// "http://127.0.0.1:8080" → "127.0.0.1", "file:///…/demo/login.html" → "Demo",
+/// "com.shop.app" → "Shop".
+fn name_from(t: &Targets) -> String {
+    let cap = |w: &str| w.chars().take(1).flat_map(char::to_uppercase).chain(w.chars().skip(1)).collect::<String>();
+    if let Some(u) = t.web.as_deref().and_then(|w| url::Url::parse(w).ok()) {
+        if u.scheme() == "file" {
+            let dir = u.path_segments().and_then(|p| p.rev().nth(1).map(str::to_owned)).unwrap_or_default();
+            let dir = percent_decode(&dir);
+            return if dir.is_empty() { "Local page".into() } else { cap(&dir) };
+        }
+        return match u.host() {
+            Some(url::Host::Domain(d)) if d != "localhost" => {
+                let parts: Vec<&str> = d.split('.').filter(|p| *p != "www").collect();
+                let words = if parts.len() > 1 { &parts[..parts.len() - 1] } else { &parts[..] };
+                if words.len() > 1 { format!("{} {}", cap(words[1]), words[0]) } else { cap(words.first().copied().unwrap_or("Website")) }
+            }
+            Some(h) => h.to_string(),
+            None => "Website".into(),
+        };
+    }
+    let id = t.android.as_deref().or(t.ios.as_deref()).unwrap_or("");
+    let segs: Vec<&str> = id.split('.').filter(|p| !p.is_empty()).collect();
+    let last = match segs.as_slice() {
+        [.., a, b] if ["app", "android", "ios", "mobile", "client"].contains(b) => a,
+        [.., b] => b,
+        [] => "App",
+    };
+    cap(last)
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).chars().filter(|c| !c.is_control()).take(60).collect()
+}
+
 fn check_name(name: &str) -> Result<String, String> {
     let n = name.trim();
     if n.is_empty() {
@@ -364,6 +417,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_name_comes_from_the_address() {
+        let web = |w: &str| name_from(&check_targets(Targets { web: Some(w.into()), ..Default::default() }).expect("ok"));
+        assert_eq!(web("https://staging.shop.example"), "Shop staging");
+        assert_eq!(web("https://www.tokoku.co"), "Tokoku");
+        assert_eq!(web("http://127.0.0.1:8080/login"), "127.0.0.1");
+        assert_eq!(web("http://localhost:3000"), "localhost");
+        assert_eq!(web("file:///Users/me/my%20demo/login.html"), "My demo");
+        let phone = |a: &str| name_from(&Targets { android: Some(a.into()), ..Default::default() });
+        assert_eq!((phone("com.shop.app"), phone("com.fastpilot.demo")), ("Shop".into(), "Demo".into()));
+    }
+
+    #[test]
     fn names_become_stable_ids() {
         assert_eq!(slug("Shop staging"), "shop-staging");
         assert_eq!(slug("  Android demo (v2)!"), "android-demo-v2");
@@ -388,6 +453,7 @@ mod tests {
         assert!(check_targets(Targets { ios: Some("Shop".into()), ..Default::default() }).is_err());
         let t = check_targets(Targets { web: Some(" https://staging.shop.example ".into()), android: Some("com.shop.app".into()), ios: Some(String::new()) }).expect("ok");
         assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example/"), Some("com.shop.app"), None));
+        assert_eq!(name_from(&t), "Shop staging");
         let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0 };
         assert_eq!(a.kinds(), ["web", "android"]);
     }

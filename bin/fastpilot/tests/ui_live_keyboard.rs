@@ -87,10 +87,13 @@ async fn live_page_works_with_the_keyboard() {
     let (ok, out) = call(&shop, "run_flow", json!({ "flow": flow })).await;
     assert!(!ok && out.contains("(your blocked words)"), "{out}");
 
-    // The user opens the printed link: no `#/live` in it.
-    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Step 5/5\", timeout: 10000 }}\n", link.trim());
+    // The user opens the printed link (no hash: Chat first, s6a), then Live.
+    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n", link.trim());
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
-    assert!(ok, "the first page must show the sessions, not hang on 'Membaca sesi…': {out}");
+    assert!(ok, "{out}");
+    eval(&client, "location.hash = '#/live', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n" })).await;
+    assert!(ok, "Live must show the sessions, not hang on 'Membaca sesi…': {out}");
     // Header pill counts the blocked session; the step says why.
     assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 blocked"));
     // FastTest final report: no "null" in the header (a null child became text).
@@ -143,6 +146,8 @@ async fn live_page_works_with_the_keyboard() {
     eval(&client, "location.hash = '#/live', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n", "session": "viewer" })).await;
     assert!(ok, "back on Live: {out}");
+    // The blocked session's steps: pick its card (the viewer's own session may be listed first).
+    eval(&client, "(() => { const s = lastLive.sessions.find((x) => x.id === 'shop'); selectSession(`${s.pid}:${s.id}`); return 'ok'; })()").await;
     let why = eval(&client, "[...document.querySelectorAll('.steps .blk')].map(l => l.textContent).join('|')").await;
     // Design N2 (P2): the word as the user wrote it in Batasan, not lower-cased.
     // v0.3.2 design (s3): the button, the word as written in Batasan, and where to change it.
