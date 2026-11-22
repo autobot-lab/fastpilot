@@ -839,7 +839,16 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
     use crate::apps;
     let id = body["id"].as_str().unwrap_or("");
     let targets = || serde_json::from_value::<apps::Targets>(body["targets"].clone()).map_err(|_| "targets: give web, android or ios as text".to_owned());
-    let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+    // Moving to another app while Chat answers or a map runs would mix two apps' data (they read
+    // "here" as they go): wait for them (Security, #183 L2).
+    let action = body["action"].as_str().unwrap_or("");
+    if matches!(action, "use" | "remove") {
+        let busy = if !crate::chat::busy_agents().is_empty() { Some("Chat is answering") } else if crate::map::is_mapping() { Some("a map is being made") } else { None };
+        if let Some(what) = busy {
+            return refuse(StatusCode::CONFLICT, &format!("{what} for this app. Wait for it to finish (or stop it), then switch apps."));
+        }
+    }
+    let result: Result<Value, String> = match action {
         "add" => targets().and_then(|t| apps::add(body["name"].as_str().unwrap_or(""), t)).map(|a| json!({ "app": app_json(&a) })),
         "update" => (|| {
             let t = if body["targets"].is_null() { None } else { Some(targets()?) };

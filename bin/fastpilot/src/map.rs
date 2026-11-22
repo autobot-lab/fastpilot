@@ -911,6 +911,11 @@ struct Running {
 
 static RUNNING: LazyLock<Mutex<Option<Running>>> = LazyLock::new(Default::default);
 
+/// A map is being made now.
+pub fn is_mapping() -> bool {
+    RUNNING.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| !r.done.load(Ordering::Relaxed))
+}
+
 /// What the Map page shows: the map being made, else the latest one, with its coverage.
 pub fn state() -> Value {
     let running = RUNNING.lock().unwrap_or_else(|p| p.into_inner());

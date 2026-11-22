@@ -16,6 +16,17 @@ use std::path::{Path, PathBuf};
 type Client = RunningService<RoleClient, ()>;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+const FAKE_CHAT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude-chat/claude");
+const FAKE_RUN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude");
+
+/// Every Claude Code start the stand-in recorded (its arguments).
+fn claude_argv(log: &Path) -> Vec<Vec<String>> {
+    std::fs::read_dir(log).map(|d| d.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).filter_map(|v| v["argv"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())).collect()).unwrap_or_default()
+}
+
+fn user_settings_only(argv: &[String]) -> bool {
+    argv.windows(2).any(|w| w[0] == "--setting-sources" && w[1] == "user")
+}
 
 struct Ui {
     child: std::process::Child,
@@ -52,6 +63,9 @@ fn start(home: &Path, cwd: &Path) -> Ui {
         .env_remove("FASTPILOT_CONFIG")
         .env_remove("FASTPILOT_DIR")
         .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env("FASTPILOT_CLAUDE", FAKE_CHAT)
+        .env("FAKE_CLAUDE_LOG", home.join("claude-log"))
+        .env("FAKE_CHAT_DELAY_MS", "2500")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -77,6 +91,10 @@ impl Ui {
         let (st, out) = raw(self.port, "POST", "/api/apps", &h, &body.to_string());
         assert_eq!(st, 200, "{body}: {out}");
         serde_json::from_str(out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")).expect("json")
+    }
+    fn post(&self, path: &str, body: Value) -> (u16, String) {
+        let h = [("Cookie", self.cookie.clone()), ("Origin", format!("http://127.0.0.1:{}", self.port)), ("Content-Type", "application/json".to_owned())];
+        raw(self.port, "POST", path, &h, &body.to_string())
     }
     fn runs(&self) -> Vec<String> {
         self.get("/api/history")["runs"].as_array().map(|r| r.iter().filter_map(|x| x["title"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
@@ -121,6 +139,19 @@ fn the_dashboard_works_in_the_current_apps_folder() {
     assert_eq!((r["name"].as_str(), v["current"].as_str()), (Some("shop-repo"), r["id"].as_str()), "the folder it was started in is the current app: {v}");
     assert_eq!(ui.runs(), ["repo-check"]);
     assert!(!v.to_string().contains(&home.to_string_lossy().to_string()), "no full path is shown: {v}");
+    // Security #183 M1: Chat in a Repo app starts Claude Code with the user's settings only, never
+    // the repo's .claude/settings.json (hooks, env). L2: no switching while Chat answers.
+    let (st, out) = ui.post("/api/chat", json!({ "message": "hello" }));
+    assert_eq!(st, 200, "{out}");
+    let (st, out) = ui.post("/api/apps", json!({ "action": "use", "id": "shop" }));
+    assert!(st == 409 && out.contains("Chat is answering"), "{st} {out}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while ui.get("/api/chat")["busy"] != false {
+        assert!(std::time::Instant::now() < until, "the stand-in did not answer");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let starts = claude_argv(&home.join("claude-log"));
+    assert!(!starts.is_empty() && starts.iter().all(|a| user_settings_only(a)), "{starts:?}");
     ui.apps(json!({ "action": "use", "id": "shop" }));
     assert_eq!(ui.runs(), ["shop-check"], "switching away from the repo works too");
 
@@ -129,6 +160,12 @@ fn the_dashboard_works_in_the_current_apps_folder() {
     let old = home.join("projects/old-app");
     std::fs::create_dir_all(old.join(".fastpilot")).expect("old");
     std::fs::create_dir_all(home.join(".fastpilot")).expect("settings");
+    // A .fastpilot that is a link to somewhere else is not a project (#183 L3).
+    let odd = home.join("code/odd");
+    std::fs::create_dir_all(&odd).expect("odd");
+    std::fs::create_dir_all(home.join("outside")).expect("outside");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(home.join("outside"), odd.join(".fastpilot")).expect("link");
     let f = ui.apps(json!({ "action": "find_older" }));
     let found: Vec<String> = f["found"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
     assert_eq!(found, ["old-app"], "the listed repo and the home folder are not offered: {f}");
@@ -182,5 +219,55 @@ async fn claude_code_in_any_folder_works_on_the_current_app() {
     assert!(runs(home.join("fastpilot/apps/shop")).iter().any(|r| r.ends_with("where-check")), "the run is the app's: {:?}", runs(home.join("fastpilot/apps/shop")));
     assert!(runs(anywhere.clone()).is_empty(), "nothing in the folder Claude Code was opened in");
     client.cancel().await.expect("shutdown");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Security #183 M1: a test run (`fastpilot run`, schedules, Run on all platforms) starts Claude Code
+/// with the user's settings only, so a project's .claude/settings.json cannot run hooks or send the
+/// login elsewhere.
+#[test]
+fn runs_start_claude_code_with_the_users_settings_only() {
+    let home = std::env::temp_dir().join(format!("fp-apps-run-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("log")).expect("home");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["run", "tests/login.md"])
+        .current_dir(ROOT)
+        .env("HOME", &home)
+        .env("FASTPILOT_CONFIG", home.join("config.toml"))
+        .env("FASTPILOT_DIR", home.join("fp"))
+        .env("FASTPILOT_CLAUDE", FAKE_RUN)
+        .env("FAKE_CLAUDE_LOG", home.join("log"))
+        .env("DEMO_PASS", "rahasia123")
+        .env("FASTPILOT_VARS", "DEMO_PASS")
+        .env("FASTPILOT_RETRY_BUDGET", "1")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("run");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let starts: Vec<Vec<String>> = claude_argv(&home.join("log")).into_iter().filter(|a| a.iter().any(|x| x == "-p")).collect();
+    assert!(!starts.is_empty(), "the run started Claude Code: {text}");
+    assert!(starts.iter().all(|a| user_settings_only(a)), "{starts:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Security #183 L1: Claude Code opened in a cloned repo (a .mcp.json naming fastpilot) does not
+/// list it as an app, let alone make it the current one.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_code_in_a_cloned_repo_does_not_list_it() {
+    let home = std::env::temp_dir().join(format!("fp-apps-clone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let repo = home.join("Downloads/evil-repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    std::fs::write(repo.join(".mcp.json"), json!({ "mcpServers": { "fastpilot": { "command": "fastpilot", "args": ["mcp"] } } }).to_string()).expect("mcp.json");
+    let (h, r) = (home.clone(), repo.clone());
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+        c.arg("mcp").current_dir(&r).env("HOME", &h).env_remove("FASTPILOT_DIR").env_remove("FASTPILOT_CONFIG").env("FASTPILOT_LIVE_DIR", h.join("live"));
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let _ = call(&client, "docs", json!({ "topic": "dsl" })).await;
+    client.cancel().await.expect("shutdown");
+    let apps = std::fs::read_to_string(home.join("fastpilot/apps.json")).unwrap_or_default();
+    assert!(!apps.contains("evil-repo"), "{apps}");
     let _ = std::fs::remove_dir_all(&home);
 }

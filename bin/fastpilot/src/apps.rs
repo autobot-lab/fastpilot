@@ -182,7 +182,8 @@ pub fn is_project(dir: &Path) -> bool {
     if home.is_some_and(|h| real(&h) == real(dir)) || real(dir) == Path::new("/") {
         return false;
     }
-    dir.join(".fastpilot").is_dir() || std::fs::read_to_string(dir.join(".mcp.json")).is_ok_and(|t| t.contains("\"fastpilot\""))
+    // A real folder, not a link to somewhere else (Security, #183 L3).
+    dir.join(".fastpilot").symlink_metadata().is_ok_and(|m| m.is_dir()) || std::fs::read_to_string(dir.join(".mcp.json")).is_ok_and(|t| t.contains("\"fastpilot\""))
 }
 
 /// The app for a project folder, added as a Repo app (named after the folder) if it is not listed
@@ -218,10 +219,14 @@ pub fn enter(make_current: bool) -> Option<App> {
     }
     let here = std::env::current_dir().ok()?;
     if is_project(&here) {
-        let app = add_repo(&here).ok()?;
-        if make_current {
-            let _ = set_current(&app.id);
+        // Claude Code opened in a project works there, but only the person lists it as an app
+        // (`fastpilot init`, starting the dashboard there, or the search): a cloned repo never
+        // makes itself one, let alone the current one (Security, #183 L1).
+        if !make_current {
+            return None;
         }
+        let app = add_repo(&here).ok()?;
+        let _ = set_current(&app.id);
         return Some(app);
     }
     let app = current()?;

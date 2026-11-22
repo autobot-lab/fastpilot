@@ -174,9 +174,12 @@ function older() {
   if (found && found.length) {
     return h("section", { class: "grp", "aria-label": "Older fastpilot folders" },
       h("div", { class: "gh" }, `older fastpilot folders · ${found.length}`),
-      h("ul", { class: "s" }, found.map((f) => h("li", {}, h("b", {}, f.name), " ", h("span", { class: "muted" }, f.path)))),
+      h("ul", { class: "s found-list" }, found.map((f) => h("li", {}, h("label", { class: "ck" }, h("input", { type: "checkbox", value: f.path }), h("b", {}, f.name), " ", h("span", { class: "muted" }, f.path))))),
       h("div", { class: "btns" }, h("button", { type: "button", class: "btn p", onclick: async () => {
-        try { const r = await api("/api/apps", { action: "add_found", paths: found.map((f) => f.path) }); toast(`${r.added.length === 1 ? "1 folder is" : `${r.added.length} folders are`} now in your apps. Nothing was moved.`, true); } catch (e) { toast(e.message); }
+        // Each folder is chosen on its own (Security, #183 L3): none is added unticked.
+        const paths = [...document.querySelectorAll(".found-list input:checked")].map((i) => i.value);
+        if (!paths.length) { toast("Tick the folders you know, then press Show them as apps."); return; }
+        try { const r = await api("/api/apps", { action: "add_found", paths }); toast(`${r.added.length === 1 ? "1 folder is" : `${r.added.length} folders are`} now in your apps. Nothing was moved.`, true); } catch (e) { toast(e.message); }
         found = null; data = null; await load(); render();
       } }, "Show them as apps"), h("button", { type: "button", class: "btn", onclick: () => { found = null; render(); } }, "Not now")),
       h("p", { class: "s muted" }, "Nothing is moved, copied or changed: they are listed as Repo apps."));
