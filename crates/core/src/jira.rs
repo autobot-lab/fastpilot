@@ -626,9 +626,16 @@ pub mod requests {
         if j.site() != r.site {
             return Err(format!("Jira is now connected to {}, not {}. Nothing was sent.", j.site(), r.site));
         }
+        // Security Low 3: an answer that never came may hide a write that arrived.
+        let place = if r.kind == "issue" { r.project.clone() } else { r.key.clone() };
+        let check = j.browse(&place);
         let fail = |e: JiraError| {
             if e == JiraError::Refused {
                 mark(true, None);
+            }
+            if matches!(e, JiraError::Network | JiraError::Other(500..=599)) {
+                crate::change::audit("jira", None, Some(&format!("{} {place}", r.site)), channel, "no-answer");
+                return format!("Jira did not answer in time, so I cannot tell whether it got this. Check {place} in Jira before you ask again: {check}");
             }
             format!("{e} Nothing was sent.")
         };

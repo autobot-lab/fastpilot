@@ -185,12 +185,12 @@ async fn jira_tools_file_requests_the_person_sends_and_read_only_the_default_pro
     assert_eq!(fake.writes().len(), 1, "a dropped request sends nothing");
     drop(ui);
 
-    // Direct, only when the user's own MCP config says so.
+    // Security Low 2: no environment value (a project's .mcp.json could set one) skips the request.
     let c = mcp(&home, &fake.base, Some("direct")).await;
     let (ok, out) = call(&c, "jira_comment", json!({ "key": "KAN-12", "text": "Passed on the second build." })).await;
-    assert!(ok && out.starts_with("Comment added to KAN-12"), "{out}");
+    assert!(ok && out.starts_with("Not sent yet"), "{out}");
     outputs.push(out);
-    assert_eq!(fake.writes().len(), 2);
+    assert_eq!(fake.writes().len(), 1, "still nothing sent by the AI");
     assert!(fake.log().iter().all(|r| r.path.starts_with("/rest/api/3/") && !r.path.contains("transitions")), "no status change, only Jira's API");
     c.cancel().await.ok();
 
@@ -205,7 +205,7 @@ async fn jira_tools_file_requests_the_person_sends_and_read_only_the_default_pro
         assert!(!ok, "{mode}: no reads either");
         c.cancel().await.ok();
     }
-    assert_eq!(fake.writes().len(), 2, "no more writes");
+    assert_eq!(fake.writes().len(), 1, "no more writes");
 
     // Atlassian stops accepting the token: said plainly, and Apps shows Needs attention.
     fake.stop_accepting();

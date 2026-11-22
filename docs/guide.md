@@ -259,9 +259,8 @@ later), then **Save**.
 - **From Claude Code** (fastpilot's `jira_create_issue` and `jira_comment` tools), nothing is sent by
   the AI: each issue or comment waits under **Apps › Waiting for your OK** with its exact text, and you
   send it with one click there or with `fastpilot jira approve` in your own terminal. A request expires
-  after 30 minutes. `fastpilot jira status` shows what is connected. If you prefer to rely on Claude
-  Code's own permission prompt, set `"FASTPILOT_JIRA_WRITES": "direct"` in the `env` of fastpilot in
-  your own `.mcp.json`; fastpilot never writes that, and never adds an allow rule for these tools.
+  after 30 minutes. `fastpilot jira status` shows what is connected. There is no way around this step
+  (no setting or environment value turns it off), and fastpilot never adds an allow rule for these tools.
 - `jira_read` reads only tickets of the default project, so text on a tested page cannot make the AI
   read other private tickets.
 
