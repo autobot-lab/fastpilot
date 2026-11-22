@@ -1,3 +1,8 @@
+## What's new in 0.6.1
+
+- Fixes `npm install` failing with "fetch failed" on some IPv6 networks: the download now retries and
+  falls back to IPv4.
+
 ## What's new in 0.6.0
 
 Connect Jira, see which screens have a test, compare one test across web, Android and iPhone, run only the

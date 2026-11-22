@@ -5,12 +5,12 @@
   "description": "AI-driven QA for web, Android and iOS: drive Chrome, emulators and simulators.",
   "repository": { "url": "https://github.com/autobot-lab/fastpilot", "source": "github" },
   "websiteUrl": "https://github.com/autobot-lab/fastpilot",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "fastpilot",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "runtimeHint": "npx",
       "transport": { "type": "stdio" },
       "packageArguments": [{ "type": "positional", "value": "mcp" }]
