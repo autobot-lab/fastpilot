@@ -130,8 +130,9 @@ struct Chat {
     notes_given: Option<String>,
     /// v0.6 (QA bug 1): when the user's own message last asked for a Jira issue.
     jira_asked_ms: Option<u64>,
-    /// The issue draft shown in the last answer, which a "yes" in the next message may confirm.
-    jira_offered: Option<String>,
+    /// The issue draft shown in the last answer (the bot's proposal, as shown), which a "yes" in
+    /// the next message turns into a card (QA re-test bug 1).
+    jira_offered: Option<Value>,
 }
 
 /// D10a: one conversation per agent (agent id -> its Chat).
@@ -225,7 +226,16 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             let r = reads.clone();
             with_bot(&agent, bot, |m| m.jira_reads = r);
         }
-        let error = turn(&agent, &text, tickets.as_deref(), bot, resume).await.err();
+        // QA re-test bug 1: a "yes" to the draft shown last time gets its card from fastpilot,
+        // whatever the bot writes; the bot is told so, so it never says otherwise.
+        let accepting = chat_of(&agent).jira_offered.is_some() && confirmed(&text);
+        let before = match (accepting, tickets.as_deref()) {
+            (false, t) => t.map(str::to_owned),
+            (true, t) => Some(
+                [Some(OFFER_TAKEN), t].into_iter().flatten().collect::<Vec<_>>().join("\n\n"),
+            ),
+        };
+        let error = turn(&agent, &text, before.as_deref(), bot, resume).await.err();
         let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has());
         let mut c = chat_of(&agent);
         let now = change::now_ms();
@@ -256,8 +266,9 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
         if asked_for_issue(&text) {
             c.jira_asked_ms = Some(now);
         }
-        let jira_offered = c.jira_offered.take();
-        let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered };
+        let offered_draft = c.jira_offered.take();
+        let jira_offered = offered_draft.as_ref().map(offer_sig);
+        let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None };
         if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
             t.read_app = !m.tools.is_empty();
             let (clean, proposals, attempts) = proposals_in(&m.text, &mut t);
@@ -276,8 +287,7 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             m.error = error.or(m.error.take());
             m.done = true;
         }
-        let offered = c.msgs.iter().find(|m| m.id == bot).and_then(|m| m.page_attempts.iter().find_map(|a| a["offer"].as_str().map(str::to_owned)));
-        c.jira_offered = offered;
+        c.jira_offered = t.new_offer.take();
         c.loosen_times.extend(std::iter::repeat_n(now, t.made));
         c.busy = false;
         // D7: kept in History after every answer, so it outlives this page and this process.
@@ -766,8 +776,12 @@ struct Turn {
     /// The user asked for a Jira issue earlier in this conversation (QA bug 1): a follow-up
     /// ("please make the bug") counts as their own ask.
     jira_follow_up: bool,
-    /// The draft shown last turn ("No Jira card was made"), which a short "yes" may confirm.
+    /// The draft shown last turn ("No Jira card was made"), which a short "yes" may confirm: its
+    /// signature, and the draft itself.
     jira_offered: Option<String>,
+    offered_draft: Option<Value>,
+    /// The draft this turn offers for the next "yes".
+    new_offer: Option<Value>,
 }
 
 const MAX_LOOSEN_PER_TURN: usize = 3;
@@ -793,6 +807,17 @@ fn proposals_in(text: &str, t: &mut Turn) -> (String, Vec<Proposal>, Vec<Value>)
         let body = rest[body_start..body_start + end].trim();
         rest = &rest[body_start + end + 3..];
         cards(body, t, &mut found, &mut attempts);
+    }
+    // QA re-test bug 1: the user's "yes" to the draft shown last time makes its card here, from
+    // the draft the user saw (never from this turn's text), if the bot did not propose it again.
+    if let Some(draft) = t.offered_draft.clone()
+        && confirmed(&t.user)
+    {
+        let sig = offer_sig(&draft);
+        let made = found.iter().any(|p| p.kind == "jira_issue" && p.data["summary"].as_str().is_some_and(|s| draft_sig(s) == sig));
+        if !made && let Some(p) = jira_card(&draft, "", t, &mut attempts) {
+            found.push(p);
+        }
     }
     clean.push_str(rest);
     // A removed block leaves blank lines behind.
@@ -1033,6 +1058,14 @@ fn has_link(s: &str) -> bool {
     l.contains("://") || l.contains("www.")
 }
 
+/// The bot is told this in the turn where the user's "yes" takes the draft shown last time.
+const OFFER_TAKEN: &str = "[fastpilot: the user's message accepts the Jira issue draft from your last answer. fastpilot shows its card below your answer itself, with the exact text the user saw; the user clicks Create issue to send it. Do not write a jira_issue proposal again and do not say you cannot create it: say in one short sentence that the card is below to check and click.]";
+
+/// The signature of an offered draft (its summary, as the card cleans it).
+fn offer_sig(draft: &Value) -> String {
+    draft_sig(&fastpilot_core::jira::clean(draft["summary"].as_str().unwrap_or(""), "", true, 250))
+}
+
 /// What identifies a drafted issue the user was shown: its summary, cleaned and in lower case.
 fn draft_sig(summary: &str) -> String {
     plain(summary)
@@ -1123,7 +1156,9 @@ fn jira_card(v: &Value, _body: &str, t: &mut Turn, attempts: &mut Vec<Value>) ->
     let asked = if issue {
         asked_for_issue(&t.user)
             || (quiet && t.jira_follow_up && followed_up(&t.user))
-            || (quiet && !sig.is_empty() && t.jira_offered.as_deref() == Some(sig.as_str()) && confirmed(&t.user))
+            // The very draft the user was shown last time, and a "yes" now: content fastpilot kept,
+            // so a page read in this turn cannot change it.
+            || (!sig.is_empty() && t.jira_offered.as_deref() == Some(sig.as_str()) && confirmed(&t.user))
     } else {
         key_ok && asked_for_comment(&t.user, &key)
     };
@@ -1149,6 +1184,9 @@ fn jira_card(v: &Value, _body: &str, t: &mut Turn, attempts: &mut Vec<Value>) ->
             let from = if (t.read_app || !t.tickets.is_empty()) && !user_tried { "page" } else { "none" };
             // An offer only when the user's own message asked for the issue (Security, Low).
             let offer = (issue && user_tried && !sig.is_empty()).then(|| sig.clone());
+            if offer.is_some() && t.new_offer.is_none() {
+                t.new_offer = Some(v.clone());
+            }
             attempts.push(json!({ "kind": "jira", "what": if issue { "Create a Jira issue".to_owned() } else { title.clone() }, "said": clip(draft.trim(), 900), "from": from, "say": say, "offer": offer }));
         }
         return None;
@@ -2557,7 +2595,24 @@ mod tests {
             cards(&json!({ "kind": "jira_issue", "summary": summary, "description": "Steps" }).to_string(), &mut t, &mut found, &mut a);
             found.len()
         };
-        assert_eq!((confirm("Login fails", false), confirm("Allow the Pay button", false), confirm("Login fails", true)), (1, 0, 0));
+        // The same draft the user saw is taken also in a turn that read the app (its content is
+        // what fastpilot kept); any other draft is not.
+        assert_eq!((confirm("Login fails", false), confirm("Allow the Pay button", false), confirm("Login fails", true)), (1, 0, 1));
+        // QA re-test bug 1: the bot does not propose it again ("I can't send it myself"); the
+        // user's "yes" still gets the card, made from the draft that was shown.
+        let draft = json!({ "kind": "jira_issue", "summary": "Login fails", "description": "Steps" });
+        let take = |user: &str, offered: Option<Value>, bot: &str| {
+            let mut t = turn(user);
+            t.jira = Some(connected());
+            t.jira_offered = offered.as_ref().map(offer_sig);
+            t.offered_draft = offered;
+            let (_, found, _) = proposals_in(bot, &mut t);
+            found.iter().filter(|p| p.kind == "jira_issue" && p.status == "pending").count()
+        };
+        assert_eq!(take("yes", Some(draft.clone()), "I can't send it to Jira myself."), 1);
+        assert_eq!(take("yes", Some(draft.clone()), &format!("Here it is:\n```fastpilot-proposal\n{draft}\n```")), 1, "one card, not two");
+        assert_eq!(take("thanks", Some(draft.clone()), "You're welcome."), 0);
+        assert_eq!(take("yes", None, "I can't send it to Jira myself."), 0, "no offer, no card: planted text never made one");
         // Security Low 6: a project the user's message does not name is refused; named, it is used.
         let (found, _) = card("file it in Jira", json!({ "kind": "jira_issue", "summary": "x", "project": "SEC" }), true);
         assert!(found[0].status == "refused" && found[0].note.as_deref().is_some_and(|n| n.contains("does not name project SEC")), "{:?}", found[0]);
@@ -2618,7 +2673,7 @@ mod tests {
     }
 
     fn turn(user: &str) -> Turn {
-        Turn { user: user.into(), read_app: false, open: vec![], recent: 0, made: 0, words: 0, notes: 0, note_tries: 0, open_notes: vec![], jira: None, tickets: vec![], jira_cards: 0, jira_tries: 0, open_jira: vec![], jira_follow_up: false, jira_offered: None }
+        Turn { user: user.into(), read_app: false, open: vec![], recent: 0, made: 0, words: 0, notes: 0, note_tries: 0, open_notes: vec![], jira: None, tickets: vec![], jira_cards: 0, jira_tries: 0, open_jira: vec![], jira_follow_up: false, jira_offered: None, offered_draft: None, new_offer: None }
     }
 
     fn settings(changes: Value) -> String {
