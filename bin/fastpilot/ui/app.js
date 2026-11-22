@@ -200,7 +200,7 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secret", "Secret"));
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"));
 }
 
 function topSettings() {
@@ -363,10 +363,10 @@ function pageLimits() {
 
 function pageSecret() {
   return h("section", { class: "panel" },
-    h("h2", {}, "Secret", savedNote()),
+    h("h2", {}, "Secrets", savedNote()),
     h("p", { class: "sub" }, "Variables a flow may read as ", code("${NAME}"), ". Their values always show as *** in output."),
     h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("key"), "secret"),
+      h("div", { class: "gh" }, icon("key"), "secrets"),
       opt("Secret name", "Only the name is saved here; this page never reads or shows the value.",
         chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars")),
       h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, "Where is the value?"),
@@ -394,13 +394,14 @@ function pageBroken() {
 }
 
 function pageSettings(sub) {
+  if (sub === "secret") sub = "secrets"; // links made before v0.7
   topSettings();
   if (S.error) {
-    $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secret" ? sub : "limits"), pageBroken()));
+    $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secrets" ? sub : "limits"), pageBroken()));
     return;
   }
-  const page = sub === "model" ? pageModel() : sub === "secret" ? pageSecret() : pageLimits();
-  $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secret" ? sub : "limits"), page));
+  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : pageLimits();
+  $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secrets" ? sub : "limits"), page));
   if (sub === "model" && !doctorCache) loadDoctor(false);
 }
 
@@ -458,7 +459,7 @@ function pageDevice() {
     PAGES.deviceFix ? PAGES.deviceFix() : null,
     h("div", { class: "grp" }, header, content),
     h("p", { class: "muted" }, "The same checks as ", code("fastpilot doctor"), " in Terminal."),
-    h("p", { class: "muted" }, "The AI model and secrets are in Settings: ", h("a", { class: "lk", href: "#/settings/model" }, "AI model"), " · ", h("a", { class: "lk", href: "#/settings/secret" }, "Secrets"), ".")));
+    h("p", { class: "muted" }, "The AI model and secrets are in Settings: ", h("a", { class: "lk", href: "#/settings/model" }, "AI model"), " · ", h("a", { class: "lk", href: "#/settings/secrets" }, "Secrets"), ".")));
 }
 
 // ---- live (C7a) ----
@@ -1667,7 +1668,7 @@ function lastRun(x) {
   if (l.needs) {
     return h("div", {}, h("span", { class: "warn-txt" }, "Could not run · ", at),
       h("div", { class: "s" }, `${x.schedule.name} could not run. It needs the secret ${l.needs}, and no value is set where schedules run. Nothing ran, so this is not a pass.`),
-      h("div", { class: "s" }, h("a", { class: "lk", href: "#/settings/secret" }, "Open Settings → Secret")),
+      h("div", { class: "s" }, h("a", { class: "lk", href: "#/settings/secrets" }, "Open Settings → Secrets")),
       l.notified && l.notified.length ? h("div", { class: "s" }, l.notified.join(" · ")) : null);
   }
   const count = l.total !== undefined && l.total !== null ? `${l.ok}/${l.total}` : (l.passed ? "passed" : "failed");

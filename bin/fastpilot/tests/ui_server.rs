@@ -467,7 +467,7 @@ fn the_dashboard_and_readme_words_are_current() {
     assert!(readme.contains(&format!("its {skills} skills")), "README counts all {skills} skills");
     // The plugin or `init`, not both; where a plugin user's secret goes.
     assert!(readme.contains("Use **either** the plugin **or** `fastpilot init`") && readme.contains("two\n> fastpilot servers"), "plugin or init");
-    assert!(readme.contains("add its **name** in\n> `fastpilot ui` › Settings › Secret") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
+    assert!(readme.contains("add its **name** in\n> `fastpilot ui` › Settings › Secrets") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
 }
 
 /// v0.6 1.1: the Apps page. A new menu item between Device and Settings; `/api/apps` says what is

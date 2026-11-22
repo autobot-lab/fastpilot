@@ -250,7 +250,7 @@ function notesPanel() {
   const err = noteError
     ? h("div", { class: "note-err", role: "alert", tabindex: "-1" }, noteError.message,
       noteError.kind === "secret" ? h("div", { class: "btns tight note-acts" },
-        h("a", { class: "btn sm p", href: "#/settings/secret" }, "Save as a secret instead"),
+        h("a", { class: "btn sm p", href: "#/settings/secrets" }, "Save as a secret instead"),
         h("button", { class: "btn sm", onclick: () => { noteError = null; pageNotes(); document.querySelector(".note-text")?.focus(); } }, "Remove the password")) : null)
     : null;
   return h("aside", { class: "mem-panel" },
@@ -264,7 +264,7 @@ function notesPanel() {
       noteForm.id || noteForm.text ? h("button", { class: "btn sm", onclick: () => { noteForm = { group: noteForm.group, text: "", id: null }; noteError = null; pageNotes(); } }, "Cancel") : null),
     noteForm.id ? null : [h("div", { class: "mem-k" }, "Or start from a question"),
       h("div", { class: "note-qs" }, QUESTIONS.map(([q, g, start]) => h("button", { class: "chip preset", onclick: () => { noteForm = { group: g, text: start, id: null }; noteError = null; pageNotes(); const t = document.querySelector(".note-text"); t?.focus(); t?.setSelectionRange(start.length, start.length); } }, q)))],
-    h("p", { class: "note-warn" }, h("b", {}, "Notes are not hidden. "), "Never write a password, a token or a code here. Save those as ", h("a", { class: "lk", href: "#/settings/secret" }, "Secrets"), " and only mention the name."),
+    h("p", { class: "note-warn" }, h("b", {}, "Notes are not hidden. "), "Never write a password, a token or a code here. Save those as ", h("a", { class: "lk", href: "#/settings/secrets" }, "Secrets"), " and only mention the name."),
     h("p", { class: "s muted" }, "Every agent in this project reads these notes when a run starts; runs already started keep the notes they began with. Chat gets your changes with your next message. A Claude Code session in Terminal reads them after you restart it."),
     h("p", { class: "s muted" }, "Kept on this computer for this project folder, not in the project's files: a project you download cannot bring notes of its own. An agent on another AI provider sends them to that provider with its messages."));
 }
