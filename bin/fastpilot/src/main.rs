@@ -200,8 +200,25 @@ fn read_secret(prompt: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
     }
 }
 
+/// QA v0.6 Low 8: `fastpilot doctor | head -1` panicked with "failed printing to stdout: Broken
+/// pipe" once the reader had stopped. Rust ignores SIGPIPE, so a print to a closed pipe fails and
+/// `println!` panics. Like other command-line tools, fastpilot then stops quietly, with the exit
+/// code a SIGPIPE would give (141). Only that print failure is caught: servers get their socket and
+/// pipe errors as before, and every other panic is reported as before.
+fn quiet_on_closed_pipe() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload_as_str().unwrap_or("");
+        if (msg.starts_with("failed printing to stdout") || msg.starts_with("failed printing to stderr")) && msg.contains("Broken pipe") {
+            std::process::exit(141);
+        }
+        report(info);
+    }));
+}
+
 #[tokio::main]
 async fn main() {
+    quiet_on_closed_pipe();
     fastpilot_core::config::keep_out_of_git();
     // An error for people in the terminal: one plain line, not Rust's `Error: "…"`.
     if let Err(e) = run_main().await {

@@ -159,3 +159,30 @@ fn an_old_claude_code_is_a_failure_with_the_fix() {
     let (ok, out) = doctor("2.1.280");
     assert!(ok && out.contains("✓") && !out.contains("too old"), "{out}");
 }
+
+/// QA v0.6 Low 8: `fastpilot … | head -1` must not panic with "Broken pipe" when the reader stops
+/// early. The read end is closed before fastpilot starts, so its first print meets a closed pipe.
+#[cfg(unix)]
+#[test]
+fn a_closed_pipe_stops_quietly_without_a_panic() {
+    let home = std::env::temp_dir().join(format!("fp-cli-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    for args in [&["--version"][..], &["config", "path"][..], &["doctor", "web"][..]] {
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        drop(reader);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(args)
+            .env("HOME", &home)
+            .env("FASTPILOT_KEYSTORE", "file")
+            .env_remove("FASTPILOT_CONFIG")
+            .stdout(writer)
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("run");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{args:?}: {err}");
+        assert_eq!(out.status.code(), Some(141), "{args:?}: stops like a tool stopped by SIGPIPE; stderr: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
