@@ -105,7 +105,7 @@ function panel(t) {
     ["Status", h("span", { class: "mem-st " + cls }, label)],
     ["Last worked", whenText(t.last_worked_ms)],
     t.path.length ? ["Path it remembers", t.path.join(" → ")] : null,
-    t.recent_runs ? ["Recent runs", t.recent_fails ? `Failed ${t.recent_fails} of the last ${t.recent_runs}` : `Passed the last ${t.recent_runs}`] : null,
+    t.recent_runs ? ["Recent runs", t.recent_fails ? `Failed ${t.recent_fails} of the last ${t.recent_runs}` + (t.recent_retried ? ` (${t.recent_retried} passed after a failed step was tried again)` : "") : `Passed the last ${t.recent_runs}`] : null,
     t.set_aside_since_ms ? ["Set aside", whenText(t.set_aside_since_ms) + (t.set_aside_auto ? " (by fastpilot)" : "")] : null,
   ].filter(Boolean);
   const explain = {

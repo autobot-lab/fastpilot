@@ -41,6 +41,8 @@ pub struct Row {
     /// Failures in the last runs, and how many runs that is (up to 10).
     pub recent_fails: usize,
     pub recent_runs: usize,
+    /// Of `recent_fails`, the runs that passed after all, once a failed step was tried again.
+    pub recent_retried: usize,
     pub set_aside_since_ms: Option<u64>,
     /// fastpilot set it aside by itself (it flips between pass and fail).
     pub set_aside_auto: bool,
@@ -107,6 +109,12 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Option<&Quarantine>, orphan: bool) -> Row {
     let recent: Vec<bool> = m.map(|m| m.history.iter().rev().take(10).copied().collect()).unwrap_or_default();
     let recent_fails = recent.iter().filter(|p| !**p).count();
+    // L061-3: which of those still passed, after a failed step was tried again (`passed` is
+    // aligned with the end of `history`; older files have no entry, so they count as failures).
+    let passed_at = |i: usize| m.and_then(|m| m.passed.iter().rev().nth(i).copied()).unwrap_or(false);
+    let recent_retried = recent.iter().enumerate().filter(|(i, clean)| !**clean && passed_at(*i)).count();
+    let hard_fails = recent_fails - recent_retried;
+    let retried_words = |n: usize, of: usize| format!("Passed only after a failed step was tried again in {n} of the last {}.", plural(of, "run", "runs"));
     let steps = m.map_or(0, |m| steps_of(&m.flow));
     let remembers = if steps > 0 { format!("Remembers the last path that worked ({}).", plural(steps, "step", "steps")) } else { String::new() };
     let (status, summary) = if let Some(q) = q {
@@ -116,11 +124,20 @@ pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Opt
         ("set_aside", format!("{who} since {since}. It still runs, but does not turn a run red."))
     } else if m.is_none_or(|m| m.history.is_empty() && m.flow.is_empty()) {
         ("new", "Nothing remembered yet. It remembers after the first pass.".to_owned())
-    } else if m.is_some_and(|m| m.stale || (m.consecutive_failures >= 3)) {
-        let n = m.map_or(0, |m| m.consecutive_failures);
-        ("failing", format!("Failed the last {n} runs. The remembered path is not used until it passes again."))
+    } else if let Some(n) = m.filter(|m| m.stale || m.consecutive_failures >= 3).map(|m| m.consecutive_failures as usize) {
+        // Runs that passed after a retried step are not failures of the test, so not "Failing".
+        let passed = m.map_or(0, |m| m.passed.iter().rev().take(n).filter(|p| **p).count());
+        if passed == 0 {
+            ("failing", format!("Failed the last {n} runs. The remembered path is not used until it passes again."))
+        } else {
+            ("unstable", format!("{} The remembered path is not used until a run passes with no step tried again.", retried_words(passed, n)))
+        }
     } else if recent_fails > 0 && recent_fails < recent.len() {
-        ("unstable", format!("{remembers} Failed {recent_fails} of the last {} runs.", recent.len()).trim().to_owned())
+        let also = if recent_retried > 0 { format!(" {} of them passed after a failed step was tried again.", recent_retried) } else { String::new() };
+        ("unstable", format!("{remembers} Failed {recent_fails} of the last {} runs.{also}", recent.len()).trim().to_owned())
+    } else if recent_fails > 0 && steps == 0 && recent_retried > 0 {
+        let failed = if hard_fails > 0 { format!(" Failed {}.", plural(hard_fails, "run", "runs")) } else { String::new() };
+        ("unstable", format!("{}{failed} Nothing remembered yet: it remembers after a run passes with no step tried again.", retried_words(recent_retried, recent.len())))
     } else if recent_fails > 0 && steps == 0 {
         ("failing", format!("Failed the last {}. Nothing remembered yet: it remembers after the first pass.", plural(recent_fails, "run", "runs")))
     } else {
@@ -137,6 +154,7 @@ pub fn row(id: &str, title: &str, platform: &str, m: Option<&PathMemory>, q: Opt
         last_worked_ms: m.and_then(|m| stamp_ms(&m.last_pass)),
         recent_fails,
         recent_runs: recent.len(),
+        recent_retried,
         set_aside_since_ms: q.and_then(|q| stamp_ms(&q.since)),
         set_aside_auto: q.is_some_and(|q| q.auto),
         orphan,
@@ -295,6 +313,21 @@ mod tests {
         let r = row("t", "Checkout", "web", Some(&mem(&[true, false, false, false], flow)), None, false);
         assert_eq!(r.status, "failing", "{}", r.summary);
         assert!(r.summary.starts_with("Failed the last 3 runs."));
+        // L061-3: a run that passed after a retried step is never "Failing".
+        let first = PathMemory { passed: vec![true], ..mem(&[false], "") };
+        let r = row("t", "Save a note", "web", Some(&first), None, false);
+        assert_eq!((r.status, r.recent_fails, r.recent_retried), ("unstable", 1, 1), "{}", r.summary);
+        assert_eq!(r.summary, "Passed only after a failed step was tried again in 1 of the last 1 run. Nothing remembered yet: it remembers after a run passes with no step tried again.");
+        let three = PathMemory { passed: vec![true, true, true, true], stale: true, ..mem(&[true, false, false, false], flow) };
+        let r = row("t", "Save a note", "web", Some(&three), None, false);
+        assert_eq!(r.status, "unstable", "{}", r.summary);
+        assert!(r.summary.starts_with("Passed only after a failed step was tried again in 3 of the last 3 runs."), "{}", r.summary);
+        let mixed = PathMemory { passed: vec![true, false, true], ..mem(&[true, false, false], "") };
+        let r = row("t", "Save a note", "web", Some(&mixed), None, false);
+        assert_eq!(r.summary, "Failed 2 of the last 3 runs. 1 of them passed after a failed step was tried again.");
+        // Real failures stay Failing, also without the new field (older files).
+        let r = row("t", "Checkout", "web", Some(&PathMemory { passed: vec![false, false], ..mem(&[false, false], "") }), None, false);
+        assert_eq!(r.status, "failing");
         let r = row("t", "Notifications", "android", None, None, false);
         assert_eq!((r.status, r.summary.as_str()), ("new", "Nothing remembered yet. It remembers after the first pass."));
         let q = Quarantine { reason: "x".into(), since: "2026-11-17 10:00:00".into(), auto: false };
