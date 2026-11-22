@@ -254,7 +254,7 @@ async fn settings_menu_says_secrets() {
     let c = &d.client;
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
-        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets\"");
+        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
         open(c, hash, "Only the name is saved here").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;

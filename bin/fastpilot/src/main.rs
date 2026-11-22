@@ -3,6 +3,7 @@
 mod agents;
 mod approve;
 mod bench;
+mod browsers;
 mod chat;
 mod cli;
 mod demo;
