@@ -64,6 +64,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "android_serial", help: "default Android device or emulator serial", rule: Rule::Free },
     Setting { key: "ios_device", help: "simulator booted when none runs (default iPhone 16)", rule: Rule::Free },
     Setting { key: "ios_udid", help: "default iOS simulator or device UDID", rule: Rule::Free },
+    Setting { key: "device_autostart", help: "start a stopped Android emulator or iPhone simulator when a test needs it: true or false; not set: asked once (Device page, or `fastpilot run` in Terminal)", rule: Rule::HumanOnly },
+    Setting { key: "android_avd", help: "the installed Android emulator started when a test needs one (default: fastpilot's test phone, else the first installed)", rule: Rule::HumanOnly },
     Setting { key: "memory", help: "path memory: rw (default), readonly, off", rule: Rule::Free },
     Setting { key: "max_parallel", help: "tests that may run at once on this computer, for all agents together (1-20, default 3); one device always runs one test", rule: Rule::Free },
     Setting { key: "daemon_idle", help: "shell CLI daemon exits after this many idle seconds (default 1800)", rule: Rule::Free },
@@ -379,6 +381,9 @@ pub fn invalid(key: &str, value: &str) -> Option<String> {
     }
     if FLAGS.contains(&key) && !BOOLS.contains(&v.to_lowercase().as_str()) {
         return Some(format!("`{key}` takes true or false, not `{value}`"));
+    }
+    if key == "device_autostart" && !matches!(v.to_lowercase().as_str(), "true" | "false") {
+        return Some(format!("`device_autostart` takes true or false, not `{value}`"));
     }
     if key == "headful" && !matches!(v.to_lowercase().as_str(), "true" | "false") {
         return Some(format!("`headful` takes true or false, not `{value}`"));
