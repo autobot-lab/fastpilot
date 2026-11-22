@@ -57,7 +57,8 @@ pub fn start(id: &str) -> Result<String, String> {
         return Err(format!("This app runs only on {}. Add another kind of app to compare.", kinds.first().map_or("one platform", |p| platform_name(*p))));
     }
     let log = crate::apps::root().join("logs").join(format!("run-all-{id}.log"));
-    std::fs::create_dir_all(log.parent().unwrap_or(&crate::apps::root())).map_err(|e| format!("Could not prepare the run: {e}"))?;
+    // Owner-only, like the rest of an app's data (Security, #180).
+    crate::filestore::ensure_dir(log.parent().unwrap_or(&crate::apps::root()), true).map_err(|e| format!("Could not prepare the run: {e}"))?;
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("Could not prepare the run: {e}"))?;
     let err = out.try_clone().map_err(|e| format!("Could not prepare the run: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("The fastpilot program file was not found: {e}"))?;

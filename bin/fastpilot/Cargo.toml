@@ -20,6 +20,8 @@ axum.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 serde = { workspace = true }
+# E6: website addresses parsed like a browser (already in the build through reqwest).
+url = "2"
 # E3: SHA-256 of remembered browsers' keys (already in the build through fastpilot-core).
 ring.workspace = true
 # D10b: the dashboard Chat drives `fastpilot mcp` itself for agents on another provider.

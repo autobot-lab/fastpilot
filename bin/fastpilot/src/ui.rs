@@ -260,7 +260,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/browsers", get(browsers_api).post(browsers_change))
         .route("/api/doctor", get(doctor_api))
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
-        .route("/api/apps", get(apps_api))
+        .route("/api/integrations", get(integrations_api))
+        .route("/api/apps", get(apps_list).post(apps_change))
         .route("/api/map", get(map_api).post(map_change))
         .route("/api/run-all", get(run_all_info).post(run_all_start))
         .route("/api/map/thumb", get(map_thumb))
@@ -815,7 +816,42 @@ async fn map_thumb(axum::extract::Query(q): axum::extract::Query<std::collection
     }
 }
 
-async fn apps_api() -> Response {
+// ---- apps being tested (E6) -------------------------------------------------------------------
+
+fn app_json(a: &crate::apps::App) -> Value {
+    json!({ "id": a.id, "name": a.name, "targets": a.targets, "kinds": a.kinds(), "repo": a.repo.as_ref().map(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), "created_ms": a.created_ms })
+}
+
+/// `{ current, apps }`. A repo app shows only its folder's name, never the full path.
+async fn apps_list() -> Response {
+    let apps: Vec<Value> = crate::apps::list().iter().map(app_json).collect();
+    axum::Json(json!({ "current": crate::apps::current().map(|a| a.id), "apps": apps })).into_response()
+}
+
+/// `{action: add, name, targets}`, `{action: update, id, name?, targets?}`, `{action: remove, id}`
+/// (off the list, its folder stays), `{action: use, id}`.
+async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use crate::apps;
+    let id = body["id"].as_str().unwrap_or("");
+    let targets = || serde_json::from_value::<apps::Targets>(body["targets"].clone()).map_err(|_| "targets: give web, android or ios as text".to_owned());
+    let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        "add" => targets().and_then(|t| apps::add(body["name"].as_str().unwrap_or(""), t)).map(|a| json!({ "app": app_json(&a) })),
+        "update" => (|| {
+            let t = if body["targets"].is_null() { None } else { Some(targets()?) };
+            apps::update(id, body["name"].as_str(), t).map(|a| json!({ "app": app_json(&a) }))
+        })(),
+        "remove" => apps::remove(id).map(|()| json!({ "removed": id })),
+        "use" => apps::set_current(id).map(|a| json!({ "app": app_json(&a) })),
+        _ => Err("unknown action".into()),
+    };
+    match result {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+/// Integrations (Jira, schedule webhooks): what is connected and waiting.
+async fn integrations_api() -> Response {
     let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()).map(|s| {
         json!({ "site": s.site, "email": s.email, "project_key": s.project_key, "project_name": s.project_name,
                 "checked_ms": s.checked_ms, "needs_attention": s.needs_attention })

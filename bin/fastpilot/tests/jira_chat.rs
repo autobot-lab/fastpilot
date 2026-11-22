@@ -213,7 +213,7 @@ fn jira_in_chat_reads_tickets_as_data_and_writes_only_after_a_click() {
     assert!(st == 422 && r.to_string().contains("did not accept the email or token"), "{st} {r}");
     let (_, chat) = request(ui.port, "GET", "/api/chat", &ui.cookie, "");
     assert_eq!(card(&serde_json::from_str(&chat).expect("json"), &c["id"])["status"], "pending");
-    let (_, apps) = request(ui.port, "GET", "/api/apps", &ui.cookie, "");
+    let (_, apps) = request(ui.port, "GET", "/api/integrations", &ui.cookie, "");
     assert!(apps.contains("\"needs_attention\":true"), "{apps}");
     assert_eq!(fake.writes().len(), 4, "the click tried once, and Jira refused it");
 
