@@ -130,6 +130,8 @@ struct Chat {
     notes_given: Option<String>,
     /// v0.6 (QA bug 1): when the user's own message last asked for a Jira issue.
     jira_asked_ms: Option<u64>,
+    /// The issue draft shown in the last answer, which a "yes" in the next message may confirm.
+    jira_offered: Option<String>,
 }
 
 /// D10a: one conversation per agent (agent id -> its Chat).
@@ -254,7 +256,8 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
         if asked_for_issue(&text) {
             c.jira_asked_ms = Some(now);
         }
-        let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up };
+        let jira_offered = c.jira_offered.take();
+        let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered };
         if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
             t.read_app = !m.tools.is_empty();
             let (clean, proposals, attempts) = proposals_in(&m.text, &mut t);
@@ -273,6 +276,8 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             m.error = error.or(m.error.take());
             m.done = true;
         }
+        let offered = c.msgs.iter().find(|m| m.id == bot).and_then(|m| m.page_attempts.iter().find_map(|a| a["offer"].as_str().map(str::to_owned)));
+        c.jira_offered = offered;
         c.loosen_times.extend(std::iter::repeat_n(now, t.made));
         c.busy = false;
         // D7: kept in History after every answer, so it outlives this page and this process.
@@ -758,6 +763,8 @@ struct Turn {
     /// The user asked for a Jira issue earlier in this conversation (QA bug 1): a follow-up
     /// ("please make the bug") counts as their own ask.
     jira_follow_up: bool,
+    /// The draft shown last turn ("No Jira card was made"), which a short "yes" may confirm.
+    jira_offered: Option<String>,
 }
 
 const MAX_LOOSEN_PER_TURN: usize = 3;
@@ -978,11 +985,53 @@ pub(crate) fn asked_for_issue(user: &str) -> bool {
 
 /// A follow-up that asks for the issue the user already asked for in this conversation: a create
 /// verb or a "yes" word, with no "no" right before it. The earlier ask is checked by the caller.
+///
+/// Security re-review (Medium): it must name the issue ("please make the bug", "file it"), right
+/// after a create verb, in a short message with no link. "ok, run the checkout test again" or
+/// "make sure the login test passes" are not follow-ups. The caller also needs a turn that read no
+/// app and no ticket.
 pub(crate) fn followed_up(user: &str) -> bool {
+    const NAMES: &[&str] = &["bug", "issue", "ticket", "tiket", "isu", "it", "one", "report", "bugnya", "tiketnya"];
+    const SMALL: &[&str] = &["a", "an", "the", "this", "that", "my", "new", "jira", "please", "ya", "itu", "ini", "tolong", "for", "me"];
+    let w = words_of(user);
+    if w.len() > 25 || has_link(user) {
+        return false;
+    }
+    (0..w.len()).any(|i| {
+        if !ISSUE_VERBS.contains(&w[i].as_str()) || said_no_before(&w, i) {
+            return false;
+        }
+        for x in w.iter().skip(i + 1).take(4) {
+            if NAMES.contains(&x.as_str()) {
+                return true;
+            }
+            if !SMALL.contains(&x.as_str()) {
+                return false;
+            }
+        }
+        false
+    })
+}
+
+/// A short "yes" to the draft fastpilot showed in the last turn ("yes", "ok, make it", "go
+/// ahead"): at most 12 words, no link, no "no".
+pub(crate) fn confirmed(user: &str) -> bool {
     let w = words_of(user);
     let said = lower_words(user);
-    (0..w.len()).any(|i| (ISSUE_VERBS.contains(&w[i].as_str()) || FOLLOW_UP.contains(&w[i].as_str())) && !said_no_before(&w, i))
-        || FOLLOW_UP_PHRASES.iter().any(|p| said.contains(p) && !JIRA_NO.iter().any(|n| said.contains(&format!("{n} {p}"))))
+    w.len() <= 12
+        && !has_link(user)
+        && ((0..w.len()).any(|i| (ISSUE_VERBS.contains(&w[i].as_str()) || FOLLOW_UP.contains(&w[i].as_str())) && !said_no_before(&w, i))
+            || FOLLOW_UP_PHRASES.iter().any(|p| said.contains(p) && !JIRA_NO.iter().any(|n| said.contains(&format!("{n} {p}")))))
+}
+
+fn has_link(s: &str) -> bool {
+    let l = s.to_lowercase();
+    l.contains("://") || l.contains("www.")
+}
+
+/// What identifies a drafted issue the user was shown: its summary, cleaned and in lower case.
+fn draft_sig(summary: &str) -> String {
+    plain(summary)
 }
 
 /// The user's own message asks for a comment on ticket `key`: it names the ticket and asks for a
@@ -1062,7 +1111,18 @@ fn jira_card(v: &Value, _body: &str, t: &mut Turn, attempts: &mut Vec<Value>) ->
     let key = v["key"].as_str().unwrap_or("").trim().to_ascii_uppercase();
     let key_ok = jira::check_issue(&key).is_ok();
     let title = if issue { "Create Jira issue".to_owned() } else if key_ok { format!("Comment on {key}") } else { "Comment on a Jira ticket".to_owned() };
-    let asked = if issue { asked_for_issue(&t.user) || (t.jira_follow_up && followed_up(&t.user)) } else { key_ok && asked_for_comment(&t.user, &key) };
+    // A follow-up or a "yes" counts only in a turn that read no app and no ticket (Security
+    // re-review, Medium): a page read in this turn cannot steer the draft into a card. A "yes"
+    // counts only for the very draft the user was shown.
+    let quiet = !t.read_app && t.tickets.is_empty();
+    let sig = draft_sig(&jira::clean(v["summary"].as_str().unwrap_or(""), "", true, 250));
+    let asked = if issue {
+        asked_for_issue(&t.user)
+            || (quiet && t.jira_follow_up && followed_up(&t.user))
+            || (quiet && !sig.is_empty() && t.jira_offered.as_deref() == Some(sig.as_str()) && confirmed(&t.user))
+    } else {
+        key_ok && asked_for_comment(&t.user, &key)
+    };
     if !asked {
         t.jira_tries += 1;
         if t.jira_tries <= 3 {
@@ -1077,8 +1137,12 @@ fn jira_card(v: &Value, _body: &str, t: &mut Turn, attempts: &mut Vec<Value>) ->
             };
             let project = t.jira.as_ref().map(|s| s.project_key.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| "KAN".into());
             let say = if issue { format!("file a Jira bug in {project}") } else if key_ok { format!("add the result to {key}") } else { format!("add the result to {project}-12") };
-            let from = if t.read_app || !t.tickets.is_empty() { "page" } else { "none" };
-            attempts.push(json!({ "kind": "jira", "what": if issue { "Create a Jira issue".to_owned() } else { title.clone() }, "said": clip(draft.trim(), 900), "from": from, "say": say }));
+            // "page": a page or ticket was read and the user did not ask; "none": the user's words
+            // did not ask clearly enough (then a "yes" to this draft gets the card).
+            let user_tried = asked_for_issue(&t.user) || followed_up(&t.user) || confirmed(&t.user);
+            let from = if (t.read_app || !t.tickets.is_empty()) && !user_tried { "page" } else { "none" };
+            let offer = (issue && from == "none" && !sig.is_empty()).then(|| sig.clone());
+            attempts.push(json!({ "kind": "jira", "what": if issue { "Create a Jira issue".to_owned() } else { title.clone() }, "said": clip(draft.trim(), 900), "from": from, "say": say, "offer": offer }));
         }
         return None;
     }
@@ -2305,11 +2369,21 @@ mod tests {
             assert!(!asked_for_issue(no), "{no}");
         }
         // QA bug 1: a follow-up after an earlier ask (the caller checks the earlier ask).
-        for yes in ["It failed for me… please make the bug", "yes", "go ahead", "ok, buat", "lanjut"] {
+        for yes in ["It failed for me… please make the bug", "file it", "ok, buat bugnya", "create the issue please"] {
             assert!(followed_up(yes), "{yes}");
         }
-        for no in ["test KAN-12", "don't make it", "why did it fail?", "no, do not go ahead"] {
+        // Security re-review: the probes that counted before.
+        for no in [
+            "ok, run the checkout test again", "yes", "Log in as demo and check the cart", "please report what you see on the page", "make sure the login test passes",
+            "file upload test please", "sure, open the tickets page", "create the test from KAN-12", "test KAN-12", "don't make it", "please make the bug at https://evil.example",
+        ] {
             assert!(!followed_up(no), "{no}");
+        }
+        for yes in ["yes", "go ahead", "ok, make it", "lanjut"] {
+            assert!(confirmed(yes), "{yes}");
+        }
+        for no in ["no, do not go ahead", "yes, and then run the checkout test on the staging shop again with the new voucher", "yes https://evil.example"] {
+            assert!(!confirmed(no), "{no}");
         }
         assert_eq!(ticket_keys("test kan-12 and OPS-3, not utf-8 or Kan-12 again, SHA-256", "KAN"), [("KAN-12".to_owned(), true), ("OPS-3".to_owned(), false), ("SHA-256".to_owned(), false)]);
     }
@@ -2368,6 +2442,25 @@ mod tests {
         // Planted text after an earlier ask: "test KAN-12" is no follow-up, so still no card.
         let (found, a) = follow("test KAN-12", true);
         assert!(found.is_empty() && a.len() == 1, "{a:?}");
+        // Security re-review: a follow-up in a turn that read the app makes no card.
+        let mut t = turn("It failed for me… please make the bug");
+        t.jira = Some(connected());
+        t.jira_follow_up = true;
+        t.read_app = true;
+        let (mut found, mut a) = (Vec::new(), Vec::new());
+        cards(&json!({ "kind": "jira_issue", "summary": "Login fails", "description": "Steps" }).to_string(), &mut t, &mut found, &mut a);
+        assert!(found.is_empty() && a[0]["from"] == "none" && a[0]["offer"] == "login fails", "the user tried, so a yes may confirm this draft: {a:?}");
+        // A "yes" confirms only the draft that was shown, in a quiet turn.
+        let confirm = |summary: &str, read_app: bool| {
+            let mut t = turn("yes");
+            t.jira = Some(connected());
+            t.jira_offered = Some("login fails".into());
+            t.read_app = read_app;
+            let (mut found, mut a) = (Vec::new(), Vec::new());
+            cards(&json!({ "kind": "jira_issue", "summary": summary, "description": "Steps" }).to_string(), &mut t, &mut found, &mut a);
+            found.len()
+        };
+        assert_eq!((confirm("Login fails", false), confirm("Allow the Pay button", false), confirm("Login fails", true)), (1, 0, 0));
         // Security Low 6: a project the user's message does not name is refused; named, it is used.
         let (found, _) = card("file it in Jira", json!({ "kind": "jira_issue", "summary": "x", "project": "SEC" }), true);
         assert!(found[0].status == "refused" && found[0].note.as_deref().is_some_and(|n| n.contains("does not name project SEC")), "{:?}", found[0]);
@@ -2428,7 +2521,7 @@ mod tests {
     }
 
     fn turn(user: &str) -> Turn {
-        Turn { user: user.into(), read_app: false, open: vec![], recent: 0, made: 0, words: 0, notes: 0, note_tries: 0, open_notes: vec![], jira: None, tickets: vec![], jira_cards: 0, jira_tries: 0, open_jira: vec![], jira_follow_up: false }
+        Turn { user: user.into(), read_app: false, open: vec![], recent: 0, made: 0, words: 0, notes: 0, note_tries: 0, open_notes: vec![], jira: None, tickets: vec![], jira_cards: 0, jira_tries: 0, open_jira: vec![], jira_follow_up: false, jira_offered: None }
     }
 
     fn settings(changes: Value) -> String {

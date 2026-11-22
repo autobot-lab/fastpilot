@@ -275,6 +275,9 @@ fn a_follow_up_gets_the_card_and_a_lost_answer_is_not_a_silent_retry() {
     let a = &bot["page_attempts"][0];
     assert_eq!((a["kind"].as_str(), a["from"].as_str(), a["say"].as_str()), (Some("jira"), Some("none"), Some("file a Jira bug in KAN")), "{bot}");
     assert!(a["said"].as_str().is_some_and(|t| t.starts_with("Summary: Login with the demo account fails") && !t.contains('{')), "the draft as text, not the raw proposal: {a}");
+    // The user then says "yes": a card for exactly that draft.
+    let bot = say(&ui, "yes");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("jira_issue"), Some("pending")), "{bot}");
     let audit = std::fs::read_to_string(d.join("audit.jsonl")).unwrap_or_default();
     assert!(audit.lines().filter(|l| l.contains("\"setting\":\"jira\"")).all(|l| !l.contains("refused-no-provenance")) && audit.contains("\"result\":\"not-asked\""), "{audit}");
 

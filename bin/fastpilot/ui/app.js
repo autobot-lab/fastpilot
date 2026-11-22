@@ -1208,7 +1208,7 @@ function pageAttempts(list) {
   page.filter((a) => a.kind === "jira" && a.from === "none").forEach((a) => {
     out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
       h("div", {}, h("b", {}, "No Jira card was made. "), "Your message did not ask for one in your own words, so nothing was sent. ",
-        a.say ? ["Say “", a.say, "” to get the card."] : null,
+        a.say ? ["Say “", a.say, "” to get the card", a.offer ? ", or reply “yes” to get a card for this draft." : "."] : null,
         h("details", {}, h("summary", {}, "See the bot's draft"), h("pre", {}, a.said)))));
   });
   groups.forEach(([list, words]) => {

@@ -157,7 +157,7 @@ if "jira ticket for the voucher bug" in user:
 # QA bug 1: an ask the bot cannot act on yet, then a follow-up without the word "Jira".
 if "file a jira bug for the failed login test" in user:
     text.append("I could not find a failed login test in this project yet.")
-if "please make the bug" in user:
+if "please make the bug" in user or user.strip() == "yes":
     text.append("Here's the Jira bug card. Nothing is sent until you click it.\n```fastpilot-proposal\n" + json.dumps({"kind": "jira_issue", "summary": "Login with the demo account fails", "description": "Steps: open the login page, sign in with the demo account\nExpected: the dashboard\nActual: an error"}) + "\n```")
 if "add the result to kan-12" in user:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "jira_comment", "key": "KAN-12", "text": "fastpilot ran \"Checkout with voucher SAVE10\": failed at step 2."}) + "\n```")
