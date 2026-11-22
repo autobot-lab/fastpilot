@@ -116,38 +116,91 @@ function jobPanel(job) {
     fixDetails ? h("pre", { class: "fix-log", tabindex: "0", "aria-label": "Details" }, job.log.length ? job.log.join("\n") : "Nothing yet.") : null);
 }
 
+// S10 + DC4 (v0.7): one line per kind (website, Android, iPhone) with the device picked for the
+// person; every device of that kind is under Change. Buttons name the kind, never an ID.
+async function startLine(l) {
+  const ok = await UI.confirmDialog({ title: l.button + "?", text: l.confirm || "", verb: l.button, keep: "Cancel", danger: false });
+  if (!ok) return;
+  if (l.start.action === "boot-simulator") {
+    try { toast((await fixPost({ action: "boot-simulator", confirmed: true })).ok, true); } catch (e) { toast("Could not start: " + e.message); }
+    loadFix();
+    return;
+  }
+  lastStart = { ...l.start, confirmed: true };
+  await run(lastStart);
+}
+
+async function useDevice(l, c) {
+  if (c.act === "start") {
+    const ok = await UI.confirmDialog({ title: `Start ${c.name}?`, text: c.confirm || "", verb: "Start", keep: "Cancel", danger: false });
+    if (!ok) return;
+    lastStart = { action: "start", area: "android", avd: c.id, confirmed: true };
+    await run(lastStart);
+  } else if (l.kind === "android") {
+    try { toast((await fixPost({ action: "pick-android", serial: c.id })).ok, true); } catch (e) { toast(e.message); }
+    loadFix();
+  } else {
+    await pickSimulator(c);
+  }
+}
+
+async function answerAutostart(on) {
+  try { toast((await fixPost({ action: "autostart", on })).ok, true); } catch (e) { toast(e.message); }
+  loadFix();
+}
+
+function lineRows(l, busy) {
+  const state = l.ready ? "ok" : l.button ? "warn" : "fail";
+  const row = h("div", { class: "row dev-line", "data-kind": l.kind },
+    h("div", {},
+      h("div", { class: "t" }, h("span", { class: "dot " + state, "aria-hidden": "true" }), l.name),
+      h("div", { class: "s" }, l.detail)),
+    l.button ? h("button", { class: "btn sm p", disabled: busy, onclick: () => startLine(l) }, l.button) : null);
+  const items = (l.choices || []).map((c) => h("li", { "data-id": c.id },
+    h("span", {}, h("b", {}, c.name), c.note ? h("span", { class: "s" }, ` · ${c.note}`) : null),
+    c.button ? h("button", { class: "btn sm", disabled: busy, onclick: () => useDevice(l, c) }, c.button) : null));
+  // fastpilot's own test phone as a second choice (DV1), when the Android offer has it.
+  const add = l.kind === "android" ? (fixData.offers || []).find((o) => o.area === "android" && o.button && o.secondary) : null;
+  if (!items.length && !add) return [row];
+  const label = l.kind === "ios" ? "iPhone simulators on this computer" : "Android devices on this computer";
+  return [row, UI.moreOptions({ label: "Change" },
+    items.length ? h("ul", { class: "fix-choices", "aria-label": label }, items) : null,
+    add ? h("div", { class: "fix-more" }, h("button", { class: "btn sm", disabled: busy, onclick: () => startFix(add) }, add.button), h("span", { class: "s" }, " (downloads about 1.5 GB)")) : null)];
+}
+
+function autostartRow() {
+  if (fixData.ask_autostart) {
+    return h("div", { class: "row dev-auto", role: "group", "aria-labelledby": "dev-auto-q" },
+      h("div", {}, h("div", { class: "t", id: "dev-auto-q" }, "Start it automatically when a test needs it?"),
+        h("div", { class: "s" }, "When a test needs the Android emulator or the iPhone simulator and it is not running. Asked once.")),
+      h("div", { class: "btns tight" },
+        h("button", { class: "btn sm p", onclick: () => answerAutostart(true) }, "Yes"),
+        h("button", { class: "btn sm", onclick: () => answerAutostart(false) }, "No")));
+  }
+  if (fixData.autostart === true || fixData.autostart === false) {
+    const on = fixData.autostart;
+    return h("p", { class: "s muted dev-auto" },
+      on ? "Tests start a stopped emulator or simulator when they need it. " : "Tests do not start devices; use Start above. ",
+      h("button", { class: "lk", onclick: () => answerAutostart(!on) }, on ? "Turn off" : "Turn on"));
+  }
+  return null;
+}
+
 function section() {
   const body = [];
   if (!fixData) {
-    body.push(h("div", { class: "s muted" }, "Checking what fastpilot can set up…"));
+    body.push(h("div", { class: "s muted" }, "Checking the devices for tests…"));
   } else {
-    if (fixData.error) body.push(h("div", { class: "err", role: "alert" }, "Could not read the fixes: " + fixData.error));
-    const busy = fixData.job && fixData.job.state === "running";
-    const offers = fixData.offers || [];
-    if (!offers.length && !fixData.job) body.push(h("div", { class: "s muted" }, "Nothing to set up: Chrome and a device for tests are ready."));
-    // While a fix runs, its own job panel stands for the offer.
-    for (const o of offers.filter((x) => !(busy && fixData.job.area === x.area))) {
-      body.push(h("div", { class: "row fix-row", "data-area": o.area },
-        h("div", {}, h("div", { class: "t" }, h("span", { class: "dot " + (o.ready ? "ok" : o.button || o.choices.length ? "warn" : "fail") }), o.title), h("div", { class: "s" }, o.detail)),
-        o.button && !o.secondary ? h("button", { class: "btn sm p", disabled: busy, onclick: () => startFix(o) }, o.button) : null));
-      // DV1: what is installed on this computer first, each with its own button.
-      if (o.choices.length) {
-        body.push(h("ul", { class: "fix-choices", "aria-label": o.area === "ios" ? "iPhone simulators on this computer" : "Emulators on this computer" },
-          o.choices.map((c) => h("li", { "data-id": c.id },
-            h("span", {}, h("b", {}, c.name), c.note ? h("span", { class: "s" }, ` · ${c.note}`) : null),
-            c.button ? h("button", { class: "btn sm" + (o.area === "android" ? " p" : ""), disabled: busy, onclick: () => (o.area === "android" ? startFix(o, c) : pickSimulator(c)) }, c.button) : null))));
-      }
-      if (o.button && o.secondary) {
-        body.push(h("div", { class: "fix-more" }, h("span", { class: "s" }, "Or "),
-          h("button", { class: "btn sm", disabled: busy, onclick: () => startFix(o) }, o.button), (o.steps || []).some((s) => s.startsWith("Download")) ? h("span", { class: "s" }, " (downloads about 1.5 GB)") : null));
-      }
-    }
+    if (fixData.error) body.push(UI.notice("error", "Could not read the devices: " + fixData.error));
+    const busy = !!(fixData.job && fixData.job.state === "running");
+    for (const l of fixData.lines || []) body.push(...lineRows(l, busy));
+    body.push(autostartRow());
     if (fixData.job) body.push(jobPanel(fixData.job));
   }
   return h("div", { class: "grp", id: "fix-section" },
-    h("div", { class: "gh" }, icon("plug"), "Set up for tests"),
-    ...body,
-    h("p", { class: "s muted fix-lock" }, icon("lock", "sm"), " Fix buttons work only from this page. You cannot start them from Chat, so the AI cannot install things."));
+    h("div", { class: "gh" }, icon("device"), "Devices for tests"),
+    ...UI.kids(body),
+    h("p", { class: "s muted fix-lock" }, icon("lock", "sm"), " Starting and setting up devices works only from this page. You cannot start them from Chat, so the AI cannot install things."));
 }
 
 // Each time the Device page draws (also after Check again), the offers are read again.

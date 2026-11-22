@@ -365,3 +365,87 @@ async fn no_ai_tool_can_start_a_fix() {
     }
     client.cancel().await.expect("shutdown");
 }
+
+/// S10 + DC4 (v0.7): the Device page has one line per kind of device, with the device picked for
+/// the person and the full list behind Change. Buttons name the kind, never an ID. "Start it
+/// automatically when a test needs it?" is asked once and remembered. Stand-in SDK and simctl:
+/// no real emulator or simulator is started, and emulator-5554 is never contacted.
+#[test]
+fn the_device_page_has_one_line_per_kind_and_asks_once() {
+    let home = std::env::temp_dir().join(format!("fp-fix-s10-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let sdk = home.join("sdk");
+    fake_sdk(&sdk);
+    std::fs::write(sdk.join("user-avd"), "").expect("an installed emulator");
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    for (name, text) in [("xcrun", XCRUN), ("xcodebuild", XCODEBUILD)] {
+        std::fs::write(bin.join(name), text).expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+    }
+    // A built iPhone runner, so the iPhone line is about the simulator, not the one-time setup.
+    let runner = home.join("runner");
+    std::fs::create_dir_all(runner.join("Build/Products")).expect("runner");
+    std::fs::write(runner.join("Build/Products/FastpilotRunner_iphonesimulator18.1-arm64.xctestrun"), "").expect("xctestrun");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let ui = start_ui_with(&home, &sdk, &[("PATH", path), ("FASTPILOT_IOS_RUNNER", runner.display().to_string())]);
+    let own = format!("http://127.0.0.1:{}", ui.port);
+    let get = || serde_json::from_str::<Value>(&request(&ui, "GET", "/api/fix", "", &own).1).expect("json");
+    let post = |body: Value| {
+        let (st, text) = request(&ui, "POST", "/api/fix", &body.to_string(), &own);
+        (st, serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+    };
+    let line = |v: &Value, kind: &str| v["lines"].as_array().and_then(|l| l.iter().find(|x| x["kind"] == kind)).cloned().unwrap_or(Value::Null);
+
+    let v = get();
+    let kinds: Vec<&str> = v["lines"].as_array().map(|l| l.iter().filter_map(|x| x["kind"].as_str()).collect()).unwrap_or_default();
+    let expect: &[&str] = if cfg!(target_os = "macos") { &["web", "android", "ios"] } else { &["web", "android"] };
+    assert_eq!(kinds, expect, "one line per kind: {v}");
+    let a = line(&v, "android");
+    assert_eq!((a["name"].as_str(), a["ready"].as_bool(), a["detail"].as_str()), (Some("Android emulator"), Some(false), Some("No emulator running")), "{a}");
+    assert_eq!((a["button"].as_str(), a["start"]["avd"].as_str()), (Some("Start the Android emulator"), Some("Pixel_User")), "{a}");
+    assert!(a["choices"].as_array().is_some_and(|c| c.iter().any(|x| x["name"] == "Pixel_User" && x["act"] == "start")), "the list is behind Change: {a}");
+    if cfg!(target_os = "macos") {
+        let i = line(&v, "ios");
+        assert_eq!((i["name"].as_str(), i["ready"].as_bool(), i["detail"].as_str()), (Some("iPhone simulator"), Some(true), Some("iPhone 16 · in use")), "{i}");
+        assert!(i["button"].is_null(), "nothing to do: {i}");
+        assert_eq!(i["choices"].as_array().map(Vec::len), Some(2), "every iPhone simulator is under Change, not on the line: {i}");
+        assert!(i["choices"][0]["name"] == "iPhone 16" && i["choices"][0]["button"].is_null() && i["choices"][1]["button"] == "Use for tests", "only the others can be picked: {i}");
+    }
+    // DC4/M4: no button names a device ID.
+    for l in v["lines"].as_array().into_iter().flatten() {
+        for b in [l["button"].as_str()].into_iter().flatten().chain(l["choices"].as_array().into_iter().flatten().filter_map(|c| c["button"].as_str())) {
+            assert!(!b.contains("emulator-") && !b.contains("AAAA") && !b.contains("Pixel_User"), "a button names an ID: {b}");
+        }
+    }
+    // The one-time question: asked while there is something to start, then remembered.
+    assert_eq!((v["ask_autostart"].as_bool(), v["autostart"].is_null()), (Some(true), true), "{v}");
+    let (st, r) = post(json!({ "action": "autostart" }));
+    assert_eq!(st, 400, "yes or no: {r}");
+    let (st, r) = post(json!({ "action": "autostart", "on": false }));
+    assert_eq!(st, 200, "{r}");
+    let v = get();
+    assert_eq!((v["ask_autostart"].as_bool(), v["autostart"].as_bool()), (Some(false), Some(false)), "asked once: {v}");
+    let cfg = std::fs::read_to_string(home.join(".fastpilot/config.toml")).expect("config");
+    assert!(cfg.contains("device_autostart = \"false\""), "{cfg}");
+    // "No" leaves the Start button on the line; it starts the installed emulator on a free port.
+    let a = line(&v, "android");
+    let (st, r) = post(json!({ "action": "start", "area": "android", "avd": a["start"]["avd"], "confirmed": true }));
+    assert_eq!(st, 200, "{r}");
+    let v = wait_job(&ui, &own, |j| j["state"] != "running");
+    assert_eq!(v["job"]["state"], "done", "{v}");
+    let a = line(&get(), "android");
+    assert_eq!((a["ready"].as_bool(), a["detail"].as_str()), (Some(true), Some("Pixel_User · in use")), "named from its own process, not by asking it: {a}");
+    assert!(a["choices"].as_array().is_some_and(|c| c.iter().any(|x| x["name"] == "Pixel_User" && x["note"] == "in use")), "{a}");
+    let calls = std::fs::read_to_string(sdk.join("calls.log")).expect("calls");
+    assert!(!calls.contains("emulator-5554") && !calls.contains("-port 5554"), "emulator-5554 is never contacted: {calls}");
+    let cfg = std::fs::read_to_string(home.join(".fastpilot/config.toml")).expect("config");
+    assert!(cfg.contains("android_avd = \"Pixel_User\""), "the emulator a test starts next time: {cfg}");
+    let _ = std::process::Command::new("pkill").args(["-f", &format!("{}/emulator/emulator", sdk.display())]).status();
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}

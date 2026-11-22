@@ -1183,6 +1183,11 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     let mut need: Vec<Platform> = cases.iter().flat_map(Case::platforms).collect();
     need.sort_by_key(|p| p.to_string());
     need.dedup();
+    // S10: a stopped emulator or simulator the tests need is started when the person said so
+    // (asked once in Terminal, or on the Device page).
+    for note in crate::fix::start_for_run(&need).await {
+        println!("{note}");
+    }
     let pool = Arc::new(Pool::discover(&need).await);
     println!("{} tests, {} workers, {}", cases.len(), opts.workers, pool.summary(&need));
     // V042: the first iPhone test builds the runner once (a person's run), or says what to do (a schedule).
