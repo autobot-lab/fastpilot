@@ -22,7 +22,8 @@ const pick = (name) => {
 const limitPicker = new Function("document", "Node", pick("h") + ";" + pick("limitPicker") + ";return limitPicker;")(document, Node);
 const sel = (box) => box.kids.find((k) => k.tag === "select");
 const opts = (data) => { const s = sel(limitPicker(data)); return [s.kids.length, s.kids.filter((o) => "selected" in o.attrs).map((o) => o.attrs.value)]; };
-console.log(JSON.stringify([opts({ limit: 15, limit_max: 20 }), opts({ limit: 3, limit_max: 20 })]));
+const label = (data, v) => sel(limitPicker(data)).kids.find((o) => o.attrs.value === v).kids.map((k) => k.text).join("");
+console.log(JSON.stringify([opts({ limit: 15, limit_max: 20 }), opts({ limit: 3, limit_max: 20 }), [label({ limit: 5, limit_max: 20, limit_default: 3 }, "3"), label({ limit: 5, limit_max: 20, limit_default: 3 }, "5")]]));
 "#;
 
 #[test]
@@ -32,7 +33,10 @@ fn tests_at_once_offers_every_allowed_value() {
         return eprintln!("skipping: no node");
     };
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let got: Vec<(usize, Vec<String>)> = serde_json::from_slice(&out.stdout).expect("json");
-    assert_eq!(got[0], (20, vec!["15".to_owned()]), "a limit of 15 shows as 15, out of 1 to 20");
-    assert_eq!(got[1], (20, vec!["3".to_owned()]));
+    let got: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(got[0], serde_json::json!([20, ["15"]]), "a limit of 15 shows as 15, out of 1 to 20");
+    assert_eq!(got[1], serde_json::json!([20, ["3"]]));
+    // UXA5: the default is marked.
+    assert_eq!(got[2], serde_json::json!(["3 (default)", "5"]));
+    assert!(UI.contains(r#""limit_default": fastpilot_core::claim::DEFAULT_PARALLEL"#));
 }

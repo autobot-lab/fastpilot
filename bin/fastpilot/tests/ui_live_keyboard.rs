@@ -95,7 +95,8 @@ async fn live_page_works_with_the_keyboard() {
     assert!(eval(&client, "document.querySelector('.top .pill').textContent").await.contains("1 blocked"));
     // FastTest final report: no "null" in the header (a null child became text).
     let top = eval(&client, "document.querySelector('.top').textContent").await;
-    assert!(!top.contains("null") && top.contains("Tests at once"), "{top}");
+    // UXA5: "Tests at once" is no longer on the Live header (it is in Settings › Limits).
+    assert!(!top.contains("null") && !top.contains("Tests at once"), "{top}");
 
     // FastTest final report: "click Web, fill in, Create" said "Pick where it tests" (Web was
     // picked already and the click took it off). The last place picked stays on, with a reason.
@@ -171,6 +172,18 @@ async fn live_page_works_with_the_keyboard() {
     eval(&client, "location.hash = '#/settings/limits', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Limits & permissions\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
+    // UXA5: "Tests at once" is in Settings › Limits, with its default marked.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Tests at once\", timeout: 5000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let mut picked = String::new();
+    for _ in 0..20 {
+        picked = eval(&client, "(() => { const s = document.querySelector('select[aria-label=\"Tests at once\"]'); return s ? s.selectedOptions[0].textContent + '|' + s.options.length : 'none'; })()").await;
+        if picked != "\"none\"" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert_eq!(picked, "\"3 (default)|20\"", "the default is marked");
     let enter = "(() => { const i = document.querySelector('input[data-key=\"block_actions\"]'); i.value = VALUE; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return document.querySelector('.toast')?.textContent || ''; })()";
     let msg = eval(&client, &enter.replace("VALUE", "'a, b'")).await;
     assert!(msg.contains("without commas"), "{msg}");

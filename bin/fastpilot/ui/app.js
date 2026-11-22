@@ -341,6 +341,15 @@ function pageModel() {
       providerGroup()));
 }
 
+// The "Tests at once" list for Settings: the Live data says the current value, the most and the default.
+function limitsTestsAtOnce() {
+  if (lastLive && lastLive.limit) return limitPicker(lastLive);
+  // Filled in place when the value arrives: redrawing the page would move the keyboard focus.
+  const holder = h("span", { class: "s muted" }, "Reading…");
+  api("/api/live").then((d) => { if (holder.isConnected && d.limit) holder.replaceWith(limitPicker(d)); }).catch(() => {});
+  return holder;
+}
+
 function pageLimits() {
   const confirmShow = (w) => (w === "default" ? "default (delete, pay, buy, …)" : w);
   const emptied = (key) => { const s = get(key); return s && s.source !== "default" && Array.isArray(s.value) && !s.value.length; };
@@ -381,6 +390,8 @@ function pageLimits() {
       h("div", { class: "gh" }, icon("gauge"), "usage limits · fastpilot run"),
       opt("Most AI steps per test", "The test stops and fails when it goes over",
         select("max_steps", [["", "30 steps (built in)"], ["10", "10 steps"], ["20", "20 steps"], ["40", "40 steps"], ["60", "60 steps"], ["100", "100 steps"]], "Most steps"), get("max_steps")),
+      // UXA5: "Tests at once" lives here (advanced), with its default marked; not on the Live header.
+      opt("Tests at once", "How many tests may run at the same time on this computer, for all agents together. One device always runs one test.", limitsTestsAtOnce()),
       opt("Longest time per test", "The test stops and fails when it goes over",
         select("test_timeout", [["", "30 minutes (built in)"], ["5", "5 minutes"], ["10", "10 minutes"], ["15", "15 minutes"], ["60", "60 minutes"]], "Longest time"), get("test_timeout"))));
 }
@@ -999,7 +1010,8 @@ function liveExtras(data) {
 // above 10 shows as itself instead of falling back to 1 (L062-12).
 function limitPicker(data) {
   const max = Math.max(Number(data.limit_max) || 20, Number(data.limit) || 1);
-  const sel = h("select", { class: "sel", "aria-label": "Tests at once" }, Array.from({ length: max }, (_, i) => h("option", { value: String(i + 1), selected: data.limit === i + 1 }, `${i + 1}`)));
+  const dflt = Number(data.limit_default) || 3;
+  const sel = h("select", { class: "sel", "aria-label": "Tests at once" }, Array.from({ length: max }, (_, i) => h("option", { value: String(i + 1), selected: data.limit === i + 1 }, `${i + 1}${i + 1 === dflt ? " (default)" : ""}`)));
   sel.addEventListener("change", async () => {
     try { await api("/api/live/limit", { limit: Number(sel.value) }); toast(`Up to ${sel.value} tests at once, from the next test.`, true); } catch (e) { toast(e.message); }
   });
@@ -1012,7 +1024,7 @@ function renderLive(data) {
   const q = (data.queue || []).length;
   // No null children: replaceChildren writes them as the text "null" (FastTest, final report).
   $top().replaceChildren(...[icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions),
-    q ? h("span", { class: "pill warn" }, `${q} queued`) : null, data.limit ? limitPicker(data) : null].filter(Boolean));
+    q ? h("span", { class: "pill warn" }, `${q} queued`) : null].filter(Boolean));
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();
