@@ -490,13 +490,13 @@ fn a_missing_secret_is_a_setup_problem_and_the_test_does_not_start() {
     assert!(out.contains("Could not run. The test \"Login works\" needs the secret DEMO_PASS, and it is not set.\n0 of 1 tests ran. This is not a pass."), "{out}");
     assert!(out.contains("• Set it for this window:   export DEMO_PASS=…") && !out.contains("export FASTPILOT_VARS"), "{out}");
     // V051: the plugin case (no .mcp.json; the value comes from Claude Code's environment).
-    assert!(out.contains("With the Claude Code plugin: add the name in Settings → Secret, and export the value before you start Claude Code."), "{out}");
+    assert!(out.contains("With the Claude Code plugin: add the name in Settings → Secrets, and export the value before you start Claude Code."), "{out}");
     assert!(out.contains("1 test could not start: a secret it needs is not set") && !out.contains("attempts"), "{out}");
     assert!(calls(&log).is_empty(), "Claude Code never started for a test that cannot run");
     // Neither allowed nor set: both go in the export line, and the dashboard way is named.
     let log = dir.join("claude-b");
     let (ok, out) = run_on("tests/login.md", &dir, &log, &[("DEMO_PASS", ""), ("FASTPILOT_VARS", "")], &[]);
-    assert!(!ok && out.contains("export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=…") && out.contains("Settings → Secret"), "{out}");
+    assert!(!ok && out.contains("export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=…") && out.contains("Settings → Secrets"), "{out}");
     assert!(calls(&log).is_empty());
     // A value without its name in FASTPILOT_VARS: the value is never printed.
     let log = dir.join("claude-c");

@@ -35,7 +35,7 @@ press Enter.
 > one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
 > Use **either** the plugin **or** `fastpilot init` in a project, not both: both together start two
 > fastpilot servers. With the plugin, a secret such as `DEMO_PASS` works like this: add its **name** in
-> `fastpilot ui` › Settings › Secret, and set its **value** in the environment you start Claude Code
+> `fastpilot ui` › Settings › Secrets, and set its **value** in the environment you start Claude Code
 > from (`export DEMO_PASS=…`). The value is never typed into the dashboard or the chat.
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
@@ -69,7 +69,7 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
 ### 2. Pick the AI and store passwords: **Settings**
 - **AI model:** pick the provider, then the model. Claude Code is the default. Other providers
   (OpenAI, OpenRouter, Groq, Ollama) also work, and are marked "not tested yet".
-- **Secret:** add the names of passwords your tests need, for example `TEST_PASS`. Tests write them as
+- **Secrets:** add the names of passwords your tests need, for example `TEST_PASS`. Tests write them as
   `${TEST_PASS}`, and they always show as `***`. Never type a password in Chat.
 - **Limits & permissions:** see the next section, "Safe from the start".
 
@@ -135,7 +135,7 @@ test at a time and the others wait their turn.
 | **Memory** | Test health and project notes |
 | **History** | Past runs and conversations |
 | **Device** | Chrome, Android, iOS readiness and Fix buttons |
-| **Settings** | AI model, Limits & permissions, Secret |
+| **Settings** | AI model, Limits & permissions, Secrets |
 
 ## Safe from the start
 

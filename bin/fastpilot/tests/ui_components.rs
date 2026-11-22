@@ -242,3 +242,28 @@ async fn every_confirmation_is_in_the_page_and_esc_changes_nothing() {
         assert!(!js.contains("confirm("), "{f} still calls confirm()");
     }
 }
+
+/// UXA2 (v0.7): the Settings menu and page say "Secrets" (plural), like everywhere else; a link
+/// made before v0.7 (#/settings/secret) still opens it; no "Secret" label is left in the dashboard.
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_menu_says_secrets() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-secrets", |_| {}).await;
+    let c = &d.client;
+    open(c, "#/settings/limits", "Limits & permissions").await;
+    assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
+        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets\"");
+    for hash in ["#/settings/secrets", "#/settings/secret"] {
+        open(c, hash, "Only the name is saved here").await;
+        let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
+        assert_eq!(page, "\"Secrets|Secrets\"", "{hash}");
+    }
+    for f in ["app.js", "memory.js", "agents.js", "history.js", "apps.js", "map.js", "fix.js"] {
+        let js = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(f)).expect("js");
+        for old in ["\"Secret\"", "→ Secret\"", "settings/secret\""] {
+            assert!(!js.contains(old), "{f} still has {old}");
+        }
+    }
+}

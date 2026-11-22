@@ -941,7 +941,7 @@ pub async fn run(id: &str) -> Res<bool> {
             // V042 (FastUI/UX D1): a setup problem, said as one, never "failed".
             Some(names) => (
                 format!("Schedule \"{}\" could not run: needs {names}", s.name),
-                format!("fastpilot: \"{}\" could not run. It needs the secret {names}, and no value is set where schedules run. Nothing ran, so this is not a pass. Set it in the environment of fastpilot (and its name in Settings → Secret), then run again.{report_line}", s.name),
+                format!("fastpilot: \"{}\" could not run. It needs the secret {names}, and no value is set where schedules run. Nothing ran, so this is not a pass. Set it in the environment of fastpilot (and its name in Settings → Secrets), then run again.{report_line}", s.name),
             ),
             // V042: no iPhone runner yet: a schedule does not build it; it says so, not "failed".
             None if setup_lines_only(&text) => (
