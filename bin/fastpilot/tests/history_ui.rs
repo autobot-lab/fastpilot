@@ -144,7 +144,9 @@ fn history_lists_opens_and_deletes_runs_and_conversations() {
     let failed = runs.iter().find(|r| r["failed"] == 1).expect("failed suite");
     assert_eq!(failed["title"], "Login works", "one test: its title");
     assert!(runs.iter().any(|r| r["id"] == "run:20261120-090000-solo-check" && r["passed"] == 1));
-    assert_eq!(h["keep_days"], Value::Null, "auto-delete is off until the user picks it");
+    // UXA6 (v0.7): 30 days unless the user picks otherwise, marked as the default; it deletes
+    // nothing until that default has been in place for 30 days (the runs here stay).
+    assert_eq!((h["keep_days"].as_u64(), h["keep_default"].as_bool()), (Some(30), Some(true)), "30 days by default: {h}");
 
     // Open: the suite's report, sandboxed; never a path from the request.
     let id = named["id"].as_str().expect("id").to_owned();

@@ -70,7 +70,18 @@ pub struct ChatItem {
 struct Settings {
     #[serde(default)]
     keep_days: Option<u32>,
+    /// The user turned auto-delete off (UXA6: without a choice it is on, after 30 days).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    off: bool,
+    /// When the default (no choice made) was first seen: it deletes nothing until it has been in
+    /// place for its 30 days, so an update never removes older history without warning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_since_ms: Option<u64>,
 }
+
+/// UXA6 (v0.7): runs and conversations are deleted after this many days unless the user picks
+/// otherwise (a choice on the History page, "off" included).
+pub const DEFAULT_KEEP_DAYS: u32 = 30;
 
 /// What a delete removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -400,25 +411,59 @@ impl History {
         self.delete(&runs, &chats)
     }
 
-    pub fn keep_days(&self) -> Option<u32> {
-        fs::read_to_string(self.dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Settings>(&t).ok()).and_then(|s| s.keep_days).filter(|d| *d > 0)
+    fn settings(&self) -> Settings {
+        fs::read_to_string(self.dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Settings>(&t).ok()).unwrap_or_default()
     }
 
-    /// Auto-delete after `days` (None: keep everything). Applied at once.
+    /// Days after which runs and conversations are deleted: the user's choice, else 30 (UXA6);
+    /// `None` only when the user turned auto-delete off.
+    pub fn keep_days(&self) -> Option<u32> {
+        let s = self.settings();
+        if s.off {
+            return None;
+        }
+        Some(s.keep_days.filter(|d| *d > 0).unwrap_or(DEFAULT_KEEP_DAYS))
+    }
+
+    /// Whether the days are the default (no choice made on the History page).
+    pub fn keep_days_is_default(&self) -> bool {
+        let s = self.settings();
+        !s.off && s.keep_days.is_none_or(|d| d == 0)
+    }
+
+    /// Auto-delete after `days` (None: keep everything, off). Applied at once.
     pub fn set_keep_days(&self, days: Option<u32>) -> std::io::Result<Deleted> {
         let days = days.filter(|d| *d > 0);
         if days.is_some_and(|d| d > 3650) {
             return Err(std::io::Error::other("auto-delete takes 1 to 3650 days"));
         }
-        let text = serde_json::to_string(&Settings { keep_days: days }).map_err(std::io::Error::other)?;
+        let text = serde_json::to_string(&Settings { keep_days: days, off: days.is_none(), default_since_ms: None }).map_err(std::io::Error::other)?;
         write_private(&self.dir().join("settings.json"), &text)?;
         Ok(self.prune(now_ms()))
     }
 
-    /// Auto-delete: rows and conversations older than `keep_days` at `now`.
+    /// Auto-delete: rows and conversations older than `keep_days` at `now`. The default deletes
+    /// nothing until it has been in place for its days (counted from when it was first seen).
     pub fn prune(&self, now: u64) -> Deleted {
         let Some(days) = self.keep_days() else { return Deleted::default() };
-        let cutoff = now.saturating_sub(u64::from(days) * 86_400_000);
+        let span = u64::from(days) * 86_400_000;
+        if self.keep_days_is_default() {
+            let mut s = self.settings();
+            let since = match s.default_since_ms {
+                Some(t) => t,
+                None => {
+                    s.default_since_ms = Some(now);
+                    if self.dir().is_dir() {
+                        let _ = serde_json::to_string(&s).map_err(std::io::Error::other).and_then(|t| write_private(&self.dir().join("settings.json"), &t));
+                    }
+                    now
+                }
+            };
+            if now.saturating_sub(since) < span {
+                return Deleted::default();
+            }
+        }
+        let cutoff = now.saturating_sub(span);
         let runs: Vec<String> = self.runs().into_iter().filter(|i| i.finished_ms > 0 && i.finished_ms < cutoff).map(|i| i.id).collect();
         let chats: Vec<String> = self.chats().into_iter().filter(|c| c.updated_ms > 0 && c.updated_ms < cutoff).map(|c| c.id).collect();
         self.delete(&runs, &chats)
@@ -428,6 +473,32 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UXA6 (v0.7): with no choice made, auto-delete is on after 30 days, but it deletes nothing
+    /// until that default has been in place for 30 days; "off" keeps everything; a choice wins.
+    #[test]
+    fn auto_delete_defaults_to_30_days_without_removing_history_at_once() {
+        let root = tmp("default-keep");
+        let h = History::new(&root);
+        assert_eq!((h.keep_days(), h.keep_days_is_default()), (Some(30), true));
+        let day = 86_400_000u64;
+        let now = 1_800_000_000_000u64;
+        run(&root, "20250101-100000-old", Some("pass"));
+        let old_runs = || h.runs().len();
+        let before = old_runs();
+        assert!(before >= 1);
+        // First seen now: nothing goes, even though the run is old.
+        assert_eq!(h.prune(now), Deleted::default());
+        assert_eq!(old_runs(), before, "an update never removes older history at once");
+        assert_eq!(h.prune(now + 29 * day), Deleted::default(), "not before the default has been in place for 30 days");
+        // Off: kept; a choice of 7 days: applied (the old run goes).
+        h.set_keep_days(None).expect("off");
+        assert_eq!((h.keep_days(), h.keep_days_is_default()), (None, false));
+        assert_eq!(h.prune(now + 400 * day), Deleted::default());
+        h.set_keep_days(Some(7)).expect("7 days");
+        assert_eq!((h.keep_days(), h.keep_days_is_default()), (Some(7), false));
+        let _ = fs::remove_dir_all(&root);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("fp-history-{name}-{}", std::process::id()));
@@ -601,8 +672,9 @@ mod tests {
         let old = Suite { id: "100".into(), title: "old".into(), finished_ms: 1_000, ..Suite::default() };
         h.record_suite(&old).expect("old");
         h.save_chat("200", &serde_json::json!([{ "role": "user", "text": "hi" }])).expect("chat");
-        assert_eq!(h.keep_days(), None, "off by default");
-        assert_eq!(h.prune(now_ms()), Deleted::default(), "nothing goes while it is off");
+        // UXA6: 30 days by default, and nothing goes before that default has been in place for 30 days.
+        assert_eq!(h.keep_days(), Some(30), "30 days by default");
+        assert_eq!(h.prune(now_ms()), Deleted::default(), "nothing goes at once");
         // 30 days from "now" far in the future: everything recorded so far is older.
         let later = now_ms() + 31 * 86_400_000;
         fs::write(root.join("history/settings.json"), r#"{"keep_days":30}"#).expect("settings");

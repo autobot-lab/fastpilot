@@ -193,7 +193,8 @@ function pageHistory() {
   const tab = (key, label, n) => h("button", { class: "hist-tab" + (histTab === key ? " on" : ""), role: "tab", "aria-selected": String(histTab === key),
     onclick: () => { histTab = key; histQuery = ""; pageHistory(); } }, label, h("span", { class: "cnt" }, String(n)));
   const keep = histData ? histData.keep_days : null;
-  const options = [["", "Auto-delete: off"], ["7", "Auto-delete: after 7 days"], ["30", "Auto-delete: after 30 days"], ["90", "Auto-delete: after 90 days"]];
+  // UXA6: 30 days unless the person picks otherwise; the default says so.
+  const options = [["", "Auto-delete: off"], ["7", "Auto-delete: after 7 days"], ["30", `Auto-delete: after 30 days${histData && histData.keep_default ? " (default)" : ""}`], ["90", "Auto-delete: after 90 days"]];
   if (keep && !options.some(([v]) => Number(v) === keep)) options.push([String(keep), `Auto-delete: after ${keep} days`]);
   const select = h("select", { class: "sel", "aria-label": "Auto-delete", disabled: !histData, onchange: (e) => setKeepDays(e.target.value) },
     options.map(([v, t]) => h("option", { value: v, selected: String(keep || "") === v }, t)));
@@ -220,7 +221,9 @@ function pageHistory() {
     : null;
   const search = h("input", { class: "hist-q", type: "search", placeholder: "Search history", "aria-label": "Search history", value: histQuery,
     oninput: (e) => { histQuery = e.target.value; const at = e.target.selectionStart; pageHistory(); const q = document.querySelector(".hist-q"); q?.focus(); q?.setSelectionRange(at, at); } });
-  const bar = h("div", { class: "hist-bar" }, filters, search, h("span", { class: "sp" }),
+  // UXA6: search only when the list is long (or a search is going on).
+  const long = (kind === "runs" ? histData.runs.length : histData.chats.length) > 10 || histQuery;
+  const bar = h("div", { class: "hist-bar" }, filters, long ? search : null, h("span", { class: "sp" }),
     n ? h("span", { class: "muted" }, `${n} selected`) : null,
     n ? h("button", { class: "btn sm danger", onclick: deleteSelected }, `Delete ${kind === "runs" ? plural(n, "run", "runs") : plural(n, "conversation", "conversations")}…`) : null);
   $body().replaceChildren(...(histData.error ? [h("div", { class: "err", role: "alert" }, "Could not read History: " + histData.error)] : []),
