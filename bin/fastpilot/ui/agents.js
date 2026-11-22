@@ -162,7 +162,8 @@ function tabSettings(x) {
           if (out) page(out.id, "settings");
         } }, "Save"),
         a.id === "default" ? null : h("button", { class: "btn danger", onclick: async () => {
-          if (!confirm(`Delete the agent "${a.name}"? Its schedules and conversations move to "${(byId("default") || { agent: { name: "My agent" } }).agent.name}".`)) return;
+          const heir = (byId("default") || { agent: { name: "My agent" } }).agent.name;
+          if (!(await UI.confirmDialog({ title: `Delete the agent "${a.name}"?`, text: `Its instructions and settings are deleted. Its schedules and conversations move to "${heir}".`, verb: "Delete agent" }))) return;
           try { await api("/api/agents", { action: "delete", id: a.id }); await loadAgents(); toast("Agent deleted.", true); location.hash = "#/agents/default/chat"; } catch (e) { toast(e.message); }
         } }, "Delete agent"))));
 }

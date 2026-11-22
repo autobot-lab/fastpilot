@@ -290,7 +290,7 @@ function providerGroup() {
   const btns = h("div", { class: "btns" },
     h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Save"),
     provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Testing…" : "Test the connection") : null,
-    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: () => { if (confirm("Delete the saved API key?")) provAction({ action: "delete-key" }); } }, "Delete the key") : null);
+    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: async () => { if (await UI.confirmDialog({ title: "Delete the saved API key?", text: "The key is removed from this computer. Tests cannot use this provider until you enter a key again. Your other settings stay.", verb: "Delete key" })) provAction({ action: "delete-key" }); } }, "Delete the key") : null);
   return h("div", { class: "grp" },
     h("div", { class: "gh" }, icon("plug"), "who runs the tests · fastpilot run"),
     provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "The provider is set in the environment (FASTPILOT_PROVIDER…), which wins over this setting.")) : null,
@@ -1707,7 +1707,7 @@ function schedRow(x) {
       h("button", { class: "btn sm", disabled: x.running, onclick: () => schedAction({ action: "run", id: s.id }, () => toast(`"${s.name}" is running now. The result shows under Last.`, true)).then(() => setTimeout(loadSchedules, 1500)) }, icon("play", "sm"), "Run now"),
       h("button", { class: "btn sm", onclick: () => { schedForm = Object.assign({}, s, { webhook_set: !!x.webhook }); pageSchedules(); document.querySelector(".sched-form input, .sched-form select")?.focus(); } }, "Edit"),
       s.notify && (s.notify.webhook || s.notify.os || s.notify.github) ? h("button", { class: "btn sm", onclick: () => schedAction({ action: "test", id: s.id }, (r) => toast("Test notification: " + r.sent.join(" · "), !r.sent.some((x) => x.includes("failed")))) }, "Test notification") : null,
-      h("button", { class: "btn sm danger", onclick: () => { if (confirm(`Delete the schedule "${s.name}"? Its entry in the system scheduler is removed too.`)) schedAction({ action: "delete", id: s.id }); } }, "Delete"))));
+      h("button", { class: "btn sm danger", onclick: async () => { if (await UI.confirmDialog({ title: `Delete the schedule "${s.name}"?`, text: "It stops running, and its entry in the system scheduler is removed too. Your tests stay.", verb: "Delete schedule" })) schedAction({ action: "delete", id: s.id }); } }, "Delete"))));
 }
 
 function schedPanel() {
