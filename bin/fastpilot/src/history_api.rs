@@ -23,7 +23,7 @@ fn refuse(status: StatusCode, why: &str) -> Response {
 pub async fn list() -> Response {
     let h = History::from_env();
     h.prune(now_ms());
-    Json(json!({ "runs": h.runs(), "chats": h.chats(), "keep_days": h.keep_days() })).into_response()
+    Json(json!({ "runs": h.runs(), "chats": h.chats(), "keep_days": h.keep_days(), "keep_default": h.keep_days_is_default() })).into_response()
 }
 
 /// Conversations to delete, minus the one Chat is still answering (with why).
@@ -75,7 +75,7 @@ pub async fn change(Json(body): Json<Value>) -> Response {
         }
         _ => return refuse(StatusCode::BAD_REQUEST, "Unknown History action."),
     };
-    Json(json!({ "deleted": deleted, "note": note, "keep_days": h.keep_days() })).into_response()
+    Json(json!({ "deleted": deleted, "note": note, "keep_days": h.keep_days(), "keep_default": h.keep_days_is_default() })).into_response()
 }
 
 /// `GET /api/history/report?id=suite:<id>|run:<folder>`: a run's HTML report, sandboxed like the
