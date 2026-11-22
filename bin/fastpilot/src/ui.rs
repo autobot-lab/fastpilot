@@ -8,6 +8,10 @@
 //!   Every request needs that cookie, a `Host` of 127.0.0.1/localhost on this port (no DNS
 //!   rebinding) and, when a browser sends one, our own `Origin`. Changes are POSTs with JSON from
 //!   our own Origin only.
+//! - E3 (v0.7): a session lasts until the browser closes, at most 12 hours. A browser the person
+//!   chose to remember keeps a key in this page's localStorage (bound to this port; a cookie on
+//!   127.0.0.1 is sent to every port) and trades it for a new session on its next visit; see
+//!   `browsers.rs`. The port is kept, so a bookmark keeps working.
 //! - Run it yourself, not through an agent: whoever holds the session can loosen the limits.
 //! - Everything (HTML, CSS, JS, icons, fonts) is inside the binary: no CDN, works offline.
 //! - Changes made here are the user's: they may loosen guard rails, and like every change they
@@ -38,13 +42,30 @@ type Res<T> = Result<T, Box<dyn Error + Send + Sync>>;
 pub struct Ui {
     /// The one-time code of the printed link, until it is used or expires.
     code: std::sync::Mutex<Option<(String, std::time::Instant)>>,
-    /// The session cookie handed out for the code (never equal to it).
-    session: String,
+    /// Session cookies handed out (for the code, or for a remembered browser's key), each with
+    /// when it was made and the remembered browser it belongs to.
+    sessions: std::sync::Mutex<std::collections::HashMap<String, Session>>,
     port: u16,
+}
+
+#[derive(Clone)]
+struct Session {
+    at: std::time::Instant,
+    /// Wall-clock start too: `Instant` does not count sleep on macOS (Security, #178 L3).
+    wall: std::time::SystemTime,
+    browser: Option<String>,
+}
+
+impl Session {
+    fn fresh(&self) -> bool {
+        self.at.elapsed() < SESSION_TTL && self.wall.elapsed().is_ok_and(|e| e < SESSION_TTL)
+    }
 }
 
 /// How long the printed link works.
 const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// How long a session cookie works, even with the browser left open (Security, E3).
+const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
 
 const USAGE: &str = "usage: fastpilot ui [--no-open] [--port N]
 
@@ -57,7 +78,38 @@ whoever opens that page can loosen the Limits.";
 
 impl Ui {
     pub fn new(port: u16) -> Res<Self> {
-        Ok(Self { code: std::sync::Mutex::new(Some((random_hex(32)?, std::time::Instant::now()))), session: random_hex(32)?, port })
+        Ok(Self { code: std::sync::Mutex::new(Some((random_hex(32)?, std::time::Instant::now()))), sessions: Default::default(), port })
+    }
+
+    /// A new session cookie value (never the code, never a browser key).
+    fn new_session(&self, browser: Option<String>) -> Res<String> {
+        let token = random_hex(32)?;
+        let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|_, s| s.fresh());
+        all.insert(token.clone(), Session { at: std::time::Instant::now(), wall: std::time::SystemTime::now(), browser });
+        Ok(token)
+    }
+
+    /// The session for a cookie value, if it is ours and not older than 12 hours.
+    fn session(&self, token: &str) -> Option<(String, Session)> {
+        let all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        all.iter().find(|(t, s)| same(t, token) && s.fresh()).map(|(t, s)| (t.clone(), s.clone()))
+    }
+
+    /// Sign out the sessions of forgotten browsers.
+    fn drop_browsers(&self, ids: &[String]) {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| s.browser.as_ref().is_none_or(|b| !ids.contains(b)));
+    }
+
+    /// Forget all: every other session ends too, remembered or not (#178 L4).
+    fn drop_all_but(&self, keep: &str) {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner()).retain(|t, _| t == keep);
+    }
+
+    fn bind(&self, token: &str, browser: &str) {
+        if let Some(s) = self.sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(token) {
+            s.browser = Some(browser.to_owned());
+        }
     }
 
     fn code(&self) -> String {
@@ -127,6 +179,20 @@ pub async fn ui(args: &[String]) -> Res<()> {
             other => fail_args(&format!("unknown option `{other}`")),
         }
     }
+    // E3: the port of the last start, so a bookmark keeps working; a free one if it is taken now.
+    let saved = std::fs::read_to_string(crate::browsers::dir().join("port")).ok().and_then(|p| p.trim().parse::<u16>().ok()).filter(|p| *p >= 1024);
+    let mut moved = None;
+    if port == 0
+        && let Some(p) = saved
+    {
+        match tokio::net::TcpListener::bind(("127.0.0.1", p)).await {
+            Ok(l) => {
+                drop(l);
+                port = p;
+            }
+            Err(_) => moved = Some(p),
+        }
+    }
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -138,6 +204,9 @@ pub async fn ui(args: &[String]) -> Res<()> {
         Err(e) => fail(&format!("cannot open 127.0.0.1:{port}: {e}")),
     };
     let port = listener.local_addr()?.port();
+    if moved.is_none() {
+        save_port(port);
+    }
     let state = Arc::new(Ui::new(port)?);
     let url = format!("http://127.0.0.1:{port}/?code={}", state.code());
     // Whoever started us may stop reading stdout after the link (a script, a test): a closed pipe
@@ -156,10 +225,31 @@ pub async fn ui(args: &[String]) -> Res<()> {
         say(&url);
         say("fastpilot ui: open the link above once, within 10 minutes (only this computer can).");
     }
+    if let Some(p) = moved {
+        // Whatever holds the bookmark's address could read the keys a remembered browser keeps
+        // there, so they stop working (#178 L2).
+        let forgotten = crate::browsers::forget(None).map(|g| g.len()).unwrap_or(0);
+        say(&format!("fastpilot ui: port {p} is in use (another fastpilot ui?), so this one is on {port} for now; bookmarks of {p} open the other one."));
+        if forgotten > 0 {
+            say(&format!("fastpilot ui: for safety, the {forgotten} remembered browser{} must sign in again with the link above: the program on port {p} could read their keys.", if forgotten == 1 { "" } else { "s" }));
+        }
+    }
     say("Ctrl-C stops it.");
     tokio::spawn(keep_takeovers());
     axum::serve(listener, router(state)).await?;
     Ok(())
+}
+
+/// Keep the port for the next start (`~/.fastpilot/ui/port`, owner-only folder).
+fn save_port(port: u16) {
+    let d = crate::browsers::dir();
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    if b.create(&d).is_ok() {
+        let _ = std::fs::write(d.join("port"), format!("{port}\n"));
+    }
 }
 
 pub fn router(state: Arc<Ui>) -> Router {
@@ -167,6 +257,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
         .route("/api/settings", get(settings).post(change))
+        .route("/api/browsers", get(browsers_api).post(browsers_change))
         .route("/api/doctor", get(doctor_api))
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/apps", get(apps_api))
@@ -231,7 +322,7 @@ fn open_browser(url: &str) -> Res<()> {
 }
 
 /// Same length and bytes, without an early exit on the first difference.
-fn same(a: &str, b: &str) -> bool {
+pub(crate) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -253,6 +344,17 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
     if !ours.iter().any(|o| o == host) {
         return refuse(StatusCode::MISDIRECTED_REQUEST, "wrong host: open the 127.0.0.1 link that `fastpilot ui` printed");
     }
+    // localhost is another origin with its own localStorage, and [::1] is not ours (#178 L1): the
+    // page moves to 127.0.0.1, and a key is never traded or handed out under localhost.
+    if host != ours[0] {
+        if req.method() == Method::GET && req.uri().path() == "/" {
+            let to = format!("http://{}{}", ours[0], req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"));
+            return Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, to).body(Body::empty()).unwrap_or_default();
+        }
+        if req.uri().path() == "/api/unlock" {
+            return refuse(StatusCode::MISDIRECTED_REQUEST, "open the dashboard at its 127.0.0.1 address");
+        }
+    }
     let origin = headers.get(header::ORIGIN).and_then(|h| h.to_str().ok());
     if let Some(o) = origin
         && !ours.iter().any(|h| o == format!("http://{h}"))
@@ -266,7 +368,8 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
         }
     }
     let code = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("code="))).map(str::to_owned);
-    let cookie_ok = cookie(headers, &cookie_name(ui.port)).is_some_and(|c| same(&c, &ui.session));
+    let current = cookie(headers, &cookie_name(ui.port)).and_then(|c| ui.session(&c));
+    let cookie_ok = current.is_some();
     if let Some(code) = code {
         if req.method() != Method::GET || req.uri().path() != "/" {
             return refuse(StatusCode::UNAUTHORIZED, "the access code only opens the page");
@@ -281,17 +384,59 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
                 "this link was already used or has expired (it works once, for 10 minutes). Run `fastpilot ui` again for a new link.",
             );
         }
-        // Trade the code for the session cookie, and drop it from the address bar.
+        // Trade the code for a session cookie, and drop it from the address bar.
         let mut r = Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, "/").body(Body::empty()).unwrap_or_default();
-        if let Ok(v) = HeaderValue::from_str(&format!("{}={}; HttpOnly; SameSite=Strict; Path=/", cookie_name(ui.port), ui.session)) {
-            r.headers_mut().insert(header::SET_COOKIE, v);
-        }
+        set_session(&ui, &mut r, None);
         return r;
     }
     if !cookie_ok {
+        let path = req.uri().path().to_owned();
+        // E3: a remembered browser trades its key (localStorage) for a session.
+        if req.method() == Method::POST && path == "/api/unlock" {
+            let body = axum::body::to_bytes(req.into_body(), 4096).await.unwrap_or_default();
+            let key = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["key"].as_str().map(str::to_owned)).unwrap_or_default();
+            let mut r = match crate::browsers::unlock(&key) {
+                Some(b) => {
+                    let mut r = axum::Json(json!({ "ok": true, "until_ms": b.until_ms() })).into_response();
+                    set_session(&ui, &mut r, Some(b.id));
+                    r
+                }
+                None => (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "this browser is not remembered (forgotten, or its 30 days ended)" }))).into_response(),
+            };
+            harden(&mut r);
+            return r;
+        }
+        // The page that tries that, or says how to sign in; and only what it needs to look right.
+        if req.method() == Method::GET {
+            if path == "/" {
+                let mut r = (StatusCode::UNAUTHORIZED, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], include_str!("../ui/unlock.html")).into_response();
+                harden(&mut r);
+                return r;
+            }
+            if path == "/assets/unlock.js" || path == "/assets/app.css" || path == "/assets/logo.svg" || path.starts_with("/assets/fonts/") {
+                let mut r = next.run(req).await;
+                harden(&mut r);
+                return r;
+            }
+        }
         return refuse(StatusCode::UNAUTHORIZED, "open the link that `fastpilot ui` printed (it holds a one-time access code)");
     }
     let mut r = next.run(req).await;
+    harden(&mut r);
+    r
+}
+
+/// A new session cookie on `r`: HttpOnly, SameSite=Strict, ended with the browser (and after 12
+/// hours by the server).
+fn set_session(ui: &Ui, r: &mut Response, browser: Option<String>) {
+    if let Ok(token) = ui.new_session(browser)
+        && let Ok(v) = HeaderValue::from_str(&format!("{}={token}; HttpOnly; SameSite=Strict; Path=/", cookie_name(ui.port)))
+    {
+        r.headers_mut().insert(header::SET_COOKIE, v);
+    }
+}
+
+fn harden(r: &mut Response) {
     let h = r.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
@@ -304,7 +449,66 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
             HeaderValue::from_static("default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
         );
     }
-    r
+}
+
+// ---- remembered browsers (E3) --------------------------------------------------------------
+
+fn current_session(ui: &Ui, headers: &HeaderMap) -> Option<(String, Session)> {
+    cookie(headers, &cookie_name(ui.port)).and_then(|c| ui.session(&c))
+}
+
+/// The remembered browsers (never a key or hash), and which one this is.
+async fn browsers_api(State(ui): State<Arc<Ui>>, headers: HeaderMap) -> Response {
+    let here = current_session(&ui, &headers).and_then(|(_, s)| s.browser);
+    let list: Vec<Value> = crate::browsers::list()
+        .iter()
+        .map(|b| json!({ "id": b.id, "label": b.label, "created_ms": b.created_ms, "last_ms": b.last_ms, "until_ms": b.until_ms(), "current": here.as_deref() == Some(b.id.as_str()) }))
+        .collect();
+    let here = here.filter(|h| list.iter().any(|b| b["id"] == h.as_str()));
+    axum::Json(json!({ "browsers": list, "current": here, "port": ui.port })).into_response()
+}
+
+/// `{action: remember}` (the key is returned once, for this browser's localStorage), `{action:
+/// forget, id}`, `{action: forget_all}`.
+async fn browsers_change(State(ui): State<Arc<Ui>>, headers: HeaderMap, axum::Json(body): axum::Json<Value>) -> Response {
+    let Some((token, session)) = current_session(&ui, &headers) else {
+        return refuse(StatusCode::UNAUTHORIZED, "sign in first");
+    };
+    let result: Result<Value, String> = match body["action"].as_str().unwrap_or("") {
+        "remember" => (|| {
+            // The key lives in the page's localStorage: only ever under http://127.0.0.1:<port>,
+            // the address this dashboard owns (#178 L1).
+            if headers.get(header::HOST).and_then(|h| h.to_str().ok()) != Some(format!("127.0.0.1:{}", ui.port).as_str()) {
+                return Err(format!("open the dashboard at http://127.0.0.1:{} to remember this browser", ui.port));
+            }
+            if let Some(b) = session.browser.as_deref().and_then(|id| crate::browsers::list().into_iter().find(|b| b.id == id)) {
+                return Ok(json!({ "id": b.id, "label": b.label, "until_ms": b.until_ms(), "already": true }));
+            }
+            let key = random_hex(32).map_err(|e| e.to_string())?;
+            let id = random_hex(4).map_err(|e| e.to_string())?;
+            let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
+            let b = crate::browsers::remember(&key, &crate::browsers::label(ua), &id)?;
+            ui.bind(&token, &b.id);
+            Ok(json!({ "id": b.id, "label": b.label, "until_ms": b.until_ms(), "key": key }))
+        })(),
+        "forget" => {
+            let id = body["id"].as_str().unwrap_or("");
+            crate::browsers::forget(Some(id)).map(|gone| {
+                ui.drop_browsers(&gone);
+                json!({ "forgotten": gone.len(), "signed_out": session.browser.as_deref() == Some(id) && !gone.is_empty() })
+            })
+        }
+        "forget_all" => crate::browsers::forget(None).map(|gone| {
+            ui.drop_browsers(&gone);
+            ui.drop_all_but(&token);
+            json!({ "forgotten": gone.len(), "signed_out": session.browser.as_ref().is_some_and(|b| gone.contains(b)) })
+        }),
+        _ => Err("unknown action".into()),
+    };
+    match result {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
+    }
 }
 
 fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -933,6 +1137,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
     Some(match path {
         "app.css" => ("text/css; charset=utf-8", include_bytes!("../ui/app.css")),
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
+        "unlock.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/unlock.js")),
         "components.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/components.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
@@ -1247,4 +1452,33 @@ async fn frames(Query(q): Query<std::collections::HashMap<String, String>>) -> R
         r.headers_mut().insert(header::CONTENT_TYPE, v);
     }
     r
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    /// E3: a session cookie stops working after 12 hours, even with the browser left open; a
+    /// forgotten browser's sessions end at once, others stay.
+    #[test]
+    fn sessions_end_after_12_hours_and_when_their_browser_is_forgotten() {
+        let ui = Ui::new(1234).expect("ui");
+        let fresh = ui.new_session(Some("b1".into())).expect("session");
+        let other = ui.new_session(None).expect("session");
+        let old = ui.new_session(None).expect("session");
+        ui.sessions.lock().expect("lock").get_mut(&old).expect("old").at = std::time::Instant::now() - SESSION_TTL - std::time::Duration::from_secs(1);
+        // Asleep: the monotonic clock stood still, the wall clock moved 13 hours.
+        let slept = ui.new_session(None).expect("session");
+        ui.sessions.lock().expect("lock").get_mut(&slept).expect("slept").wall = std::time::SystemTime::now() - SESSION_TTL - std::time::Duration::from_secs(3600);
+        assert!(ui.session(&slept).is_none(), "12 hours on the wall clock, sleep included");
+        assert!(ui.session(&fresh).is_some() && ui.session(&other).is_some());
+        assert!(ui.session(&old).is_none(), "older than 12 hours");
+        assert!(ui.session("0".repeat(64).as_str()).is_none());
+        ui.drop_browsers(&["b1".to_owned()]);
+        assert!(ui.session(&fresh).is_none() && ui.session(&other).is_some(), "only the forgotten browser's session ends");
+        // Forget all: every session but the one that asked ends, remembered or not (#178 L4).
+        let me = ui.new_session(None).expect("session");
+        ui.drop_all_but(&me);
+        assert!(ui.session(&me).is_some() && ui.session(&other).is_none());
+    }
 }

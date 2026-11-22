@@ -645,3 +645,11 @@ dialog.cdlg .btn:focus-visible,dialog.cdlg input:focus-visible{outline:2px solid
 /* S10 + DC4: one line per kind of device; its list under Change */
 #fix-section .more{margin:0 16px 6px}
 #fix-section .dev-auto .btns{flex-wrap:nowrap}
+/* E3 remembered browsers */
+body.unlock{display:flex;min-height:100vh;align-items:center;justify-content:center;background:var(--bg,#f6f7f9)}
+.unlock-box{max-width:460px;padding:28px;background:var(--card);border:var(--bw) solid var(--ink);border-radius:var(--r)}
+.unlock-box h1{font:700 22px var(--display);margin:0 0 10px}
+.unlock-box p{line-height:1.5}
+.remember{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+.remember .btns{margin:0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}

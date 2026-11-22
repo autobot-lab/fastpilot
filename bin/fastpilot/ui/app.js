@@ -53,6 +53,12 @@ async function api(path, body) {
     // The browser's own "Failed to fetch": the fastpilot ui process is not running any more.
     throw new Error("the fastpilot ui server is not answering; run `fastpilot ui` again in Terminal");
   }
+  // E3: the session ended (12 hours, forgotten, or the dashboard restarted): the page reloads and a
+  // remembered browser signs in again by itself; any other one is told how to sign in.
+  if (r.status === 401) {
+    location.reload();
+    return new Promise(() => {});
+  }
   if (!r.ok) throw new Error((await r.text()).replace(/^fastpilot ui: /, "").trim() || r.statusText);
   return r.json();
 }
@@ -200,7 +206,7 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"));
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"));
 }
 
 function topSettings() {
@@ -397,12 +403,94 @@ function pageSettings(sub) {
   if (sub === "secret") sub = "secrets"; // links made before v0.7
   topSettings();
   if (S.error) {
-    $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secrets" ? sub : "limits"), pageBroken()));
+    $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), pageBroken()));
     return;
   }
-  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : pageLimits();
-  $body().replaceChildren(h("div", { class: "set" }, settingsNav(sub === "model" || sub === "secrets" ? sub : "limits"), page));
+  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : pageLimits();
+  $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), page));
   if (sub === "model" && !doctorCache) loadDoctor(false);
+}
+
+// ---- Settings › Security: remembered browsers (E3) ----
+const REMEMBER_KEY = "fastpilot.browser";
+let secData = null;
+const day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+async function loadBrowsers() {
+  try { secData = await api("/api/browsers"); } catch (e) { secData = { error: e.message, browsers: [] }; }
+  if (location.hash.startsWith("#/settings/security")) render();
+}
+
+async function forgetBrowsers(b) {
+  const all = !b;
+  const self = b && b.current;
+  const n = secData.browsers.length;
+  const ok = await UI.confirmDialog(all
+    ? { title: `Forget all ${n === 1 ? "1 browser" : `${n} browsers`}?`, text: "Every browser will need a new link from the Terminal, including this one if it is remembered.", verb: "Forget all" }
+    : self
+      ? { title: "Forget this browser?", text: "You are using it now. You will be signed out right away and need a new link from the Terminal.", verb: "Forget and sign out" }
+      : { title: `Forget ${b.label}?`, text: "It will need a new link from the Terminal the next time. Your tests and settings are not affected.", verb: `Forget ${b.label.split(" on ")[0]}` });
+  if (!ok) return;
+  try {
+    const r = await api("/api/browsers", all ? { action: "forget_all" } : { action: "forget", id: b.id });
+    if (r.signed_out) {
+      localStorage.removeItem(REMEMBER_KEY);
+      location.reload();
+      return;
+    }
+    toast(all ? "All browsers are forgotten." : `${b.label} is forgotten.`, true);
+  } catch (e) { toast(e.message); }
+  loadBrowsers();
+}
+
+function pageSecurity() {
+  if (!secData) { loadBrowsers(); return h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading the browsers…")); }
+  if (secData.error) return UI.notice("error", "Could not read the remembered browsers: " + secData.error);
+  const list = secData.browsers;
+  const table = list.length
+    ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Remembered browsers"),
+      h("thead", {}, h("tr", {}, ["Browser", "Remembered", "Last used", "Stays signed in until", ""].map((t) => h("th", { scope: "col" }, t)))),
+      h("tbody", {}, list.map((b) => h("tr", { "data-id": b.id },
+        h("th", { scope: "row" }, b.label, b.current ? h("span", { class: "tag" }, " This browser") : null),
+        h("td", {}, day(b.created_ms)), h("td", {}, day(b.last_ms)), h("td", {}, day(b.until_ms)),
+        h("td", {}, h("button", { class: "btn sm", onclick: () => forgetBrowsers(b) }, "Forget")))))))
+    : UI.empty({ icon: "lock", title: "No browser is remembered", text: "When you open the dashboard, choose \"Remember this browser\" to open it from a bookmark for 30 days, without a new link." });
+  return h("div", { class: "page" },
+    h("h2", {}, "Security", savedNote()),
+    h("section", { class: "grp" }, h("div", { class: "gh" }, icon("lock"), `browsers that can open the dashboard · only on this Mac · 127.0.0.1:${secData.port}`),
+      table,
+      list.length ? h("div", { class: "btns" }, h("button", { class: "btn danger", onclick: () => forgetBrowsers(null) }, "Forget all browsers"),
+        h("span", { class: "s muted" }, "The next visit from each needs a new link from the Terminal.")) : null),
+    UI.notice("info", "The dashboard only answers this Mac, and only a link or a browser you allowed can open it. A remembered browser stays signed in for 30 days after its last use, and never longer than 90 days."));
+}
+
+/// The first-open question (asked once; "Not now" asks again at most once a week).
+async function askRemember() {
+  let d;
+  try { d = await api("/api/browsers"); } catch (_) { return; }
+  if (d.current) return;
+  const key = localStorage.getItem(REMEMBER_KEY);
+  if (key) {
+    // Remembered before, opened with a link now: sign in with the key, no question.
+    try { await fetch("/api/unlock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) }); } catch (_) { /* the link's session stays */ }
+    return;
+  }
+  const later = Number(localStorage.getItem("fastpilot.notnow") || 0);
+  if (Date.now() - later < 7 * 86400000) return;
+  const bar = h("section", { class: "notice info remember", role: "region", "aria-label": "Remember this browser" },
+    h("span", {}, h("b", {}, "Note: "), "Remember this browser? Next time you can open the dashboard from a bookmark, without a new link. It stays signed in for 30 days, only on this Mac, and you can forget it any time in Settings › Security."),
+    h("span", { class: "btns tight" },
+      h("button", { class: "btn p", onclick: async () => {
+        try {
+          const r = await api("/api/browsers", { action: "remember" });
+          if (r.key) localStorage.setItem(REMEMBER_KEY, r.key);
+          bar.remove();
+          toast(`Done. Bookmark 127.0.0.1:${location.port} and open it any time until ${day(r.until_ms)}. Manage it in Settings › Security.`, true);
+          secData = null;
+        } catch (e) { toast("Could not remember this browser: " + e.message); }
+      } }, "Remember this browser"),
+      h("button", { class: "btn", onclick: () => { localStorage.setItem("fastpilot.notnow", String(Date.now())); bar.remove(); } }, "Not now")));
+  document.getElementById("main").prepend(bar);
 }
 
 // ---- device ----
@@ -1939,6 +2027,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadSettings();
     render();
+    askRemember();
   } catch (e) {
     $top().replaceChildren("fastpilot");
     $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Cannot load the settings: " + e.message));
