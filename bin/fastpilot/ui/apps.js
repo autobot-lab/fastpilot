@@ -144,6 +144,9 @@ async function testConnection(again) {
     const r = await jiraPost({ action: "test", ...creds() });
     jt = { ok: true, name: r.display_name, projects: r.projects };
     jf.site = r.site;
+    // QA bug 3: a new token for the same account keeps the saved default project.
+    const savedProject = ((jiraState && jiraState.settings) || {}).project_key;
+    if (!jf.project && savedProject && r.projects.some((p) => p.key === savedProject)) jf.project = savedProject;
     if (!r.projects.some((p) => p.key === jf.project)) jf.project = r.projects.length === 1 ? r.projects[0].key : "";
     if (jf.project) loadStatuses();
   } catch (e) {
@@ -239,8 +242,9 @@ function pageJira() {
   const clear = () => { clearTimeout(jWaitTimer); if (jt && !jt.saved) jt = null; else if (jt && jt.saved) jt = null; };
   const input = (key, attrs) => {
     const el = h("input", { ...attrs, value: jf[key] });
+    // QA bug 2: leaving a field must not redraw the form, or the next click or focus lands on an
+    // element that was just replaced (the first Test connection press was lost).
     el.addEventListener("input", () => { jf[key] = el.value; clear(); redrawControls(); });
-    el.addEventListener("change", () => PAGES.appsJira());
     return el;
   };
   const site = input("site", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: "yourteam.atlassian.net", "aria-describedby": "jira-site-h" });
@@ -258,7 +262,7 @@ function pageJira() {
   }
   const filled = jf.site.trim() && jf.email.trim() && (!tokenNeeded() || jf.token.trim());
   const testBtn = h("button", { class: "btn p", disabled: !filled || jBusy, onclick: () => testConnection(false), "aria-describedby": "jira-test-why" }, "Test connection");
-  const why = filled ? null : h("span", { class: "s", id: "jira-test-why" }, `Enter your ${!jf.site.trim() ? "Jira address" : !jf.email.trim() ? "email" : "API token"}. Test connection stays off until all three fields are filled.`);
+  const why = h("span", { class: "s", id: "jira-test-why" }, filled ? "" : `Enter your ${!jf.site.trim() ? "Jira address" : !jf.email.trim() ? "email" : "API token"}. Test connection stays off until all three fields are filled.`);
   const projects = (jt && jt.ok && jt.projects) || null;
   const proj = h("select", { class: "sel", "aria-label": "Default project", disabled: !projects || !projects.length },
     h("option", { value: "" }, projects ? "Choose a project" : connected ? `${(jiraState.settings || {}).project_name || ""} (${jf.project})` : "Test the connection first"),
@@ -270,13 +274,17 @@ function pageJira() {
   qa.addEventListener("change", () => { jf.qa = qa.value; redrawControls(); });
   const canSave = jt && jt.ok && jt.projects && jt.projects.length && jf.project && !jBusy;
   const saveBtn = h("button", { class: "btn p", disabled: !canSave, onclick: saveJira }, connected ? "Save changes" : "Save");
-  const pasted = /^https?:\/\//i.test(jf.site) || jf.site.includes("/") ? h("span", { class: "s" }, "We use only the address and ignore the rest of what you paste.") : null;
+  const pastedText = () => (/^https?:\/\//i.test(jf.site) || jf.site.includes("/") ? "We use only the address and ignore the rest of what you paste." : "");
+  const pasted = h("span", { class: "s", id: "jira-site-paste" }, pastedText());
   $top().replaceChildren(icon("plug"), h("div", {}, h("a", { class: "lk s", href: "#/apps" }, "Apps /"), h("h1", { tabindex: "-1" }, connected ? "Jira · Manage" : "Connect Jira")),
     h("span", { class: "s muted" }, connected ? "Connected" : "about 2 minutes"),
     h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/apps" }, connected ? "Back to Apps" : "Cancel"), saveBtn));
   function redrawControls() {
     const ok = jf.site.trim() && jf.email.trim() && (!tokenNeeded() || jf.token.trim());
     testBtn.disabled = !ok || jBusy;
+    pasted.textContent = pastedText();
+    if (ok) why?.replaceChildren();
+    else if (why) why.textContent = `Enter your ${!jf.site.trim() ? "Jira address" : !jf.email.trim() ? "email" : "API token"}. Test connection stays off until all three fields are filled.`;
     saveBtn.disabled = !(jt && jt.ok && jt.projects && jt.projects.length && jf.project && !jBusy);
     const r = document.getElementById("jira-result");
     if (r) r.replaceChildren(...[testResult()].filter(Boolean));
