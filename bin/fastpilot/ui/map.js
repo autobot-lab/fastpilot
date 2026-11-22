@@ -59,9 +59,16 @@ async function stopMap() {
   load();
 }
 
+// Where a screen is, as shown: a local file by its name only (QA re-test Low 5), a site as is.
+function place(location) {
+  const l = String(location || "");
+  if (l.startsWith("file://")) return l.split("#")[0].split("/").filter(Boolean).pop() || "local file";
+  return l;
+}
+
 function makeTest(s) {
   const m = data.map;
-  chatPrefill = `Make a test for the "${s.title}" screen of ${m.name || m.target} (${m.platform}, ${s.location}). Open it the way the app map found it${s.path && s.path.length ? `: ${s.path.map((p) => p.name).join(" › ")}` : ""}.`;
+  chatPrefill = `Make a test for the "${s.title}" screen of ${m.name || m.target} (${m.platform}, ${place(s.location)}). Open it the way the app map found it${s.path && s.path.length ? `: ${s.path.map((p) => p.name).join(" › ")}` : ""}.`;
   location.hash = "#/agents/default/chat";
 }
 
@@ -208,7 +215,7 @@ function panel(m) {
     h("h2", { class: "app-sec-t" }, "Selected screen"),
     h("h3", {}, s.title), h("p", { class: `map-pill ${st[1]}` }, st[0]),
     s.thumb ? h("img", { class: "map-thumb", src: `/api/map/thumb?target=${encodeURIComponent(m.target)}&id=${encodeURIComponent(s.id)}`, alt: `Picture of the ${s.title} screen`, loading: "lazy" }) : null,
-    h("p", { class: "s muted" }, s.location),
+    h("p", { class: "s muted" }, place(s.location)),
     h("h4", {}, "Tests that reach this screen"),
     c.tests.length ? h("ul", { class: "map-tests" }, c.tests.map(testRow)) : h("p", { class: "s" }, "None yet."),
     h("p", { class: "s" }, `You can get here from: ${from.length ? from.join(", ") : "the start"}. You can go from here to: ${to.length ? to.join(", ") : "nothing found"}.`),

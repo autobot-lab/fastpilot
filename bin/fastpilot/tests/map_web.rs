@@ -179,6 +179,9 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
     assert_eq!(sign_in["sign_in"], true);
     assert!(m["wall"] == "Masuk ke Akun" && m["signed_in"] == false && !screens.iter().any(|s| s["title"] == "Dashboard"), "{m}");
     assert!(m["message"].as_str().is_some_and(|t| t.contains("Nothing was typed in or submitted") && t.contains("did not sign in")), "{m}");
+    // QA re-test Low 5: the count in the summary is the named list.
+    let named = m["skipped"].as_array().expect("skipped").len();
+    assert!(m["message"].as_str().is_some_and(|t| t.contains(&format!("{named} buttons and links were not pressed"))), "{named}: {m}");
 
     // 2. Coverage from the demo tests: tests/login.md starts on the sign-in page.
     let c = status(&v, &sign_in["id"]);
@@ -266,6 +269,23 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
         }
     }
     assert!(reached, "Make a test is reachable with Tab");
+    // QA re-test Low 5: the screen panel shows a local file by its name, never the full path.
+    eval(&client, "([...document.querySelectorAll('.map-table button')].find((b) => b.textContent === 'Open').click(), 'ok')").await;
+    let (ok, out) = flow(&client, "- assertVisible: { text: \"Selected screen\", timeout: 5000 }\n").await;
+    assert!(ok, "{out}");
+    let panel = eval(&client, "document.querySelector('.map-side').innerText").await;
+    assert!(!panel.contains(home.to_string_lossy().trim_start_matches("/private")) && !panel.contains("file://") && panel.contains(".html"), "{panel}");
+    eval(&client, "(location.hash = '#/map', 'ok')").await;
+    let (ok, out) = flow(&client, "- tapOn: List\n").await;
+    assert!(ok, "{out}");
+    eval(&client, "(document.querySelector('.map-filters input').focus(), 'ok')").await;
+    for _ in 0..30 {
+        let (ok, out) = flow(&client, "- pressKey: Tab\n").await;
+        assert!(ok, "{out}");
+        if eval(&client, "document.activeElement.textContent").await == "Make a test" {
+            break;
+        }
+    }
     let (ok, out) = flow(&client, "- pressKey: Enter\n- assertVisible: { text: \"Ask or tell the fastpilot bot\", timeout: 8000 }\n").await;
     assert!(ok, "{out}");
     let typed = eval(&client, "document.querySelector('textarea').value").await;
