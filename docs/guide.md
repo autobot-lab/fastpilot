@@ -214,8 +214,9 @@ Skills format use the same folder in their own skill location (not tested).
 
 Write a Markdown test case like `tests/login.md`: a title, `id`, `platform`, `target`, then the steps and
 expected results in plain language. You do not need to write selectors or scripts; Claude builds the flow.
-Store secrets in the MCP configuration (`-e NAMA=nilai`, then add `NAMA` to `FASTPILOT_VARS`), not in the
-config file. If you run the same test twice, the second time `session start` returns a *hint* from the
+Set passwords once in the dashboard (Settings › Secrets › Set value): they are kept in the key store
+for the current app and used only on its own website. In CI, put them in the environment instead
+(`-e NAMA=nilai`, then add `NAMA` to `FASTPILOT_VARS`); never in the config file. If you run the same test twice, the second time `session start` returns a *hint* from the
 previous run, so the test can finish in a single `run_flow`.
 
 ### One test on web, Android and iPhone, side by side

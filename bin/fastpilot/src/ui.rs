@@ -264,6 +264,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/integrations", get(integrations_api))
         .route("/api/apps", get(apps_list).post(apps_change))
+        .route("/api/secrets", get(secrets_list).post(secrets_change))
         .route("/api/map", get(map_api).post(map_change))
         .route("/api/run-all", get(run_all_info).post(run_all_start))
         .route("/api/map/thumb", get(map_thumb))
@@ -886,6 +887,68 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
     {
         apps::go(&app);
     }
+    match result {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+// ---- secrets, per app (E2) ---------------------------------------------------------------------
+
+/// The secret names (Settings › Secrets) and, for the current app, which have a value: never a
+/// value itself.
+async fn secrets_list() -> Response {
+    use fastpilot_core::secrets;
+    let app = crate::apps::current();
+    // As the settings file has them now (this process pinned its settings at start).
+    let listed = match config::current("vars") {
+        Source::File(v) | Source::Env(v) => v,
+        Source::Default => String::new(),
+    };
+    let names: Vec<String> = listed.split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
+    let rows: Vec<Value> = names
+        .iter()
+        .map(|n| json!({ "name": n, "set": app.as_ref().is_some_and(|a| secrets::has(&a.id, n)), "env": std::env::var_os(n).is_some() }))
+        .collect();
+    axum::Json(json!({ "app": app.map(|a| json!({ "id": a.id, "name": a.name })), "names": rows, "kept_in": fastpilot_core::jira::token::kept_in() })).into_response()
+}
+
+/// `{action: set, name, value}` (only from this page: the person types it; a new name joins the
+/// list) and `{action: remove, name}`, for the current app. The activity log says only "set" or
+/// "removed", never the value.
+async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use fastpilot_core::secrets;
+    let Some(app) = crate::apps::current() else {
+        return refuse(StatusCode::CONFLICT, "Add or choose an app first: a password belongs to an app.");
+    };
+    let name = body["name"].as_str().unwrap_or("").trim().to_owned();
+    if let Err(e) = secrets::check_name(&name) {
+        return refuse(StatusCode::BAD_REQUEST, &e);
+    }
+    let result = match body["action"].as_str().unwrap_or("") {
+        "set" => (|| {
+            let value = body["value"].as_str().unwrap_or("");
+            secrets::check_value(value)?;
+            let listed = match config::current("vars") {
+                Source::File(v) | Source::Env(v) => v,
+                Source::Default => String::new(),
+            };
+            let mut names: Vec<&str> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            if !names.contains(&name.as_str()) {
+                names.push(&name);
+                config::write("vars", Some(&names.join(","))).map_err(|e| e.to_string())?;
+            }
+            fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), None, Some("set"), "dashboard", "done")?;
+            secrets::set(&app.id, &name, value)?;
+            Ok(json!({ "name": name, "set": true }))
+        })(),
+        "remove" => (|| {
+            fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), Some("set"), None, "dashboard", "done")?;
+            secrets::remove(&app.id, &name)?;
+            Ok(json!({ "name": name, "set": false }))
+        })(),
+        _ => Err("unknown action".to_owned()),
+    };
     match result {
         Ok(v) => axum::Json(v).into_response(),
         Err(e) => refuse(StatusCode::BAD_REQUEST, &e),

@@ -222,6 +222,12 @@ pub fn enter(make_current: bool) -> Option<App> {
         return None;
     }
     let here = std::env::current_dir().ok()?;
+    // A folder that already is a listed app's (its workspace folder, or a Repo): that app. This is
+    // where Chat and runs start Claude Code, so its fastpilot works for the same app.
+    if let Some(app) = app_at(&here) {
+        set_scope(Some(&app));
+        return Some(app);
+    }
     if is_project(&here) {
         // Claude Code opened in a project works there, but only the person lists it as an app
         // (`fastpilot init`, starting the dashboard there, or the search): a cloned repo never
@@ -231,6 +237,7 @@ pub fn enter(make_current: bool) -> Option<App> {
         }
         let app = add_repo(&here).ok()?;
         let _ = set_current(&app.id);
+        set_scope(Some(&app));
         return Some(app);
     }
     let app = current()?;
@@ -238,8 +245,26 @@ pub fn enter(make_current: bool) -> Option<App> {
     Some(app)
 }
 
+/// The listed app whose folder `dir` is.
+pub fn app_at(dir: &Path) -> Option<App> {
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let here = real(dir)?;
+    list().into_iter().find(|a| real(&a.dir()).as_ref() == Some(&here))
+}
+
+/// E2 / S-1: the app whose passwords this process may use, and where (its website, its phones).
+pub fn set_scope(app: Option<&App>) {
+    fastpilot_core::secrets::set_scope(app.map(|a| fastpilot_core::secrets::Scope {
+        app: a.id.clone(),
+        web: a.targets.web.clone(),
+        android: a.targets.android.is_some(),
+        ios: a.targets.ios.is_some(),
+    }));
+}
+
 /// Move this process into the app's folder (made, owner-only, if it is a workspace app).
 pub fn go(app: &App) {
+    set_scope(Some(app));
     let dir = app.dir();
     if app.repo.is_none() {
         let _ = crate::filestore::ensure_dir(&dir, true);

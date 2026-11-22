@@ -444,16 +444,40 @@ function pageLimits() {
         select("test_timeout", [["", "30 minutes (built in)"], ["5", "5 minutes"], ["10", "10 minutes"], ["15", "15 minutes"], ["60", "60 minutes"]], "Longest time"), get("test_timeout")))));
 }
 
+// E2: secret names, and for the current app whether each has a value (never the value).
+let secData2 = null;
+async function loadSecrets() {
+  try { secData2 = await api("/api/secrets"); } catch (e) { secData2 = { error: e.message, names: [] }; }
+  if (location.hash.startsWith("#/settings/secrets")) render();
+}
+
 function pageSecret() {
+  if (!secData2) { loadSecrets(); return h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading secrets…")); }
+  if (secData2.error) return UI.notice("error", "Could not read the secrets: " + secData2.error);
+  const reload = () => { secData2 = null; render(); };
+  const app = secData2.app;
+  const row = (r) => h("tr", { "data-name": r.name },
+    h("th", { scope: "row" }, code(r.name)),
+    h("td", {}, r.env ? "✓ from the environment" : r.set ? "✓ Set" : "⚠ Not set: tests that use it stop before they type anything"),
+    h("td", {}, app ? h("span", { class: "btns tight" },
+      h("button", { type: "button", class: "btn sm" + (r.set ? "" : " p"), onclick: () => UI.passwordAsk({ name: r.name, label: r.set ? `Replace ${r.name}` : `Set ${r.name}`, onSaved: () => { toast(`${r.name} is saved for ${app.name}.`, true); reload(); } }) }, r.set ? "Replace" : "Set value"),
+      r.set ? h("button", { type: "button", class: "btn sm", onclick: async () => {
+        if (!(await UI.confirmDialog({ title: `Remove ${r.name}?`, text: `Its value is deleted from this Mac's key store for ${app.name}. Tests that use it stop before they type anything, until you set it again.`, verb: "Remove value", danger: false }))) return;
+        try { await api("/api/secrets", { action: "remove", name: r.name }); toast(`${r.name} was removed.`, true); } catch (e) { toast(e.message); }
+        reload();
+      } }, "Remove") : null) : null));
   return h("section", { class: "panel" },
     h("h2", {}, "Secrets", savedNote()),
-    h("p", { class: "sub" }, "Variables a flow may read as ", code("${NAME}"), ". Their values always show as *** in output."),
-    h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("key"), "secrets"),
-      opt("Secret name", "Only the name is saved here; this page never reads or shows the value.",
-        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars")),
-      h("div", { class: "opt" }, h("div", {}, h("div", { class: "l" }, "Where is the value?"),
-        h("div", { class: "d" }, "Put the value in the MCP configuration, for example ", code("claude mcp add fastpilot -e DEMO_PASS=… -- fastpilot mcp"), ", or in the environment when you run fastpilot.")))));
+    app
+      ? h("p", { class: "sub" }, `Passwords for ${app.name}. Tests write them as `, code("${NAME}"), ". Values are kept in " + secData2.kept_in + ", show as *** in output, and are typed only on this app's own website.")
+      : h("p", { class: "sub" }, "Add or choose an app first: passwords belong to an app."),
+    secData2.names.length
+      ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Secrets"),
+        h("thead", {}, h("tr", {}, ["Name", "Value", ""].map((t) => h("th", { scope: "col" }, t)))), h("tbody", {}, secData2.names.map(row))))
+      : UI.empty({ icon: "key", title: "No password yet", text: "fastpilot asks for one the first time a test needs it." }),
+    UI.moreOptions({ label: "Add a name" },
+      opt("Secret name", "Only the name is saved here; set its value with Set value.",
+        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars"))));
 }
 
 // The settings file does not parse: say what and where, and offer nothing to change (the server

@@ -1202,6 +1202,10 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 
 #[async_trait]
 impl Driver for WebPage {
+    async fn current_url(&self) -> Option<String> {
+        self.location().await.ok().map(|(_, url)| url)
+    }
+
     fn is_gone(&self) -> bool {
         self.browser.is_closed()
     }

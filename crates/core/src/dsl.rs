@@ -1439,12 +1439,37 @@ fn allowed() -> Vec<String> {
 fn lookup(name: &str) -> Result<String, String> {
     if !allowed().iter().any(|a| a == name) {
         return Err(format!(
-            "variable `{name}` is not allowed: the user adds its name in fastpilot ui › Settings › Secret (or FASTPILOT_VARS); the value comes from the environment fastpilot starts in (with the Claude Code plugin: export {name}=… before starting Claude Code)"
+            "variable `{name}` is not allowed: the user adds it in the dashboard, Settings › Secrets › Add a name, then Set value (or FASTPILOT_VARS and the environment)"
         ));
     }
-    std::env::var(name).map_err(|_| {
-        format!("variable `{name}` has no value where fastpilot runs: the user sets it in that environment (with the Claude Code plugin: export {name}=… before starting Claude Code; with a project .mcp.json: its env)")
-    })
+    // E2: the environment first (CI, power users), then the current app's saved value. A saved
+    // value is masked in output from now on, like an environment one.
+    if let Ok(v) = std::env::var(name) {
+        return Ok(v);
+    }
+    match crate::secrets::lookup(name) {
+        Some(v) => {
+            add_secret(&v);
+            let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+            if !kept.contains(&v) {
+                kept.push(v.clone());
+            }
+            Ok(v)
+        }
+        None => Err(format!(
+            "setup needed: the test needs the password {name} and it is not set for this app. The user sets it once in the dashboard (Settings › Secrets › {name} › Set value), or sets it in the environment fastpilot starts in; nothing was typed"
+        )),
+    }
+}
+
+/// Values read from the current app's key store (E2), whatever local name they are copied to
+/// later (`runFlow` env, a captured variable): S-1 follows the value, not its name.
+static APP_SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// S-1: does this (already substituted) text hold a password saved for the app? A value from the
+/// environment fastpilot starts in is not one: it keeps the older rules (allowed domains).
+pub(crate) fn holds_app_secret(text: &str) -> bool {
+    APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| !v.is_empty() && text.contains(v.as_str()))
 }
 
 /// Replace `${NAME}` with allowed environment values of fastpilot's own process.
@@ -1972,7 +1997,7 @@ mod tests {
         assert!(substitute("${HOME}").expect_err("not allowlisted").contains("FASTPILOT_VARS"));
         // V051: what a plugin user (no .mcp.json) sees in Claude Code says where the name and the value go.
         let e = substitute("${HOME}").expect_err("not allowlisted");
-        assert!(e.contains("Settings › Secret") && e.contains("with the Claude Code plugin: export HOME=… before starting Claude Code"), "{e}");
+        assert!(e.contains("Settings › Secrets › Add a name, then Set value"), "{e}");
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }

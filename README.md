@@ -34,9 +34,10 @@ press Enter.
 > Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 24 skills in
 > one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
 > Use **either** the plugin **or** `fastpilot init` in a project, not both: both together start two
-> fastpilot servers. With the plugin, a secret such as `DEMO_PASS` works like this: add its **name** in
-> `fastpilot ui` › Settings › Secrets, and set its **value** in the environment you start Claude Code
-> from (`export DEMO_PASS=…`). The value is never typed into the dashboard or the chat.
+> fastpilot servers. A password such as `DEMO_PASS` is set once in the dashboard: Settings › Secrets ›
+> Set value. It is kept in this Mac's Keychain for the current app, typed only on that app's own
+> website, and never typed into the chat. (An `export DEMO_PASS=…` in the environment still works,
+> for CI.)
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
 > pages and example tests, and opens the dashboard on it.
@@ -180,7 +181,8 @@ fastpilot doctor
 | iPhone isn't ready | `fastpilot setup ios` (once, with Xcode) |
 | fastpilot doesn't show up in Claude | Run `fastpilot init` again |
 | A test stops with "Blocked by limits" | That's on purpose. See **Settings › Limits & permissions** |
-| A saved test can't find its password in `fastpilot run` | Export it first, e.g. `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
+| A test stops with "setup needed: the test needs the password …" | Set it once: dashboard › Settings › Secrets › Set value (in CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...`) |
+| A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's website in Settings › Your apps |
 
 ## Learn more
 

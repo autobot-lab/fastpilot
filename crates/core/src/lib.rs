@@ -13,6 +13,7 @@ mod error;
 mod recording;
 mod selector;
 pub mod policy;
+pub mod secrets;
 pub mod ship;
 mod snapshot;
 pub mod state;
@@ -298,6 +299,11 @@ pub trait Driver: Send + Sync {
         }
         Err(Error::Unsupported("launchApp `arguments` / `env` are for Android and iOS apps".into()))
     }
+    /// The address of the page that is open now (web); `None` where there is none (phones).
+    async fn current_url(&self) -> Option<String> {
+        None
+    }
+
     /// Which platform this driver drives (for `when: { platform: ... }`).
     fn platform(&self) -> Platform {
         Platform::Web

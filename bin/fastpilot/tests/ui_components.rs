@@ -262,7 +262,7 @@ async fn settings_menu_says_secrets() {
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
         "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
-        open(c, hash, "Only the name is saved here").await;
+        open(c, hash, "No password yet").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
         assert_eq!(page, "\"Secrets|Secrets\"", "{hash}");
     }
@@ -272,6 +272,29 @@ async fn settings_menu_says_secrets() {
             assert!(!js.contains(old), "{f} still has {old}");
         }
     }
+}
+
+/// E2 (v0.7): a password is asked in the page, in a dialog, kept for the current app (here the
+/// owner-only key file of `FASTPILOT_KEYSTORE=file`), and never shown again: the page says "Set",
+/// and the value is in neither the page nor its list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_is_asked_in_the_page_and_kept_for_the_app() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-pass", |_| {}).await;
+    let c = &d.client;
+    let seeded = eval(c, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example/' } }); await api('/api/settings', { key: 'vars', value: ['DEMO_PASS'] }); return 'ok'; })()").await;
+    assert_eq!(seeded, "\"ok\"");
+    open(c, "#/settings/secrets", "Passwords for Shop").await;
+    see(c, "⚠ Not set").await;
+    let flow = "- tapOn: Set value\n- assertVisible: Set DEMO_PASS\n- inputText: { into: Set DEMO_PASS, text: kunci-rahasia-9 }\n- tapOn: Save password\n- assertVisible: ✓ Set\n";
+    let (ok, out) = call(c, "run_flow", json!({ "flow": flow })).await;
+    assert!(ok, "{out}");
+    let kept = std::fs::read_to_string(d.home.join(".fastpilot/keys/secrets/shop/DEMO_PASS")).expect("kept for the app");
+    assert!(!kept.contains("kunci-rahasia-9"), "kept encoded, not as typed");
+    let page = eval(c, "(async () => { const t = document.body.innerHTML + JSON.stringify(await api('/api/secrets')); const i = t.indexOf('kunci-rahasia-9'); return i < 0 ? 'clean DEMO_PASS' : t.slice(Math.max(0, i - 300), i + 50); })()").await;
+    assert!(page.contains("DEMO_PASS") && !page.contains("kunci-rahasia-9"), "never shown again: {page}");
 }
 
 /// UXA3 (v0.7): one set of button words. New thing: Create + the thing; an edit: Save changes; into a
