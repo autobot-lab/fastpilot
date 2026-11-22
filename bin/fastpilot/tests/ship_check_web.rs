@@ -322,3 +322,38 @@ async fn ship_check_measures_speed_and_flags_a_slower_page() {
     let _ = client.cancel().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// S7 (v0.7): `fastpilot ship-check` with no page checks the current app's own address (E6 apps),
+/// so nothing is typed; with no app and no page it says how to add one.
+#[test]
+fn ship_check_with_no_page_uses_the_apps_address() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let port = serve(Arc::new(Mutex::new(Vec::new())));
+    let dir = std::env::temp_dir().join(format!("fpsa-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("fastpilot")).expect("dir");
+    let run = || {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(["ship-check", "--links", "0"])
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("FASTPILOT_SOCKET", dir.join("d.sock"))
+            .env("FASTPILOT_DIR", dir.join("fp"))
+            .env("FASTPILOT_CONFIG", dir.join("config.toml"))
+            .env_remove("FASTPILOT_SESSION")
+            .env_remove("FASTPILOT_ALLOWED_DOMAINS")
+            .output()
+            .expect("run");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let out = run();
+    assert!(out.contains("add your app's website in the dashboard"), "no app, no page: {out}");
+    let url = format!("http://127.0.0.1:{port}/good");
+    std::fs::write(dir.join("fastpilot/apps.json"), serde_json::json!({ "current": "shop", "apps": [{ "id": "shop", "name": "Shop staging", "targets": { "web": url } }] }).to_string()).expect("apps");
+    let out = run();
+    assert!(out.contains(&format!("Checking Shop staging at its address, {url}.")) && out.contains(&format!("Ship check · {url}")), "{out}");
+    let _ = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).args(["daemon", "stop"]).env("HOME", &dir).env("FASTPILOT_SOCKET", dir.join("d.sock")).output();
+    let _ = std::fs::remove_dir_all(&dir);
+}

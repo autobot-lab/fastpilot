@@ -91,6 +91,9 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     let cards = eval(&client, "[...document.querySelectorAll('.preset')].map(c => c.querySelector('b').textContent + ':' + c.querySelector('button').textContent).join('|')").await;
     assert_eq!(cards, "\"Every 2 hours (8–20):Turn on|Every night:Turn on|Before each release:Turn on\"");
     assert!(eval(&client, "document.querySelector('[data-preset=release] .s').textContent").await.contains("Can we release?"), "the release trigger is explained");
+    // S7: one button before a release, one toggle after it.
+    let rel = eval(&client, "(() => { const s = document.querySelector('.sched-release'); return [s.querySelector('h2').textContent, [...s.querySelectorAll('.rel-row b')].map(b => b.textContent).join('+'), s.querySelector('button.p').textContent, s.querySelector('[role=switch]').getAttribute('aria-label') + ':' + s.querySelector('[role=switch]').getAttribute('aria-checked')].join('|'); })()").await;
+    assert_eq!(rel, "\"Before and after a release|Check before release+Watch for 2 hours after a release|Check before release|Watch for 2 hours after a release:false\"");
     eval(&client, "document.querySelector('[data-preset=night] button').click(), 'ok'").await;
     see(&client, "Created: every night at 2:00.").await;
     assert_eq!(eval(&client, "document.activeElement.textContent").await, "\"Undo\"", "focus on Undo");

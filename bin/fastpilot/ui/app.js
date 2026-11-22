@@ -2045,6 +2045,31 @@ function schedPresets() {
       made));
 }
 
+// S7: before and after a release, for this app: one button checks it (Chat "Can we release?",
+// on the app's own address), one toggle watches it for 2 hours afterwards.
+function schedRelease() {
+  if (!(schedData.tests || []).length) return null;
+  const app = schedData.app || {};
+  const w = schedData.watching;
+  const check = h("button", { class: "btn sm p", onclick: async () => {
+    location.hash = "#/chat";
+    await chatSend("Can we release?");
+  } }, "Check before release");
+  const tg = h("button", { class: "tg", role: "switch", "aria-checked": String(!!w), "aria-label": "Watch for 2 hours after a release",
+    onclick: () => schedAction({ action: "watch", on: !w }, (r) => toast(r.on ? "Watching for 2 hours: the first run, the \"before\", is running now." : "The release watch is off.", true)) });
+  return h("section", { class: "grp sched-release", "aria-label": "Before and after a release" },
+    h("div", { class: "prop-body" },
+      h("h2", {}, "Before and after a release"),
+      h("div", { class: "rel-row" },
+        h("div", {}, h("b", {}, "Check before release"),
+          h("div", { class: "s" }, app.web ? `Runs the tests and a ship check of ${app.name ? app.name + " at " : ""}${app.web}, then says Ship or Do not ship.` : "Runs the tests and a ship check, then says Ship or Do not ship.")),
+        check),
+      h("div", { class: "rel-row" },
+        h("div", {}, h("b", {}, "Watch for 2 hours after a release"),
+          h("div", { class: "s" }, w && w.until_ms ? `On until ${hm(new Date(w.until_ms))}. Every 10 minutes; you hear only about a problem that is new since the release.` : "Every 10 minutes; you hear only about a problem that is new since the release. It ends by itself.")),
+        tg)));
+}
+
 function pageSchedules() {
   const openForm = () => { schedForm = {}; pageSchedules(); document.querySelector(".sched-form select, .sched-form input")?.focus(); };
   UI.pageHeader({ icon: "clock", title: "Schedules", sub: "Run your tests by themselves" });
@@ -2067,7 +2092,7 @@ function pageSchedules() {
   const more = UI.moreOptions({ label: "More options", open: !!schedForm || schedMoreOpen },
     h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages."),
     schedForm ? schedPanel() : h("button", { class: "btn sm", onclick: openForm }, icon("plus", "sm"), "New schedule"));
-  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), more, table));
+  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), schedRelease(), more, table));
 }
 
 // ---- router ----

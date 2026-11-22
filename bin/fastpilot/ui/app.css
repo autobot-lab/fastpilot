@@ -685,3 +685,8 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 /* S6: what runs the tests, in one line */
 .using{font:500 15px var(--sans);margin:8px 0 12px}
 .using.ok{color:var(--ink)}
+
+/* S7: before and after a release */
+.sched-release h2{font:600 17px var(--sans);margin:0 0 8px}
+.rel-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0;border-top:1px solid var(--line)}
+.rel-row:first-of-type{border-top:0}

@@ -161,7 +161,7 @@ pub struct Store {
     pub last: std::collections::BTreeMap<String, LastRun>,
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -847,6 +847,38 @@ pub fn preset_on(key: &str, tests: &str, tests_label: &str, agent: Option<String
         watch: None,
     };
     Ok((save(s, None)?, true))
+}
+
+/// S7 (v0.7): "Watch for 2 hours after a release", one toggle: on starts a release watch of `tests`
+/// (every 10 minutes for 2 hours, a Mac notification, its first run is the "before"); off stops the
+/// running one. The watch that is on, if any.
+pub fn release_watch(tests: &str, on: bool) -> Res<Option<Schedule>> {
+    let running = |s: &Schedule| s.tests == tests && s.enabled && s.watch.as_ref().is_some_and(|w| !w.ended && w.until_ms > now_ms());
+    let current = load().schedules.into_iter().find(running);
+    match (on, current) {
+        (true, Some(s)) => Ok(Some(s)),
+        (true, None) => {
+            let when = When { every: Every::Minutes, minutes: Some(10), ..Default::default() };
+            let s = Schedule {
+                id: String::new(),
+                name: format!("{} · release watch", tests_label(tests)),
+                tests: tests.to_owned(),
+                when,
+                notify: Notify { os: true, ..Default::default() },
+                enabled: true,
+                agent: None,
+                watch: None,
+            };
+            let s = save(with_watch(s, Some(2))?, None)?;
+            start_now(&s.id)?;
+            Ok(Some(s))
+        }
+        (false, Some(s)) => {
+            set_enabled(&s.id, false)?;
+            Ok(None)
+        }
+        (false, None) => Ok(None),
+    }
 }
 
 /// S5: someone asked Chat "Can we release?": start agent `agent`'s "before each release"
