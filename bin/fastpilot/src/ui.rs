@@ -799,6 +799,10 @@ async fn map_change(axum::Json(body): axum::Json<Value>) -> Response {
             crate::map::stop();
             axum::Json(crate::map::state()).into_response()
         }
+        "skip-wall" => match crate::map::skip_wall() {
+            Ok(()) => axum::Json(crate::map::state()).into_response(),
+            Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+        },
         _ => refuse(StatusCode::BAD_REQUEST, "Unknown map action."),
     }
 }

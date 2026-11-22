@@ -109,6 +109,6 @@ fn the_map_sends_nothing_that_could_change_something() {
     assert!(text.contains("that would have changed something") && text.contains("blocked") && !text.contains("Nothing was typed in or submitted"), "{text}");
     assert!(!text.contains("is blocked"), "the browser's block page is not a screen: {text}");
     // A screen whose only way on is "Continue with Google" is a sign-in wall: nothing pressed.
-    assert!(text.contains("Mapping stopped at \"Account\""), "{text}");
+    assert!(text.contains("\"Account\" needs a sign-in, so the pages behind it are not on the map yet."), "{text}");
     let _ = std::fs::remove_dir_all(&home);
 }
