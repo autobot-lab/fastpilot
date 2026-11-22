@@ -52,6 +52,11 @@ pub fn read(dir: &Path, base: Option<&str>) -> Result<Changes, NoChanges> {
     if git(dir, &["rev-parse", "--is-inside-work-tree"]).is_none_or(|o| o.trim() != "true") {
         return Err(NoChanges::NotGit);
     }
+    // Git is asked from the project's top folder: from `tests/`, `ls-files --others` only lists new
+    // files under `tests/`, so a new file elsewhere was "no changes" (QA v0.6 re-test Low 7), and
+    // its paths would not match `git diff`'s (always from the top).
+    let top = git(dir, &["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).filter(|t| t.is_dir());
+    let dir = top.as_deref().unwrap_or(dir);
     let has_head = git(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_some();
     let (from, label) = match base {
         Some(b) => {
@@ -445,6 +450,29 @@ mod tests {
         assert_eq!(read(&dir, Some("--output=/tmp/x")), Err(NoChanges::BadBase("--output=/tmp/x".into())), "an option is never passed to git");
         assert!(matches!(read(&dir, Some("nope")), Err(NoChanges::BadBase(_))));
         assert_eq!(NoChanges::NotGit.message(14), "I cannot see what you changed because this folder is not tracked by git. Running all 14 tests instead.");
+        // From the tests folder (`fastpilot run tests --changed`): the same files, from the top.
+        std::fs::create_dir_all(dir.join("tests")).expect("tests");
+        std::fs::write(dir.join("tests/login.md"), "# Login\n").expect("w");
+        assert_eq!(read(&dir.join("tests"), None).expect("changes").files, ["a.txt", "demo/login.html", "new.ts", "tests/login.md"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// QA v0.6 re-test Low 7: with only a new untracked file (`notes.txt`) next to `tests/`,
+    /// `fastpilot run tests --changed` said "I did not find any changes" and ran everything.
+    #[test]
+    fn a_new_untracked_file_is_a_change_from_the_tests_folder() {
+        let dir = std::env::temp_dir().join(format!("fp-pf2-untracked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tests")).expect("dir");
+        let g = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").output().expect("git").status.success(), "{args:?}");
+        g(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("tests/login.md"), "# Login\n").expect("w");
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "one"]);
+        assert_eq!(read(&dir.join("tests"), None), Err(NoChanges::Nothing));
+        std::fs::write(dir.join("notes.txt"), "x").expect("w");
+        let c = read(&dir.join("tests"), None).expect("a new file is a change");
+        assert_eq!(c.files, ["notes.txt"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
