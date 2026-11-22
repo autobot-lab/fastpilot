@@ -118,6 +118,10 @@ pub fn words(s: &str) -> Vec<String> {
     out
 }
 
+/// Folders that hold a whole site or app, not one part of it: a step that says "demo" or "web"
+/// is not about the changed file (QA v0.6 Low 6).
+const CONTAINER_FOLDERS: &[&str] = &["demo", "demos", "sample", "samples", "web", "site", "www", "client", "frontend", "backend", "server", "resources", "res", "templates", "template", "dist", "build", "website", "ui"];
+
 fn meaningful(w: &str) -> bool {
     w.chars().count() >= 3 && !GENERIC.contains(&w) && !w.chars().all(|c| c.is_ascii_digit())
 }
@@ -137,7 +141,7 @@ pub fn area(path: &str) -> Area {
     let dirs: Vec<String> = p.parent().map(|d| d.iter().map(|c| c.to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
     let page = matches!(ext.as_str(), "html" | "htm" | "vue" | "svelte" | "astro") || dirs.iter().any(|d| matches!(d.as_str(), "pages" | "page" | "views" | "view" | "screens" | "screen" | "routes"));
     let stem: Vec<String> = p.file_stem().map(|s| words(&s.to_string_lossy())).unwrap_or_default().into_iter().filter(|w| meaningful(w)).collect();
-    let folder_words: Vec<String> = dirs.iter().flat_map(|d| words(d)).filter(|w| meaningful(w)).collect();
+    let folder_words: Vec<String> = dirs.iter().flat_map(|d| words(d)).filter(|w| meaningful(w) && !CONTAINER_FOLDERS.contains(&w.as_str())).collect();
     let name_words = if stem.is_empty() { folder_words.iter().rev().take(1).cloned().collect() } else { stem };
     let what = if page { "page" } else { "code" };
     let name = if name_words.is_empty() { format!("{} {what}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) } else { format!("{} {what}", name_words.join(" ")) };
@@ -236,13 +240,16 @@ pub fn choose(tests: &[TestInfo], changes: &Changes, notes: &[String], history: 
             score += 2;
             reasons.push((2, "it failed the last time these files changed".into()));
         }
-        // 4. Its steps use the same code or screen (the steps only, not its target line).
+        // 4. Its steps name the changed file or its folder (the steps only, not its target line).
+        // The reason says the word that matched; no word, no reason (QA v0.6 Low 6).
         let steps: String = t.text.lines().filter(|l| l.trim_start().starts_with("- ")).collect::<Vec<_>>().join("\n");
+        let by_name = || areas.iter().find_map(|a| a.words.iter().find(|w| has_word(&steps, w)).map(|w| format!("its steps mention \"{w}\", and you changed the {}", a.name)));
+        let by_folder = || areas.iter().find_map(|a| a.folder_words.iter().find(|w| has_word(&steps, w)).map(|w| format!("its steps mention \"{w}\", and you changed code in the {w} folder")));
         if reasons.is_empty()
-            && let Some(a) = areas.iter().find(|a| a.words.iter().chain(&a.folder_words).any(|w| has_word(&steps, w)))
+            && let Some(why) = by_name().or_else(by_folder)
         {
             score += 1;
-            reasons.push((1, format!("it uses the same code or screen as the {}", a.name)));
+            reasons.push((1, why));
         }
         if score > 0 {
             reasons.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -352,6 +359,24 @@ mod tests {
         assert_eq!(words("checkoutVoucher-form.tsx"), ["checkout", "voucher", "form", "tsx"]);
     }
 
+    /// QA v0.6 Low 6: a change to the tickets page picked the login test "because it uses the same
+    /// code or screen as the tickets page" (its step said "demo"). Only a concrete word counts, and
+    /// the reason says it.
+    #[test]
+    fn a_weak_match_is_not_a_reason() {
+        let tests = vec![
+            t("login", "Login", "http://127.0.0.1:8080/demo/login.html", "- Open the demo login page and sign in\n- Check the Dashboard\n"),
+            t("notes", "Save a note", "http://127.0.0.1:8080/demo/widgets.html", "- Type a note and save it\n"),
+            t("board", "Help desk board", "http://127.0.0.1:8080/demo/board.html", "- Open the board, then the tickets list\n"),
+        ];
+        let changes = Changes { files: vec!["demo/tickets.html".into()], base: "main".into() };
+        let c = choose(&tests, &changes, &[], &History::new(), &BTreeMap::new(), 5);
+        let got: Vec<(&str, &str)> = c.picked.iter().map(|p| (tests[p.index].id.as_str(), p.reason.as_str())).collect();
+        assert_eq!(got, [("board", "its steps mention \"tickets\", and you changed the tickets page")]);
+        assert_eq!(c.not_run.len(), 2, "login and notes are not related: not run, not chosen");
+        assert!(area("demo/tickets.html").folder_words.is_empty() && area("web/src/cart/a.ts").folder_words == ["cart"]);
+    }
+
     #[test]
     fn related_tests_first_each_with_one_reason() {
         let tests = vec![
@@ -374,7 +399,7 @@ mod tests {
                 ("login", "you changed the login page"),
                 ("search", "it failed the last time these files changed"),
                 ("profile", "your project note says this area belongs to the test"),
-                ("plain", "it uses the same code or screen as the voucher code"),
+                ("plain", "its steps mention \"cart\", and you changed code in the cart folder"),
             ]
         );
         assert!(c.not_run.is_empty() && !c.none_related);
