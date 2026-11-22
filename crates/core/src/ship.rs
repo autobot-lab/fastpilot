@@ -479,12 +479,21 @@ pub fn compare(now: &Sample, before: Option<&Sample>) -> Vec<SpeedRow> {
             None => ("no earlier value".to_owned(), None),
             Some(None) => ("no earlier value".to_owned(), None),
             Some(Some(b)) => {
-                let pct = if b == 0 { 0.0 } else { (n as f64 - b as f64) / b as f64 * 100.0 };
+                // A big change is said in words with both values, never as "16811% slower" or
+                // "100% faster": more than twice as slow is "much slower", a quarter or less of the
+                // time is "much faster".
+                let pct = if b == 0 { if n == 0 { 0.0 } else { f64::INFINITY } } else { (n as f64 - b as f64) / b as f64 * 100.0 };
+                let both = format!("{} → {}", secs(b), secs(n));
                 if pct.abs() <= 10.0 {
                     ("no change".into(), None)
                 } else if pct > 0.0 {
-                    let flag = (pct > 20.0 && n.saturating_sub(b) > 300).then(|| format!("{label} {}, up from {} ({:.0}% slower)", secs(n), secs(b), pct));
-                    (format!("▲ {:.0}% slower", pct), flag)
+                    let how = if pct > 100.0 { format!("much slower ({both})") } else { format!("{pct:.0}% slower") };
+                    let flag = (pct > 20.0 && n.saturating_sub(b) > 300).then(|| {
+                        if pct > 100.0 { format!("{label} {}, up from {} (much slower)", secs(n), secs(b)) } else { format!("{label} {}, up from {} ({pct:.0}% slower)", secs(n), secs(b)) }
+                    });
+                    (format!("▲ {how}"), flag)
+                } else if pct <= -75.0 {
+                    (format!("▼ much faster ({both})"), None)
                 } else {
                     (format!("▼ {:.0}% faster", -pct), None)
                 }
@@ -493,14 +502,14 @@ pub fn compare(now: &Sample, before: Option<&Sample>) -> Vec<SpeedRow> {
         SpeedRow { label, value: secs(n), change, flagged }
     };
     let b = before.map(|b| &b.speed);
-    let mut rows = vec![time("Loads in", now.speed.load_ms, b.map(|b| b.load_ms)), time("Main content appears", now.speed.lcp_ms, b.map(|b| b.lcp_ms))];
+    let mut rows = vec![time("Loads in", now.speed.load_ms, b.map(|b| b.load_ms)), time("Main content shown", now.speed.lcp_ms, b.map(|b| b.lcp_ms))];
     rows.push(match (now.speed.cls, b.map(|b| b.cls)) {
-        (None, _) => SpeedRow { label: "Layout jumps", value: "not measured".into(), change: String::new(), flagged: None },
-        (Some(n), None | Some(None)) => SpeedRow { label: "Layout jumps", value: format!("{n:.2}"), change: "no earlier value".into(), flagged: None },
+        (None, _) => SpeedRow { label: "Layout shift", value: "not measured".into(), change: String::new(), flagged: None },
+        (Some(n), None | Some(None)) => SpeedRow { label: "Layout shift", value: format!("{n:.2}"), change: "no earlier value".into(), flagged: None },
         (Some(n), Some(Some(o))) => {
             let up = n - o;
-            let flagged = (up > 0.1).then(|| format!("Layout jumps {n:.2}, up from {o:.2}"));
-            SpeedRow { label: "Layout jumps", value: format!("{n:.2}"), change: if up.abs() < 0.01 { "no change".into() } else if up > 0.0 { format!("▲ {up:.2} more") } else { format!("▼ {:.2} less", -up) }, flagged }
+            let flagged = (up > 0.1).then(|| format!("Layout shift {n:.2}, up from {o:.2}"));
+            SpeedRow { label: "Layout shift", value: format!("{n:.2}"), change: if up.abs() < 0.01 { "no change".into() } else if up > 0.0 { format!("▲ {up:.2} more") } else { format!("▼ {:.2} less", -up) }, flagged }
         }
     });
     let req = format!("{} · {}", now.speed.requests, mb(now.speed.bytes));
@@ -565,7 +574,7 @@ pub async fn speed_check(d: &dyn Driver, url: &str) -> Check {
     let mut details = vec![basis];
     details.extend(now.flags.iter().cloned());
     details.push(format!(
-        "Details: LCP {}, CLS {} (layout shifts summed). Flagged when a page is more than 20% and more than 0.3 s slower, layout jumps grow by more than 0.1, or a new page error or failed request appears.",
+        "Details: main content shown = LCP {}, layout shift = CLS {} (shifts summed). Flagged when a page is more than 20% and more than 0.3 s slower, layout shift grows by more than 0.1, or a new page error or failed request appears.",
         now.speed.lcp_ms.map_or("not measured".into(), |m| format!("{m} ms")),
         now.speed.cls.map_or("not measured".into(), |x| format!("{x:.3}"))
     ));
@@ -895,7 +904,7 @@ mod tests {
         let now = sample(2, Some(2820), Some(2100), Some(0.04), 58, &[]);
         let rows = compare(&now, Some(&before));
         let words: Vec<(&str, &str, &str)> = rows.iter().map(|r| (r.label, r.value.as_str(), r.change.as_str())).collect();
-        assert_eq!(words[..4], [("Loads in", "2.8 s", "▲ 41% slower"), ("Main content appears", "2.1 s", "▲ 38% slower"), ("Layout jumps", "0.04", "no change"), ("Requests", "58 · 2.1 MB", "▲ 12 more")]);
+        assert_eq!(words[..4], [("Loads in", "2.8 s", "▲ 41% slower"), ("Main content shown", "2.1 s", "▲ 38% slower"), ("Layout shift", "0.04", "no change"), ("Requests", "58 · 2.1 MB", "▲ 12 more")]);
         assert_eq!(rows[0].flagged.as_deref(), Some("Loads in 2.8 s, up from 2.0 s (41% slower)"));
         // 25% but only 50 ms slower: not flagged. Within 10%: no change. Faster: never flagged.
         let rows = compare(&sample(3, Some(250), Some(1600), None, 46, &[]), Some(&sample(1, Some(200), Some(1520), Some(0.04), 46, &[])));
@@ -904,7 +913,18 @@ mod tests {
         let rows = compare(&sample(3, Some(1000), None, Some(0.2), 46, &["exception: boom"]), Some(&before));
         assert_eq!(rows[0].change, "▼ 50% faster");
         assert_eq!(rows[1].value, "not measured");
-        assert!(rows[2].flagged.as_deref() == Some("Layout jumps 0.20, up from 0.04") && rows[4].flagged.as_deref() == Some("1 new page error: exception: boom"), "{rows:?}");
+        assert!(rows[2].flagged.as_deref() == Some("Layout shift 0.20, up from 0.04") && rows[4].flagged.as_deref() == Some("1 new page error: exception: boom"), "{rows:?}");
+        // QA (v0.6 Low 7): no absurd percentages; a big change is said in words with both values.
+        let rows = compare(&sample(4, Some(3400), Some(3400), None, 1, &[]), Some(&sample(1, Some(20), Some(200), None, 1, &[])));
+        assert_eq!((rows[0].change.as_str(), rows[1].change.as_str()), ("▲ much slower (0.02 s → 3.4 s)", "▲ much slower (0.20 s → 3.4 s)"));
+        assert_eq!(rows[0].flagged.as_deref(), Some("Loads in 3.4 s, up from 0.02 s (much slower)"));
+        let rows = compare(&sample(4, Some(3), Some(800), None, 1, &[]), Some(&sample(1, Some(3400), Some(3400), None, 1, &[])));
+        assert_eq!((rows[0].change.as_str(), rows[1].change.as_str()), ("▼ much faster (3.4 s → 0.00 s)", "▼ much faster (3.4 s → 0.80 s)"));
+        let rows = compare(&sample(4, Some(500), None, None, 1, &[]), Some(&sample(1, Some(0), None, None, 1, &[])));
+        assert_eq!(rows[0].change, "▲ much slower (0.00 s → 0.50 s)", "from zero is not an infinite percentage");
+        for r in compare(&sample(4, Some(9_000_000), Some(1), Some(0.0), 1, &[]), Some(&sample(1, Some(1), Some(9_000_000), Some(0.0), 1, &[]))) {
+            assert!(!r.change.contains('%'), "a huge change is never a percentage: {}", r.change);
+        }
         // First measurement.
         let rows = compare(&now, None);
         assert!(rows.iter().all(|r| r.flagged.is_none()) && rows[0].change == "no earlier value");
