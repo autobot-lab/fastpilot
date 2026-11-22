@@ -106,8 +106,12 @@ fn the_first_iphone_test_builds_the_runner_once() {
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .env("FASTPILOT_CLAUDE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude"))
             .env("FAKE_CLAUDE_LOG", home.join("claude-log"))
-            .env("FASTPILOT_RETRY_BUDGET", "0");
-        for k in ["FASTPILOT_CONFIG", "FASTPILOT_IOS_RUNNER", "FASTPILOT_SCHEDULED_AS", "FASTPILOT_RUN_BY_PERSON", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_SERIAL", "FASTPILOT_ANDROID_SERIAL", "FASTPILOT_ADB"] {
+            .env("FASTPILOT_RETRY_BUDGET", "0")
+            // The runner folder `setup ios` builds into, under this HOME. Without it, a binary built
+            // from a checkout that has `ios-runner/build/` uses that build and never builds (FastTest,
+            // v0.6.1 nightly).
+            .env("FASTPILOT_IOS_RUNNER", home.join(".fastpilot/ios-runner/build"));
+        for k in ["FASTPILOT_CONFIG", "FASTPILOT_SCHEDULED_AS", "FASTPILOT_RUN_BY_PERSON", "ANDROID_HOME", "ANDROID_SDK_ROOT", "ANDROID_SERIAL", "FASTPILOT_ANDROID_SERIAL", "FASTPILOT_ADB"] {
             cmd.env_remove(k);
         }
         cmd.envs(env.iter().copied());
