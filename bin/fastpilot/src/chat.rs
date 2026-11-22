@@ -551,6 +551,9 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
         // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
         .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me))])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
+        // Only the user's own Claude Code settings: never a project folder's .claude/settings.json
+        // (its hooks and env), whatever folder the dashboard works in (Security, #183 M1).
+        .args(["--setting-sources", "user"])
         // fastpilot only, and not its `config` tool or the Jira writes: changes go through the cards.
         .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--disallowedTools", "mcp__fastpilot__config,mcp__fastpilot__jira_read,mcp__fastpilot__jira_create_issue,mcp__fastpilot__jira_comment", "--permission-mode", "dontAsk"]);
     if let Some(id) = &resume {

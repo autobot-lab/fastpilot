@@ -266,7 +266,12 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let web = LaunchOptions { headless: !headful, executable: None };
 
     match args.first().map(String::as_str) {
-        Some("mcp") => live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await,
+        Some("mcp") => {
+            // E6: Claude Code in any folder: a project folder is its own (Repo) app; elsewhere the
+            // current app's folder.
+            apps::enter(false);
+            live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await
+        }
         Some("config") if args.get(1).is_some_and(|a| a == "test-provider") => match provider::test_provider().await {
             Ok(msg) => {
                 println!("{msg}");

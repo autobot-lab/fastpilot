@@ -117,6 +117,11 @@ pub async fn init(args: &[String]) -> Res<()> {
     println!("\n5/5 Safe limits");
     limits();
 
+    // E6: this project folder is one more app in the dashboard ("Repo"); nothing in it moves.
+    if !global && mode != Mode::Plan {
+        let _ = crate::apps::add_repo(Path::new("."));
+    }
+
     println!("\nReady. Next:\n  1. open claude in this folder\n  2. type: \"Use fastpilot to run {}\"\n  Want to try the demo first? fastpilot demo", example_path().display());
     // D3: only when the user is asked step by step (not --yes, not a script).
     crate::offer::dashboard(Path::new("."), mode == Mode::Ask, None);

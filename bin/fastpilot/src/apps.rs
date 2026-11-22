@@ -10,7 +10,7 @@
 //!   point an app at a folder of its choosing.
 //! - Removing an app takes it off the list; its folder stays.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +43,8 @@ impl App {
 
     /// Where its tests, memory and map live: `~/fastpilot/apps/<id>`.
     pub fn dir(&self) -> PathBuf {
-        root().join("apps").join(&self.id)
+        // A repo app's tests and data live in its code folder (developer mode).
+        self.repo.clone().unwrap_or_else(|| root().join("apps").join(&self.id))
     }
 }
 
@@ -170,6 +171,112 @@ pub fn set_current(id: &str) -> Result<App, String> {
     s.current = Some(app.id.clone());
     save(&s)?;
     Ok(app)
+}
+
+/// A fastpilot project folder (`fastpilot init` ran there): a `.fastpilot` folder, or a `.mcp.json`
+/// that starts fastpilot.
+pub fn is_project(dir: &Path) -> bool {
+    // The home folder's `.fastpilot` is fastpilot's own settings, not a project; `/` is not one either.
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if home.is_some_and(|h| real(&h) == real(dir)) || real(dir) == Path::new("/") {
+        return false;
+    }
+    // A real folder, not a link to somewhere else (Security, #183 L3).
+    dir.join(".fastpilot").symlink_metadata().is_ok_and(|m| m.is_dir()) || std::fs::read_to_string(dir.join(".mcp.json")).is_ok_and(|t| t.contains("\"fastpilot\""))
+}
+
+/// The app for a project folder, added as a Repo app (named after the folder) if it is not listed
+/// yet. Nothing in the folder is moved or changed.
+pub fn add_repo(folder: &Path) -> Result<App, String> {
+    let folder = std::fs::canonicalize(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let _held = hold();
+    let mut s = load();
+    if let Some(a) = s.apps.iter().find(|a| a.repo.as_deref() == Some(folder.as_path())) {
+        return Ok(a.clone());
+    }
+    let base = folder.file_name().map(|n| n.to_string_lossy().chars().filter(|c| !c.is_control()).take(50).collect::<String>()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Repo".into());
+    let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} ({n})") }).find(|n| !s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(n))).unwrap_or(base);
+    let slugged = slug(&name);
+    let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
+    let id = (1..).map(|n| if n == 1 { slugged.clone() } else { format!("{slugged}-{n}") }).find(free).unwrap_or(slugged);
+    let app = App { id: id.clone(), name, targets: Targets::default(), repo: Some(folder), created_ms: now_ms() };
+    s.apps.push(app.clone());
+    if s.current.is_none() {
+        s.current = Some(id);
+    }
+    save(&s)?;
+    Ok(app)
+}
+
+/// E6: start in the right folder, so every "here" (`.fastpilot`, `tests/`, the map, notes) is the
+/// app's. In a project folder: that folder, listed as a Repo app (`make_current`: and chosen, for
+/// the dashboard). Elsewhere: the current app's folder. `FASTPILOT_DIR` set by the person wins and
+/// nothing moves. Returns the app now worked on.
+pub fn enter(make_current: bool) -> Option<App> {
+    if std::env::var_os("FASTPILOT_DIR").is_some() {
+        return None;
+    }
+    let here = std::env::current_dir().ok()?;
+    if is_project(&here) {
+        // Claude Code opened in a project works there, but only the person lists it as an app
+        // (`fastpilot init`, starting the dashboard there, or the search): a cloned repo never
+        // makes itself one, let alone the current one (Security, #183 L1).
+        if !make_current {
+            return None;
+        }
+        let app = add_repo(&here).ok()?;
+        let _ = set_current(&app.id);
+        return Some(app);
+    }
+    let app = current()?;
+    go(&app);
+    Some(app)
+}
+
+/// Move this process into the app's folder (made, owner-only, if it is a workspace app).
+pub fn go(app: &App) {
+    let dir = app.dir();
+    if app.repo.is_none() {
+        let _ = crate::filestore::ensure_dir(&dir, true);
+    }
+    let _ = std::env::set_current_dir(&dir);
+}
+
+/// Older fastpilot folders in the home folder (`.fastpilot` inside), not listed yet: searched only
+/// when the person asks. A few levels deep; Library, hidden folders and dependency folders are
+/// skipped.
+pub fn find_older() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let listed: Vec<PathBuf> = list().into_iter().filter_map(|a| a.repo).collect();
+    let mut found = Vec::new();
+    let mut stack = vec![(home.clone(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if found.len() >= 50 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        if dir != home && is_project(&dir) {
+            if let Ok(real) = std::fs::canonicalize(&dir)
+                && !listed.contains(&real)
+            {
+                found.push(real);
+            }
+            continue;
+        }
+        if depth >= 4 {
+            continue;
+        }
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let skip = name.starts_with('.') || ["Library", "node_modules", "target", "Applications", "fastpilot"].contains(&name.as_str());
+            if !skip && e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((e.path(), depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 fn now_ms() -> u64 {

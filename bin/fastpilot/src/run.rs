@@ -888,6 +888,8 @@ async fn claude_session(prompt: &str, model: &str, addr: &str, token: &str) -> S
         .args(["-p", "--output-format", "json", "--model", model, "--effort", effort])
         .args(["--append-system-prompt", SYSTEM])
         .args(["--mcp-config", &config.to_string(), "--strict-mcp-config"])
+        // Only the user's own Claude Code settings, never the project folder's (Security, #183 M1).
+        .args(["--setting-sources", "user"])
         // Only fastpilot: no shell, file or web tools for an unattended agent.
         .args(["--tools", "", "--allowedTools", "mcp__fastpilot", "--permission-mode", "dontAsk", "--no-session-persistence"])
         .stdin(std::process::Stdio::piped())
