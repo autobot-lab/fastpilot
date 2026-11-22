@@ -14,7 +14,7 @@ async function loadApps() {
   if (appsBusy) return;
   appsBusy = true;
   try {
-    appsData = await api("/api/apps");
+    appsData = await api("/api/integrations");
   } catch (e) {
     appsData = { error: e.message };
   }
@@ -110,7 +110,7 @@ function pollApps() {
   appsPoll = setTimeout(async () => {
     if ((location.hash || "") !== "#/apps") return;
     try {
-      const fresh = await api("/api/apps");
+      const fresh = await api("/api/integrations");
       const ids = (d) => JSON.stringify(((d && d.jira_requests) || []).map((r) => r.id));
       if (ids(fresh) !== ids(appsData)) { appsData = fresh; render(); return; }
     } catch (_) { /* the next try */ }

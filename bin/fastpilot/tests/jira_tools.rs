@@ -167,7 +167,7 @@ async fn jira_tools_file_requests_the_person_sends_and_read_only_the_default_pro
 
     // The person sends one from the Apps page and drops the other.
     let ui = Ui::start(&home, &fake.base);
-    let (st, apps) = ui.call("GET", "/api/apps", Value::Null);
+    let (st, apps) = ui.call("GET", "/api/integrations", Value::Null);
     let reqs = apps["jira_requests"].as_array().cloned().unwrap_or_default();
     assert!(st == 200 && reqs.len() == 2, "{apps}");
     let issue = reqs.iter().find(|r| r["kind"] == "issue").expect("issue");

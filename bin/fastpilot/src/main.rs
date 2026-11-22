@@ -9,6 +9,7 @@ mod chat;
 mod cli;
 mod demo;
 mod doctor;
+mod filestore;
 mod fix;
 mod history_api;
 mod memory_api;

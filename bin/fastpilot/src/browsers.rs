@@ -60,72 +60,20 @@ pub fn hash(key: &str) -> String {
     ring::digest::digest(&ring::digest::SHA256, key.as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One change at a time (Security, #178 M1): a thread lock in this process and a file lock for other
-/// fastpilot processes of this user, held around every load-change-save, so a Forget can never be
-/// lost to an unlock that read the file before it.
+/// One change at a time (Security, #178 M1): see `filestore`.
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-struct Held(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>, #[allow(dead_code)] Option<std::fs::File>);
-
-fn hold() -> Held {
-    let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let f = ensure_dir().ok().and_then(|d| {
-        let mut o = std::fs::OpenOptions::new();
-        o.write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let f = o.open(d.join("browsers.lock")).ok()?;
-        f.lock().ok()?;
-        Some(f)
-    });
-    Held(g, f)
-}
-
-fn ensure_dir() -> Result<PathBuf, String> {
-    let d = dir();
-    let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(&d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
-    }
-    Ok(d)
+fn hold() -> crate::filestore::Held {
+    crate::filestore::hold(&LOCK, &dir(), "browsers.lock", true)
 }
 
 fn load() -> Store {
     std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
-/// Owner-only folder and file, written whole (a temp file renamed into place).
-/// Call with the lock held (`hold`).
+/// Owner-only folder and file, written whole. Call with the lock held (`hold`).
 fn save(s: &Store) -> Result<(), String> {
-    let d = ensure_dir()?;
-    // A name of its own for every write (pid and random), never an existing file.
-    let tmp = d.join(format!(".browsers.{}.{:016x}.tmp", std::process::id(), random_u64()));
-    {
-        use std::io::Write;
-        let mut o = std::fs::OpenOptions::new();
-        o.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let mut f = o.open(&tmp).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        f.write_all(serde_json::to_string_pretty(s).unwrap_or_default().as_bytes()).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, path()).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })
-}
-
-fn random_u64() -> u64 {
-    use std::io::Read;
-    let mut b = [0u8; 8];
-    let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
-    u64::from_le_bytes(b) ^ now_ms()
+    crate::filestore::write_atomic(&dir(), "browsers.json", serde_json::to_string_pretty(s).unwrap_or_default().as_bytes(), true)
 }
 
 /// The remembered browsers that still work, newest first; expired ones are dropped from the file.

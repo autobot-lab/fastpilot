@@ -1,57 +1,251 @@
-//! TEMPORARY on the S8 branch: the read side of FastDev's E6 app contract (channel, 23 Nov 2026),
-//! so "Run on all platforms" can be built before E6a merges. E6a's own `apps.rs` replaces this file
-//! at the rebase; nothing here may grow beyond the contract.
+//! E6 (v0.7): the apps being tested, for this user, without a project folder.
 //!
-//! `~/fastpilot/apps.json`: `{ "current": "<id>", "apps": [ { "id", "name", "targets": { "web",
-//! "android", "ios" }, "repo", "created_ms" } ] }`. One app is one entry; its web, Android and
-//! iPhone versions are the keys of `targets`. An app's data is in `~/fastpilot/apps/<id>/`.
+//! - `~/fastpilot/apps.json`: `{ current, apps: [{ id, name, targets: { web, android, ios }, repo,
+//!   created_ms }] }`. One app is one entry; its website, Android and iPhone versions are the keys of
+//!   `targets` (each optional, at least one), the same names Save test uses for a test on several
+//!   platforms.
+//! - `id` is a slug of the name, unique and never renamed: E2 keys an app's passwords on it
+//!   (Keychain account `<id>/<NAME>`), and the app's data lives in `~/fastpilot/apps/<id>/`.
+//! - `repo` is set only by `fastpilot init` in a code folder (never by the dashboard), so no page can
+//!   point an app at a folder of its choosing.
+//! - Removing an app takes it off the list; its folder stays.
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Targets {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ios: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct App {
     pub id: String,
     pub name: String,
-    #[serde(default)]
     pub targets: Targets,
     #[serde(default)]
     pub repo: Option<PathBuf>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Store {
-    current: Option<String>,
     #[serde(default)]
-    apps: Vec<App>,
-}
-
-/// `~/fastpilot`: the user's one workspace.
-pub fn root() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join("fastpilot")
-}
-
-fn store() -> Store {
-    std::fs::read_to_string(root().join("apps.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    pub created_ms: u64,
 }
 
 impl App {
-    /// This app's folder: tests, memory, map.
+    /// The platforms it has: "web", "android", "ios", in that order.
+    pub fn kinds(&self) -> Vec<&'static str> {
+        [("web", &self.targets.web), ("android", &self.targets.android), ("ios", &self.targets.ios)].into_iter().filter(|(_, t)| t.is_some()).map(|(k, _)| k).collect()
+    }
+
+    /// Where its tests, memory and map live: `~/fastpilot/apps/<id>`.
     pub fn dir(&self) -> PathBuf {
         root().join("apps").join(&self.id)
     }
 }
 
+#[derive(Serialize, Deserialize, Default)]
+struct Store {
+    #[serde(default)]
+    current: Option<String>,
+    #[serde(default)]
+    apps: Vec<App>,
+}
+
+/// `~/fastpilot`: the person's workspace (made on first use, no question).
+pub fn root() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("fastpilot")
+}
+
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn hold() -> crate::filestore::Held {
+    crate::filestore::hold(&LOCK, &root(), ".apps.lock", false)
+}
+
+fn load() -> Store {
+    std::fs::read_to_string(root().join("apps.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save(s: &Store) -> Result<(), String> {
+    crate::filestore::write_atomic(&root(), "apps.json", serde_json::to_string_pretty(s).unwrap_or_default().as_bytes(), false)
+}
+
+/// All apps, in the order they were added.
+pub fn list() -> Vec<App> {
+    let _held = hold();
+    load().apps
+}
+
+/// The app the dashboard and Claude Code work on now: the chosen one, else the only one.
 pub fn current() -> Option<App> {
-    let s = store();
-    let id = s.current?;
-    s.apps.into_iter().find(|a| a.id == id)
+    let _held = hold();
+    let s = load();
+    s.current.as_deref().and_then(|c| s.apps.iter().find(|a| a.id == c)).or(if s.apps.len() == 1 { s.apps.first() } else { None }).cloned()
+}
+
+/// One app by id. Used by S1 (Map) and S8 (Run on all platforms), built on this contract.
+#[allow(dead_code)]
+pub fn get(id: &str) -> Option<App> {
+    let _held = hold();
+    load().apps.into_iter().find(|a| a.id == id)
+}
+
+/// Add an app; the first one becomes the current one.
+pub fn add(name: &str, targets: Targets) -> Result<App, String> {
+    let name = check_name(name)?;
+    let targets = check_targets(targets)?;
+    let _held = hold();
+    let mut s = load();
+    if s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
+        return Err(format!("there is already an app called \"{name}\": pick another name"));
+    }
+    let base = slug(&name);
+    let id = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|id| !s.apps.iter().any(|a| &a.id == id)).unwrap_or(base);
+    let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms() };
+    // Its own folder for tests, memory and map.
+    crate::filestore::ensure_dir(&app.dir(), false)?;
+    s.apps.push(app.clone());
+    if s.current.is_none() {
+        s.current = Some(id);
+    }
+    save(&s)?;
+    Ok(app)
+}
+
+/// Change an app's name or platforms (its id stays).
+pub fn update(id: &str, name: Option<&str>, targets: Option<Targets>) -> Result<App, String> {
+    let name = name.map(check_name).transpose()?;
+    let targets = targets.map(check_targets).transpose()?;
+    let _held = hold();
+    let mut s = load();
+    if let Some(n) = &name
+        && s.apps.iter().any(|a| a.id != id && a.name.eq_ignore_ascii_case(n))
+    {
+        return Err(format!("there is already an app called \"{n}\": pick another name"));
+    }
+    let app = s.apps.iter_mut().find(|a| a.id == id).ok_or("no such app")?;
+    if let Some(n) = name {
+        app.name = n;
+    }
+    if let Some(t) = targets {
+        app.targets = t;
+    }
+    let out = app.clone();
+    save(&s)?;
+    Ok(out)
+}
+
+/// Take an app off the list; its folder (tests, memory, map) stays on disk.
+pub fn remove(id: &str) -> Result<(), String> {
+    let _held = hold();
+    let mut s = load();
+    let before = s.apps.len();
+    s.apps.retain(|a| a.id != id);
+    if s.apps.len() == before {
+        return Err("no such app".into());
+    }
+    if s.current.as_deref() == Some(id) {
+        s.current = s.apps.first().map(|a| a.id.clone());
+    }
+    save(&s)
+}
+
+/// Make `id` the current app.
+pub fn set_current(id: &str) -> Result<App, String> {
+    let _held = hold();
+    let mut s = load();
+    let app = s.apps.iter().find(|a| a.id == id).cloned().ok_or("no such app")?;
+    s.current = Some(app.id.clone());
+    save(&s)?;
+    Ok(app)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+fn check_name(name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("give the app a name, for example \"Shop staging\"".into());
+    }
+    if n.chars().count() > 60 || n.chars().any(char::is_control) {
+        return Err("the name is too long or has odd characters: use up to 60 letters, digits and spaces".into());
+    }
+    Ok(n.to_owned())
+}
+
+/// At least one platform; a website is an http(s) or file address, a phone app an app id such as
+/// com.shop.app.
+fn check_targets(t: Targets) -> Result<Targets, String> {
+    let clean = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let t = Targets { web: clean(t.web), android: clean(t.android), ios: clean(t.ios) };
+    if t.web.is_none() && t.android.is_none() && t.ios.is_none() {
+        return Err("add a website address, an Android app or an iPhone app".into());
+    }
+    if let Some(w) = &t.web {
+        let lower = w.to_ascii_lowercase();
+        let ok = (lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("file://")) && w.len() <= 2000 && !w.chars().any(|c| c.is_control() || c.is_whitespace());
+        if !ok {
+            return Err(format!("\"{}\" is not a website address: start it with https://", w.chars().take(80).collect::<String>()));
+        }
+    }
+    for (what, v) in [("Android", &t.android), ("iPhone", &t.ios)] {
+        if let Some(id) = v
+            && !app_id(id)
+        {
+            return Err(format!("\"{}\" is not an {what} app id: it looks like com.shop.app", id.chars().take(80).collect::<String>()));
+        }
+    }
+    Ok(t)
+}
+
+fn app_id(s: &str) -> bool {
+    s.len() <= 200 && s.split('.').count() >= 2 && s.split('.').all(|p| p.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+}
+
+/// "Shop staging" → "shop-staging": lower-case letters and digits, one dash between words.
+pub fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out: String = out.trim_end_matches('-').chars().take(40).collect();
+    let out = out.trim_end_matches('-').to_owned();
+    if out.is_empty() { "app".into() } else { out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_become_stable_ids() {
+        assert_eq!(slug("Shop staging"), "shop-staging");
+        assert_eq!(slug("  Android demo (v2)!"), "android-demo-v2");
+        assert_eq!(slug("日本"), "app");
+        assert_eq!(slug(&"a".repeat(90)).len(), 40);
+    }
+
+    #[test]
+    fn an_app_has_a_name_and_at_least_one_real_platform() {
+        assert!(check_name("  ").is_err() && check_name("a\u{7}b").is_err() && check_name(&"x".repeat(61)).is_err());
+        assert!(check_targets(Targets::default()).is_err());
+        assert!(check_targets(Targets { web: Some("javascript:alert(1)".into()), ..Default::default() }).is_err());
+        assert!(check_targets(Targets { web: Some("shop.example".into()), ..Default::default() }).is_err());
+        assert!(check_targets(Targets { android: Some("../../etc".into()), ..Default::default() }).is_err());
+        assert!(check_targets(Targets { ios: Some("Shop".into()), ..Default::default() }).is_err());
+        let t = check_targets(Targets { web: Some(" https://staging.shop.example ".into()), android: Some("com.shop.app".into()), ios: Some(String::new()) }).expect("ok");
+        assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example"), Some("com.shop.app"), None));
+        let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0 };
+        assert_eq!(a.kinds(), ["web", "android"]);
+    }
 }

@@ -145,7 +145,7 @@ fn connect_jira_only_with_a_working_token_kept_only_in_the_key_store() {
     assert_eq!(r["ok"], "Saved. Jira is connected to yourteam.atlassian.net · Kanban (KAN).");
     let state = ui.get("/api/jira");
     assert_eq!((state["connected"].as_bool(), state["settings"]["project_key"].as_str(), state["settings"]["qa_status"].as_str()), (Some(true), Some("KAN"), Some("QA")), "{state}");
-    let apps = ui.get("/api/apps");
+    let apps = ui.get("/api/integrations");
     assert_eq!((apps["jira"]["site"].as_str(), apps["jira"]["needs_attention"].as_bool()), (Some("yourteam.atlassian.net"), Some(false)), "{apps}");
 
     // Manage: Test connection with the saved token; another address needs the token again.
@@ -165,14 +165,14 @@ fn connect_jira_only_with_a_working_token_kept_only_in_the_key_store() {
     fake.stop_accepting();
     let (_, r) = ui.post(json!({ "action": "test", "site": "yourteam.atlassian.net", "email": "alex@yourteam.com" }));
     assert_eq!(r["kind"], "refused", "{r}");
-    assert_eq!(ui.get("/api/apps")["jira"]["needs_attention"], true);
+    assert_eq!(ui.get("/api/integrations")["jira"]["needs_attention"], true);
 
     // Disconnect: token and settings gone, audit says so.
     let (st, r) = ui.post(json!({ "action": "disconnect" }));
     assert_eq!(st, 200, "{r}");
     assert!(r["ok"].as_str().is_some_and(|m| m.starts_with("Jira disconnected.")));
     assert_eq!(ui.get("/api/jira")["connected"], false);
-    assert_eq!(ui.get("/api/apps")["jira"], Value::Null);
+    assert_eq!(ui.get("/api/integrations")["jira"], Value::Null);
     assert!(!home.join(".fastpilot/keys/jira").exists() && !home.join(".fastpilot/jira.json").exists());
     let audit = std::fs::read_to_string(home.join(".fastpilot/audit.jsonl")).unwrap_or_default();
     assert!(audit.contains("disconnected"), "{audit}");
