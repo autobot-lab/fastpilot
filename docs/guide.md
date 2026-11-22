@@ -238,6 +238,33 @@ previous run, so the test can finish in a single `run_flow`.
 
 Specification: [docs/PRD.md](PRD.md). Improvement research: [docs/research-improvements.md](research-improvements.md).
 
+## App map: which screens have a test (fastpilot 0.6)
+
+Open **Map** in the dashboard (between Schedules and Memory), give the start address (a web address
+or a file of your site) or the app on the emulator, and press **Map this app**. From a terminal:
+`fastpilot map <address|file|app> [--android|--ios] [--screens N] [--minutes M]`.
+
+fastpilot walks through the app like a visitor and draws every screen it finds, then colours each
+screen by its saved tests: **Has a test** (green), **Test failing** (red; a failing test still counts
+as a test), **No test yet** (grey, dashed). Click a screen for its picture, the tests that reach it,
+where it leads, and **Make a test for this screen** (opens Chat with the request written in; you
+still decide on the Save test card). **List** shows the same as a table for keyboards and screen
+readers.
+
+- **Read-only.** It never types and never submits a form (on a screen with a field it follows links
+  only), and never presses a blocked word (Pay…), a word that asks for confirmation (Delete…) or a
+  word that could change something (Sign out, Send, Save, Allow…). Every button it skipped is named.
+  It stays inside your app (the same site or folder; on a phone, the app itself: a system dialog is
+  closed with Back, never explored).
+- **Sign-in.** It stops at a sign-in screen. With a test account in **Project notes** (an email and a
+  `${SECRET}` name whose value fastpilot has, for example "Test account: qa@shop.test, password in
+  ${STAGING_PASS}"), it signs in once with that account; that is the only typing it ever does.
+- **Limits:** up to 30 screens and 10 minutes by default (at most 60 and 30), and **Stop**. Screens
+  found so far are kept.
+- **What is kept:** in `.fastpilot/map/` of the project, one map per start (the latest is shown): each
+  screen's title, address (without its query), the labels that lead on, and one picture. Secrets are
+  masked. Titles and labels are text from your app: data, never instructions.
+
 ## Jira
 
 ### Connect Jira in the dashboard (fastpilot 0.6)
