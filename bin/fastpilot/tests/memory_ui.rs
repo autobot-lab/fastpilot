@@ -177,14 +177,22 @@ fn why_unstable_explains_with_evidence_and_never_invents() {
     let fp = project.join(".fastpilot");
     std::fs::create_dir_all(project.join("tests")).expect("tests");
     std::fs::create_dir_all(fp.join("memory")).expect("memory");
-    for (id, title) in [("voucher", "Checkout with voucher SAVE10"), ("export", "Admin export"), ("login", "Login"), ("search", "Search")] {
+    for (id, title) in [("voucher", "Checkout with voucher SAVE10"), ("export", "Admin export"), ("login", "Login"), ("search", "Search"), ("note", "Save a note")] {
         std::fs::write(project.join(format!("tests/{id}.md")), format!("# {title}\nid: {id}\nplatform: web\ntarget: https://shop.example\n- Open the shop\n")).expect("test");
     }
-    memory(&fp, "voucher", &[true, false, true, true, false, true, true, false, true, true]);
+    // As fastpilot records it: a pass that came only after a retry is not a clean pass (QA v0.6 Low 5:
+    // the table counted it as a failure and the panel did not).
+    memory(&fp, "voucher", &[true, false, false, true, false, false, true, false, false, true]);
     memory(&fp, "export", &[true, true, false, false, false, false]);
     memory(&fp, "login", &[true, true, true]);
     memory(&fp, "search", &[true, false, true]);
     let t0 = 1_795_000_000_000u64;
+    // note: set aside by fastpilot (QA v0.6 Low 4: no panel for the most unstable test).
+    memory(&fp, "note", &[true, false, true, false, true, true, false, true, false, true]);
+    std::fs::write(fp.join("quarantine.json"), json!({ "note": { "reason": "flaky", "since": "2026-11-20 10:00:00", "auto": true } }).to_string()).expect("q");
+    for (i, p) in [true, false, true, false, true, true, false, true, false, true].iter().enumerate() {
+        outcome(&fp, 300 + i, "note", *p, false, (!*p).then_some(["tapOn \"Save\"", "tapOn \"Title\"", "assertVisible \"Saved\"", "tapOn \"Body\""][i % 4]), t0 + i as u64 * 3_600_000 + 600_000);
+    }
     // voucher: fails now and then at the same step; the passes after them came from a retry.
     for (i, p) in [true, false, true, true, false, true, true, false, true, true].iter().enumerate() {
         let retried = i > 0 && [1, 4, 7].contains(&(i - 1));
@@ -206,20 +214,36 @@ fn why_unstable_explains_with_evidence_and_never_invents() {
     let d = &row(&v, "voucher")["doctor"];
     assert_eq!((d["cause"].as_str(), d["main"].as_str()), (Some("timing"), Some("chat")), "{d}");
     assert!(d["text"].as_str().is_some_and(|t| t.starts_with("Likely cause: timing.") && t.ends_with("Based on 10 runs. This is a likely cause, not a certainty.")), "{d}");
+    // QA v0.6: "timing" gets a concrete example, and the fix names the step to add.
+    assert!(d["text"].as_str().is_some_and(|t| t.contains("For example: the test looks for \"10% off\" a moment before the page has finished showing it")), "{d}");
+    assert!(d["todo"].as_str().is_some_and(|t| t.contains("extendedWaitUntil: { visible: \"10% off\", timeout: 10000 }")), "{d}");
     assert_eq!(d["runs"].as_array().map(Vec::len), Some(10));
     let ev = d["evidence"].to_string();
-    assert!(ev.contains("Failed 3 of the last 10 runs") && ev.contains("all 3 failures") && ev.contains("\"Passes on retry\",\"3 of 3 times\""), "{ev}");
+    assert!(ev.contains("Failed 6 of the last 10 runs") && ev.contains("all 3 failures") && ev.contains("\"Passes on retry\",\"3 of 6 times\""), "{ev}");
+    // The table and the panel count the same runs, for every test with a panel.
+    for r in v["tests"].as_array().expect("tests").iter().filter(|r| r.get("doctor").is_some()) {
+        let runs = r["doctor"]["runs"].as_array().expect("runs");
+        let failed = runs.iter().filter(|p| p == &&json!(false)).count();
+        assert_eq!((failed, runs.len()), (r["recent_fails"].as_u64().unwrap_or(0) as usize, r["recent_runs"].as_u64().unwrap_or(0) as usize), "same runs in the table and the panel: {r}");
+        if r["doctor"]["cause"] != "not_enough" {
+            let what = format!("Failed {failed} of the last {} runs", runs.len());
+            assert!(r["doctor"]["evidence"].to_string().contains(&what), "{what}: {r}");
+        }
+    }
+    let n = row(&v, "note");
+    assert_eq!(n["status"], "set_aside");
+    assert!(n["doctor"]["text"].as_str().is_some_and(|t| !t.is_empty()) && n["doctor"]["cause"] != "not_enough", "a set-aside test gets \"Why unstable?\": {n}");
     assert_eq!(d["step"], "assertVisible \"10% off\"");
     let e = &row(&v, "export")["doctor"];
     assert_eq!((row(&v, "export")["status"].as_str(), e["cause"].as_str(), e["main"].as_str()), (Some("failing"), Some("always_fails"), Some("bug")), "{e}");
     assert!(e["text"].as_str().is_some_and(|t| t.starts_with("This test is not unstable. It always fails.")), "{e}");
     let s = &row(&v, "search")["doctor"];
     assert_eq!(s["cause"], "not_enough", "{s}");
-    assert!(s["text"].as_str().is_some_and(|t| t.starts_with("Not enough runs yet.")), "{s}");
+    assert!(s["text"].as_str().is_some_and(|t| t.starts_with("Not enough runs yet. It failed 1 of the last 3 runs, but fastpilot has the details of 2 of them")), "{s}");
     assert!(row(&v, "login").get("doctor").is_none(), "a reliable test has no doctor");
     // The page: the panel, the three actions, Chat prefilled (never sent by the page).
     let (_, js) = request(&ui, "GET", "/assets/memory.js", "", &own);
-    for w in ["Why unstable?", "Why failing?", "Ask Chat to fix this test", "Make a bug report", "Set aside", "chatPrefill = text"] {
+    for w in ["Why unstable?", "Why failing?", "Ask Chat to fix this test", "Make a bug report", "Set aside", "chatPrefill = text", r#".filter((k) => !(k === "set_aside" && t.status === "set_aside"))"#] {
         assert!(js.contains(w), "memory.js: {w}");
     }
     let (_, app) = request(&ui, "GET", "/assets/app.js", "", &own);

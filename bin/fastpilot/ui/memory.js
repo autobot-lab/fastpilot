@@ -84,7 +84,8 @@ function doctorPanel(t) {
   const all = { chat: ["Ask Chat to fix this test", fix], bug: ["Make a bug report", bug], set_aside: ["Set aside", aside] };
   const order = [d.main, "chat", "bug", "set_aside"].filter((k, i, a) => k && all[k] && a.indexOf(k) === i);
   // No cause: only the evidence and the safe actions.
-  const keys = d.cause === "unknown" ? ["bug", "set_aside"] : d.cause === "not_enough" ? [] : order;
+  // A set-aside test gets the panel too; "Bring back" is on the panel already, so no "Set aside".
+  const keys = (d.cause === "unknown" ? ["bug", "set_aside"] : d.cause === "not_enough" ? [] : order).filter((k) => !(k === "set_aside" && t.status === "set_aside"));
   const buttons = keys.map((k, i) => h("button", { class: "btn sm" + (i === 0 ? " p" : ""), onclick: all[k][1] }, all[k][0]));
   if (d.main === "device") buttons.unshift(h("a", { class: "btn sm p", href: "#/device" }, "Open Device"));
   const tone = { real_bug: "bad", always_fails: "bad", not_enough: "", unknown: "", site: "info", hours: "info" }[d.cause] ?? "warn";
