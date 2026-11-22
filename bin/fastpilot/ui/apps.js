@@ -72,6 +72,36 @@ function githubCard() {
       h("li", {}, "fastpilot comments on the pull request with the result: one comment, updated on each run.")) : null);
 }
 
+// Security (Medium 1): Jira issues and comments Claude Code asked for. Nothing was sent; the
+// person sends each one here (or with `fastpilot jira approve`). The text is exactly what is sent.
+let reqBusy = false;
+async function decideRequest(id, approve) {
+  if (reqBusy) return;
+  reqBusy = true;
+  try {
+    const r = await api("/api/jira", { action: approve ? "approve" : "decline", id });
+    toast(r.message, true);
+  } catch (e) { toast(e.message); }
+  reqBusy = false;
+  appsData = null;
+  loadApps();
+}
+
+function requestCard(r) {
+  const issue = r.kind === "issue";
+  const mins = Math.max(0, Math.round((r.expires_ms - Date.now()) / 60000));
+  return h("section", { class: "app-card req", "aria-label": r.title },
+    h("div", { class: "app-head" }, badge("J", "jira"),
+      h("div", {}, h("b", {}, r.title), h("p", { class: "s" }, `Asked by Claude Code · ${r.site} · expires in ${mins} min`))),
+    h("dl", { class: "prop-rows" },
+      issue ? [h("dt", {}, "Summary"), h("dd", {}, r.summary)] : null,
+      h("dt", {}, issue ? "Description" : "Comment"), h("dd", {}, h("pre", { class: "req-text" }, r.text || "(none)"))),
+    h("p", { class: "s" }, "Did you ask for this? Exactly this text is sent. It never changes a ticket's status."),
+    h("div", { class: "app-acts" },
+      h("button", { class: "btn p", onclick: () => decideRequest(r.id, true) }, issue ? "Create issue" : "Add comment"),
+      h("button", { class: "btn", onclick: () => decideRequest(r.id, false) }, "Don't send")));
+}
+
 function pageApps() {
   $top().replaceChildren(icon("plug"), h("h1", { tabindex: "-1" }, "Apps"), h("span", { class: "s muted" }, "Connect fastpilot to the tools your team already uses"));
   if (!appsData) {
@@ -90,8 +120,10 @@ function pageApps() {
   const soon = ["Linear", "Telegram", "Confluence", "Email"].map((name) => h("div", { class: "app-soon" }, badge(name[0], "soon"), h("b", {}, name)));
   const section = (title, kids) => h("section", { class: "app-sec", "aria-label": title }, h("h2", { class: "app-sec-t" }, title), ...kids);
   const kept = appsData.token_kept || "this computer's key store";
+  const reqs = appsData.jira_requests || [];
   $body().replaceChildren(h("div", { class: "apps" },
     h("div", { class: "apps-main" },
+      reqs.length ? section("Waiting for your OK", [h("div", { class: "app-grid" }, reqs.map(requestCard))]) : null,
       section("Connected", connected.length ? [h("div", { class: "app-grid" }, connected)]
         : [h("div", { class: "app-none" }, h("b", {}, "Nothing is connected yet"),
           h("p", {}, "Connect Jira to send failed tests to your team's board. Slack and webhook notifications you set on a schedule show up here too."))]),

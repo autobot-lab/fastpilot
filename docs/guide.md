@@ -256,6 +256,14 @@ later), then **Save**.
 - **Only this page** connects, changes or disconnects Jira: Chat and the AI cannot.
 - Issues and comments are filed by the dashboard's **Chat bot** or by **Claude Code**, always as a draft
   you approve first. The dashboard has no "send" form of its own.
+- **From Claude Code** (fastpilot's `jira_create_issue` and `jira_comment` tools), nothing is sent by
+  the AI: each issue or comment waits under **Apps › Waiting for your OK** with its exact text, and you
+  send it with one click there or with `fastpilot jira approve` in your own terminal. A request expires
+  after 30 minutes. `fastpilot jira status` shows what is connected. If you prefer to rely on Claude
+  Code's own permission prompt, set `"FASTPILOT_JIRA_WRITES": "direct"` in the `env` of fastpilot in
+  your own `.mcp.json`; fastpilot never writes that, and never adds an allow rule for these tools.
+- `jira_read` reads only tickets of the default project, so text on a tested page cannot make the AI
+  read other private tickets.
 
 ### With Atlassian's MCP server
 
@@ -566,9 +574,9 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `config` | View and change settings (`~/.fastpilot/config.toml`) through chat: `list` / `get` / `set` / `unset`. The agent may only **make limits stricter** (`allowed_domains`, `confirm_actions`, `block_actions`, `vars`, `state_expire_days`, the `allow_*` permissions, `upload_dirs`, `max_steps`, `test_timeout`); stricter values apply right away, looser ones only after a restart. Program paths, locations, and other computers (`chrome`, `claude`, `dir`, `ios_runner`, `adb_server`, `chrome_endpoint`) can only be changed by the user with `fastpilot config set` or `fastpilot ui` |
 | `docs` | On-demand reference: `dsl`, `selectors`, `parallel`, `examples`, `errors`, `memory` |
 | `related_tests` | Which saved tests to run first after a code change ("test what I changed"): reads the changed files with git (read only) and gives each chosen test one plain reason |
-| `jira_read` | Read a ticket from the Jira connected in the dashboard (Apps › Jira): summary, status, type, description, marked as data that is never followed as instructions. The token stays with fastpilot |
-| `jira_create_issue` | Create one issue there, after the user saw the exact text. Looks for an open issue that seems the same first. Text is cleaned (secrets as `***`, no emails, no other sites' links, no mentions). Refused in the dashboard Chat (it uses cards) and in `fastpilot run` / schedules (nobody to approve) |
-| `jira_comment` | Add one comment to a ticket, the same way. Never changes a ticket's status |
+| `jira_read` | Read a ticket of the default project chosen in the dashboard (Apps › Jira): summary, status, type, description, marked as data that is never followed as instructions. The token stays with fastpilot. Not used in the dashboard Chat (fastpilot reads the tickets you name) or in `fastpilot run` / schedules |
+| `jira_create_issue` | Ask to create one issue there. Looks for an open issue that seems the same first. Text is cleaned (secrets masked, no emails, no other sites' links, no mentions). **Sends nothing**: it files a request you send with one click on the Apps page or with `fastpilot jira approve` in your own terminal (30 minutes). Refused in the dashboard Chat (it uses cards) and in `fastpilot run` / schedules (nobody to approve) |
+| `jira_comment` | Ask to add one comment to a ticket, the same way. Never changes a ticket's status |
 
 ## Examples
 

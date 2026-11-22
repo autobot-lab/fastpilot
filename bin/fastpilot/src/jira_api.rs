@@ -63,7 +63,35 @@ pub async fn change(axum::Json(body): axum::Json<Value>) -> Response {
         "statuses" => statuses(&body).await,
         "save" => save(&body).await,
         "disconnect" => disconnect(),
+        "approve" => decide(&body, true).await,
+        "decline" => decide(&body, false).await,
         _ => refuse(StatusCode::BAD_REQUEST, "other", "Unknown Jira action."),
+    }
+}
+
+/// The Jira writes Claude Code asked for, as the Apps page shows them (fastpilot's words and the
+/// exact text that is sent).
+pub fn requests_shown() -> Vec<Value> {
+    jira::requests::list()
+        .into_iter()
+        .map(|r| json!({ "id": r.id, "kind": r.kind, "title": r.title(), "site": r.site, "project": r.project, "key": r.key, "summary": r.summary, "text": r.text, "created_ms": r.created_ms, "expires_ms": r.created_ms + jira::requests::EXPIRY_MS }))
+        .collect()
+}
+
+/// `{action: approve|decline, id}`: the person's click on a request from Claude Code (Security,
+/// Medium 1). The request is taken out first, so it is decided once.
+async fn decide(body: &Value, approve: bool) -> Response {
+    let id = text(body, "id");
+    let Some(r) = jira::requests::take(&id) else {
+        return refuse(StatusCode::NOT_FOUND, "gone", "This request is not waiting any more (it was decided, or it expired after 30 minutes). Nothing was sent.");
+    };
+    if !approve {
+        fastpilot_core::change::audit("jira", None, Some(&r.site), "dashboard", "declined");
+        return axum::Json(json!({ "message": "Dropped. Nothing was sent to Jira.", "requests": requests_shown() })).into_response();
+    }
+    match jira::requests::send(&r, "dashboard").await {
+        Ok((msg, link)) => axum::Json(json!({ "message": msg, "link": link, "requests": requests_shown() })).into_response(),
+        Err(e) => refuse(StatusCode::CONFLICT, "send", &e),
     }
 }
 
