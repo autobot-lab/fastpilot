@@ -305,22 +305,40 @@ function providerGroup() {
       provResult ? h("p", { class: "prov-result " + (provResult.ok ? "ok" : "bad"), role: "status" }, provResult.ok ? "✓ " : "✗ ", provResult.text) : null));
 }
 
+// S6: one line says what runs the tests (the signed-in Claude Code, found by itself); the models
+// and other providers are under More options, which says how many differ from the defaults.
+function modelUsing(run) {
+  if (provData && !provData.error && provData.provider && provData.provider !== "claude") {
+    return h("p", { class: "using", role: "status" }, `Using ${PROV_LABEL[provData.provider] || provData.provider}${provData.model ? " · " + provData.model : ""}`,
+      h("span", { class: "s muted" }, " · change it under More options"));
+  }
+  if (!doctorCache) return h("p", { class: "using s muted", role: "status" }, "Looking for Claude Code…");
+  if (run && run.status === "ok") return h("p", { class: "using ok", role: "status" }, "Using Claude Code ✓", h("span", { class: "s muted" }, ` · ${run.detail} · your own sign-in, no API key`));
+  return UI.notice("warn", "Claude Code is not on this computer yet. fastpilot uses your own Claude Code sign-in, with no API key. ",
+    h("a", { class: "lk", href: "https://claude.com/claude-code", target: "_blank", rel: "noopener" }, "Get Claude Code"), ", sign in once, then come back.");
+}
+
 function pageModel() {
   const run = doctorCache && doctorCache.checks.find((c) => c.area === "run");
+  if (!provData) loadProvider();
   const status = !doctorCache ? h("span", { class: "tag" }, "Checking…")
     : run && run.status === "ok" ? h("span", { class: "tag" }, "✓ Installed")
     : h("span", { class: "tag warn" }, "Not installed");
+  const changed = ["model_replay", "model_explore"].filter((k) => get(k) && get(k).value !== null).length + (provData && provData.provider && provData.provider !== "claude" ? 1 : 0);
   const replay = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_replay)?.[1] || S.defaults.model_replay}`], ...MODELS];
   const explore = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_explore)?.[1] || S.defaults.model_explore}`], ...MODELS];
   return h("section", { class: "panel" },
     h("h2", {}, "AI model", savedNote()),
-    h("p", { class: "sub" }, "The model is only used when fastpilot runs tests itself (", code("fastpilot run"), "). From Claude Code or Cursor, the model is chosen in that app."),
-    h("div", { class: "grp" },
-      h("div", { class: "gh" }, icon("model"), "ai model · who runs what"),
-      opt("Replay (fast & cheap)", "Replays steps that are already recorded", select("model_replay", replay, "Replay model"), get("model_replay")),
-      opt("Exploring / repairing", "Used when a replay fails, or for a new test", select("model_explore", explore, "Exploring model"), get("model_explore")),
-      opt("Claude Code", run ? `${run.detail}` : "Uses your Claude Code login, no API key", status)),
-    providerGroup());
+    modelUsing(run),
+    // Open by itself only when another provider is in use: its key and model are managed there.
+    UI.moreOptions({ label: "More options", changed, open: !!(provData && provData.provider && provData.provider !== "claude") },
+      h("p", { class: "sub" }, "fastpilot picks the models by itself: a fast one to replay recorded steps, a balanced one to explore. These only apply when fastpilot runs tests itself; from Claude Code, the model is chosen in that app."),
+      h("div", { class: "grp" },
+        h("div", { class: "gh" }, icon("model"), "ai model · who runs what"),
+        opt("Replay (fast & cheap)", "Replays steps that are already recorded", select("model_replay", replay, "Replay model"), get("model_replay")),
+        opt("Exploring / repairing", "Used when a replay fails, or for a new test", select("model_explore", explore, "Exploring model"), get("model_explore")),
+        opt("Claude Code", run ? `${run.detail}` : "Uses your Claude Code login, no API key", status)),
+      providerGroup()));
 }
 
 function pageLimits() {

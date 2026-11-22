@@ -471,7 +471,8 @@ fn an_agent_on_another_provider_chats_with_the_same_tools_and_rules() {
     let v = get("/api/agents");
     let me = v["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "other-model")).cloned().expect("agent");
     assert_eq!((me["model_label"].as_str(), me["tested"].as_bool()), (Some("Other · fake-model-1"), Some(false)), "{me}");
-    assert_eq!(v["agents"][0]["model_label"], "Claude Code · Opus", "the first agent: Claude Code with the default model");
+    // S6 (DC7): the default is the balanced model, not the most expensive one.
+    assert_eq!(v["agents"][0]["model_label"], "Claude Code · Sonnet", "the first agent: Claude Code with the default model");
     assert!(v["providers"].as_array().is_some_and(|p| p.len() == 6), "{v}");
 
     let (st, body) = post("/api/chat", json!({ "agent": "other-model", "message": "test the demo login" }));

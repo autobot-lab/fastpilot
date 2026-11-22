@@ -910,8 +910,9 @@ fastpilot run tests/ --changed release-1  # compared with a branch, tag or commi
   tool permissions are approved automatically, because nobody is waiting in front of the screen. The `report` and `config` tools
   are not given.
 - Tests with a path memory hint are replayed by a fast model (`claude-haiku-5-5`). If the replay fails
-  or there is no hint yet, a large model (`claude-opus-5-5`) continues from the last screen (both can be
-  changed: `model_replay`, `model_explore`). `--model` (or `model`) forces one model, and `--max-steps` limits the number of tool calls per test (default 30).
+  or there is no hint yet, a balanced model (`claude-sonnet-5-5`) continues from the last screen (both can be
+  changed under Settings › AI model › More options, or `model_replay`, `model_explore`; Opus is a choice there,
+  not the default). `--model` (or `model`) forces one model, and `--max-steps` limits the number of tool calls per test (default 30).
 - Failures are retried while `FASTPILOT_RETRY_BUDGET` (default 3) is not used up; a retry that passes = flaky.
   After `FASTPILOT_BREAKER` (default 3) infra failures in a row, the remaining tests are skipped as infra.
 - `--workers N` runs N tests at once. Each test has its own Chrome. Booted Android devices and iOS simulators
