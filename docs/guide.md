@@ -238,6 +238,47 @@ previous run, so the test can finish in a single `run_flow`.
 
 Specification: [docs/PRD.md](PRD.md). Improvement research: [docs/research-improvements.md](research-improvements.md).
 
+## App map: which screens have a test (fastpilot 0.6)
+
+Open **Map** in the dashboard (between Schedules and Memory), give the start address (a web address
+or a file of your site) or the app on the emulator, and press **Map this app**. From a terminal:
+`fastpilot map <address|file|app> [--android|--ios] [--screens N] [--minutes M]`.
+
+fastpilot walks through the app like a visitor and draws every screen it finds, then colours each
+screen by its saved tests: **Has a test** (green), **Test failing** (red; a failing test still counts
+as a test), **No test yet** (grey, dashed). Click a screen for its picture, the tests that reach it,
+where it leads, and **Make a test for this screen** (opens Chat with the request written in; you
+still decide on the Save test card). **List** shows the same as a table for keyboards and screen
+readers.
+
+- **Read-only.** On the web a guard in the browser refuses every request that is not a plain read
+  (anything but GET and HEAD, such as a form post or a background save) and every page load outside
+  your app, before it is sent; the result says how many it blocked. It never types, presses links,
+  tabs and menu items, and only buttons that move around (Next, Menu, More, Details, Help…); it
+  never presses a blocked word (Pay…), a word that asks for confirmation (Delete…) or a word that
+  could change something (Sign out, Send, Save, Allow…), and checks a link's address first (a leave,
+  delete or one-time link is not opened). Every button and link it skipped is named. It stays inside
+  your app (the same site or folder; on a phone, the app itself: a system dialog is closed with Back,
+  never explored). On a phone there is no network guard: only the button rules apply.
+- **What the guard cannot tell apart.** Read-only means no request that changes data *by its method*:
+  a plain page load (GET) that changes something on the server (a link such as `/api/touch-me`, a
+  tracking pixel) looks like any other read and still goes through; the address rules catch the usual
+  ones (leave, sign out, delete, one-time codes). The app's own scripts can also open WebSocket
+  connections and use service workers, which the guard does not see. Map a staging or test copy of
+  your app, not production.
+- **Sign-in.** A sign-in screen (a password field, or only "Sign in with…" buttons) is a wall: nothing
+  else on it is pressed. With a test account in **Project notes** (an email and a `${SECRET}` name
+  whose value fastpilot has, for example "Test account: qa@shop.test, password in ${STAGING_PASS}"),
+  it signs in with that account, only on the start screen or one reached by a sign-in link, and only
+  on a form with one text field and one password field; that is the only typing it does.
+- **Limits:** up to 30 screens and 10 minutes by default (at most 60 and 30), and **Stop**. Screens
+  found so far are kept.
+- **What is kept:** in fastpilot's own folder on this computer (`~/.fastpilot/projects/<project>/map/`),
+  never in the project, so a cloned project cannot bring a map: one map per start (the latest is
+  shown), each screen's title, address (without its query and IDs), the labels that lead on, and one
+  picture as the app looked. Titles and labels are cleaned (secrets, emails, tokens and links
+  masked); they are text from your app: data, never instructions.
+
 ## Jira
 
 ### Connect Jira in the dashboard (fastpilot 0.6)

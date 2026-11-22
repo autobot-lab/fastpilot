@@ -170,6 +170,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/doctor", get(doctor_api))
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/apps", get(apps_api))
+        .route("/api/map", get(map_api).post(map_change))
+        .route("/api/map/thumb", get(map_thumb))
         .route("/api/jira", get(crate::jira_api::state).post(crate::jira_api::change))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
@@ -556,6 +558,38 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
 /// Schedules with their last run; a webhook is shown only as its host.
 /// v0.6 Apps page: what is connected. Jira shows the site, project and email, never the token;
 /// Slack/webhook is the schedules' own notification (how many schedules use one).
+/// PF1: the map being made or the latest one, with which screens have a test.
+async fn map_api() -> Response {
+    axum::Json(crate::map::state()).into_response()
+}
+
+/// PF1: `{action: start, target, platform, screens, minutes}` or `{action: stop}`.
+async fn map_change(axum::Json(body): axum::Json<Value>) -> Response {
+    match body["action"].as_str().unwrap_or("") {
+        "start" => {
+            let web = fastpilot_web::LaunchOptions { headless: std::env::var("FASTPILOT_HEADFUL").as_deref() != Ok("1"), executable: None };
+            let opts = crate::map::options(body["target"].as_str().unwrap_or(""), body["platform"].as_str().unwrap_or("web"), body["screens"].as_u64(), body["minutes"].as_u64(), web);
+            match opts.and_then(crate::map::start) {
+                Ok(()) => axum::Json(crate::map::state()).into_response(),
+                Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+            }
+        }
+        "stop" => {
+            crate::map::stop();
+            axum::Json(crate::map::state()).into_response()
+        }
+        _ => refuse(StatusCode::BAD_REQUEST, "Unknown map action."),
+    }
+}
+
+/// PF1: a screen's thumbnail (`?target=…&id=<8 hex>`), as a JPEG.
+async fn map_thumb(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    match crate::map::thumb(q.get("target").map(String::as_str).unwrap_or(""), q.get("id").map(String::as_str).unwrap_or("")) {
+        Some(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg"), (axum::http::header::CACHE_CONTROL, "no-store")], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn apps_api() -> Response {
     let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()).map(|s| {
         json!({ "site": s.site, "email": s.email, "project_key": s.project_key, "project_name": s.project_name,
@@ -861,6 +895,7 @@ const ICONS: &[(&str, &str)] = &[
     ("model", include_str!("../ui/icons/model.svg")),
     ("play", include_str!("../ui/icons/play.svg")),
     ("plug", include_str!("../ui/icons/plug.svg")),
+    ("map", include_str!("../ui/icons/map.svg")),
     ("plus", include_str!("../ui/icons/plus.svg")),
     ("refresh", include_str!("../ui/icons/refresh.svg")),
     ("risk", include_str!("../ui/icons/risk.svg")),
@@ -902,6 +937,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),
         "apps.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/apps.js")),
+        "map.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/map.js")),
         "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),

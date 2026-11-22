@@ -12,6 +12,9 @@ type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// The demo pages, as in `examples/demo/`.
 pub const PAGES: &[(&str, &str)] = &[
+    ("index.html", include_str!("../../../examples/demo/index.html")),
+    ("account.html", include_str!("../../../examples/demo/account.html")),
+    ("help.html", include_str!("../../../examples/demo/help.html")),
     ("login.html", include_str!("../../../examples/demo/login.html")),
     ("widgets.html", include_str!("../../../examples/demo/widgets.html")),
     ("pin.html", include_str!("../../../examples/demo/pin.html")),

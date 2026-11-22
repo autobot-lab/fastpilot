@@ -144,6 +144,29 @@ struct Shared {
     downloads_dir: Option<PathBuf>,
     /// CDP screencast while recording: start time and base64 JPEG frames (capped).
     screencast: Mutex<Option<Screencast>>,
+    /// PF1 (v0.6): the app map's read-only guard, while it maps with this page.
+    read_only: Mutex<Option<ReadOnly>>,
+}
+
+/// While the app map explores (Security review, High): every request that could change something
+/// (any method but GET and HEAD) is refused, and so is every page load outside the app, before
+/// anything is sent. `blocked` counts them.
+#[derive(Debug, Clone, Default)]
+struct ReadOnly {
+    /// `https://shop.test/` or `file:///…/demo/`.
+    inside: String,
+    blocked: usize,
+}
+
+impl ReadOnly {
+    /// Why this request is refused, or `None`.
+    fn refuse(&self, method: &str, url: &str, document: bool) -> Option<String> {
+        if method != "GET" && method != "HEAD" {
+            return Some(format!("blocked: a {method} request (the app map changes nothing)"));
+        }
+        let inside = url.starts_with(&self.inside) || url == self.inside.trim_end_matches('/') || url.starts_with("about:") || url.starts_with("data:");
+        (document && !inside).then(|| format!("blocked: {url} is outside the app"))
+    }
 }
 
 /// Recording start and `(seconds since start, base64 jpeg)` frames.
@@ -247,7 +270,35 @@ async fn enable(cdp: &crate::cdp::Cdp, session: Option<&str>) -> std::result::Re
     Ok(())
 }
 
+/// Every request of a guarded tab stops for the read-only check.
+const ALL_REQUESTS: &str = r#"{ "patterns": [{ "urlPattern": "*", "requestStage": "Request" }] }"#;
+
 impl WebPage {
+    /// PF1 (v0.6): turns on the app map's read-only guard for this page and its popups: from now
+    /// on every request that is not GET or HEAD is refused, and so is every page load that does
+    /// not start with `inside` (`https://shop.test/`, `file:///…/demo/`), before it is sent.
+    pub async fn read_only(&self, inside: &str) -> Result<()> {
+        *lock(&self.shared.read_only) = Some(ReadOnly { inside: inside.to_owned(), blocked: 0 });
+        let all: Value = serde_json::from_str(ALL_REQUESTS).unwrap_or_default();
+        self.call("Fetch.enable", all).await.map_err(|e| CoreError::Driver(format!("the read-only guard could not start: {e}")))?;
+        Ok(())
+    }
+
+    /// Requests the read-only guard refused so far.
+    pub fn blocked(&self) -> usize {
+        lock(&self.shared.read_only).as_ref().map_or(0, |r| r.blocked)
+    }
+
+    /// Where the link with this snapshot handle points (its `href`), when it is in the main page.
+    pub async fn link_target(&self, handle: i64) -> Option<String> {
+        if handle >= 1i64 << FRAME_SHIFT {
+            return None;
+        }
+        let v = self.call("DOM.describeNode", json!({ "backendNodeId": handle })).await.ok()?;
+        let attrs = v["node"]["attributes"].as_array()?;
+        attrs.chunks(2).find(|kv| kv.first().and_then(Value::as_str) == Some("href")).and_then(|kv| kv.get(1)).and_then(Value::as_str).map(str::to_owned)
+    }
+
     pub(crate) async fn create(browser: Arc<Browser>) -> std::result::Result<Self, Error> {
         let cdp = browser.cdp.clone();
         let ctx = cdp.call(None, "Target.createBrowserContext", json!({ "disposeOnDetach": true })).await?;
@@ -301,6 +352,7 @@ impl WebPage {
             next_frame: AtomicU32::new(1),
             downloads_dir,
             screencast: Mutex::new(None),
+            read_only: Mutex::new(None),
         });
         let (nav_tx, nav) = watch::channel(Nav::default());
         let rx = browser.cdp.subscribe();
@@ -641,13 +693,27 @@ async fn event_loop(
             let ours = ev.session == tab.session || lock(&shared.openers).iter().any(|(t, _)| t.session == ev.session);
             if let (true, Some(id)) = (ours, p["requestId"].as_str()) {
                 let url = p["request"]["url"].as_str().unwrap_or("");
-                if fastpilot_core::policy::url_allowed(url, &fastpilot_core::policy::allowed_domains()) {
-                    cdp.send(ev.session.as_deref(), "Fetch.continueRequest", json!({ "requestId": id }));
-                } else {
-                    cdp.send(ev.session.as_deref(), "Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" }));
-                    let msg = format!("blocked: {url} is not in allowed_domains");
-                    note(msg.clone());
-                    diag(msg);
+                let method = p["request"]["method"].as_str().unwrap_or("GET");
+                // Without the map's guard only page loads stop here; with it, every request.
+                let document = p["resourceType"].as_str().is_none_or(|t| t == "Document");
+                let guarded = {
+                    let mut g = lock(&shared.read_only);
+                    let why = g.as_ref().and_then(|r| r.refuse(method, url, document));
+                    if why.is_some()
+                        && let Some(r) = g.as_mut()
+                    {
+                        r.blocked += 1;
+                    }
+                    why
+                };
+                let why = guarded.or_else(|| (document && !fastpilot_core::policy::url_allowed(url, &fastpilot_core::policy::allowed_domains())).then(|| format!("blocked: {url} is not in allowed_domains")));
+                match why {
+                    None => cdp.send(ev.session.as_deref(), "Fetch.continueRequest", json!({ "requestId": id })),
+                    Some(msg) => {
+                        cdp.send(ev.session.as_deref(), "Fetch.failRequest", json!({ "requestId": id, "errorReason": "BlockedByClient" }));
+                        note(msg.clone());
+                        diag(msg);
+                    }
                 }
             }
             continue;
@@ -669,6 +735,11 @@ async fn event_loop(
                         continue;
                     }
                     if enable(&cdp, Some(&session)).await.is_ok() {
+                        // The app map's guard covers a popup too.
+                        if lock(&shared.read_only).is_some() {
+                            let all: Value = serde_json::from_str(ALL_REQUESTS).unwrap_or_default();
+                            let _ = cdp.call(Some(&session), "Fetch.enable", all).await;
+                        }
                         let frames = std::mem::take(&mut *lock(&shared.frames));
                         lock(&shared.openers).push((tab.clone(), frames));
                         *lock(&shared.tab) = Tab { session: Some(session), target };
