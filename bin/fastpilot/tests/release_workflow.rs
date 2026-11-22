@@ -92,3 +92,29 @@ fn the_mcp_registry_is_published_after_npm_with_a_pinned_publisher() {
     assert!(run(&steps[fetch]).contains("/download/v1.") && run(&steps[fetch]).contains("  mcp-publisher.tar.gz"), "a fixed version and its hash");
     assert!(run(&steps[publish]).contains("::error::"), "a refusal is reported");
 }
+
+/// QA v0.6 re-test Low 4: a published binary always carries the Android helper. Packaging for a
+/// release stops when the APK is missing (it only warned before), after `agent-android/build.sh`
+/// built it, and a step checks that the packaged binary holds it.
+#[test]
+fn published_binaries_carry_the_android_helper() {
+    let wf: Value = serde_yaml::from_str(WORKFLOW).expect("release.yml is YAML");
+    let steps = wf["jobs"]["package"]["steps"].as_sequence().expect("package steps");
+    let run = |s: &Value| s["run"].as_str().unwrap_or("").to_owned();
+    let pos = |needle: &str| steps.iter().position(|s| run(s).contains(needle)).unwrap_or_else(|| panic!("a step runs {needle}"));
+    let (build, package) = (pos("agent-android/build.sh"), pos("scripts/package.sh"));
+    assert!(build < package, "the helper is built before packaging");
+    assert!(run(&steps[package]).contains("--require-android"), "packaging for a release requires the helper");
+    let check = pos("classes.dex");
+    assert!(check > package && steps[check]["if"].is_null(), "every target's binary is checked for the helper");
+    assert!(run(&steps[check]).contains("grep -aq \"classes.dex\"") && run(&steps[check]).contains("::error::the release binary has no Android helper"));
+    // Without the APK (as in a plain checkout and CI), `--require-android` stops before building.
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    if std::path::Path::new(root).join("agent-android/out/fastpilot-agent.apk").exists() {
+        return eprintln!("skipping the script part: the helper APK is built here");
+    }
+    let out = std::process::Command::new("sh").arg("scripts/package.sh").args(["--target", "x86_64-unknown-linux-gnu", "--require-android"]).current_dir(root).output().expect("package.sh");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("this release would have no Android helper. Run agent-android/build.sh first."), "{err}");
+}

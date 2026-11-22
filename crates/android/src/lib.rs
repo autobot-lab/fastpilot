@@ -21,6 +21,10 @@ use tokio::net::TcpStream;
 
 pub use adb::{Adb, configured_server, sdk_tool};
 
+/// What a person reads when this build has no Android helper (the agent APK), in plain words
+/// (QA v0.6 re-test Low 4: "agent APK not embedded: run agent-android/build.sh, then rebuild").
+pub const NO_HELPER: &str = "This build of fastpilot has no Android helper. Install fastpilot from npm or the release, or build the helper first (agent-android/build.sh) and then build fastpilot again.";
+
 /// Whether this build carries the Android agent APK (release builds do).
 pub fn agent_embedded() -> bool {
     !AGENT_APK.is_empty()
@@ -49,6 +53,9 @@ pub enum Error {
     Io(String),
     #[error("{0}")]
     Unauthorized(String),
+    /// This build has no Android helper (`NO_HELPER`).
+    #[error("{0}")]
+    NoHelper(&'static str),
     #[error("{0}")]
     Offline(String),
     /// Screen locked with a PIN/pattern fastpilot cannot (and must not) enter.
@@ -331,7 +338,7 @@ impl AndroidDriver {
     /// Connect to `serial` (or the only attached device), install/refresh the agent, start it.
     pub async fn start(serial: Option<&str>) -> std::result::Result<Self, Error> {
         if AGENT_APK.is_empty() {
-            return Err(Error::Agent("agent APK not embedded: run agent-android/build.sh, then rebuild fastpilot".into()));
+            return Err(Error::NoHelper(NO_HELPER));
         }
         let adb = Adb::new().await?;
         let serial = device::resolve(serial).await?;
@@ -1212,6 +1219,21 @@ impl Driver for AndroidDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA v0.6 re-test Low 4: without the helper APK, starting an Android session says so in plain
+    /// words ("agent APK not embedded: run agent-android/build.sh, then rebuild fastpilot" was too
+    /// technical). It stops before adb, so no device is touched. A build with the APK skips this.
+    #[test]
+    fn a_build_without_the_android_helper_says_so_in_plain_words() {
+        if agent_embedded() {
+            return eprintln!("skipping: this build has the Android helper");
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let err = rt.block_on(AndroidDriver::start(None)).err().expect("no helper, no session").to_string();
+        assert_eq!(err, NO_HELPER);
+        assert!(err.starts_with("This build of fastpilot has no Android helper. Install fastpilot from npm or the release, or build the helper first (agent-android/build.sh)"), "{err}");
+        assert!(!err.contains("APK") && !err.contains("embedded") && !err.starts_with("agent:"), "{err}");
+    }
 
     /// Security review (High): values from a flow reached the device's `sh -c` unquoted
     /// (`appId: "com.x/.Main&<cmd>"`), so a flow could run any command on the device. Each `adb shell`

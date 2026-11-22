@@ -45,13 +45,21 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
       - run: agent-android/build.sh
-      - run: scripts/package.sh --target ${{ matrix.target }}
+      # A published binary always carries the Android helper: packaging stops without it.
+      - run: scripts/package.sh --target ${{ matrix.target }} --require-android
       - name: Smoke run
         if: matrix.target != 'x86_64-apple-darwin'
         shell: bash
         run: |
           f=$(ls dist/*.tar.gz); d=$(basename "$f" .tar.gz)
           tar -xzf "$f" -C dist && "dist/$d/fastpilot" --version
+      - name: The binary carries the Android helper
+        shell: bash
+        run: |
+          # The embedded helper APK is a zip: its file list (classes.dex) is in the binary.
+          f=$(ls dist/*.tar.gz); d=$(basename "$f" .tar.gz); rm -rf "dist/$d"
+          tar -xzf "$f" -C dist && LC_ALL=C grep -aq "classes.dex" "dist/$d/fastpilot" || { echo "::error::the release binary has no Android helper (agent APK)"; exit 1; }
+          rm -rf "dist/$d"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fastpilot-${{ matrix.target }}
