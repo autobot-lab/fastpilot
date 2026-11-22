@@ -86,8 +86,14 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
     assert_eq!(st, 200, "{r}");
     let shop = &r["app"];
     assert_eq!((shop["id"].as_str(), shop["kinds"].clone(), shop["targets"].clone(), shop["repo"].clone()),
-        (Some("shop-staging"), json!(["web", "android"]), json!({ "web": "https://staging.shop.example", "android": "com.shop.app" }), Value::Null), "a page cannot set a repo folder: {r}");
+        (Some("shop-staging"), json!(["web", "android"]), json!({ "web": "https://staging.shop.example/", "android": "com.shop.app" }), Value::Null), "a page cannot set a repo folder: {r}");
     assert!(home.join("fastpilot/apps/shop-staging").is_dir(), "its own folder in ~/fastpilot");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home.join("fastpilot/apps/shop-staging")).expect("dir").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "an app's data is owner-only");
+    }
     assert_eq!(ui.get("/api/apps")["current"], "shop-staging");
 
     // Refused: the same name, no platform, an address that is not a website, a made-up app id.
@@ -97,6 +103,9 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
         (json!({ "action": "add", "name": "Script", "targets": { "web": "javascript:alert(1)" } }), "not a website address"),
         (json!({ "action": "add", "name": "Phone", "targets": { "ios": "../../etc" } }), "not an iPhone app id"),
         (json!({ "action": "add", "name": "  ", "targets": { "web": "https://x.example" } }), "give the app a name"),
+        (json!({ "action": "add", "name": "Login", "targets": { "web": "https://user:pw@shop.example" } }), "leave the user name and password out"),
+        (json!({ "action": "add", "name": "Hidden", "targets": { "web": "https://shop.example%2f@evil.example" } }), "leave the user name and password out"),
+        (json!({ "action": "add", "name": "Share", "targets": { "web": "file://evil.example/share" } }), "not a website address"),
     ] {
         let (st, r) = ui.post(bad.clone());
         assert!(st == 400 && r.to_string().contains(why), "{bad} → {st} {r}");
@@ -115,6 +124,11 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
     assert_eq!((v["current"].as_str(), v["apps"].as_array().map(Vec::len)), (Some("shop-staging"), Some(1)), "the remaining app becomes current: {v}");
     assert!(home.join("fastpilot/apps/android-demo").is_dir(), "removing an app keeps its folder");
     assert_eq!(ui.post(json!({ "action": "use", "id": "android-demo" })).0, 400, "a removed app cannot be used");
+    // A new app with the same name never gets the removed one's id, folder or (E2) passwords.
+    let (_, r) = ui.post(json!({ "action": "add", "name": "Android demo", "targets": { "web": "https://other.example" } }));
+    assert_eq!(r["app"]["id"], "android-demo-2", "{r}");
+    let (_, r) = ui.post(json!({ "action": "remove", "id": "android-demo-2" }));
+    assert_eq!(r["removed"], "android-demo-2");
 
     // Only the page may change apps: no Origin, or JSON from another site, is refused.
     let (st, _, _) = raw(ui.port, "POST", "/api/apps", &[("Cookie", ui.cookie.clone()), ("Content-Type", "application/json".to_owned())], &json!({ "action": "remove", "id": "shop-staging" }).to_string());
@@ -145,7 +159,7 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
     let i = ui.get("/api/integrations");
     assert!(i.get("jira").is_some() && i.get("token_kept").is_some(), "{i}");
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(home.join("fastpilot/apps.json")).expect("apps.json")).expect("json");
-    assert_eq!(saved["apps"][0]["targets"], json!({ "web": "https://shop.example", "ios": "com.shop.app" }));
+    assert_eq!(saved["apps"][0]["targets"], json!({ "web": "https://shop.example/", "ios": "com.shop.app" }));
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -53,6 +53,10 @@ struct Store {
     current: Option<String>,
     #[serde(default)]
     apps: Vec<App>,
+    /// Ids of removed apps: never given out again, so a new app never inherits an old one's folder or
+    /// passwords (Security, #180 L1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired: Vec<String>,
 }
 
 /// `~/fastpilot`: the person's workspace (made on first use, no question).
@@ -104,10 +108,12 @@ pub fn add(name: &str, targets: Targets) -> Result<App, String> {
         return Err(format!("there is already an app called \"{name}\": pick another name"));
     }
     let base = slug(&name);
-    let id = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|id| !s.apps.iter().any(|a| &a.id == id)).unwrap_or(base);
+    // A fresh id: not in use, not retired, and no folder of that name left on disk.
+    let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
+    let id = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(free).unwrap_or(base);
     let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms() };
-    // Its own folder for tests, memory and map.
-    crate::filestore::ensure_dir(&app.dir(), false)?;
+    // Its own folder for tests, memory and map, owner-only (#180 L3).
+    crate::filestore::ensure_dir(&app.dir(), true)?;
     s.apps.push(app.clone());
     if s.current.is_none() {
         s.current = Some(id);
@@ -148,6 +154,7 @@ pub fn remove(id: &str) -> Result<(), String> {
     if s.apps.len() == before {
         return Err("no such app".into());
     }
+    s.retired.push(id.to_owned());
     if s.current.as_deref() == Some(id) {
         s.current = s.apps.first().map(|a| a.id.clone());
     }
@@ -187,13 +194,7 @@ fn check_targets(t: Targets) -> Result<Targets, String> {
     if t.web.is_none() && t.android.is_none() && t.ios.is_none() {
         return Err("add a website address, an Android app or an iPhone app".into());
     }
-    if let Some(w) = &t.web {
-        let lower = w.to_ascii_lowercase();
-        let ok = (lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("file://")) && w.len() <= 2000 && !w.chars().any(|c| c.is_control() || c.is_whitespace());
-        if !ok {
-            return Err(format!("\"{}\" is not a website address: start it with https://", w.chars().take(80).collect::<String>()));
-        }
-    }
+    let t = Targets { web: t.web.map(|w| check_web(&w)).transpose()?, ..t };
     for (what, v) in [("Android", &t.android), ("iPhone", &t.ios)] {
         if let Some(id) = v
             && !app_id(id)
@@ -202,6 +203,33 @@ fn check_targets(t: Targets) -> Result<Targets, String> {
         }
     }
     Ok(t)
+}
+
+/// A website: an http(s) address with a host and no user name or password, or a local file
+/// (`file:///…`, no host). Parsed like a browser does (WHATWG), and stored as parsed, so the host S-1
+/// binds secrets to is the host the browser opens (Security, #180 L2).
+fn check_web(w: &str) -> Result<String, String> {
+    let shown = || w.chars().take(80).collect::<String>();
+    let bad = || format!("\"{}\" is not a website address: start it with https://", shown());
+    if w.len() > 2000 || w.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(bad());
+    }
+    let u = url::Url::parse(w).map_err(|_| bad())?;
+    match u.scheme() {
+        "http" | "https" => {
+            if u.host_str().is_none_or(str::is_empty) {
+                return Err(bad());
+            }
+            // Any "@" before the host, even with an empty user name, is a login part (#180 L2).
+            let authority = w.split_once("://").map(|(_, r)| r.split(['/', '?', '#']).next().unwrap_or("")).unwrap_or("");
+            if !u.username().is_empty() || u.password().is_some() || authority.contains('@') {
+                return Err("leave the user name and password out of the address: fastpilot asks for the password when a test needs it".into());
+            }
+        }
+        "file" if u.host_str().is_none_or(|h| h.is_empty() || h == "localhost") => {}
+        _ => return Err(bad()),
+    }
+    Ok(u.as_str().to_owned())
 }
 
 fn app_id(s: &str) -> bool {
@@ -241,10 +269,17 @@ mod tests {
         assert!(check_targets(Targets::default()).is_err());
         assert!(check_targets(Targets { web: Some("javascript:alert(1)".into()), ..Default::default() }).is_err());
         assert!(check_targets(Targets { web: Some("shop.example".into()), ..Default::default() }).is_err());
+        // Parsed like a browser (#180 L2): no host, a login, a hidden host, a remote file share.
+        for bad in ["https://", "https://@evil.example", "https://user:pw@shop.example", "https://shop.example%2f@evil.example", "file://evil.example/share", "data:text/html,x", "ftp://shop.example"] {
+            assert!(check_web(bad).is_err(), "{bad}");
+        }
+        assert_eq!(check_web("file:///Users/me/demo/login.html").as_deref(), Ok("file:///Users/me/demo/login.html"));
+        assert_eq!(check_web("HTTPS://Shop.Example:8443/a b").ok(), None, "whitespace is refused");
+        assert_eq!(check_web("HTTPS://Shop.Example:8443/x").as_deref(), Ok("https://shop.example:8443/x"));
         assert!(check_targets(Targets { android: Some("../../etc".into()), ..Default::default() }).is_err());
         assert!(check_targets(Targets { ios: Some("Shop".into()), ..Default::default() }).is_err());
         let t = check_targets(Targets { web: Some(" https://staging.shop.example ".into()), android: Some("com.shop.app".into()), ios: Some(String::new()) }).expect("ok");
-        assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example"), Some("com.shop.app"), None));
+        assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example/"), Some("com.shop.app"), None));
         let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0 };
         assert_eq!(a.kinds(), ["web", "android"]);
     }
