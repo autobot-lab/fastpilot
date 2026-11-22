@@ -81,6 +81,8 @@ pub struct Options {
     pub changed: Option<Option<String>>,
     /// `--all-after`: with `--changed`, run the other tests after the related ones.
     pub all_after: bool,
+    /// S8 `--all-platforms`: each test once on every platform the current app has, side by side.
+    pub all_platforms: bool,
 }
 
 /// PF2: how many related tests run first.
@@ -268,6 +270,99 @@ impl Case {
             Some(ps) => ps.iter().map(|p| self.on(*p, &ps)).collect(),
             None => vec![self],
         }
+    }
+}
+
+/// "website" / "Android" / "iPhone": a kind of app, as the add buttons name it ("Add Android app").
+pub fn short_kind(p: Platform) -> &'static str {
+    match p {
+        Platform::Web => "website",
+        Platform::Android => "Android",
+        Platform::Ios => "iPhone",
+    }
+}
+
+/// S8: where an app runs on each platform (E6's `targets`: web address, Android and iPhone app).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppTargets {
+    pub web: Option<String>,
+    pub android: Option<String>,
+    pub ios: Option<String>,
+}
+
+impl AppTargets {
+    pub fn get(&self, p: Platform) -> Option<&str> {
+        match p {
+            Platform::Web => self.web.as_deref(),
+            Platform::Android => self.android.as_deref(),
+            Platform::Ios => self.ios.as_deref(),
+        }
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    }
+
+    /// The platforms the app has, in column order.
+    pub fn kinds(&self) -> Vec<Platform> {
+        [Platform::Web, Platform::Android, Platform::Ios].into_iter().filter(|p| self.get(*p).is_some()).collect()
+    }
+
+    /// The platforms it does not have yet ("Add Android app").
+    pub fn missing(&self) -> Vec<Platform> {
+        [Platform::Web, Platform::Android, Platform::Ios].into_iter().filter(|p| self.get(*p).is_none()).collect()
+    }
+}
+
+impl Case {
+    /// S8 "Run on all platforms": this saved test once on every platform the app has, side by side
+    /// (PF5), without editing the file. A test whose own `platform:` line already lists several
+    /// platforms keeps them. A platform's own `target <p>:` line in the file wins over the app's.
+    /// With one platform only, the test runs as it is.
+    pub fn on_all_platforms(self, app: &AppTargets) -> Vec<Case> {
+        if self.side_by_side().is_some() || self.text.lines().any(|l| l.trim_start().starts_with("sessions:")) {
+            return self.per_platform();
+        }
+        let kinds = app.kinds();
+        if kinds.len() < 2 {
+            return vec![self];
+        }
+        let names: Vec<String> = kinds.iter().map(ToString::to_string).collect();
+        let mut text = String::new();
+        let mut placed = false;
+        for l in self.text.lines() {
+            let t = l.trim_start();
+            if t.starts_with("platform:") {
+                text.push_str(&format!("platform: {}\n", names.join(", ")));
+                placed = true;
+                continue;
+            }
+            // The single-platform test's plain target goes to its own platform (below).
+            if t.starts_with("target:") {
+                continue;
+            }
+            text.push_str(l);
+            text.push('\n');
+        }
+        if !placed {
+            // Right after the title (or at the top), like a written side-by-side test.
+            let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            let at = lines.iter().position(|l| l.starts_with("# ")).map_or(0, |i| i + 1);
+            lines.insert(at, format!("platform: {}", names.join(", ")));
+            text = lines.join("\n") + "\n";
+        }
+        // The file's own target for its platform, else the app's.
+        let own = |p: Platform| -> Option<String> {
+            self.text.lines().find_map(|l| platform_target(l).filter(|(q, _)| *q == p).map(|(_, v)| v)).or_else(|| {
+                (self.platforms() == vec![p]).then(|| self.text.lines().find_map(|l| l.trim_start().strip_prefix("target:").map(|v| v.trim().to_owned()))).flatten()
+            })
+        };
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let at = lines.iter().position(|l| l.trim_start().starts_with("platform:")).map_or(0, |i| i + 1);
+        let targets: Vec<String> = kinds.iter().filter_map(|p| own(*p).or_else(|| app.get(*p).map(str::to_owned)).map(|t| format!("target {p}: {t}"))).collect();
+        lines.retain(|l| platform_target(l).is_none());
+        for (i, t) in targets.into_iter().enumerate() {
+            lines.insert(at + i, t);
+        }
+        Case { text: lines.join("\n") + "\n", platform: names.join(", "), ..self }.per_platform()
     }
 }
 
@@ -1164,8 +1259,18 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
         Some(base) => plan_changed(cases, target, base.as_deref(), opts.all_after),
         None => (cases, None),
     };
-    // PF5: a test that lists several platforms runs once on each.
-    let cases = expand(cases);
+    // PF5: a test that lists several platforms runs once on each. S8: with --all-platforms, every
+    // test runs on each platform the current app has.
+    let cases = if opts.all_platforms {
+        let app = crate::apps::current().ok_or("Run on all platforms needs an app: add one with the App switcher, then try again.")?;
+        let t = AppTargets { web: app.targets.web.clone(), android: app.targets.android.clone(), ios: app.targets.ios.clone() };
+        for p in t.missing() {
+            println!("{} is not in this comparison: {} has no {} yet (Add {} app).", platform_name(p), app.name, short_kind(p), short_kind(p));
+        }
+        cases.into_iter().flat_map(|c| c.on_all_platforms(&t)).collect()
+    } else {
+        expand(cases)
+    };
     // The user's own Claude Code does the thinking (no API key, their login and plan), unless an
     // OpenAI-compatible provider is configured (B2).
     let provider = crate::provider::Provider::configured().transpose()?;
@@ -1587,6 +1692,36 @@ mod tests {
         assert_eq!(lock(&a.reported).iter().map(|r| (r.step, r.passed, r.notes.clone())).collect::<Vec<_>>(), [(2, false, "no link".to_owned())]);
         a.call("finish", json!({ "status": "fail", "notes": "x" })).await;
         assert_eq!(a.call("step", json!({ "step": 1, "status": "pass" })).await["isError"], true, "no step after the verdict");
+    }
+
+    /// S8: "Run on all platforms" makes a saved one-platform test a side-by-side run over the
+    /// app's platforms, with the app's targets, without touching the file. The file's own target
+    /// for its platform stays; a test that lists its platforms keeps them; one platform runs as is.
+    #[test]
+    fn a_saved_test_runs_on_every_platform_the_app_has() {
+        let app = AppTargets { web: Some("https://staging.shop.example".into()), android: Some("com.shop.app/.Main".into()), ios: Some("com.shop.app".into()) };
+        let saved = case("# Login\nid: login-ok\ntarget: examples/demo/login.html\n- Open the login page\n- Sign in\n");
+        let runs = saved.clone().on_all_platforms(&app);
+        let ids: Vec<&str> = runs.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["login-ok-web", "login-ok-android", "login-ok-ios"]);
+        assert!(runs[0].text.contains("platform: web\n") && runs[0].text.contains("target: examples/demo/login.html\n"), "the file's own web target: {}", runs[0].text);
+        assert!(runs[1].text.contains("platform: android\n") && runs[1].text.contains("target: com.shop.app/.Main\n") && !runs[1].text.contains("login.html"), "{}", runs[1].text);
+        assert!(runs[2].text.contains("target: com.shop.app\n"), "{}", runs[2].text);
+        let side = runs[2].side.as_ref().expect("side by side");
+        assert_eq!((side.group.as_str(), side.platforms.clone(), side.steps.len()), ("login-ok", vec![Platform::Web, Platform::Android, Platform::Ios], 2));
+        assert!(saved.side.is_none(), "the saved test itself is unchanged");
+        // The app has web and Android only: two columns, and iPhone is what is missing.
+        let two = AppTargets { ios: None, ..app.clone() };
+        assert_eq!(saved.clone().on_all_platforms(&two).len(), 2);
+        assert_eq!(two.missing(), vec![Platform::Ios]);
+        // One platform: the test runs as it is.
+        let web_only = AppTargets { web: app.web.clone(), ..AppTargets::default() };
+        let as_is = saved.clone().on_all_platforms(&web_only);
+        assert_eq!((as_is.len(), as_is[0].id.as_str(), as_is[0].side.is_none()), (1, "login-ok", true));
+        assert_eq!(web_only.missing(), vec![Platform::Android, Platform::Ios]);
+        // A test that already lists its platforms (PF5) keeps them.
+        let listed = case("# Login\nid: l2\nplatform: web, ios\ntarget web: a.html\ntarget ios: com.x\n- Open\n");
+        assert_eq!(listed.on_all_platforms(&app).iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["l2-web", "l2-ios"]);
     }
 
     #[test]

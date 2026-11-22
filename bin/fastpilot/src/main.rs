@@ -1,6 +1,7 @@
 //! fastpilot: single-binary MCP server for AI-driven QA on web (Android/iOS later).
 
 mod agents;
+mod apps;
 mod approve;
 mod bench;
 mod browsers;
@@ -24,6 +25,7 @@ mod pool;
 mod report;
 mod report_cards;
 mod run;
+mod run_all;
 mod side;
 mod schedule;
 mod skills_catalog;
@@ -322,7 +324,7 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             stability::run(path, runs.max(1), web).await
         }
         Some("run") => {
-            const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--changed [BASE]] [--all-after] [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
+            const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--changed [BASE]] [--all-after] [--all-platforms] [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
             let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
                 eprintln!("{RUN_USAGE}");
                 std::process::exit(2);
@@ -341,7 +343,7 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                         }
                     }
                     // Any `--report-github=…`: github::Mode::from_args says which values it takes.
-                    "--record" | "--reset" | "--headful" | "--report-github" | "--all-after" => {}
+                    "--record" | "--reset" | "--headful" | "--report-github" | "--all-after" | "--all-platforms" => {}
                     // PF2: `--changed` alone (compared with main) or with a base branch or commit.
                     "--changed" => {
                         if rest.clone().next().is_some_and(|n| !n.starts_with("--")) {
@@ -378,6 +380,7 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 workers: value("--workers").map(|n| n.parse::<usize>()).transpose()?.unwrap_or(1).max(1),
                 changed: flag("--changed").then(|| value("--changed").filter(|b| !b.starts_with("--"))),
                 all_after: flag("--all-after"),
+                all_platforms: flag("--all-platforms"),
                 web,
             };
             if opts.all_after && opts.changed.is_none() {

@@ -954,7 +954,9 @@ function sideRow(r) {
     h("div", { class: "gh" }, h("b", {}, `${r.title} · on ${tiles.length} platforms`),
       h("span", { class: "sbs-chip " + (finished ? "grey" : "ok") }, finished ? "done" : "running"), h("span", { class: "right s" }, `started ${at}`)),
     h("ul", { class: "sbs-tiles" }, tiles.map(tile)),
-    h("p", { class: "s sbs-foot" }, "The side by side report opens when all platforms are done: find it in ", h("a", { href: "#/history" }, "History"), "."));
+    h("p", { class: "s sbs-foot" }, "The side by side report opens when all platforms are done: find it in ", h("a", { href: "#/history" }, "History"), "."),
+    // S8: run it again on every platform of the app.
+    finished ? h("div", { class: "btns tight" }, ...runAllButtons(r.id)) : null);
 }
 
 function liveExtras(data) {
@@ -1175,6 +1177,34 @@ function markdown(text) {
   return out;
 }
 
+// S8: "Run on all platforms" on a saved test: every platform its app has, side by side. A platform
+// the app does not have is an "Add Android app" button. What it would run is read once per test.
+const runAllInfo = {};
+function runAllButtons(test) {
+  if (!test) return [];
+  const info = runAllInfo[test];
+  if (info === undefined) {
+    runAllInfo[test] = null;
+    api("/api/run-all?test=" + encodeURIComponent(test)).then((v) => {
+      runAllInfo[test] = v;
+      // Draw again where the buttons are: the Chat card now, Live on its next refresh.
+      const live = document.getElementById("live-extra");
+      if (live) live.dataset.sig = "";
+      if ((location.hash || "").includes("/chat")) { chatSig = ""; renderChat(); }
+    }).catch(() => { runAllInfo[test] = { platforms: [], missing: [] }; });
+    return [];
+  }
+  if (!info) return [];
+  const go = info.platforms.length >= 2
+    ? [h("button", { class: "btn", title: "On " + info.platforms.join(", "), onclick: () => runAll(test) }, icon("play", "sm"), "Run on all platforms")]
+    : [];
+  return [...go, ...info.missing.map((m) => h("a", { class: "btn quiet", href: m.href, "data-kind": m.kind }, icon("plus", "sm"), m.button))];
+}
+
+async function runAll(test) {
+  try { toast((await api("/api/run-all", { test })).message, true); } catch (e) { toast(e.message); }
+}
+
 async function chatRun(id) {
   try {
     const r = await api("/api/chat/run", { id, agent: chatAgent });
@@ -1229,6 +1259,7 @@ function testCard(p) {
   } else if (p.status === "applied") {
     foot = [h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved")),
       h("div", { class: "btns" }, h("button", { class: "btn", onclick: () => chatRun(p.id) }, icon("play", "sm"), "Run now"),
+        ...runAllButtons(p.saved && p.saved.test),
         p.saved && p.saved.schedule ? h("a", { class: "btn", href: "#/schedules" }, "Open Schedules") : null, h("a", { class: "btn", href: "#/live" }, "Open Live"))];
   } else if (p.status === "cancelled") {
     foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dismissed");

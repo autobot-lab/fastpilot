@@ -100,7 +100,7 @@ fn short(p: Platform) -> &'static str {
 }
 
 /// "a", "a and b", "a, b and c".
-fn and_list(items: &[String]) -> String {
+pub fn and_list(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),

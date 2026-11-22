@@ -262,6 +262,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
         .route("/api/apps", get(apps_api))
         .route("/api/map", get(map_api).post(map_change))
+        .route("/api/run-all", get(run_all_info).post(run_all_start))
         .route("/api/map/thumb", get(map_thumb))
         .route("/api/jira", get(crate::jira_api::state).post(crate::jira_api::change))
         .route("/api/live", get(live_api))
@@ -765,6 +766,22 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
 /// PF1: the map being made or the latest one, with which screens have a test.
 async fn map_api() -> Response {
     axum::Json(crate::map::state()).into_response()
+}
+
+/// S8: `?test=<id>`: the platforms "Run on all platforms" would use, and an add button per missing one.
+async fn run_all_info(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
+    match crate::run_all::info(q.get("test").map(String::as_str).unwrap_or("")) {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => refuse(StatusCode::NOT_FOUND, &e),
+    }
+}
+
+/// S8: `{test}`: run the saved test on every platform of the current app (a person's click).
+async fn run_all_start(axum::Json(body): axum::Json<Value>) -> Response {
+    match crate::run_all::start(body["test"].as_str().unwrap_or("")) {
+        Ok(message) => axum::Json(json!({ "message": message })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
 }
 
 /// PF1: `{action: start, target, platform, screens, minutes}` or `{action: stop}`.
