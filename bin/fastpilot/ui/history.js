@@ -63,7 +63,7 @@ function visibleChats() {
 
 // A confirmation with the safe button focused first. Resolves true only on the red button.
 function histConfirm(title, text, okLabel) {
-  return UI.confirmDialog({ title, text, verb: okLabel, keep: "Keep them" });
+  return UI.confirmDialog({ title, text, verb: okLabel, keep: "Keep it" });
 }
 
 async function histChange(body, okText) {

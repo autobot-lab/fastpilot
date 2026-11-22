@@ -322,7 +322,7 @@ function pageJira() {
     h("option", { value: "" }, "None"), jStatuses.map((st) => h("option", { value: st, selected: st === jf.qa }, st)));
   qa.addEventListener("change", () => { jf.qa = qa.value; redrawControls(); });
   const canSave = jt && jt.ok && jt.projects && jt.projects.length && jf.project && !jBusy;
-  const saveBtn = h("button", { class: "btn p", disabled: !canSave, onclick: saveJira }, connected ? "Save changes" : "Save");
+  const saveBtn = h("button", { class: "btn p", disabled: !canSave, onclick: saveJira }, connected ? "Save changes" : "Connect Jira");
   const pastedText = () => (/^https?:\/\//i.test(jf.site) || jf.site.includes("/") ? "We use only the address and ignore the rest of what you paste." : "");
   const pasted = h("span", { class: "s", id: "jira-site-paste" }, pastedText());
   $top().replaceChildren(icon("plug"), h("div", {}, h("a", { class: "lk s", href: "#/apps" }, "Apps /"), h("h1", { tabindex: "-1" }, connected ? "Jira · Manage" : "Connect Jira")),
