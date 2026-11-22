@@ -115,6 +115,17 @@ async fn the_first_test_press_works_and_replace_token_keeps_the_project() {
     assert_eq!(myself_calls(&fake), before + 1, "one press after Replace token, one test");
     assert_eq!(eval(&client, "document.querySelector('select[aria-label=\"Default project\"]').value").await, "OPS", "the project is kept after Replace token");
     assert_eq!(eval(&client, "String([...document.querySelectorAll('.top button')].find((b) => b.textContent.includes('Save')).disabled)").await, "false", "Save changes is ready without choosing again");
+    // QA re-test Low 8: a request dropped elsewhere (as `fastpilot jira approve` does: it takes it
+    // out of the list) leaves "Waiting for your OK" without a reload.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let request = serde_json::json!([{ "id": "a1b2c3d4", "kind": "comment", "site": fake_jira::SITE, "project": "", "key": "KAN-12", "summary": "", "text": "Passed on build 7", "created_ms": now }]);
+    std::fs::write(home.join(".fastpilot/jira-requests.json"), request.to_string()).expect("request");
+    eval(&client, "location.hash = '#/apps', 'ok'").await;
+    let (ok, out) = flow(&client, "- assertVisible: { text: \"Waiting for your OK\", timeout: 8000 }\n").await;
+    assert!(ok, "{out}");
+    std::fs::write(home.join(".fastpilot/jira-requests.json"), "[]").expect("dropped");
+    let (ok, out) = flow(&client, "- assertNotVisible: { text: \"Waiting for your OK\", timeout: 10000 }\n").await;
+    assert!(ok, "the dropped request leaves the page without a reload: {out}");
     let _ = client.cancel().await;
     let _ = std::fs::remove_dir_all(&home);
 }
