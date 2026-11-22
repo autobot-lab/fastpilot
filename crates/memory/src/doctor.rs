@@ -74,7 +74,8 @@ pub enum Cause {
     AlwaysFails,
     Timing,
     Site,
-    RealBug,
+    /// Fails at the same step the same way, but passes in between: flaky, not broken.
+    FlakySameStep,
     Platform,
     Busy,
     Hours,
@@ -233,10 +234,16 @@ pub fn diagnose_with(runs: &[Outcome], all: &[Outcome], history: Option<&[bool]>
         d.todo = Some("Set the test aside until the site is steady, or check the site.".into());
         d.main = Some("set_aside");
     } else if f >= 3 && same_way && retried == 0 {
-        d.cause = Cause::RealBug;
-        d.text = format!("This looks like a real problem in your app. It fails at the same step, the same way, every time it fails, and retrying does not help.{based}");
-        d.todo = Some("Make a bug report.".into());
-        d.main = Some("bug");
+        // It also passes without a change, so it is flaky, not broken: "a real problem" is only for
+        // a test that fails the same way every time (QA v0.6 re-test Low 6).
+        d.cause = Cause::FlakySameStep;
+        let p = n - f;
+        d.text = format!(
+            "This test is flaky, not broken. It fails at {} the same way each time it fails, but it also passed {p} of the last {n} runs without a change. A test that passes and fails like this usually depends on timing, test data or the test environment.{based}",
+            quoted(&top_step)
+        );
+        d.todo = Some(format!("Check what {} depends on: wait until the screen has settled, use fresh test data, or run it when the computer is less busy. If people see this failure too, make a bug report.", quoted(&top_step)));
+        d.main = Some("chat");
     } else if let Some((bad, good)) = (platforms.len() >= 2)
         .then(|| {
             platforms.iter().find_map(|p| {
@@ -337,7 +344,9 @@ mod tests {
         // A real bug: same step, same way, no retry helps (and it passes in between).
         let r: Vec<Outcome> = (0..8).map(|i| if [1, 4, 6].contains(&i) { fail_at(run("t", i, 10, false), "tapOn \"Export\"", "not_found", "no Export") } else { run("t", i, 10, true) }).collect();
         let d = diagnose(&r, &r);
-        assert_eq!((d.cause, d.main), (Cause::RealBug, Some("bug")), "{d:?}");
+        assert_eq!((d.cause, d.main), (Cause::FlakySameStep, Some("chat")), "{d:?}");
+        // QA v0.6 re-test Low 6: a test that sometimes passes is never "a real problem in your app".
+        assert!(d.text.starts_with("This test is flaky, not broken. It fails at tapOn \"Export\" the same way each time it fails, but it also passed 5 of the last 8 runs") && !d.text.contains("real problem") && !d.text.contains("retrying does not help"), "{}", d.text);
 
         // Always fails at the same step: not "unstable".
         let a: Vec<Outcome> = (0..6).map(|i| if i < 2 { run("t", i, 10, true) } else { fail_at(run("t", i, 10, false), "tapOn \"Download\"", "not_found", "no file") }).collect();

@@ -88,7 +88,7 @@ function doctorPanel(t) {
   const keys = (d.cause === "unknown" ? ["bug", "set_aside"] : d.cause === "not_enough" ? [] : order).filter((k) => !(k === "set_aside" && t.status === "set_aside"));
   const buttons = keys.map((k, i) => h("button", { class: "btn sm" + (i === 0 ? " p" : ""), onclick: all[k][1] }, all[k][0]));
   if (d.main === "device") buttons.unshift(h("a", { class: "btn sm p", href: "#/device" }, "Open Device"));
-  const tone = { real_bug: "bad", always_fails: "bad", not_enough: "", unknown: "", site: "info", hours: "info" }[d.cause] ?? "warn";
+  const tone = { always_fails: "bad", not_enough: "", unknown: "", site: "info", hours: "info" }[d.cause] ?? "warn";
   return h("section", { class: "mem-doctor", "aria-label": t.status === "failing" ? "Why failing?" : "Why unstable?" },
     h("h3", {}, t.status === "failing" ? "Why failing?" : "Why unstable?"),
     d.runs.length ? h("div", { class: "doc-runs" }, h("span", { class: "mono", "aria-hidden": "true" }, strip),
