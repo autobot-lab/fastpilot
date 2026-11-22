@@ -1347,8 +1347,8 @@ function bugCard(b) {
     h("div", { class: "btns" },
       h("button", { class: "btn p", onclick: () => copyText(b.text || "", "Bug report") }, "Copy report"),
       h("button", { class: "btn", onclick: () => copyText(bugMarkdown(b), "Markdown") }, "Copy as Markdown"),
-      h("button", { class: "btn", disabled: true, title: "Jira is not connected" }, "Send to Jira"),
-      h("span", { class: "s" }, "Jira is not connected"))));
+      // v0.6 scope: the dashboard only connects Jira; issues are filed by the bot or Claude Code.
+      h("span", { class: "s jira-hint" }, "Ask the bot or Claude Code to file it in Jira"))));
 }
 
 function chatMsg(m) {

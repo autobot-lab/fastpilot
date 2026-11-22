@@ -4,6 +4,7 @@
 pub mod change;
 pub mod claim;
 pub mod config;
+pub mod jira;
 pub mod live;
 mod device;
 mod dsl;

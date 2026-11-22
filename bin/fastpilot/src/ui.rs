@@ -169,6 +169,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/settings", get(settings).post(change))
         .route("/api/doctor", get(doctor_api))
         .route("/api/fix", get(crate::fix::api_state).post(crate::fix::api_change))
+        .route("/api/apps", get(apps_api))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
@@ -546,6 +547,23 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
 // ---- Schedules (C3) --------------------------------------------------------------------------
 
 /// Schedules with their last run; a webhook is shown only as its host.
+/// v0.6 Apps page: what is connected. Jira shows the site, project and email, never the token;
+/// Slack/webhook is the schedules' own notification (how many schedules use one).
+async fn apps_api() -> Response {
+    let jira = fastpilot_core::jira::settings().map(|s| {
+        json!({ "site": s.site, "email": s.email, "project_key": s.project_key, "project_name": s.project_name,
+                "checked_ms": s.checked_ms, "needs_attention": s.needs_attention })
+    });
+    let store = crate::schedule::load();
+    let webhooks = store.schedules.iter().filter(|s| s.notify.webhook && crate::schedule::secret_path(&s.id).exists()).count();
+    let where_kept = match crate::keystore::backend() {
+        crate::keystore::Backend::Keychain => "this Mac's Keychain",
+        crate::keystore::Backend::SecretService => "this computer's secret store",
+        crate::keystore::Backend::File => "a file only you can read",
+    };
+    axum::Json(json!({ "jira": jira, "webhook_schedules": webhooks, "token_kept": where_kept })).into_response()
+}
+
 async fn schedules_api() -> Response {
     use crate::schedule;
     let store = schedule::load();
@@ -878,6 +896,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),
+        "apps.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/apps.js")),
         "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),

@@ -182,7 +182,7 @@ async fn live_page_works_with_the_keyboard() {
     // Design N3 (P2): nothing wider than a 390 px phone screen.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setViewport: { width: 390, height: 844 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    for page in ["#/live", "#/schedules", "#/settings/limits", "#/settings/model", "#/settings/secret", "#/device"] {
+    for page in ["#/live", "#/schedules", "#/settings/limits", "#/settings/model", "#/settings/secret", "#/device", "#/apps"] {
         eval(&client, &format!("location.hash = '{page}', 'ok'")).await;
         tokio::time::sleep(std::time::Duration::from_millis(700)).await;
         let w = eval(&client, "document.documentElement.scrollWidth + '/' + innerWidth + ' ' + [...document.querySelectorAll('body *')].filter(e => e.getBoundingClientRect().right > innerWidth + 0.5).slice(-4).map(e => e.tagName + '.' + e.className + ':' + Math.round(e.getBoundingClientRect().right)).join(' ')").await;

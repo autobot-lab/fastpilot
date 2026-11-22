@@ -469,3 +469,37 @@ fn the_dashboard_and_readme_words_are_current() {
     assert!(readme.contains("Use **either** the plugin **or** `fastpilot init`") && readme.contains("two\n> fastpilot servers"), "plugin or init");
     assert!(readme.contains("add its **name** in\n> `fastpilot ui` › Settings › Secret") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
 }
+
+/// v0.6 1.1: the Apps page. A new menu item between Device and Settings; `/api/apps` says what is
+/// connected (Jira: site, project, email, never a token; the schedules' webhooks); the bug card
+/// no longer has a disabled "Send to Jira" button but says to ask the bot or Claude Code.
+#[test]
+fn the_apps_page_shows_what_is_connected() {
+    let ui = start("apps", &[("FASTPILOT_KEYSTORE", "file")]);
+    let p = ui.port;
+    let r = http(p, "GET", &format!("/?code={}", ui.code), &[], "");
+    let session = r.header("set-cookie").and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let get = |path: &str| http(p, "GET", path, &[("Cookie", session.clone())], "");
+
+    let page = get("/").text();
+    let (device, apps, settings) = (page.find("data-nav=\"device\"").expect("device"), page.find("data-nav=\"apps\"").expect("apps"), page.find("data-nav=\"settings\"").expect("settings"));
+    assert!(device < apps && apps < settings, "Apps sits between Device and Settings");
+    assert!(page.contains("/assets/apps.js"));
+    let js = get("/assets/apps.js");
+    assert!(js.status == 200 && js.text().contains("PAGES.apps") && js.text().contains("Connect Jira"));
+    let app = get("/assets/app.js").text();
+    assert!(app.contains("Ask the bot or Claude Code to file it in Jira") && !app.contains("\"Send to Jira\""), "the dashboard only connects Jira");
+
+    let v: serde_json::Value = serde_json::from_str(&get("/api/apps").text()).expect("json");
+    assert_eq!(v["jira"], serde_json::Value::Null, "not connected yet: {v}");
+    assert_eq!(v["webhook_schedules"], 0);
+    assert_eq!(v["token_kept"], "a file only you can read");
+
+    // A saved connection: shown without any secret.
+    let dir = ui.home.join(".fastpilot");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("jira.json"), r#"{"site":"yourteam.atlassian.net","email":"alex@yourteam.com","project_key":"KAN","project_name":"Kanban","checked_ms":1,"needs_attention":true}"#).expect("jira.json");
+    let v: serde_json::Value = serde_json::from_str(&get("/api/apps").text()).expect("json");
+    assert_eq!((v["jira"]["site"].as_str(), v["jira"]["project_key"].as_str(), v["jira"]["needs_attention"].as_bool()), (Some("yourteam.atlassian.net"), Some("KAN"), Some(true)), "{v}");
+    assert!(v["jira"].get("token").is_none());
+}
