@@ -260,12 +260,18 @@ impl Comparison {
         let ran = self.columns.iter().filter(|c| c.ran).count();
         let differ = self.differing().len();
         let steps = format!("{} {}", self.rows.len(), if self.rows.len() == 1 { "step" } else { "steps" });
+        let passed = self.columns.iter().filter(|c| c.passed).count();
         let head = if ran < total {
             format!("{ran} of {total} platforms ran")
-        } else if differ == 0 && self.columns.iter().all(|c| c.passed) {
-            format!("All {total} platforms match")
-        } else {
+        } else if differ > 0 {
             format!("{} of {total} platforms match", total - differ)
+        } else if passed == total {
+            format!("All {total} platforms match")
+        } else if passed == 0 {
+            format!("Failed on all {total} platforms")
+        } else {
+            // Failures without a step of their own to compare: no "match" is claimed.
+            format!("{passed} of {total} platforms passed")
         };
         let sub = match differ {
             0 => steps,
@@ -459,8 +465,8 @@ table.sbs-t { border-collapse: separate; border-spacing: 8px; width: 100%; table
 .sbs-t tr.differs th[scope=row] { background: #fdf6ea; } .lbl { display: block; width: max-content; margin-top: 4px; font-size: 12px; font-weight: 500; background: #f8ead6; color: #6f4207; padding: 1px 8px; border-radius: 6px; }
 .cell { border: 1px solid var(--line) !important; border-radius: 8px; padding: 6px; } .cell p { margin: 4px 2px; }
 .cell img { display: block; width: 100%; height: 220px; object-fit: contain; max-width: none; background: #f4f5f7; border: 0; }
-.cell.ok b { color: var(--pass); } .cell.bad { border: 2px solid #8e2323 !important; } .cell.bad b { color: #8e2323; }
-.cell.diff { border: 2px solid #b26a00 !important; } .cell.diff b { color: #6f4207; } .cell.none { border: 1px dashed #8a9099 !important; color: #3d434b; }
+.cell.ok b { color: var(--pass); } .cell.diff { border: 2px solid #b26a00 !important; } .cell.diff b { color: #6f4207; }
+.cell.bad { border: 2px solid #8e2323 !important; background: #fde8e8; } .cell.bad b { color: #8e2323; } .cell.none { border: 1px dashed #8a9099 !important; color: #3d434b; }
 .next { font-size: 12px; } .where h3 { margin: 8px 0 4px; font-size: 14px; }
 ";
 
@@ -553,6 +559,13 @@ mod tests {
         // A run that reported nothing one by one says so instead of guessing which step failed.
         let silent = column(Platform::Web, "Web · Chrome", 2, &Outcome::Ran { passed: false, notes: "x".into(), steps: vec![] });
         assert!(silent.cells.iter().all(|x| matches!(x, Cell::NoResult { .. })));
+        // Seen on real devices: two platforms could not start a session (failed, no step results).
+        // Nothing is compared there, so the summary claims no match.
+        let c = three(all_pass("Lupa password?"), ran(false, vec![]), ran(false, vec![]));
+        assert_eq!(c.summary().0, "1 of 3 platforms passed");
+        assert_eq!((c.state(1), c.state(2)), (("bad", "Failed".into()), ("bad", "Failed".into())));
+        let c = three(ran(false, vec![]), ran(false, vec![]), ran(false, vec![]));
+        assert_eq!(c.summary().0, "Failed on all 3 platforms");
     }
 
     /// Page text is data: a label or found text with markup is shown as text, never as HTML.
