@@ -184,7 +184,7 @@ for f in bin/fastpilot/tests/*.rs; do
   s="$(basename "$f" .rs)"
   case "$s" in
     android|ios|real_android|real_ios|ui_takeover_device|map_android) ;;
-    *) if grep -qE 'fake_jira\.rs|FASTPILOT_JIRA_TEST_BASE' "$f"; then JIRA_SUITES="$JIRA_SUITES $s"; else WEB_SUITES="$WEB_SUITES $s"; fi ;;
+    *) if grep -q '^#\[path = "support/fake_jira.rs"\]' "$f"; then JIRA_SUITES="$JIRA_SUITES $s"; else WEB_SUITES="$WEB_SUITES $s"; fi ;;
   esac
 done
 
@@ -284,10 +284,11 @@ else READY=1; RESULT="READY TO RELEASE."
 fi
 
 # Evidence for the summary: no log but the Android one names an emulator, and that one names only
-# $SERIAL. A line, not a result: it tells whether the run kept to its devices.
+# $SERIAL. A line, not a result: it tells whether the run kept to its devices. emulator-5590 is
+# not a device: it is the one emulator listed by the fake adb server inside tests/side_by_side.rs.
 OTHER_LOGS=""
 for k in code unit web ios; do
-  grep -qE 'emulator-[0-9]+' "$OUT/$k.log" 2>/dev/null && OTHER_LOGS="$OTHER_LOGS${OTHER_LOGS:+, }$k.log"
+  grep -oE 'emulator-[0-9]+' "$OUT/$k.log" 2>/dev/null | grep -qvx emulator-5590 && OTHER_LOGS="$OTHER_LOGS${OTHER_LOGS:+, }$k.log"
 done
 OTHER_SERIALS="$(grep -oE 'emulator-[0-9]+' "$OUT/android.log" 2>/dev/null | grep -vx "$SERIAL" | sort -u | paste -sd, -)"
 if [ -n "$OTHER_LOGS" ] || [ -n "$OTHER_SERIALS" ]; then

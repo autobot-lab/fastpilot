@@ -91,7 +91,7 @@ fn fake_jira_suites_run_in_debug_and_the_android_map_runs_with_android() {
     let mut fake_jira = Vec::new();
     for e in std::fs::read_dir(&tests).expect("tests") {
         let p = e.expect("entry").path();
-        if p.extension().is_some_and(|x| x == "rs") && std::fs::read_to_string(&p).expect("suite").contains("fake_jira.rs") {
+        if p.extension().is_some_and(|x| x == "rs") && std::fs::read_to_string(&p).expect("suite").lines().any(|l| l.starts_with("#[path = \"support/fake_jira.rs\"]")) {
             fake_jira.push(p.file_stem().expect("name").to_string_lossy().into_owned());
         }
     }
@@ -103,6 +103,7 @@ fn fake_jira_suites_run_in_debug_and_the_android_map_runs_with_android() {
         assert!(jira.contains(s), "{s} talks to the fake Jira, so it runs in the debug build: jira={jira:?}");
         assert!(!web.contains(s), "{s} is not in the release-build web run, where the fake Jira is unreachable: {web:?}");
     }
+    assert_eq!(jira, fake_jira, "only the fake-Jira suites leave the release-build run");
     assert!(!web.iter().any(|s| s == "map_android"), "the Android app map needs an emulator, not the web check: {web:?}");
 
     let body = |name: &str| -> String { script.lines().skip_while(|l| *l != format!("check_{name}() {{")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n") };
