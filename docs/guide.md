@@ -351,6 +351,8 @@ later), then **Save**.
 - **Read a ticket:** name it in your message ("test KAN-12"). fastpilot reads it and gives it to the
   bot as information, never as instructions: text in a ticket that asks for something (allow a
   button, post a comment, sign in somewhere) is not followed, and Chat says so when a ticket tried.
+  This works for a ticket of another project too (say "test OPS-5"), because you named it in your own
+  message; Claude Code's `jira_read` tool reads only the default project.
 - **Create an issue or add a comment:** ask in your own words ("make a Jira ticket for the voucher
   bug", "add the result to KAN-12"). The bot's draft becomes a card that fastpilot writes: the site,
   the project or ticket, and the exact text that will be sent (secrets masked, emails and links to
