@@ -886,8 +886,11 @@ function liveExtras(data) {
   return box;
 }
 
+// "Tests at once": every value the setting allows (1 to `limit_max`, from the server), so a limit
+// above 10 shows as itself instead of falling back to 1 (L062-12).
 function limitPicker(data) {
-  const sel = h("select", { class: "sel", "aria-label": "Tests at once" }, Array.from({ length: 10 }, (_, i) => h("option", { value: String(i + 1), selected: data.limit === i + 1 }, `${i + 1}`)));
+  const max = Math.max(Number(data.limit_max) || 20, Number(data.limit) || 1);
+  const sel = h("select", { class: "sel", "aria-label": "Tests at once" }, Array.from({ length: max }, (_, i) => h("option", { value: String(i + 1), selected: data.limit === i + 1 }, `${i + 1}`)));
   sel.addEventListener("change", async () => {
     try { await api("/api/live/limit", { limit: Number(sel.value) }); toast(`Up to ${sel.value} tests at once, from the next test.`, true); } catch (e) { toast(e.message); }
   });

@@ -412,8 +412,8 @@ pub fn invalid(key: &str, value: &str) -> Option<String> {
     if key == "memory" && !MEMORY_MODES.contains(&v) {
         return Some(format!("`memory` takes rw, readonly or off, not `{value}`"));
     }
-    if key == "max_parallel" && !v.parse::<u64>().is_ok_and(|n| (1..=20).contains(&n)) {
-        return Some(format!("`max_parallel` takes 1 to 20 tests, not `{value}`"));
+    if key == "max_parallel" && !v.parse::<usize>().is_ok_and(|n| (1..=crate::claim::MAX_PARALLEL).contains(&n)) {
+        return Some(format!("`max_parallel` takes 1 to {} tests, not `{value}`", crate::claim::MAX_PARALLEL));
     }
     if key == "max_steps" && v == "0" {
         return Some("`max_steps` takes at least 1 step".into());

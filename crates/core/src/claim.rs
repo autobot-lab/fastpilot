@@ -74,9 +74,13 @@ pub fn device_key(platform: Platform, device: Option<&str>) -> Option<String> {
     }
 }
 
+/// The most tests `max_parallel` allows at once: the settings check and the Live page's
+/// "Tests at once" list use this one number (L062-12).
+pub const MAX_PARALLEL: usize = 20;
+
 /// How many sessions may run at once on this computer (`max_parallel`, 1–20, default 3).
 pub fn max_parallel() -> usize {
-    crate::config::var("FASTPILOT_MAX_PARALLEL").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| (1..=20).contains(n)).unwrap_or(3)
+    crate::config::var("FASTPILOT_MAX_PARALLEL").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| (1..=MAX_PARALLEL).contains(n)).unwrap_or(3)
 }
 
 fn entry_path(pid: u32, session: &str) -> PathBuf {

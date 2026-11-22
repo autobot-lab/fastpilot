@@ -1187,7 +1187,7 @@ async fn live_api() -> Response {
             p.side_by_side.into_iter().map(move |r| json!({ "pid": pid, "kind": kind, "scheduled": scheduled, "id": r.id, "title": r.title, "started_ms": r.started_ms, "tiles": r.tiles }))
         })
         .collect();
-    axum::Json(json!({ "sessions": sessions, "queue": queue, "running": running, "limit": fastpilot_core::claim::max_parallel(), "usage": usage, "side_by_side": side })).into_response()
+    axum::Json(json!({ "sessions": sessions, "queue": queue, "running": running, "limit": fastpilot_core::claim::max_parallel(), "limit_max": fastpilot_core::claim::MAX_PARALLEL, "usage": usage, "side_by_side": side })).into_response()
 }
 
 /// `{limit}`: how many tests may run at once (D10d, `max_parallel`), set on the Live page.
