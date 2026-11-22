@@ -340,7 +340,7 @@ fn a_cut_download_is_tried_again_over_ipv4_and_then_explained() {
     let out = shim(&pkg, &format!("http://127.0.0.1:{port}"), &["--version"]);
     let err = text(&out.stderr);
     assert!(!out.status.success() && out.stdout.is_empty(), "{err}");
-    assert!(err.contains("could not download") && err.contains("3 tries") && err.contains("Check the network connection and try again"), "{err}");
+    assert!(err.contains("could not download") && err.contains("3 tries") && err.contains("Check your Wi-Fi or VPN first, then try again"), "{err}");
     assert!(!err.contains("    at ") && !err.contains("TypeError"), "no stack trace: {err}");
     assert_eq!(hits.load(Ordering::SeqCst), 3);
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "a short pause between tries");
@@ -360,5 +360,89 @@ fn a_cut_download_is_tried_again_over_ipv4_and_then_explained() {
     } else {
         eprintln!("skipping the IPv6 part: [::1] is not available here");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stand-in server on 127.0.0.1 that answers every connection with `answer` after `wait`, then
+/// resets the connection (`answer` empty: just the reset). Returns the port and the count.
+fn serve_raw(answer: &'static [u8], wait: std::time::Duration) -> (u16, Arc<AtomicUsize>) {
+    use tokio::io::AsyncWriteExt;
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        rt.block_on(async move {
+            l.set_nonblocking(true).expect("nonblocking");
+            let l = tokio::net::TcpListener::from_std(l).expect("listener");
+            while let Ok((mut s, _)) = l.accept().await {
+                h.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    let _ = s.write_all(answer).await;
+                    let _ = s.flush().await;
+                    s.set_zero_linger().expect("linger");
+                    drop(s);
+                });
+            }
+        });
+    });
+    (port, hits)
+}
+
+/// v0.7 (Notion L062-6, -7, -8, -14), after the Security review of #161:
+/// - a mirror address with a user name or password is refused, and never repeated in a message;
+/// - one deadline for the whole download, every try included;
+/// - only network cuts are tried again (a TLS failure is not);
+/// - the last message says to check Wi-Fi or VPN first.
+#[test]
+fn the_download_refuses_a_login_in_the_mirror_and_stays_bounded() {
+    if target().is_none() {
+        return eprintln!("skipping: no prebuilt target for this platform");
+    }
+    let dir = std::env::temp_dir().join(format!("fp-npm-harden-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    // L062-6: a login in the address: refused before any request, and not echoed.
+    let (port, hits) = serve_raw(b"", std::time::Duration::ZERO);
+    let pkg = package(&dir.join("login"));
+    let out = shim(&pkg, &format!("https://ann:s3cret-pw@127.0.0.1:{port}/releases"), &["--version"]);
+    let err = text(&out.stderr);
+    if err.contains("command not found") || err.is_empty() && out.status.code().is_none() {
+        return eprintln!("skipping: no node");
+    }
+    assert!(!out.status.success() && err.contains("has a user name or password in it, so it was not used"), "{err}");
+    assert!(!err.contains("s3cret-pw") && !err.contains("ann:"), "the login is never shown: {err}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing was requested");
+    let out = shim(&pkg, "not a url s3cret-pw", &["--version"]);
+    assert!(!text(&out.stderr).contains("s3cret-pw"), "{}", text(&out.stderr));
+    // L062-8: https to a server that does not speak TLS: one try, not three.
+    let (port, hits) = serve_raw(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n", std::time::Duration::ZERO);
+    let pkg = package(&dir.join("tls"));
+    let out = shim(&pkg, &format!("https://127.0.0.1:{port}"), &["--version"]);
+    let err = text(&out.stderr);
+    assert!(!out.status.success() && err.contains("could not download") && !err.contains("3 tries") && !err.contains("trying again"), "{err}");
+    assert!(err.contains("Check your Wi-Fi or VPN first, then try again"), "L062-14: {err}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "a TLS failure is not tried again: {err}");
+    // L062-7: every try is cut after 1.5 s and the whole download may take 2 s: it stops at the
+    // deadline after the first cut, instead of three tries of their own 2 s each.
+    let (port, hits) = serve_raw(b"", std::time::Duration::from_millis(1500));
+    let pkg = package(&dir.join("deadline"));
+    let started = std::time::Instant::now();
+    let out = Command::new("node")
+        .arg(pkg.join("bin/fastpilot.js"))
+        .arg("--version")
+        .env("HOME", pkg.parent().expect("parent"))
+        .env_remove("NODE_OPTIONS")
+        .env("FASTPILOT_DOWNLOAD_BASE", format!("http://127.0.0.1:{port}"))
+        .env("FASTPILOT_DOWNLOAD_TIMEOUT", "2")
+        .output()
+        .expect("node");
+    let err = text(&out.stderr);
+    assert!(!out.status.success() && err.contains("no answer within 2 s (all tries together)") && err.contains("Check your Wi-Fi or VPN first"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(4), "one deadline for all tries: {:?} {err}", started.elapsed());
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "{err}");
+    assert!(vendor(&pkg).iter().all(|f| f != "fastpilot"));
     let _ = std::fs::remove_dir_all(&dir);
 }

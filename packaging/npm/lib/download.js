@@ -7,7 +7,9 @@
 // - Two first runs at once are safe: each writes its own temp file in vendor/ and renames it into
 //   place (atomic); the second one finds the binary already there and uses it.
 // - Later runs make no network request: the binary is there.
-// FASTPILOT_DOWNLOAD_BASE: a mirror; FASTPILOT_SKIP_DOWNLOAD=1: never download (use your own build).
+// FASTPILOT_DOWNLOAD_BASE: a mirror (never with a user name or password in it);
+// FASTPILOT_DOWNLOAD_TIMEOUT: seconds for the whole download, every try included (default 300);
+// FASTPILOT_SKIP_DOWNLOAD=1: never download (use your own build).
 "use strict";
 const crypto = require("crypto");
 const fs = require("fs");
@@ -38,46 +40,68 @@ function ready() {
 }
 
 // Bounded (Security review of #121, Low 4): a hung download would look like a dead MCP server.
+// One deadline for the whole download, both files and every try (L062-7): before, each try had its
+// own limit, so three slow tries took three times as long as the setting said.
 const LIMIT = 150 * 1024 * 1024;
-const seconds = () => Number(process.env.FASTPILOT_DOWNLOAD_TIMEOUT) || 120;
+const seconds = () => Number(process.env.FASTPILOT_DOWNLOAD_TIMEOUT) || 300;
+const AGAIN = "Check your Wi-Fi or VPN first, then try again: npm install -g fastpilot, or run fastpilot again";
 
-/// Plain http only for this computer (a local mirror); anything else must be https.
+/// Plain http only for this computer (a local mirror); anything else must be https. A user name
+/// or password in the address is refused and never repeated in a message (L062-6): it would end
+/// up in logs and CI output.
 function checkBase(base) {
   let u;
   try {
     u = new URL(base);
   } catch (_) {
-    throw new Error(`FASTPILOT_DOWNLOAD_BASE is not a URL: ${base}`);
+    throw new Error("FASTPILOT_DOWNLOAD_BASE is not a web address (it is not shown here, in case it holds a secret)");
+  }
+  if (u.username || u.password) {
+    throw new Error("FASTPILOT_DOWNLOAD_BASE has a user name or password in it, so it was not used (and is not shown here). Use a mirror that needs no sign-in");
   }
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
   if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) {
-    throw new Error(`FASTPILOT_DOWNLOAD_BASE must use https (plain http only for localhost): ${base}`);
+    throw new Error(`FASTPILOT_DOWNLOAD_BASE must use https (plain http only for localhost): ${u.origin}`);
   }
 }
 
-// A connection cut on the way (ECONNRESET, ETIMEDOUT, "fetch failed", a body cut short) is tried
-// again, TRIES times in all, after a short pause. Some IPv6 paths (NAT64) reset Node's download
-// from GitHub about half the time while IPv4 works (v0.6.0, the user's Mac), so after the first
-// cut every later connection of this process looks up IPv4 addresses first. Not tried again: an
-// HTTP error, a file over LIMIT, or the overall timeout (a hung download stays bounded).
+// A connection cut on the way is tried again, TRIES times in all, after a short pause. Some IPv6
+// paths (NAT64) reset Node's download from GitHub about half the time while IPv4 works (v0.6.0,
+// the user's Mac), so after the first cut every later connection of this process looks up IPv4
+// addresses first. Only these network codes are tried again (L062-8); a certificate or TLS error,
+// an unknown server name, an HTTP error, a file over LIMIT, or the deadline is not.
 const TRIES = 3;
+const RETRY = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "EAI_AGAIN",
+  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_CLOSED",
+]);
 const pause = (n) => new Promise((r) => setTimeout(r, 1000 * n));
 
-/// A network error, marked to be tried again, with its plain reason ("ECONNRESET", …).
-function cut(e) {
-  const c = e && e.cause;
-  return Object.assign(new Error(e.message), { cut: (c && (c.code || c.message)) || e.code || e.message });
+/// The network code under an error from fetch ("ECONNRESET", "UND_ERR_SOCKET", …), if any.
+function code(e) {
+  for (let x = e, i = 0; x && i < 4; x = x.cause, i++) if (typeof x.code === "string") return x.code;
+  return "";
 }
 
-async function get(url, log) {
+/// A network error: marked `cut` (tried again) only for a code in RETRY.
+function cut(e, url) {
+  const c = code(e);
+  if (RETRY.has(c)) return Object.assign(new Error(e.message), { cut: c });
+  return new Error(`could not download ${url} (${c || e.message}). ${AGAIN}`);
+}
+
+function late(url) {
+  return new Error(`could not download ${url}: no answer within ${seconds()} s (all tries together). ${AGAIN}`);
+}
+
+async function get(url, log, deadline) {
   for (let n = 1; ; n++) {
     try {
-      return await getOnce(url);
+      return await getOnce(url, deadline);
     } catch (e) {
       if (!e.cut) throw e;
-      if (n >= TRIES) {
-        throw new Error(`could not download ${url} (${e.cut}, ${TRIES} tries). Check the network connection and try again: npm install -g fastpilot, or run fastpilot again`);
-      }
+      if (n >= TRIES) throw new Error(`could not download ${url} (${e.cut}, ${TRIES} tries). ${AGAIN}`);
+      if (deadline - Date.now() <= 1000 * n) throw late(url);
       require("dns").setDefaultResultOrder("ipv4first");
       log(`fastpilot: the download was cut (${e.cut}); trying again over IPv4 (${n + 1} of ${TRIES})…`);
       await pause(n);
@@ -85,13 +109,15 @@ async function get(url, log) {
   }
 }
 
-async function getOnce(url) {
+async function getOnce(url, deadline) {
+  const left = deadline - Date.now();
+  if (left <= 0) throw late(url);
   let res;
   try {
-    res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(seconds() * 1000) });
+    res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(left) });
   } catch (e) {
-    if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
-    throw cut(e);
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw late(url);
+    throw cut(e, url);
   }
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   if (Number(res.headers.get("content-length")) > LIMIT) throw new Error(`${url}: larger than ${LIMIT / 1048576} MB; refused`);
@@ -104,9 +130,9 @@ async function getOnce(url) {
       chunks.push(c);
     }
   } catch (e) {
-    if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error(`${url}: no answer within ${seconds()} s; check the network and run fastpilot again`);
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw late(url);
     if (size > LIMIT) throw e;
-    throw cut(e);
+    throw cut(e, url);
   }
   return Buffer.concat(chunks);
 }
@@ -147,8 +173,9 @@ async function ensure(log) {
   checkBase(base);
   const name = `fastpilot-${version}-${target}`;
   log(`fastpilot: downloading fastpilot ${version} for ${target} (once)…`);
-  const archive = await get(`${base}/v${version}/${name}.tar.gz`, log);
-  const want = (await get(`${base}/v${version}/${name}.tar.gz.sha256`, log)).toString().split(/\s+/)[0];
+  const deadline = Date.now() + seconds() * 1000;
+  const archive = await get(`${base}/v${version}/${name}.tar.gz`, log, deadline);
+  const want = (await get(`${base}/v${version}/${name}.tar.gz.sha256`, log, deadline)).toString().split(/\s+/)[0];
   const got = crypto.createHash("sha256").update(archive).digest("hex");
   if (want !== got) throw new Error(`checksum mismatch for ${name}.tar.gz (expected ${want}, got ${got}); nothing was installed`);
   if (ready()) return bin; // another first run finished meanwhile
