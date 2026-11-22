@@ -178,7 +178,7 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
     let sign_in = screen(&v, "Masuk ke Akun");
     assert_eq!(sign_in["sign_in"], true);
     assert!(m["wall"] == "Masuk ke Akun" && m["signed_in"] == false && !screens.iter().any(|s| s["title"] == "Dashboard"), "{m}");
-    assert!(m["message"].as_str().is_some_and(|t| t.contains("Nothing was typed in or submitted") && t.contains("did not sign in")), "{m}");
+    assert!(m["message"].as_str().is_some_and(|t| t.contains("Nothing was typed in or submitted") && t.contains("\"Masuk ke Akun\" needs a sign-in")), "{m}");
     // QA re-test Low 5: the count in the summary is the named list.
     let named = m["skipped"].as_array().expect("skipped").len();
     assert!(m["message"].as_str().is_some_and(|t| t.contains(&format!("{named} buttons and links were not pressed"))), "{named}: {m}");

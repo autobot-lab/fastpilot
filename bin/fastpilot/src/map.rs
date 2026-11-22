@@ -111,6 +111,9 @@ pub struct AppMap {
     pub wall: Option<String>,
     #[serde(default)]
     pub signed_in: bool,
+    /// S1: the person chose "Skip this page" for the sign-in screen: the map stays as it is.
+    #[serde(default)]
+    pub wall_skipped: bool,
     /// Web: requests the read-only guard refused (they would have changed something).
     #[serde(default)]
     pub blocked: usize,
@@ -749,7 +752,8 @@ pub async fn explore(opts: Options, progress: Arc<Mutex<AppMap>>, stop: Arc<Atom
         _ => format!("Mapping stopped after {n} screen{}: {}. The screens found are kept.", if n == 1 { "" } else { "s" }, clean(outcome.as_ref().err().map_or("", |e| e.as_str()))),
     };
     if let Some(w) = &m.wall {
-        m.message.push_str(&format!(" Mapping stopped at \"{w}\": fastpilot did not sign in. To see the pages behind it, add a test account to Project notes and map again."));
+        // S1/M2: the page asks there and then (sign in with the test account, or skip); no Project notes step.
+        m.message.push_str(&format!(" \"{w}\" needs a sign-in, so the pages behind it are not on the map yet."));
     }
     *progress.lock().unwrap_or_else(|p| p.into_inner()) = m.clone();
     if m.state != "could_not_open" {
@@ -917,7 +921,38 @@ pub fn state() -> Value {
     let project = std::env::current_dir().unwrap_or_default();
     let cov = map.as_ref().map(|m| coverage(m, &project));
     let has_account = test_account().is_some();
-    json!({ "mapping": mapping, "map": map, "coverage": cov, "test_account": has_account })
+    json!({ "mapping": mapping, "map": map, "coverage": cov, "test_account": has_account, "plan": plan() })
+}
+
+/// S1 (v0.7): what one click maps: the current app (E6), on the kind of device that fits it (its
+/// website first, else its Android app, else its iPhone app; L062-10: a website is never mapped on
+/// the Android emulator by default), from its own start, 30 screens, 10 minutes. `null` without an app.
+pub fn plan() -> Value {
+    let Some(app) = crate::apps::current() else { return Value::Null };
+    let t = &app.targets;
+    let kinds: Vec<(&str, &str)> = [("web", &t.web), ("android", &t.android), ("ios", &t.ios)]
+        .into_iter()
+        .filter_map(|(k, v)| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(|v| (k, v)))
+        .collect();
+    let Some((platform, target)) = kinds.first().copied() else { return Value::Null };
+    json!({
+        "app": { "id": app.id, "name": app.name },
+        "kinds": kinds.iter().map(|(k, v)| json!({ "platform": k, "target": v })).collect::<Vec<_>>(),
+        "platform": platform,
+        "target": target,
+        "screens": 30,
+        "minutes": 10,
+    })
+}
+
+/// S1: "Skip this page": keep the latest map as it is and stop asking about its sign-in screen.
+pub fn skip_wall() -> Res<()> {
+    let mut m = latest().ok_or("There is no map yet.")?;
+    if m.wall.is_none() {
+        return Err("This map has no sign-in page to skip.".into());
+    }
+    m.wall_skipped = true;
+    save(&m)
 }
 
 /// Starts mapping in the background (one at a time).

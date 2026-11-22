@@ -72,33 +72,76 @@ function makeTest(s) {
   location.hash = "#/agents/default/chat";
 }
 
-// ---- empty state and the start form (design states 1, 7) ----
+// ---- S1 (v0.7): Map in one click (seamless-v13 s1b) ----
+// One button for the current app; the start, the kind of device and the limits come from the app
+// and sit under More options. A phone app with no phone running gets a Start button (state 2); no
+// app yet is "Add your app first" (state 4).
+let devices = null; // the Device page's lines (/api/fix), to see if the phone is ready
+let moreOpen = false;
+
+function choose(label, options, key) {
+  // A segmented choice: a radiogroup of buttons (s1b, accessibility note).
+  const group = h("div", { class: "seg", role: "radiogroup", "aria-label": label });
+  const draw = () => group.replaceChildren(...options.map(([v, text]) =>
+    h("button", { type: "button", role: "radio", "aria-checked": String(form[key] === v), class: "seg-b" + (form[key] === v ? " on" : ""),
+      onclick: () => { form[key] = v; if (key === "platform") { const k = (data.plan.kinds || []).find((x) => x.platform === v); if (k) form.target = k.target; } draw(); } }, text)));
+  draw();
+  return h("div", { class: "fld" }, h("span", { class: "l" }, label), group);
+}
+
+function deviceLine(platform) {
+  return platform === "web" || !devices ? null : (devices.lines || []).find((l) => l.kind === platform) || null;
+}
+
+async function startDeviceThenMap(line) {
+  const ok = await UI.confirmDialog({ title: line.button + " and map?", text: line.confirm || "", verb: line.button.replace(/^Start/, "Start") + " and map", keep: "Cancel", danger: false });
+  if (!ok) return;
+  try {
+    if (line.start.action === "boot-simulator") await api("/api/fix", { action: "boot-simulator", confirmed: true });
+    else await api("/api/fix", { ...line.start, confirmed: true });
+  } catch (e) { toast("Could not start: " + e.message); return; }
+  toast(line.name + " is starting. Mapping starts when it is ready.", true);
+  // Wait for it (the Device page's own job), then map.
+  for (let i = 0; i < 240; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const f = await api("/api/fix").catch(() => null);
+    const l = f && (f.lines || []).find((x) => x.kind === line.kind);
+    if (l && l.ready) { devices = f; startMap(); return; }
+    if (f && f.job && f.job.state === "failed") { toast(f.job.message || "The device did not start."); devices = f; draw(); return; }
+  }
+}
+
 function startForm(note) {
-  const target = h("input", { type: "text", value: form.target, placeholder: "https://staging.shop.example", "aria-describedby": "map-where-h", spellcheck: "false" });
-  target.addEventListener("input", () => { form.target = target.value; go.disabled = !form.target.trim(); });
-  const plat = h("select", { class: "sel", "aria-label": "Where the app runs" },
-    [["web", "Web · Chrome"], ["android", "Android emulator"], ["ios", "iPhone simulator"]].map(([v, l]) => h("option", { value: v, selected: v === form.platform }, l)));
-  plat.addEventListener("change", () => { form.platform = plat.value; target.placeholder = plat.value === "web" ? "https://staging.shop.example" : "com.example.app/.MainActivity"; });
-  const num = (key, label, options) => {
-    const s = h("select", { class: "sel", "aria-label": label }, options.map((v) => h("option", { value: v, selected: Number(form[key]) === v }, String(v))));
-    s.addEventListener("change", () => { form[key] = Number(s.value); });
-    return h("label", { class: "fld" }, h("span", { class: "l" }, label), s);
-  };
-  const go = h("button", { class: "btn p", disabled: !form.target.trim(), onclick: () => startMap() }, icon("map"), "Map this app");
+  const p = data && data.plan;
+  if (!p) {
+    return h("div", { class: "map-start" }, note, UI.empty({ icon: "map", title: "Add your app first", text: "The map belongs to an app.", action: { label: "Add an app", onclick: () => { location.hash = "#/apps/add"; } } }));
+  }
+  if (form.app !== p.app.id) form = { app: p.app.id, target: p.target, platform: p.platform, screens: p.screens, minutes: p.minutes };
+  if (!devices && form.platform !== "web") api("/api/fix").then((f) => { devices = f; draw(); }).catch(() => { devices = { lines: [] }; });
+  const line = deviceLine(form.platform);
+  const target = h("input", { type: "text", value: form.target, "aria-label": "Start from", spellcheck: "false" });
+  target.addEventListener("input", () => { form.target = target.value; });
+  const kinds = p.kinds || [];
+  const KIND = { web: "Website", android: "Android emulator", ios: "iPhone simulator" };
+  const more = UI.moreOptions({ open: moreOpen, changed: [form.target !== p.target, form.platform !== p.platform, form.screens !== p.screens, form.minutes !== p.minutes].filter(Boolean).length },
+    h("label", { class: "fld" }, h("span", { class: "l" }, "Start from"), target),
+    kinds.length > 1 ? choose("Where it runs", kinds.map((k) => [k.platform, KIND[k.platform]]), "platform") : null,
+    choose("Stop after", [[15, "15 screens"], [30, "30 screens"], [60, "60 screens"]], "screens"),
+    choose("Or after", [[5, "5 min"], [10, "10 min"], [20, "20 min"]], "minutes"));
+  // Stays open across redraws once the person opened it.
+  more.querySelector(".more-btn").addEventListener("click", (e) => { moreOpen = e.currentTarget.getAttribute("aria-expanded") === "true"; });
+  const notReady = line && !line.ready;
+  const go = notReady && line.button
+    ? h("button", { class: "btn p", onclick: () => startDeviceThenMap(line) }, line.button + " and map")
+    : h("button", { class: "btn p", disabled: !!notReady, onclick: () => startMap() }, icon("map"), "Map " + p.app.name);
   return h("section", { class: "grp map-start" },
-    h("h2", { class: "gh" }, "map your app"),
     h("div", { class: "form ag-pad" },
       note,
-      h("p", {}, "fastpilot walks through your app like a visitor and draws every screen it finds. Then you see which screens have a test."),
-      h("label", { class: "fld" }, h("span", { class: "l" }, "Where should it start?"), target,
-        h("span", { class: "s", id: "map-where-h" }, "A web address or a file of your site, or an app on the emulator (package/activity).")),
-      h("div", { class: "map-limits" }, h("label", { class: "fld" }, h("span", { class: "l" }, "Where it runs"), plat),
-        num("screens", "Up to how many screens", [10, 20, 30, 45, 60]), num("minutes", "Up to how many minutes", [5, 10, 15, 30])),
-      h("div", { class: "app-note info", role: "note" }, h("b", {}, "Read-only. "),
-        "It will not fill in forms, press Pay or Delete, or sign in. To map pages behind a sign-in, add a test account to ",
-        h("a", { class: "lk", href: "#/memory" }, "Project notes"), " first (an email and a ${SECRET} name).",
-        data && data.test_account ? h("span", {}, " A test account is in your project notes: it signs in with that once.") : null),
-      h("div", { class: "btns" }, go)));
+      h("h2", {}, `See which parts of ${p.app.name} have a test`),
+      notReady ? UI.notice("warn", line.detail === "No emulator running" ? "No Android emulator is running." : line.detail === "No simulator running" ? "No iPhone simulator is running." : line.detail) : null,
+      h("div", { class: "btns" }, go),
+      more,
+      h("p", { class: "s muted" }, "Read-only: it does not fill in forms or press Pay or Delete. Start, device and limits come from the app; change them under More options.")));
 }
 
 // ---- while mapping (design state 2) ----
@@ -126,10 +169,33 @@ function outcome(m) {
   return [
     h("div", { class: `app-note ${kind[0]} map-out`, role: m.state === "finished" ? "status" : "alert" }, h("b", {}, kind[1], " "), m.message || "",
       m.state === "stopped" || m.state === "failed" ? [" ", h("button", { class: "btn sm", onclick: () => { form.target = m.target; form.platform = m.platform; startMap(); } }, "Continue mapping")] : null,
-      m.wall ? [" ", h("a", { class: "lk", href: "#/memory" }, "Project notes")] : null),
+      null),
+    // S1 state 3: the sign-in page is asked about there and then, once.
+    m.wall && !m.wall_skipped && !m.signed_in ? h("div", { class: "app-note info map-wall", role: "group", "aria-label": "This page needs a sign-in" },
+      h("b", {}, "This page needs a sign-in. "),
+      h("button", { class: "btn sm p", onclick: signInAndMap }, "Sign in with the test account"), " ",
+      h("button", { class: "btn sm", onclick: skipWall }, "Skip this page"),
+      h("p", { class: "s" }, "\u201cSkip\u201d keeps mapping everything else.")) : null,
     old ? h("div", { class: "app-note info", role: "status" }, h("b", {}, "i "), `Mapped ${Math.round((Date.now() - m.finished_ms) / 86400000)} days ago. Your app may have changed since. `,
       h("button", { class: "btn sm", onclick: () => { form.target = m.target; form.platform = m.platform; startMap(); } }, "Re-map the whole app")) : null,
   ];
+}
+
+async function skipWall() {
+  try { data = await api("/api/map", { action: "skip-wall" }); } catch (e) { toast(e.message); }
+  draw();
+}
+
+// "Sign in with the test account": the password is asked once, in place (E2's field), kept in the
+// Keychain, then the app is mapped again and signs in with it.
+async function signInAndMap() {
+  const m = data.map;
+  if (data.test_account) { form.target = m.target; form.platform = m.platform; startMap(); return; }
+  if (UI.passwordAsk && data.plan) {
+    UI.passwordAsk({ app: data.plan.app.id, name: "TEST_PASSWORD", onSaved: () => { form.target = m.target; form.platform = m.platform; startMap(); } });
+    return;
+  }
+  toast("Add the test account's password in Settings › Secrets, then map again.");
 }
 
 // ---- the graph (design: graph, zoom/pan/fit, keyboard) ----
