@@ -209,7 +209,7 @@ async fn every_confirmation_is_in_the_page_and_esc_changes_nothing() {
     };
     for (what, hash, sees, opener, verb, after) in [
         ("agent", format!("#/agents/{agent}/settings"), "Delete agent", "Delete agent", "Delete agent", "\"false\""),
-        ("key", "#/settings/model".to_owned(), "Delete the key", "Delete the key", "Delete key", "\"false\""),
+        ("key", "#/settings/model".to_owned(), "Delete key", "Delete key", "Delete key", "\"false\""),
         ("schedule", "#/schedules".to_owned(), "Night run", "Delete", "Delete schedule", "\"false\""),
         ("aside", "#/memory".to_owned(), "Why failing?", "Set aside", "Set aside", "\"set_aside\""),
     ] {
@@ -266,4 +266,45 @@ async fn settings_menu_says_secrets() {
             assert!(!js.contains(old), "{f} still has {old}");
         }
     }
+}
+
+/// UXA3 (v0.7): one set of button words. New thing: Create + the thing; an edit: Save changes; into a
+/// list: Add; out of a list: Remove; data gone: Delete; the safe choice: Keep it. Never "Apply",
+/// "Save the …", "Keep as it is", or a bare "Save".
+#[tokio::test(flavor = "multi_thread")]
+async fn buttons_use_one_set_of_words() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    // In the code: no label outside the list is left in any page.
+    for f in ["app.js", "agents.js", "memory.js", "history.js", "apps.js", "map.js", "fix.js", "components.js"] {
+        let js = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join(f)).expect("js");
+        for old in ["\"Apply\"", "\"Apply the limits\"", "\"Save\"", "\"Save the schedule\"", "\"Save schedule\"", "\"Keep as it is\"", "\"Keep them\"", "\"Delete the key\""] {
+            assert!(!js.contains(old), "{f} still has the button {old}");
+        }
+    }
+    let d = dashboard("ui-verbs", |_| {}).await;
+    let c = &d.client;
+    let tests = d.home.join("tests").display().to_string();
+    let main_button = "[...document.querySelectorAll('#body button.p, #top button.p')].map((b) => b.textContent.trim()).join('|')";
+
+    // Schedules: a new one is "Create schedule"; editing it is "Save changes".
+    eval(c, &format!("(async () => {{ await api('/api/schedules', {{ action: 'save', schedule: {{ id: '', name: 'Night run', tests: {tests:?}, when: {{ every: 'day', time: '02:00' }}, notify: {{ os: true }}, enabled: true }} }}); return 'ok'; }})()")).await;
+    open(c, "#/schedules", "Night run").await;
+    eval(c, "([...document.querySelectorAll('#top button')].find((b) => b.textContent.includes('New schedule')).click(), 'ok')").await;
+    assert!(eval(c, main_button).await.contains("Create schedule"), "a new schedule");
+    eval(c, "(() => { schedForm = null; pageSchedules(); [...document.querySelectorAll('#body button')].find((b) => b.textContent.trim() === 'Edit').click(); return 'ok'; })()").await;
+    let edit = eval(c, main_button).await;
+    assert!(edit.contains("Save changes") && !edit.contains("Create schedule"), "editing a schedule: {edit}");
+
+    // Agent settings and the AI model: edits say "Save changes"; the key is "Delete key".
+    open(c, "#/agents/default/settings", "AI model").await;
+    assert!(eval(c, main_button).await.contains("Save changes"), "agent settings");
+    eval(c, "(async () => { await api('/api/provider', { action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }); await loadSettings(); return 'ok'; })()").await;
+    open(c, "#/settings/model", "Delete key").await;
+    assert!(eval(c, main_button).await.contains("Save changes"), "AI model");
+
+    // A confirmation's safe button is "Keep it" (History's "Keep them" is gone: see the scan above).
+    let keep = eval(c, "(async () => { const p = UI.confirmDialog({ title: 't', text: 'x', verb: 'Delete' }); const k = document.querySelector('dialog.cdlg button').textContent; document.querySelector('dialog.cdlg button').click(); await p; return k; })()").await;
+    assert_eq!(keep, "\"Keep it\"");
 }

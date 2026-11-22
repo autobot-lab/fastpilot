@@ -98,7 +98,7 @@ async fn the_first_test_press_works_and_replace_token_keeps_the_project() {
     assert_eq!(myself_calls(&fake), 1, "one press, one test");
     // Choose the project and save.
     eval(&client, "(() => { const s = document.querySelector('select[aria-label=\"Default project\"]'); s.value = 'OPS'; s.dispatchEvent(new Event('change')); return 'ok'; })()").await;
-    let (ok, out) = flow(&client, "- tapOn: Save\n- assertVisible: { text: \"Connected\", timeout: 8000 }\n").await;
+    let (ok, out) = flow(&client, "- tapOn: Connect Jira\n- assertVisible: { text: \"Connected\", timeout: 8000 }\n").await;
     assert!(ok, "{out}");
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/jira.json")).expect("saved")).expect("json");
     assert_eq!(saved["project_key"], "OPS");

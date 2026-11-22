@@ -160,7 +160,7 @@ function tabSettings(x) {
           const out = await save({ ...a, name: name.value, job: job.value, app: app.value, devices: [...picked], blocked: blocked.value.split(",").map((w) => w.trim()).filter(Boolean),
             provider: ai.provider === "claude" ? null : ai.provider, model: ai.model || null });
           if (out) page(out.id, "settings");
-        } }, "Save"),
+        } }, "Save changes"),
         a.id === "default" ? null : h("button", { class: "btn danger", onclick: async () => {
           const heir = (byId("default") || { agent: { name: "My agent" } }).agent.name;
           if (!(await UI.confirmDialog({ title: `Delete the agent "${a.name}"?`, text: `Its instructions and settings are deleted. Its schedules and conversations move to "${heir}".`, verb: "Delete agent" }))) return;

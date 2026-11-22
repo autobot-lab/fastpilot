@@ -288,9 +288,9 @@ function providerGroup() {
   pick.addEventListener("change", () => { sync(); keepDraft(); });
   sync();
   const btns = h("div", { class: "btns" },
-    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Save"),
+    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Save changes"),
     provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Testing…" : "Test the connection") : null,
-    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: async () => { if (await UI.confirmDialog({ title: "Delete the saved API key?", text: "The key is removed from this computer. Tests cannot use this provider until you enter a key again. Your other settings stay.", verb: "Delete key" })) provAction({ action: "delete-key" }); } }, "Delete the key") : null);
+    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: async () => { if (await UI.confirmDialog({ title: "Delete the saved API key?", text: "The key is removed from this computer. Tests cannot use this provider until you enter a key again. Your other settings stay.", verb: "Delete key" })) provAction({ action: "delete-key" }); } }, "Delete key") : null);
   return h("div", { class: "grp" },
     h("div", { class: "gh" }, icon("plug"), "who runs the tests · fastpilot run"),
     provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "The provider is set in the environment (FASTPILOT_PROVIDER…), which wins over this setting.")) : null,
@@ -1212,9 +1212,9 @@ function settingCard(p) {
     const review = h("button", { class: "btn danger" }, c.typed ? "Review and allow…" : "Allow");
     if (!c.typed) { review.disabled = true; setTimeout(() => { review.disabled = false; }, 3000); }
     review.addEventListener("click", () => (c.typed ? confirmLoosen(p, review) : chatDecide(p.id, true)));
-    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, false) }, "Keep as it is"), review);
+    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, false) }, "Keep it"), review);
   } else if (p.status === "pending") {
-    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Apply"), h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Keep as it is"));
+    foot = h("div", { class: "btns" }, h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Save changes"), h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, "Keep it"));
   } else if (p.status === "applied" && p.undo) {
     foot = h("div", { class: "btns" }, h("div", { class: "prop-state ok", tabindex: "-1" }, red ? "Allowed" : "Done"),
       h("button", { class: "btn sm", onclick: () => chatUndo(p.id) }, red ? "Block again" : "Undo"));
@@ -1270,7 +1270,7 @@ function agentCard(p) {
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Create"),
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, "Create agent"),
       h("button", { class: "btn", onclick: () => window.editAgentDraft && window.editAgentDraft(p.draft || {}) }, "Edit"),
       h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Dismiss"));
   } else if (p.status === "applied") {
@@ -1403,7 +1403,7 @@ function proposalCard(p) {
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Save the schedule" : p.kind === "note" ? "Add note" : "Apply the limits"),
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? "Add note" : "Save changes"),
       h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, p.kind === "note" ? "No thanks" : "Cancel"));
   } else if (p.status === "applied") {
     foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved"));
@@ -1868,7 +1868,7 @@ function schedPanel() {
         h("label", { class: "ck" }, gh, " GitHub issue"), h("div", { class: "sub-fld" }, repoField)),
       h("div", { class: "btns" },
         h("button", { class: "btn", onclick: cancel }, "Cancel"),
-        h("button", { class: "btn p", onclick: save }, editing ? "Save schedule" : "Create schedule")),
+        h("button", { class: "btn p", onclick: save }, editing ? "Save changes" : "Create schedule")),
       h("p", { class: "s muted" }, "Or type it in Chat: \"run the checkout tests every 2 hours\". Escape closes this without saving.")));
 }
 
