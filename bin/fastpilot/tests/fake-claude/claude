@@ -126,6 +126,12 @@ def side_by_side():
     flows = ["- assertVisible: \"Masuk ke Akun\"\n", None,
              "- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n",
              "- assertVisible: Budi\n"]
+    if os.environ.get(f"FAKE_CLAUDE_SIDE_NOSTART_{key}") == "1":
+        # QA re-test Low 3: the device session does not start (a device that is not there).
+        device = "emulator-9999" if platform == "android" else "00000000-0000-4000-8000-000000000000"
+        call("session", {"action": "start", "id": platform[:3] + "1", "platform": platform, "target": target, "device": device})
+        call("finish", {"status": "fail", "notes": "could not start: " + entry["calls"][-1]["text"][:200]})
+        return
     if real:
         r = call("session", {"action": "start", "id": platform[:3] + "1", "platform": platform, "target": target})
         if r.get("isError"):

@@ -373,7 +373,9 @@ impl CaseResult {
     /// It never started (no device, a missing secret or setup, the breaker): nothing it says is
     /// about the test itself.
     pub fn not_run(&self) -> bool {
-        !self.passed && self.turns == 0 && matches!(self.class, Some(Class::Infra | Class::Setup))
+        !self.passed
+            && matches!(self.class, Some(Class::Infra | Class::Setup))
+            && (self.turns == 0 || (self.steps.is_empty() && self.notes.starts_with("Could not run: ")))
     }
 
     /// V042: a test that needs a secret this run does not have: not started, never retried.
@@ -554,6 +556,9 @@ struct Agent {
     /// PF5: the side-by-side test this run is one platform of, and what it reported per step.
     side: Option<(Side, Platform)>,
     reported: Mutex<Vec<StepResult>>,
+    /// PF5 (QA re-test Low 3): the first device session that failed to start, and whether any did.
+    start_error: Mutex<Option<String>>,
+    started: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -644,6 +649,14 @@ impl Agent {
         lock(&self.transcript).push(format!("{} {} {}\n{}", if ok { "✓" } else { "✗" }, name, clip(&input.to_string(), 300), clip(&joined, 1500)));
         if !ok && name == "run_flow" {
             self.replay_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if start {
+            if ok {
+                self.started.store(true, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                let first = joined.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+                lock(&self.start_error).get_or_insert_with(|| clip(&fastpilot_core::redact(first), 200));
+            }
         }
         json!({ "content": out, "isError": !ok })
     }
@@ -839,6 +852,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         replay_failed: std::sync::atomic::AtomicBool::new(false),
         side: side.map(|s| s.0),
         reported: Mutex::new(Vec::new()),
+        start_error: Mutex::new(None),
+        started: std::sync::atomic::AtomicBool::new(false),
     });
     // Only this test's Claude Code may connect: a random token it passes to the bridge.
     let token: String = (0..2)
@@ -934,7 +949,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     }
     let mut transcript = std::mem::take(&mut *lock(&agent.transcript));
     let verdict = lock(&agent.verdict).clone();
-    let (passed, notes) = match (verdict, failure) {
+    let (passed, mut notes) = match (verdict, failure) {
         (Some(v), _) => v,
         (None, Some(f)) => {
             transcript.push(f.clone());
@@ -946,8 +961,22 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
             (false, "the agent ended without calling finish".to_owned())
         }
     };
+    // PF5 (QA re-test Low 3): in a side-by-side run, a platform whose device session never started
+    // (the helper missing, the runner not starting) reported nothing about the test: it is
+    // "Not run" with the reason, infrastructure, not a product failure.
+    let start_failed = case.side.is_some()
+        && !passed
+        && !agent.started.load(std::sync::atomic::Ordering::SeqCst)
+        && lock(&agent.reported).is_empty()
+        && lock(&agent.start_error).is_some();
+    if start_failed {
+        let why = lock(&agent.start_error).clone().unwrap_or_default();
+        let platform = case.platforms().first().map_or("device", |p| platform_name(*p));
+        forced_class = Some(Class::Infra);
+        notes = format!("Could not run: the {platform} session did not start ({}). Check the device and its helper, then run again.", why.trim_end_matches('.'));
+    }
     // It never ran (no browser, the agent could not start): not a failure of the test (FastTest M3).
-    let could_not_run = forced_class == Some(Class::Infra) && turns == 0;
+    let could_not_run = forced_class == Some(Class::Infra) && (turns == 0 || start_failed);
     let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry, could_not_run).await {
         Ok(f) => (forced_class.or(f.class), Some(f.report)),
         Err(e) => {
@@ -1468,6 +1497,8 @@ mod tests {
             replay_failed: std::sync::atomic::AtomicBool::new(false),
             side,
             reported: Mutex::new(Vec::new()),
+            start_error: Mutex::new(None),
+            started: std::sync::atomic::AtomicBool::new(false),
         };
         let names = |tools: Vec<Value>| tools.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect::<Vec<_>>();
         assert!(names(Agent::tools(Some(&side))).contains(&"step".to_owned()) && !names(Agent::tools(None)).contains(&"step".to_owned()));
