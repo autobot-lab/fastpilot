@@ -55,6 +55,9 @@ pub struct Column {
     pub passed: bool,
     pub cells: Vec<Cell>,
     pub shots: Vec<Option<PathBuf>>,
+    /// It did not run because something broke before the test could start (the device session, the
+    /// helper, a secret): "Could not run", not "Not run" (no device was there).
+    pub could_not_run: bool,
 }
 
 /// What one platform's run gave, before it is laid out as a column.
@@ -144,7 +147,7 @@ pub fn column(platform: Platform, name: &str, steps: usize, outcome: &Outcome) -
             (true, *passed, cells, shots)
         }
     };
-    Column { platform, name: name.to_owned(), ran, passed, cells, shots }
+    Column { platform, name: name.to_owned(), ran, passed, cells, shots, could_not_run: false }
 }
 
 /// Compare the columns row by row: which platforms differ at each step, and why, in words.
@@ -238,7 +241,9 @@ pub fn of_results(results: &[CaseResult]) -> Vec<Comparison> {
                         None => Outcome::NotRun { why: crate::run::why_not_run(crate::run::no_device(*p)), next: Some(crate::run::set_up(*p).to_owned()) },
                     };
                     let name = crate::run::device_name(*p, r.and_then(|r| r.devices.first()).map(String::as_str));
-                    column(*p, name, side.steps.len(), &outcome)
+                    let mut col = column(*p, name, side.steps.len(), &outcome);
+                    col.could_not_run = r.is_some_and(|r| r.not_run() && r.notes.trim_start().starts_with("Could not run"));
+                    col
                 })
                 .collect();
             Some(compare(g, &mine[0].case.title, &side.steps, columns))
@@ -273,25 +278,46 @@ impl Comparison {
             // Failures without a step of their own to compare: no "match" is claimed.
             format!("{passed} of {total} platforms passed")
         };
-        let sub = match differ {
-            0 => steps,
-            1 => format!("1 platform differs · {steps}"),
-            d => format!("{d} platforms differ · {steps}"),
-        };
+        // A platform that failed a step the others passed "fails"; one that found other text "differs".
+        let fails = self.differing().into_iter().filter(|c| self.failed_at(*c).is_some()).count();
+        let mut parts = Vec::new();
+        match fails {
+            0 => {}
+            1 => parts.push("1 platform fails".to_owned()),
+            f => parts.push(format!("{f} platforms fail")),
+        }
+        match differ - fails {
+            0 => {}
+            1 => parts.push("1 platform differs".to_owned()),
+            d => parts.push(format!("{d} platforms differ")),
+        }
+        parts.push(steps);
+        let sub = parts.join(" · ");
         (head, sub)
     }
 
-    /// The short state of one column for the summary: "All 5 steps", "Differs at step 2", ...
+    /// The step number where column `c` failed, if it did.
+    fn failed_at(&self, c: usize) -> Option<usize> {
+        self.columns[c].cells.iter().position(|x| matches!(x, Cell::Failed { .. })).map(|i| i + 1)
+    }
+
+    /// "Not run" (no device there) or "Could not run" (something broke before the test started).
+    fn not_run_word(col: &Column) -> &'static str {
+        if col.could_not_run { "Could not run" } else { "Not run" }
+    }
+
+    /// The short state of one column for the summary: "All 5 steps", "Failed at step 3",
+    /// "Differs at step 2", ... A failed step is a failure, never only a difference (QA, L061-5).
     pub fn state(&self, c: usize) -> (&'static str, String) {
         let col = &self.columns[c];
         if !col.ran {
-            return ("none", "Not run".into());
+            return ("none", Self::not_run_word(col).into());
+        }
+        if let Some(n) = self.failed_at(c) {
+            return ("bad", format!("Failed at step {n}"));
         }
         if let Some(r) = self.rows.iter().find(|r| r.differs.contains(&c)) {
             return ("diff", format!("Differs at step {}", r.n));
-        }
-        if let Some(i) = col.cells.iter().position(|x| matches!(x, Cell::Failed { .. })) {
-            return ("bad", format!("Failed at step {}", i + 1));
         }
         if !col.passed {
             return ("bad", "Failed".into());
@@ -380,12 +406,16 @@ impl Comparison {
         }
         b.push_str("</tr></thead><tbody>");
         for (i, row) in self.rows.iter().enumerate() {
-            let label = if row.differs.is_empty() {
-                String::new()
-            } else {
-                let on: Vec<String> = row.differs.iter().map(|c| short(self.columns[*c].platform).to_owned()).collect();
-                format!("<span class=\"lbl\">Differs on {}</span>", e(&and_list(&on)))
-            };
+            let failed_here = |c: &usize| matches!(self.columns[*c].cells[i], Cell::Failed { .. });
+            let on = |pick: &dyn Fn(&usize) -> bool| -> Vec<String> { row.differs.iter().filter(|c| pick(c)).map(|c| short(self.columns[*c].platform).to_owned()).collect() };
+            let (fails, other) = (on(&failed_here), on(&|c| !failed_here(c)));
+            let mut label = String::new();
+            if !fails.is_empty() {
+                let _ = write!(label, "<span class=\"lbl\">Fails on {}</span>", e(&and_list(&fails)));
+            }
+            if !other.is_empty() {
+                let _ = write!(label, "<span class=\"lbl\">Differs on {}</span>", e(&and_list(&other)));
+            }
             let _ = write!(b, "<tr{}><th scope=\"row\">{} · {}{label}</th>", if row.differs.is_empty() { "" } else { " class=\"differs\"" }, row.n, e(&row.label));
             for (c, col) in self.columns.iter().enumerate() {
                 let cell = &col.cells[i];
@@ -406,7 +436,8 @@ impl Comparison {
                     }
                     Cell::NotRun { why, next } => {
                         let next = next.as_ref().map(|n| format!("<br><span class=\"next\">{}</span>", e(n))).unwrap_or_default();
-                        ("none", format!("<b>Not run</b><br>{}{next}", e(why)))
+                        let word = if col.ran { "Not run" } else { Self::not_run_word(col) };
+                        ("none", format!("<b>{word}</b><br>{}{next}", e(why)))
                     }
                     Cell::NoResult { why } => ("none", format!("<b>No step result</b><br>{}", e(why))),
                 };
@@ -594,6 +625,36 @@ mod tests {
         assert_eq!((c.state(1), c.state(2)), (("bad", "Failed".into()), ("bad", "Failed".into())));
         let c = three(ran(false, vec![]), ran(false, vec![]), ran(false, vec![]));
         assert_eq!(c.summary().0, "Failed on all 3 platforms");
+    }
+
+    /// L061-5 (QA, v0.6.0 Low 5): a platform whose test failed (its app did not launch at the first
+    /// step) is "Failed at step 1", and its row says "Fails on Android", never "Differs". A platform
+    /// that could not start (infrastructure) says "Could not run", not "Not run".
+    #[test]
+    fn a_failed_platform_says_failed_not_differs() {
+        let launch = ran(false, vec![StepResult { notes: "the app did not launch".into(), ..step(1, false, None) }]);
+        let c = compare(
+            "login",
+            "Login",
+            &steps(),
+            vec![column(Platform::Web, "Web · Chrome", 4, &all_pass("Lupa password?")), column(Platform::Android, "Android emulator", 4, &launch)],
+        );
+        assert_eq!(c.state(1), ("bad", "Failed at step 1".into()));
+        assert_eq!(c.summary().1, "1 platform fails · 4 steps");
+        let html = c.html();
+        assert!(html.contains("<span class=\"lbl\">Fails on Android</span>") && !html.contains("Differs on") && !html.contains("Differs at"), "{html}");
+        let t = c.terminal();
+        assert!(t.contains("Android emulator: Failed at step 1") && !t.contains("Differs"), "{t}");
+        // Infrastructure: the column was not run because the session did not start.
+        let mut cols = vec![
+            column(Platform::Web, "Web · Chrome", 4, &all_pass("Lupa password?")),
+            column(Platform::Ios, "iPhone simulator", 4, &Outcome::NotRun { why: "The iPhone simulator session did not start".into(), next: None }),
+        ];
+        cols[1].could_not_run = true;
+        let c = compare("login", "Login", &steps(), cols);
+        assert_eq!(c.state(1), ("none", "Could not run".into()));
+        assert!(c.terminal().contains("iPhone simulator: Could not run: The iPhone simulator session did not start"), "{}", c.terminal());
+        assert_eq!(c.html().matches("<b>Could not run</b><br>The iPhone simulator session did not start").count(), 4);
     }
 
     /// Page text is data: a label or found text with markup is shown as text, never as HTML.
