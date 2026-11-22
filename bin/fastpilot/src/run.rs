@@ -354,6 +354,9 @@ pub struct CaseResult {
     pub devices: Vec<String>,
     /// PF5: the numbered steps the last attempt reported (side-by-side runs), by step number.
     pub steps: Vec<StepResult>,
+    /// A device or runner this test needs did not come up (the iPhone runner under load): the test
+    /// never ran. It is "Not run", not a product failure, and it is not retried.
+    pub start_failed: bool,
 }
 
 /// PF5: what one platform's run reported for one numbered step of the test.
@@ -374,8 +377,9 @@ impl CaseResult {
     /// about the test itself.
     pub fn not_run(&self) -> bool {
         !self.passed
-            && matches!(self.class, Some(Class::Infra | Class::Setup))
-            && (self.turns == 0 || (self.steps.is_empty() && self.notes.starts_with("Could not run: ")))
+            && (self.start_failed
+                || matches!(self.class, Some(Class::Infra | Class::Setup))
+                    && (self.turns == 0 || (self.steps.is_empty() && self.notes.starts_with("Could not run: "))))
     }
 
     /// V042: a test that needs a secret this run does not have: not started, never retried.
@@ -408,6 +412,7 @@ impl CaseResult {
             earlier_reports: Vec::new(),
             devices: Vec::new(),
             steps: Vec::new(),
+            start_failed: false,
         }
     }
 }
@@ -559,6 +564,9 @@ struct Agent {
     /// PF5 (QA re-test Low 3): the first device session that failed to start, and whether any did.
     start_error: Mutex<Option<String>>,
     started: std::sync::atomic::AtomicBool,
+    /// A session could not start because the device's runner did not come up (an infrastructure
+    /// problem): what it said. The test never ran; nothing starts that session again.
+    infra: Mutex<Option<String>>,
 }
 
 impl Agent {
@@ -614,6 +622,32 @@ impl Agent {
         Ok(format!("step {n} recorded"))
     }
 
+    /// `session start`, with a progress line every 30 s (`FASTPILOT_PROGRESS_SECS`): the iPhone
+    /// runner may take minutes to load on a busy computer, and a run that says nothing looks hung.
+    async fn start_session(&self, input: &Value) -> (bool, Vec<Value>) {
+        let every = Duration::from_secs(fastpilot_core::config::var("FASTPILOT_PROGRESS_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(30));
+        let began = Instant::now();
+        let call = self.fp.call_json("session", input.clone());
+        tokio::pin!(call);
+        loop {
+            tokio::select! {
+                r = &mut call => return r,
+                () = tokio::time::sleep(every) => {
+                    let secs = began.elapsed().as_secs();
+                    let what = match input["platform"].as_str() {
+                        Some("ios") => "the iPhone runner",
+                        Some("android") => "the Android helper",
+                        _ => "the session",
+                    };
+                    println!("  {}: still starting {what} ({secs} s; a busy computer makes this slow, it gives up after a few minutes)", self.case_id);
+                    if let Some((side, p)) = &self.side {
+                        fastpilot_core::live::side_tile(&side.group, &p.to_string(), |t| t.note = format!("Still starting ({secs} s)"));
+                    }
+                }
+            }
+        }
+    }
+
     async fn call(&self, name: &str, mut input: Value) -> Value {
         let text = |t: String, err: bool| json!({ "content": [{ "type": "text", "text": t }], "isError": err });
         if name == "config" {
@@ -644,8 +678,16 @@ impl Agent {
         if (start || name == "run_flow" || name == "assert") && input.get("test_id").is_none_or(Value::is_null) {
             input["test_id"] = json!(self.case_id);
         }
-        let (ok, out) = self.fp.call_json(name, input.clone()).await;
+        if start && let Some(why) = lock(&self.infra).clone() {
+            return text(format!("{why} Nothing starts this session again in this test: call finish with status fail and say that it could not start."), true);
+        }
+        let (ok, out) = if start { self.start_session(&input).await } else { self.fp.call_json(name, input.clone()).await };
         let joined: String = out.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+        // The device's runner did not come up (the iPhone runner on a busy computer): the test never ran.
+        if !ok && start && let Some(at) = joined.find(fastpilot_ios::RUNNER_NOT_STARTED) {
+            let why = joined[at..].split(" Last output:").next().unwrap_or("").trim();
+            *lock(&self.infra) = Some(clip(why, 500));
+        }
         lock(&self.transcript).push(format!("{} {} {}\n{}", if ok { "✓" } else { "✗" }, name, clip(&input.to_string(), 300), clip(&joined, 1500)));
         if !ok && name == "run_flow" {
             self.replay_failed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -854,6 +896,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         reported: Mutex::new(Vec::new()),
         start_error: Mutex::new(None),
         started: std::sync::atomic::AtomicBool::new(false),
+        infra: Mutex::new(None),
     });
     // Only this test's Claude Code may connect: a random token it passes to the bridge.
     let token: String = (0..2)
@@ -949,7 +992,13 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     }
     let mut transcript = std::mem::take(&mut *lock(&agent.transcript));
     let verdict = lock(&agent.verdict).clone();
+    // The device's runner never came up: the test never ran, whatever the model wrote at the end.
+    let infra_start = lock(&agent.infra).clone();
     let (passed, mut notes) = match (verdict, failure) {
+        (Some(v), _) if !v.0 && infra_start.is_some() => {
+            forced_class = Some(Class::Infra);
+            (false, format!("Could not run: {}", infra_start.clone().unwrap_or_default()))
+        }
         (Some(v), _) => v,
         (None, Some(f)) => {
             transcript.push(f.clone());
@@ -969,7 +1018,8 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         && !agent.started.load(std::sync::atomic::Ordering::SeqCst)
         && lock(&agent.reported).is_empty()
         && lock(&agent.start_error).is_some();
-    if start_failed {
+    let start_failed = (start_failed && infra_start.is_none()) || infra_start.is_some() && !passed;
+    if start_failed && infra_start.is_none() {
         let why = lock(&agent.start_error).clone().unwrap_or_default();
         let platform = case.platforms().first().map_or("device", |p| platform_name(*p));
         forced_class = Some(Class::Infra);
@@ -1002,6 +1052,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         earlier_reports: Vec::new(),
         devices: devices.iter().map(|d| d.id.clone()).collect(),
         steps: std::mem::take(&mut *lock(&agent.reported)),
+        start_failed,
     }
 }
 
@@ -1061,7 +1112,9 @@ pub async fn run_with_retries(
     }
     let mut result = attempt(case, opts, pool, false, &[]).await;
     let mut attempts = 1;
-    while !result.passed && result.attempts > 0 && result.class != Some(Class::Agent) && budget.take() {
+    // A device that did not come up is not retried: the wait for it was already long, the test
+    // never ran, and a retry would only wait again (and look hung).
+    while !result.passed && result.attempts > 0 && !result.start_failed && result.class != Some(Class::Agent) && budget.take() {
         attempts += 1;
         let mut again = attempt(case, opts, pool, true, &result.devices).await;
         let earlier = std::mem::take(&mut result.transcript);
@@ -1261,7 +1314,9 @@ pub fn shard_order(cases: &[Case], memory: &fastpilot_memory::Memory) -> Vec<usi
 
 pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -> Result<(), Box<dyn Error + Send + Sync>> {
     let setup: Vec<&CaseResult> = results.iter().filter(|r| r.class == Some(Class::Setup)).collect();
-    let failed = results.iter().filter(|r| !r.passed && !r.quarantined && r.class != Some(Class::Setup)).count();
+    // A device that did not come up (the iPhone runner on a busy computer): not run, not a failure.
+    let unrun = results.iter().filter(|r| r.start_failed && r.class != Some(Class::Setup)).count();
+    let failed = results.iter().filter(|r| !r.passed && !r.quarantined && r.class != Some(Class::Setup) && !r.start_failed).count();
     let quarantined = results.iter().filter(|r| !r.passed && r.quarantined).count();
     let tokens: (u64, u64, u64) =
         results.iter().fold((0, 0, 0), |a, r| (a.0 + r.usage.input, a.1 + r.usage.output, a.2 + r.usage.cache_read));
@@ -1269,7 +1324,12 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
     if let Some(agent) = std::env::var("FASTPILOT_AGENT").ok().filter(|a| crate::agents::get(a).is_some()) {
         crate::agents::record_usage(&agent, tokens.0, tokens.1);
     }
-    let not_run = if setup.is_empty() { String::new() } else { format!(" {} could not run,", setup.len()) };
+    let not_run = match (setup.len(), unrun) {
+        (0, 0) => String::new(),
+        (s, 0) => format!(" {s} could not run,"),
+        (0, u) => format!(" {u} did not run (the device did not start),"),
+        (s, u) => format!(" {} could not run,", s + u),
+    };
     println!(
         "\n{} tests: {} passed, {failed} failed,{not_run} {quarantined} quarantined failures, in {:.1}s; tokens in {} (cache read {}) out {}",
         results.len(),
@@ -1295,6 +1355,10 @@ pub fn finish_suite(results: &[CaseResult], elapsed: Duration, opts: &Options) -
         println!("\n{}", setup_help(&secrets, results.len()));
     }
     let only_secrets = secrets.len() == setup.len();
+    if failed == 0 && setup.is_empty() && unrun > 0 {
+        println!("\n{unrun} of {} tests did not run because a device did not start (see above). This is not a pass, and not a failure of your app.", results.len());
+        return Err(format!("{unrun} test(s) did not run: a device did not start (infrastructure, not your app)").into());
+    }
     match (failed, setup.len()) {
         (0, 0) => Ok(()),
         (0, 1) if only_secrets => Err("1 test could not start: a secret it needs is not set".into()),
@@ -1499,6 +1563,7 @@ mod tests {
             reported: Mutex::new(Vec::new()),
             start_error: Mutex::new(None),
             started: std::sync::atomic::AtomicBool::new(false),
+            infra: Mutex::new(None),
         };
         let names = |tools: Vec<Value>| tools.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect::<Vec<_>>();
         assert!(names(Agent::tools(Some(&side))).contains(&"step".to_owned()) && !names(Agent::tools(None)).contains(&"step".to_owned()));

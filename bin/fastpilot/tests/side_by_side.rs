@@ -69,7 +69,7 @@ fn fake_xcode(dir: &Path, booted: bool) -> (PathBuf, PathBuf) {
     let bin = dir.join(if booted { "bin-sim" } else { "bin-nosim" });
     std::fs::create_dir_all(&bin).expect("bin");
     let devices = if booted { format!(r#"[{{"udid":"{SIM}","name":"iPhone 16","state":"Booted"}}]"#) } else { "[]".into() };
-    let script = format!("#!/bin/sh\nif [ \"$1 $2 $3\" = \"simctl list devices\" ]; then echo '{{\"devices\":{{\"com.apple.CoreSimulator.SimRuntime.iOS-18-1\":{devices}}}}}'; exit 0; fi\nexit 1\n");
+    let script = format!("#!/bin/sh\nif [ \"$1 $2 $3\" = \"simctl list devices\" ]; then echo '{{\"devices\":{{\"com.apple.CoreSimulator.SimRuntime.iOS-18-1\":{devices}}}}}'; exit 0; fi\nif [ \"$1 $2\" = \"simctl boot\" ] || [ \"$1 $2\" = \"simctl bootstatus\" ]; then exit 0; fi\nexit 1\n");
     let xcrun = bin.join("xcrun");
     std::fs::write(&xcrun, script).expect("xcrun");
     #[cfg(unix)]
@@ -91,13 +91,22 @@ struct Run {
 }
 
 fn run(dir: &Path, booted: bool, html: &Path, env: &[(&str, &str)]) -> Run {
+    run_target(dir, booted, "tests/login-side-by-side.md", html, env)
+}
+
+/// The same run for a test file of its own (the fake simulator is the booted one).
+fn run_case_file(dir: &Path, case: &Path, html: &Path, env: &[(&str, &str)]) -> Run {
+    run_target(dir, true, case.to_str().unwrap_or(""), html, env)
+}
+
+fn run_target(dir: &Path, booted: bool, target: &str, html: &Path, env: &[(&str, &str)]) -> Run {
     let (bin, runner) = fake_xcode(dir, booted);
     let live_dir = dir.join("live");
     let log = dir.join("claude");
     std::fs::create_dir_all(&log).expect("log");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
-    cmd.args(["run", "tests/login-side-by-side.md", "--workers", "3", "--html", html.to_str().unwrap_or("")])
+    cmd.args(["run", target, "--workers", "3", "--html", html.to_str().unwrap_or("")])
         .current_dir(ROOT)
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANDROID_SERIAL")
@@ -269,5 +278,103 @@ fn a_platform_that_does_not_start_is_not_run() {
     assert!(report.contains("<b>1 of 3 platforms ran</b>") && !report.contains("Differs on"), "{report}");
     assert!(report.matches("<td class=\"cell none\"><p><b>Not run</b><br>The Android emulator session did not start").count() == 4, "{report}");
     assert!(report.matches("<b>Not run</b><br>The iPhone simulator session did not start").count() == 4, "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// v0.6.0 (QA Tester, bug 2): the iPhone runner never comes up (a busy computer; here a fake
+/// `xcodebuild` that prints nothing and sleeps). The run must not hang or retry the start again
+/// and again: web passes, the iPhone column says "Infrastructure: iPhone runner did not start
+/// (machine busy?)" and counts as Not run (not as a product failure), and the command prints the
+/// summary and exits promptly. Before the fix the start waited a fixed 180 s, and the suite
+/// retried it (retry budget 3), so the command was silent for about nine minutes.
+#[test]
+fn an_iphone_runner_that_never_starts_is_not_run_and_the_command_exits() {
+    if !ready() {
+        return eprintln!("skipping: needs Chrome and python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-pf5-slow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let (bin, _) = fake_xcode(&dir, true);
+    // A runner that never says it is ready, and stays up until it is killed.
+    let xcodebuild = bin.join("xcodebuild");
+    std::fs::write(&xcodebuild, "#!/bin/sh\necho 'Test Suite started'\nexec sleep 600\n").expect("xcodebuild");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&xcodebuild, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let case = dir.join("web-and-iphone.md");
+    std::fs::write(
+        &case,
+        "# Login on web and iPhone\nid: web-and-iphone\nplatform: web, ios\ntarget web: examples/demo/login.html\ntarget ios: com.fastpilot.demo\n\
+         - Open the login screen and check that \"Masuk ke Akun\" shows\n- Check that there is a link for a forgotten password, and note its exact text\n",
+    )
+    .expect("case");
+    let html = dir.join("report.html");
+    let started = Instant::now();
+    let r = run_case_file(&dir, &case, &html, &[("FASTPILOT_IOS_START_TIMEOUT", "3"), ("FASTPILOT_PROGRESS_SECS", "1"), ("FASTPILOT_RETRY_BUDGET", "3"), ("FAKE_CLAUDE_SIDE_REAL", "1")]);
+    println!("{}", r.out);
+    assert!(started.elapsed() < Duration::from_secs(90), "the run took {:?}", started.elapsed());
+    assert!(!r.ok, "a platform that did not run is not a pass: {}", r.out);
+    // Web passed; the iPhone did not run, said why in these words, and was started once only.
+    assert!(r.out.lines().any(|l| l.starts_with("✓ web-and-iphone-web ")), "{}", r.out);
+    let ios = r.out.lines().find(|l| l.starts_with("✗ web-and-iphone-ios ")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(ios.contains("Infrastructure: iPhone runner did not start (machine busy?)") && !ios.contains("[product]") && !ios.contains("attempts"), "{ios}");
+    assert_eq!(prompts(&dir.join("claude")).iter().filter(|c| c["prompt"].as_str().is_some_and(|p| p.contains("Test case `web-and-iphone-ios`"))).count(), 1, "the iPhone test is not retried");
+    // Progress while it waited, then the summary: Not run, not failed.
+    assert!(r.out.contains("web-and-iphone-ios: still starting the iPhone runner (1 s;"), "{}", r.out);
+    assert!(r.out.contains("1 passed, 0 failed, 1 did not run"), "{}", r.out);
+    assert!(r.out.contains("not a failure of your app"), "{}", r.out);
+    assert!(r.out.contains("iPhone simulator: Not run: Infrastructure: iPhone runner did not start (machine busy?)"), "{}", r.out);
+    let report = std::fs::read_to_string(&html).expect("report");
+    assert!(report.contains("<b>Not run</b><br>Infrastructure: iPhone runner did not start (machine busy?)"), "{report}");
+    // No xcodebuild left behind holding the simulator.
+    let left = std::process::Command::new("pgrep").args(["-f", &format!("{}/xcodebuild", dir.display())]).output().map(|o| o.stdout.len()).unwrap_or(0);
+    assert_eq!(left, 0, "the fake xcodebuild was left running");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The simulator is too busy to open the runner ("Busy ... failed preflight checks", seen at a load
+/// average above 60): the start is tried again, three times at most, and then reported as "Not run"
+/// in the same words, not as a failure of the app.
+#[test]
+fn a_busy_simulator_gets_three_tries_and_then_says_so() {
+    if !ready() {
+        return eprintln!("skipping: needs Chrome and python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-pf5-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let (bin, _) = fake_xcode(&dir, true);
+    let calls = dir.join("xcodebuild-calls");
+    let xcodebuild = bin.join("xcodebuild");
+    std::fs::write(
+        &xcodebuild,
+        format!(
+            "#!/bin/sh\necho x >> {}\necho 'Testing failed:'\necho 'The request was denied by service delegate (SBMainWorkspace) for reason: Busy (\"Application failed preflight checks\")' >&2\nexit 65\n",
+            calls.display()
+        ),
+    )
+    .expect("xcodebuild");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&xcodebuild, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let case = dir.join("web-and-iphone.md");
+    std::fs::write(
+        &case,
+        "# Login on web and iPhone\nid: web-and-iphone\nplatform: web, ios\ntarget web: examples/demo/login.html\ntarget ios: com.fastpilot.demo\n\
+         - Open the login screen and check that \"Masuk ke Akun\" shows\n- Check that there is a link for a forgotten password, and note its exact text\n",
+    )
+    .expect("case");
+    let r = run_case_file(&dir, &case, &dir.join("report.html"), &[("FASTPILOT_RETRY_BUDGET", "3"), ("FAKE_CLAUDE_SIDE_REAL", "1")]);
+    println!("{}", r.out);
+    assert!(!r.ok, "{}", r.out);
+    let ios = r.out.lines().find(|l| l.starts_with("✗ web-and-iphone-ios ")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(ios.contains("Infrastructure: iPhone runner did not start (machine busy?)") && !ios.contains("[product]"), "{ios}");
+    assert_eq!(std::fs::read_to_string(&calls).unwrap_or_default().lines().count(), 3, "three tries, not more");
+    assert!(r.out.contains("1 did not run"), "{}", r.out);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -11,7 +11,7 @@ pub mod webinspector;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -472,6 +472,17 @@ impl Drop for Forward {
     }
 }
 
+/// The first words of every "the simulator's runner did not come up" error. `fastpilot run` looks
+/// for them: such a platform is "Not run" (an infrastructure problem), never a product failure.
+pub const RUNNER_NOT_STARTED: &str = "Infrastructure: iPhone runner did not start";
+
+/// How long the simulator runner may take to say it is ready: `FASTPILOT_IOS_START_TIMEOUT`
+/// seconds (1 to 900), else 300. A loaded Mac needs minutes, and the wait is bounded.
+fn start_timeout() -> Duration {
+    let secs = fastpilot_core::config::var("FASTPILOT_IOS_START_TIMEOUT").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(300);
+    Duration::from_secs(secs.clamp(1, 900))
+}
+
 /// Physical devices with a session in this process. The device runner's token lives only in
 /// its session, so a second session would start another xcodebuild on the same port.
 fn busy_devices() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -494,6 +505,22 @@ impl Drop for Busy {
     fn drop(&mut self) {
         lock(busy_devices()).remove(&self.0);
     }
+}
+
+/// What one start of the runner came to.
+enum Started {
+    Ready(Box<Child>, tokio::io::Lines<BufReader<tokio::process::ChildStdout>>),
+    /// xcodebuild ended before the runner said it was ready: its last output.
+    Stopped(String),
+    /// Still not ready when the time was up (the last output, seconds waited).
+    TimedOut(String, u64),
+}
+
+/// The simulator refused to open the runner because it was overloaded (a busy computer), which
+/// is worth trying again; a build or signing problem is not.
+fn is_busy(output: &str) -> bool {
+    let o = output.to_ascii_lowercase();
+    o.contains("reason: busy") || o.contains("failed preflight checks") || o.contains("failed to install or launch the test runner") || o.contains("timed out")
 }
 
 impl IosDriver {
@@ -540,10 +567,46 @@ impl IosDriver {
             return Self::connected(udid, std::sync::Arc::new(agent), runner).await;
         }
         let xctestrun = xctestrun().ok_or(Error::Runner("the iPhone test runner is not set up yet: run `fastpilot setup ios` once (it builds it with your Xcode)".into()))?;
-        let mut child = Command::new("xcodebuild")
-            .arg("test-without-building")
-            .arg("-xctestrun")
-            .arg(&xctestrun)
+        // Bounded wait for the whole start, `start_timeout()`. xcodebuild may stop at once because
+        // the simulator was too busy to open the runner ("Busy: Application failed preflight
+        // checks", seen at a load average above 60): that is tried again, three times at most.
+        let deadline = Instant::now() + start_timeout();
+        let mut tries = 0;
+        let (child, mut lines) = loop {
+            tries += 1;
+            let left = deadline.saturating_duration_since(Instant::now());
+            match Self::spawn_runner(&xctestrun, &udid, port, left).await? {
+                Started::Ready(child, lines) => break (child, lines),
+                Started::Stopped(text) if tries < 3 && is_busy(&text) && deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(30) => {
+                    tracing::warn!(tries, "the simulator was busy; starting the runner again");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+                Started::Stopped(text) => {
+                    let hint = runner::classify(&text).map(|h| format!(" Fix: {h}.")).unwrap_or_default();
+                    let cause = if is_busy(&text) { "machine busy?" } else { "xcodebuild stopped before the runner was ready" };
+                    return Err(Error::Runner(format!("{RUNNER_NOT_STARTED} ({cause}).{hint} Tried {tries} time(s). Last output: {text}")));
+                }
+                Started::TimedOut(text, secs) => {
+                    return Err(Error::Runner(format!(
+                        "{RUNNER_NOT_STARTED} (machine busy?). It had {secs} s and did not answer: the simulator is slow to load the runner, usually because the computer is busy. Run again when it is quiet, or raise FASTPILOT_IOS_START_TIMEOUT (seconds). Last output: {text}"
+                    )));
+                }
+            }
+        };
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        let agent = std::sync::Arc::new(Agent::connect(port).await?);
+        let child = std::sync::Arc::new(tokio::sync::Mutex::new(*child));
+        lock(runners()).insert(udid.clone(), child.clone());
+        Self::connected(udid, agent, Some(child)).await
+    }
+
+    /// One `xcodebuild test-without-building`, waiting up to `limit` for the runner's ready line.
+    /// stderr goes into the same stream (xcodebuild reports some failures there); on a timeout the
+    /// xcodebuild is killed, so a late runner never holds the simulator and the port.
+    async fn spawn_runner(xctestrun: &std::path::Path, udid: &str, port: u16, limit: Duration) -> std::result::Result<Started, Error> {
+        let mut child = Command::new("sh")
+            .args(["-c", "exec \"$0\" \"$@\" 2>&1", "xcodebuild", "test-without-building", "-xctestrun"])
+            .arg(xctestrun)
             .args(["-destination", &format!("id={udid}")])
             .env("TEST_RUNNER_FASTPILOT_PORT", port.to_string())
             .env("TEST_RUNNER_FASTPILOT_IDLE_EXIT", fastpilot_core::config::var("FASTPILOT_IOS_RUNNER_IDLE").unwrap_or_else(|_| "300".into()))
@@ -557,7 +620,8 @@ impl IosDriver {
         let stdout = child.stdout.take().ok_or(Error::Runner("no stdout".into()))?;
         let mut lines = BufReader::new(stdout).lines();
         let mut tail = Vec::new();
-        let ready = tokio::time::timeout(Duration::from_secs(180), async {
+        let waited = Instant::now();
+        let outcome = tokio::time::timeout(limit, async {
             while let Ok(Some(l)) = lines.next_line().await {
                 if l.contains("FASTPILOT_RUNNER_READY") {
                     return true;
@@ -569,16 +633,19 @@ impl IosDriver {
             }
             false
         })
-        .await
-        .unwrap_or(false);
-        if !ready {
-            return Err(Error::Runner(format!("runner did not start: {}", tail.join(" | "))));
+        .await;
+        match outcome {
+            Ok(true) => Ok(Started::Ready(Box::new(child), lines)),
+            Ok(false) => {
+                let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                Ok(Started::Stopped(tail.join(" | ")))
+            }
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+                Ok(Started::TimedOut(tail.join(" | "), waited.elapsed().as_secs()))
+            }
         }
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        let agent = std::sync::Arc::new(Agent::connect(port).await?);
-        let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
-        lock(runners()).insert(udid.clone(), child.clone());
-        Self::connected(udid, agent, Some(child)).await
     }
 
     /// Physical device: preflight, the device build of the runner, xcodebuild with a token,
@@ -1526,6 +1593,17 @@ fn launch_arguments(args: &[(String, LaunchArg)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What xcodebuild printed at a load average above 60 (QA Tester, v0.6.0): the simulator refuses
+    /// the runner for now. That is worth another try; a signing or build problem is not.
+    #[test]
+    fn a_busy_simulator_is_told_apart_from_a_broken_runner() {
+        let busy = "Simulator device failed to launch com.fastpilot.runner.uitests.xctrunner. The request was denied by service delegate (SBMainWorkspace) for reason: Busy (\"Application failed preflight checks\")";
+        assert!(is_busy(busy));
+        assert!(is_busy("Failed to install or launch the test runner."));
+        assert!(!is_busy("error: No profile for team found | Testing failed: signing"));
+        assert!(!is_busy(""));
+    }
 
     #[test]
     fn launch_arguments_are_user_defaults() {
