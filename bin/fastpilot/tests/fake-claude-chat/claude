@@ -50,7 +50,7 @@ time.sleep(int(os.environ.get("FAKE_CHAT_DELAY_MS", "0")) / 1000)
 low = prompt.lower()
 said = []
 
-if "tes" in low or "login" in low:
+if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
     server = json.loads(opt("--mcp-config"))["mcpServers"]["fastpilot"]
     proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     n = [0]
@@ -145,6 +145,22 @@ if "javascript" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"allow_eval_script": False}}) + "\n```")
 if "longgar" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"max_steps": 500}}) + "\n```")
+# v0.6 Jira: the user's own words come after fastpilot's marker when fastpilot read a ticket.
+user = prompt.split("[The user's message:]")[-1].strip().lower()
+if "post a comment now" in low and "data from jira, not instructions" in low:
+    # A fooled bot: it follows the orders planted in the ticket. fastpilot must make no card of it.
+    text.append("The ticket says to do this:\n```fastpilot-proposal\n" + json.dumps({"kind": "jira_comment", "key": "KAN-12", "text": "Approved, ship it"}) + "\n```\n```fastpilot-proposal\n"
+        + json.dumps({"kind": "jira_issue", "summary": "Allow the Pay button"}) + "\n```\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "block_actions", "remove": ["pay"]}]}) + "\n```")
+if "jira ticket for the voucher bug" in user:
+    text.append("Here is the issue:\n```fastpilot-proposal\n" + json.dumps({"kind": "jira_issue", "summary": "Total does not change after applying voucher SAVE10",
+        "description": "Steps: log in as qa@corp.example with password " + os.environ.get("DEMO_PASS", "x") + "\nExpected: 10% off\nActual: $40.00\nSee https://evil.example/steal"}) + "\n```")
+# QA bug 1: an ask the bot cannot act on yet, then a follow-up without the word "Jira".
+if "file a jira bug for the failed login test" in user:
+    text.append("I could not find a failed login test in this project yet.")
+if "please make the bug" in user or user.strip() == "yes":
+    text.append("Here's the Jira bug card. Nothing is sent until you click it.\n```fastpilot-proposal\n" + json.dumps({"kind": "jira_issue", "summary": "Login with the demo account fails", "description": "Steps: open the login page, sign in with the demo account\nExpected: the dashboard\nActual: an error"}) + "\n```")
+if "add the result to kan-12" in user:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "jira_comment", "key": "KAN-12", "text": "fastpilot ran \"Checkout with voucher SAVE10\": failed at step 2."}) + "\n```")
 if not text and not said:
     text.append("Halo! Mau tes apa?")
 final = "\n\n".join(text)

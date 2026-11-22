@@ -34,6 +34,7 @@ struct State {
     log: Vec<Req>,
     refuse_all: bool,
     slowed: bool,
+    lose_answer: bool,
 }
 
 #[derive(Clone)]
@@ -48,6 +49,10 @@ impl Fake {
     }
     pub fn stop_accepting(&self) {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).refuse_all = true;
+    }
+    /// The next write reaches Jira (it is logged) but its answer is lost: the connection closes.
+    pub fn lose_next_answer(&self) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).lose_answer = true;
     }
     pub fn writes(&self) -> Vec<Req> {
         self.log().into_iter().filter(|r| r.method == "POST" && !r.path.ends_with("/search/jql")).collect()
@@ -99,6 +104,10 @@ fn serve(mut s: std::net::TcpStream, st: &Arc<Mutex<State>>) {
     let (site, path) = full.trim_start_matches('/').split_once('/').map(|(a, b)| (a.to_owned(), format!("/{b}"))).unwrap_or_default();
     let mut g = st.lock().unwrap_or_else(|p| p.into_inner());
     g.log.push(Req { method: method.clone(), path: path.clone(), user: user.clone(), right_token: token == TOKEN, body: body.clone() });
+    if g.lose_answer && method == "POST" && !path.ends_with("/search/jql") {
+        g.lose_answer = false;
+        return;
+    }
     let (code, json, extra): (u16, String, &str) = if site != SITE {
         (404, "{}".into(), "")
     } else if user == "slow@yourteam.com" && !g.slowed {

@@ -264,6 +264,20 @@ later), then **Save**.
 - `jira_read` reads only tickets of the default project, so text on a tested page cannot make the AI
   read other private tickets.
 
+### Jira in the dashboard Chat
+
+- **Read a ticket:** name it in your message ("test KAN-12"). fastpilot reads it and gives it to the
+  bot as information, never as instructions: text in a ticket that asks for something (allow a
+  button, post a comment, sign in somewhere) is not followed, and Chat says so when a ticket tried.
+- **Create an issue or add a comment:** ask in your own words ("make a Jira ticket for the voucher
+  bug", "add the result to KAN-12"). The bot's draft becomes a card that fastpilot writes: the site,
+  the project or ticket, and the exact text that will be sent (secrets masked, emails and links to
+  other sites removed). Nothing is sent before you click **Create issue** or **Add comment**; **Edit
+  first** lets you change the text. If an open issue looks the same, the card offers **Comment on
+  KAN-120 instead** or **Create anyway**. A card works once and expires after 10 minutes.
+- A ticket, page or file can never make a card: only your own message can. No card changes a
+  ticket's status. Scheduled and headless runs never write to Jira.
+
 ### With Atlassian's MCP server
 
 Three skills work with Jira through **Atlassian's own MCP server** (Rovo MCP) in Claude Code:

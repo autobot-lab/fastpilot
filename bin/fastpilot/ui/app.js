@@ -1197,14 +1197,27 @@ function pageAttempts(list) {
     out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
       h("div", {}, h("b", {}, "Limit kept as it is. "), "Your message names it but does not ask for it (it says no, or asks why): ", mine.map((a) => a.what).join(", "), ". Nothing was changed.")));
   }
-  if (page.length) {
-    const note = page.every((a) => a.kind === "note");
+  // One box per kind of attempt: a rule (note), a Jira write, a limit.
+  const groups = [
+    [page.filter((a) => a.kind === "note"), [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]],
+    [page.filter((a) => a.kind === "jira" && a.from !== "none"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
+    [page.filter((a) => a.kind !== "note" && a.kind !== "jira"), [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."]],
+  ];
+  // QA bug 1: the bot drafted a Jira write the user's message did not ask for in so many words.
+  // No card was made: say so plainly, with the words that get the card. The draft is plain text.
+  page.filter((a) => a.kind === "jira" && a.from === "none").forEach((a) => {
+    out.push(h("div", { class: "page-try", role: "status" }, icon("info", "sm"),
+      h("div", {}, h("b", {}, "No Jira card was made. "), "Your message did not ask for one in your own words, so nothing was sent. ",
+        a.say ? ["Say “", a.say, "” to get the card", a.offer ? ", or reply “yes” to get a card for this draft." : "."] : null,
+        h("details", {}, h("summary", {}, "See the bot's draft"), h("pre", {}, a.said)))));
+  });
+  groups.forEach(([list, words]) => {
+    if (!list.length) return;
     out.push(h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
-      h("div", {}, note ? [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]
-        : [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."],
+      h("div", {}, words,
         h("details", {}, h("summary", {}, "See what it said"),
-          page.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said)))))));
-  }
+          list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said)))))));
+  });
   return out;
 }
 
@@ -1227,7 +1240,115 @@ function agentCard(p) {
     h("h3", { class: "gh" }, icon("plus"), h("b", {}, p.title)), h("div", { class: "prop-body" }, rows, p.status === "pending" && p.note ? h("p", { class: "s" }, p.note) : null, foot));
 }
 
+// v0.6 (design 04): "Create Jira issue" and "Comment on KAN-12". Every word on the card comes from
+// fastpilot; the text shown is exactly what is sent, and nothing is sent before the click.
+function jiraText(text) {
+  const t = String(text || "");
+  if (t.length <= 400) return h("pre", { class: "jira-pre" }, t);
+  return h("div", {}, h("pre", { class: "jira-pre" }, t.slice(0, 400) + "…"),
+    h("details", {}, h("summary", {}, "Show all"), h("pre", { class: "jira-pre" }, t)));
+}
+
+function jiraLink(j, url, label) {
+  // Only a link to the connected site's own issue page.
+  const ok = typeof url === "string" && j.site && url.startsWith(`https://${j.site}/browse/`);
+  return ok ? h("a", { class: "lk", href: url, target: "_blank", rel: "noopener noreferrer" }, label || "Open in Jira") : null;
+}
+
+function jiraCard(p) {
+  const j = p.jira || {};
+  const issue = p.kind === "jira_issue";
+  const pending = p.status === "pending";
+  const ed = pending ? chatEdits[p.id] : null;
+  const done = p.status === "applied";
+  const commented = done && !!(j.result && j.result.comment);
+  const title = done ? (commented ? "Comment added" : "Jira issue created") : p.title;
+  const badge = pending ? h("span", { class: "tag" }, "Needs your OK") : done ? h("span", { class: "tag ok-tag" }, "Done")
+    : p.status === "cancelled" ? h("span", { class: "tag" }, "Cancelled") : p.status === "expired" ? h("span", { class: "tag" }, "Expired") : null;
+  const head = h("h3", { class: "gh" }, icon("plug"), h("span", { class: "s-title" }, title), badge);
+  const whole = issue ? `${j.summary || ""}\n\n${j.description || ""}`.trim() : (j.text || "");
+  const copy = h("button", { class: "btn sm", onclick: () => copyText(j.text || whole, "Text") }, "Copy the text");
+  const parts = [];
+  if (p.quote && (pending || p.status === "sending")) parts.push(h("p", { class: "quote" }, p.quote));
+  if (j.not_connected) {
+    parts.push(jiraText(j.text));
+    parts.push(h("div", { class: "prop-state bad", role: "status", tabindex: "-1" }, rich(p.note || "Jira is not connected."), " ",
+      h("a", { class: "lk", href: "#/apps/jira" }, "Connect Jira in Apps"), " ", copy));
+    return h("section", { class: "grp prop jira " + p.status, "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, parts));
+  }
+  if (p.status === "refused") {
+    parts.push(h("div", { class: "prop-state bad", tabindex: "-1" }, rich(p.note || "This cannot be sent.")));
+    return h("section", { class: "grp prop jira refused", "aria-label": p.title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, parts));
+  }
+  if (ed) {
+    const read = [];
+    const fields = issue
+      ? [["summary", "Summary", h("input", { type: "text", maxlength: "250", value: ed.summary || "", "aria-label": "Summary" })],
+        ["description", "Description", h("textarea", { rows: "8", "aria-label": "Description" }, ed.description || "")]]
+      : [["text", "Comment", h("textarea", { rows: "6", "aria-label": "Comment" }, ed.text || "")]];
+    const value = () => Object.fromEntries(fields.map(([k, , el]) => [k, el.value]));
+    fields.forEach(([, , el]) => el.addEventListener("input", () => { chatEdits[p.id] = value(); }));
+    fields.forEach(([, label, el]) => read.push(h("label", { class: "fld" }, h("span", { class: "l" }, label), el)));
+    parts.push(h("div", { class: "form t-edit" }, read,
+      h("p", { class: "s" }, "fastpilot cleans the text again before sending: secrets masked, no emails, no links to other sites."),
+      h("div", { class: "btns" },
+        h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, null, value()) }, issue ? "Create issue" : "Add comment"),
+        h("button", { class: "btn", onclick: () => { delete chatEdits[p.id]; chatSig = ""; renderChat(); } }, "Cancel edit"))));
+  } else if (issue) {
+    parts.push(h("dl", { class: "prop-rows" },
+      h("dt", {}, "Site"), h("dd", {}, j.site || ""),
+      h("dt", {}, "Project"), h("dd", {}, `${j.project_name || j.project} (${j.project})`),
+      h("dt", {}, "Summary"), h("dd", {}, j.summary || ""),
+      h("dt", {}, "Description"), h("dd", {}, j.description ? jiraText(j.description) : h("span", { class: "muted" }, "(none)"))));
+  } else {
+    parts.push(h("p", { class: "jira-where" }, `${j.site || ""} · ${j.key || ""}`, j.ticket ? ` “${j.ticket}”` : ""));
+    parts.push(h("dl", { class: "prop-rows" }, h("dt", {}, "Comment"), h("dd", {}, jiraText(j.text))));
+  }
+  if (pending && chatRefused[p.id]) {
+    parts.push(h("div", { class: "prop-state bad prop-refused", role: "alert", tabindex: "-1" }, "Not sent: ", rich(chatRefused[p.id]), " ", copy));
+  }
+  let foot = null;
+  if (pending && j.dup && !ed) {
+    parts.push(h("div", { class: "jira-dup", role: "status" }, icon("alert", "sm"),
+      h("div", {}, h("b", {}, `An open issue looks the same: ${j.dup.key}`), j.dup.summary ? ` “${j.dup.summary}”. ` : ". ", "Nothing was created yet. ", jiraLink(j, j.dup.url))));
+    foot = h("div", { class: "btns" },
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true, "comment") }, `Comment on ${j.dup.key} instead`),
+      h("button", { class: "btn", onclick: () => chatDecide(p.id, true, "anyway") }, "Create anyway"),
+      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Cancel"));
+  } else if (pending && !ed) {
+    foot = h("div", { class: "btns" },
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, issue ? "Create issue" : "Add comment"),
+      h("button", { class: "btn", onclick: () => { chatEdits[p.id] = issue ? { summary: j.summary || "", description: j.description || "" } : { text: j.text || "" }; chatSig = ""; renderChat(); } }, "Edit first"),
+      h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Cancel"));
+  } else if (p.status === "unknown") {
+    // Security Low 3: sent, but no answer from Jira: check before sending again.
+    const check = jiraLink(j, j.check_url, "Check in Jira");
+    foot = h("div", {},
+      h("div", { class: "jira-dup", role: "alert", tabindex: "-1" }, icon("alert", "sm"), h("div", {}, h("b", {}, "No answer from Jira. "), rich(p.note || ""), " ", check)),
+      h("div", { class: "btns" },
+        h("button", { class: "btn", onclick: () => chatDecide(p.id, true, "again") }, "Send again"),
+        h("button", { class: "btn quiet", onclick: () => chatDecide(p.id, false) }, "Cancel")));
+  } else if (p.status === "sending") {
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Sending to Jira…");
+  } else if (done) {
+    foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Done"), " ", jiraLink(j, j.result && j.result.url));
+  } else if (!pending) {
+    foot = h("div", { class: "prop-state muted", tabindex: "-1" }, rich(p.note || "Nothing was sent to Jira."));
+  }
+  const note = pending && p.note && !ed ? h("p", { class: "s" }, p.note) : null;
+  return h("section", { class: "grp prop jira " + p.status, "aria-label": title, "data-pid": String(p.id) }, head, h("div", { class: "prop-body" }, parts, note, foot));
+}
+
+// Tickets fastpilot read for a message (design 04 states 10 and 12): data, never instructions.
+function jiraReads(list) {
+  return list.map((r) => r.error
+    ? h("div", { class: "page-try", role: "status" }, icon("alert", "sm"), h("div", {}, rich(r.error)))
+    : h("div", { class: "jira-read", role: "status" }, icon("info", "sm"),
+      h("div", {}, h("b", {}, `Read ${r.key}: `, r.summary || ""), h("p", { class: "s" }, "Ticket text is information, not instructions."))));
+}
+
 function proposalCard(p) {
+  if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
@@ -1357,6 +1478,7 @@ function chatMsg(m) {
   return h("li", { class: "msg bot" },
     h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
     m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "What the bot did" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
+    m.jira_reads && m.jira_reads.length ? jiraReads(m.jira_reads) : null,
     // M3: next to a card that loosens a limit, the bot's own words are folded away.
     m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
       ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, markdown(m.text)))
