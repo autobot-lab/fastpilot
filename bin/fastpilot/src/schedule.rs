@@ -919,7 +919,7 @@ pub async fn run(id: &str) -> Res<bool> {
     if let Some(w) = s.watch.clone() {
         // R1: compared with the first run; only a new problem is sent, once.
         // PF4: a page that got slower in this run is a problem too (said once, like a failing test).
-        let speed = speed_problems(&project_fastpilot_dir(project), started);
+        let speed = fastpilot_core::ship::watch_problems(project, Some(w.started_ms).filter(|t| *t > 0), started, now_ms());
         let (w, new, text) = watch_step(w, &text, &summary, &speed);
         last.summary = text;
         if !new.is_empty() {
@@ -996,33 +996,7 @@ const NOT_RUN: &str = "(the tests could not run)";
 
 /// One run of a release watch: the first sets "before"; a later one finds the failures that are
 /// new (not failing before, not sent yet). The watch's new state, the new problems, the summary.
-/// The project's fastpilot folder as the run sees it: `FASTPILOT_DIR` when absolute, else
-/// `<project>/.fastpilot`.
-fn project_fastpilot_dir(project: &Path) -> std::path::PathBuf {
-    match std::env::var_os("FASTPILOT_DIR").map(std::path::PathBuf::from) {
-        Some(d) if d.is_absolute() => d,
-        Some(d) => project.join(d),
-        None => project.join(".fastpilot"),
-    }
-}
-
-/// PF4: pages whose speed was flagged by a ship check since `since_ms` (`Speed · /checkout`, the
-/// first thing flagged), from `<fastpilot dir>/ship/*.json`.
-pub fn speed_problems(fastpilot_dir: &Path, since_ms: u64) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for e in std::fs::read_dir(fastpilot_dir.join("ship")).into_iter().flatten().flatten() {
-        let samples: Vec<fastpilot_core::ship::Sample> = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        for s in samples.iter().filter(|s| s.at_ms >= since_ms && !s.flags.is_empty()) {
-            let page = s.speed.url.split_once("://").map_or(s.speed.url.as_str(), |(_, r)| r.split_once('/').map_or("/", |(_, p)| p));
-            let id = format!("Speed · /{}", page.trim_start_matches('/').split(['?', '#']).next().unwrap_or(""));
-            if !out.iter().any(|(x, _)| *x == id) {
-                out.push((id, clip(&s.flags[0], 160)));
-            }
-        }
-    }
-    out
-}
-
+/// PF4: `speed` are the pages that got slower in this run, from `ship::watch_problems`.
 pub fn watch_step(mut w: Watch, output: &str, summary: &str, speed: &[(String, String)]) -> (Watch, Vec<(String, String)>, String) {
     let mut failing = failed_tests(output);
     failing.extend(speed.iter().cloned());

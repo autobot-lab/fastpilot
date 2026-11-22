@@ -236,7 +236,7 @@ fn check(name: &'static str, state: State, summary: impl Into<String>, details: 
 pub const SPEED_VIEWPORT: (u32, u32) = (1280, 800);
 const CONNECTION: &str = "normal";
 
-/// One measurement as stored in `<project>/.fastpilot/ship/<host>.json`.
+/// One measurement as stored in `~/.fastpilot/projects/<project>/ship/<host>.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct Sample {
     pub at_ms: u64,
@@ -244,7 +244,7 @@ pub struct Sample {
     pub viewport: String,
     #[serde(flatten)]
     pub speed: crate::Speed,
-    /// What was flagged against the earlier check, in words (Release watch reads these).
+    /// What was flagged against the earlier check, in words (shown only; Release watch recomputes).
     #[serde(default)]
     pub flags: Vec<String>,
 }
@@ -254,17 +254,49 @@ const NO_REOPEN_WORDS: &[&str] = &[
     "logout", "log-out", "log_out", "signout", "sign-out", "sign_out", "logoff", "deauth", "disconnect", "delete", "remove", "unsubscribe", "destroy", "cancel", "keluar", "hapus",
 ];
 
+/// Parts of a parameter name that say it carries a code, key or session.
+const SECRET_NAME_PARTS: &[&str] = &["token", "key", "sig", "code", "otp", "secret", "auth", "session", "pass", "nonce", "ticket", "jwt"];
+
+/// A query or fragment parameter name (decoded) that may carry a one-time code or key.
+fn secret_name(name: &str) -> bool {
+    let n = pct_decode(name).to_ascii_lowercase();
+    SECRET_PARAMS.contains(&n.as_str()) || SECRET_NAME_PARTS.iter().any(|p| n.contains(p)) || n.ends_with("_id")
+}
+
+/// A path segment that looks like a random one-time id (`/magic/AbCdEf123456`).
+fn random_segment(seg: &str) -> bool {
+    let seg = pct_decode(seg);
+    if !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return false;
+    }
+    let alnum = seg.chars().filter(char::is_ascii_alphanumeric).count();
+    let digits = seg.chars().any(|c| c.is_ascii_digit());
+    let letters = seg.chars().any(|c| c.is_ascii_alphabetic());
+    let mixed_case = seg.chars().any(|c| c.is_ascii_uppercase()) && seg.chars().any(|c| c.is_ascii_lowercase());
+    digits && letters && (alnum >= 16 || (alnum >= 12 && mixed_case))
+}
+
+/// The address after the host: (path, query, fragment). `?` and `#` count anywhere, also with
+/// no `/` before them.
+fn address_parts(url: &str) -> (&str, &str, &str) {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = &rest[rest.find(['/', '?', '#']).unwrap_or(rest.len())..];
+    let (rest, frag) = rest.split_once('#').unwrap_or((rest, ""));
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    (path, query, frag)
+}
+
 /// Why the page's own address is not opened again for a speed measurement, if it is not.
 pub fn reopen_refusal(url: &str) -> Option<&'static str> {
     if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")) {
         return Some("it is not a web address");
     }
-    let rest = url.split_once("://").map_or("", |(_, r)| r.split_once('/').map_or("", |(_, p)| p));
-    let words = pct_decode(rest).to_lowercase();
-    let query = rest.split_once('?').map_or("", |(_, q)| q).to_lowercase();
-    if query.split('&').any(|kv| SECRET_PARAMS.contains(&kv.split('=').next().unwrap_or(""))) {
+    let (path, query, frag) = address_parts(url);
+    let params = query.split(['&', ';']).chain(frag.trim_start_matches(['/', '!', '?']).split(['&', ';', '?']));
+    if params.filter_map(|kv| kv.split_once('=').map(|(k, _)| k)).any(secret_name) || path.split('/').any(random_segment) {
         return Some("its address carries a one-time code or key");
     }
+    let words = pct_decode(&format!("{path}?{query}#{frag}")).to_lowercase();
     if CHANGE_WORDS.iter().chain(NO_REOPEN_WORDS).any(|w| words.contains(w)) {
         return Some("its address looks like a link that changes something");
     }
@@ -272,8 +304,9 @@ pub fn reopen_refusal(url: &str) -> Option<&'static str> {
 }
 
 /// Text kept in the speed file or shown: test variables masked (`dsl::redact`), any
-/// `user:password@` and the values of one-time code or key parameters replaced by `***`.
-fn scrub(text: &str) -> String {
+/// `user:password@` replaced by `***@`, and parameter values replaced by `***`: every value when
+/// `all` (page errors and failed requests), else those whose name may carry a code or key.
+fn scrub(text: &str, all: bool) -> String {
     let text = crate::dsl::redact(text);
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();
@@ -291,47 +324,122 @@ fn scrub(text: &str) -> String {
         rest = &rest[end..];
     }
     out.push_str(rest);
-    let lower = out.to_ascii_lowercase();
+    let bytes = out.as_bytes();
     let mut masked = String::with_capacity(out.len());
-    let mut last = 0;
-    for (i, c) in out.char_indices() {
-        if i < last || !matches!(c, '?' | '&' | ';') {
+    let (mut last, mut i) = (0, 0);
+    while i < bytes.len() {
+        if !matches!(bytes[i], b'?' | b'&' | b';' | b'#') {
+            i += 1;
             continue;
         }
-        let Some(p) = SECRET_PARAMS.iter().find(|p| lower[i + 1..].starts_with(&format!("{p}="))) else { continue };
-        let start = i + 1 + p.len() + 1;
-        let end = out[start..].find(|c: char| matches!(c, '&' | '#' | '"' | '\'' | ')' | ',') || c.is_whitespace()).map_or(out.len(), |e| start + e);
+        let name_end = (i + 1..bytes.len()).find(|&j| !(bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'_' | b'-' | b'.' | b'%' | b'[' | b']'))).unwrap_or(bytes.len());
+        if name_end == i + 1 || bytes.get(name_end) != Some(&b'=') || !(all || secret_name(&out[i + 1..name_end])) {
+            i += 1;
+            continue;
+        }
+        let start = name_end + 1;
+        let end = out[start..].find(|c: char| matches!(c, '&' | ';' | '#' | '"' | '\'' | ')' | ',' | '<' | '>') || c.is_whitespace()).map_or(out.len(), |e| start + e);
         masked.push_str(&out[last..start]);
         masked.push_str("***");
         last = end;
+        i = end;
     }
     masked.push_str(&out[last..]);
     masked
 }
 
-/// The file for a page's measurements (`shop.example.json`, `local-files.json`).
+/// Where a project's speed measurements are kept: in fastpilot's own folder on this computer
+/// (`~/.fastpilot/projects/<sha256 of the project folder>/ship`), never in the project, so a
+/// cloned project cannot bring its own "before".
+pub fn speed_dir(project: &std::path::Path) -> std::path::PathBuf {
+    let real = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_owned());
+    let hex: String = ring::digest::digest(&ring::digest::SHA256, real.to_string_lossy().as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let home = crate::config::path().parent().map(std::path::Path::to_path_buf).unwrap_or_else(std::env::temp_dir);
+    home.join("projects").join(hex).join("ship")
+}
+
+/// The file for a page's measurements (`shop.example.json`, `local-files.json`) of the project in
+/// the current folder.
 pub fn speed_file(url: &str) -> std::path::PathBuf {
     let host = url.split_once("://").filter(|(s, _)| *s != "file").map(|(_, r)| r.split(['/', '?', '#']).next().unwrap_or("").rsplit('@').next().unwrap_or("").to_lowercase()).unwrap_or_default();
-    let host: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    let host: String = host.chars().take(100).map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
     let name = if host.is_empty() || host.chars().all(|c| c == '.') { "local-files".to_owned() } else { host };
-    crate::config::project_dir().join("ship").join(format!("{name}.json"))
+    speed_dir(&std::env::current_dir().unwrap_or_default()).join(format!("{name}.json"))
+}
+
+const MAX_SPEED_FILE: u64 = 1_000_000;
+const MAX_SAMPLES: usize = 100;
+
+/// The samples in a file: at most 1 MB and the last 100; never through a link.
+pub fn read_samples(path: &std::path::Path) -> Vec<Sample> {
+    let Ok(m) = std::fs::symlink_metadata(path) else { return vec![] };
+    if !m.is_file() || m.len() > MAX_SPEED_FILE {
+        return vec![];
+    }
+    let mut all: Vec<Sample> = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let extra = all.len().saturating_sub(MAX_SAMPLES);
+    all.drain(..extra);
+    all
 }
 
 pub fn load_samples(url: &str) -> Vec<Sample> {
-    std::fs::read_to_string(speed_file(url)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    read_samples(&speed_file(url))
 }
 
+/// Written as a new owner-only file and renamed into place; never through a link.
 fn save_sample(s: &Sample) -> std::io::Result<()> {
-    let path = speed_file(&s.speed.url);
-    let mut all = load_samples(&s.speed.url);
+    save_to(&speed_file(&s.speed.url), s)
+}
+
+fn save_to(path: &std::path::Path, s: &Sample) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    let mut all = read_samples(&path);
     all.push(s.clone());
-    let extra = all.len().saturating_sub(100);
+    let extra = all.len().saturating_sub(MAX_SAMPLES);
     all.drain(..extra);
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
+    let dir = path.parent().ok_or_else(|| std::io::Error::other("no folder"))?;
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(dir)?;
+    if std::fs::symlink_metadata(dir)?.file_type().is_symlink() || std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+        return Err(std::io::Error::other("the speed file or its folder is a link"));
     }
-    crate::config::keep_out_of_git();
-    std::fs::write(path, serde_json::to_string_pretty(&all).unwrap_or_default())
+    let tmp = path.with_extension(format!("tmp-{}-{}", std::process::id(), s.at_ms));
+    {
+        use std::io::Write;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&tmp)?;
+        f.write_all(serde_json::to_string_pretty(&all).unwrap_or_default().as_bytes())?;
+    }
+    std::fs::rename(&tmp, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// PF4 Release watch: the pages measured in this run (`since_ms` to now) that are slower than
+/// before the watch began (`watch_started_ms`), as (`Speed · /path`, what is flagged). The flags
+/// are worked out again from the numbers, never taken from the file.
+pub fn watch_problems(project: &std::path::Path, watch_started_ms: Option<u64>, since_ms: u64, now_ms: u64) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(speed_dir(project)).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    files.sort();
+    for path in files.into_iter().take(200) {
+        let samples = read_samples(&path);
+        for s in samples.iter().filter(|s| (since_ms..=now_ms).contains(&s.at_ms)) {
+            let Some(flag) = compare(s, baseline(&samples, s, watch_started_ms)).into_iter().find_map(|r| r.flagged) else { continue };
+            let (page, _, _) = address_parts(&s.speed.url);
+            let id = format!("Speed · /{}", clean(page.trim_start_matches('/'), 80));
+            if !out.iter().any(|(x, _)| *x == id) {
+                out.push((id, clean(&flag, 160)));
+            }
+        }
+    }
+    out
 }
 
 /// The check to compare with: the latest of the same page, connection and window size. During a
@@ -438,7 +546,7 @@ pub async fn speed_check(d: &dyn Driver, url: &str) -> Check {
         return c(State::CouldNotRun, format!("Not measured: {}", clean(&e.to_string(), 200)), vec![]);
     }
     let speed = match d.measure_speed().await {
-        Ok(s) => crate::Speed { url: scrub(&s.url), errors: s.errors.iter().map(|e| scrub(e)).collect(), failed: s.failed.iter().map(|f| scrub(f)).collect(), ..s },
+        Ok(s) => crate::Speed { url: scrub(&s.url, false), errors: s.errors.iter().map(|e| scrub(e, true)).collect(), failed: s.failed.iter().map(|f| scrub(f, true)).collect(), ..s },
         Err(e) => return c(State::NotChecked, format!("Not measured: {}", clean(&e.to_string(), 200)), vec![]),
     };
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -809,6 +917,7 @@ mod tests {
 
     #[test]
     fn speed_baseline_and_what_is_never_opened_again() {
+        let _g = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let s = vec![sample(10, Some(1), None, None, 1, &[]), sample(20, Some(2), None, None, 1, &[]), sample(30, Some(3), None, None, 1, &[])];
         let now = sample(40, Some(4), None, None, 1, &[]);
         assert_eq!(baseline(&s, &now, None).map(|b| b.at_ms), Some(30), "the check before");
@@ -818,17 +927,100 @@ mod tests {
         other.connection = "slow 4g".into();
         assert_eq!(baseline(&[other], &now, None), None, "only the same connection is compared");
         assert_eq!(reopen_refusal("https://shop.test/checkout"), None);
-        assert_eq!(reopen_refusal("https://shop.test/welcome?token=abc"), Some("its address carries a one-time code or key"));
-        assert_eq!(reopen_refusal("https://shop.test/account/delete"), Some("its address looks like a link that changes something"));
-        assert_eq!(reopen_refusal("https://shop.test/newsletter/unsubscribe"), Some("its address looks like a link that changes something"));
+        assert_eq!(reopen_refusal("https://shop.test/products?page=2&sort=price#reviews"), None);
+        assert_eq!(reopen_refusal("https://shop.test/p/iphone-15-pro-max"), None);
+        let code = Some("its address carries a one-time code or key");
+        // Security review PF4 Low 2: every way around the check that was found.
+        for u in [
+            "https://shop.test/welcome?token=abc",
+            "https://shop.test?token=abc",
+            "https://shop.test/a?%74oken=abc",
+            "https://shop.test/a?access_token=abc",
+            "https://shop.test/a?api_key=abc",
+            "https://shop.test/a?x=1;token=2",
+            "https://shop.test/a#access_token=abc",
+            "https://shop.test/#/cb?code=abc",
+            "https://shop.test/a?TOKEN=abc",
+            "https://shop.test/a?session_id=abc",
+            "https://shop.test/magic/AbCdEf123456",
+            "https://shop.test/l/9f8e7d6c5b4a39281706",
+        ] {
+            assert_eq!(reopen_refusal(u), code, "{u}");
+        }
+        let change = Some("its address looks like a link that changes something");
+        for u in ["https://shop.test/account/delete", "https://shop.test/newsletter/unsubscribe", "https://shop.test/cart/clear", "https://shop.test/orders/7/archive", "https://shop.test/?next=/logout", "https://shop.test/#/account/delete", "https://shop.test?next=logout"] {
+            assert_eq!(reopen_refusal(u), change, "{u}");
+        }
         assert_eq!(reopen_refusal("about:blank"), Some("it is not a web address"));
         assert!(speed_file("https://Shop.Test:8080/x?y").ends_with("ship/shop.test_8080.json"));
-        // Nothing secret is kept: no password in the address, no one-time code in a failed request.
-        assert_eq!(scrub("https://ann:pw1@shop.test/a?page=2&token=abc#x"), "https://***@shop.test/a?page=2&token=***#x");
-        assert_eq!(scrub("404 GET https://api.test/v1?CODE=9f8e&lang=en failed"), "404 GET https://api.test/v1?CODE=***&lang=en failed");
-        assert_eq!(scrub("TypeError: x is null at https://shop.test/app.js:3"), "TypeError: x is null at https://shop.test/app.js:3");
-        assert!(speed_file("https://ann:pw1@shop.test/").ends_with("ship/shop.test.json"));
         assert!(speed_file("file:///Users/x/demo/login.html").ends_with("ship/local-files.json"));
+        assert!(speed_file("https://ann:pw1@shop.test/").ends_with("ship/shop.test.json"));
+        // Kept on this computer, never in the project (Security review PF4 Medium 1).
+        let here = std::env::current_dir().expect("cwd");
+        assert!(speed_file("https://shop.test/").starts_with(crate::config::path().parent().expect("home").join("projects")) && !speed_file("https://shop.test/").starts_with(&here));
+        // Nothing secret is kept (Low 3): no password in an address; in the page's own address the
+        // values of code or key parameters; in errors and failed requests every value.
+        assert_eq!(scrub("https://ann:pw1@shop.test/a?page=2&token=abc#x", false), "https://***@shop.test/a?page=2&token=***#x");
+        for (raw, want) in [
+            ("https://s.test/a?access_token=abc", "https://s.test/a?access_token=***"),
+            ("https://s.test/a#access_token=abc", "https://s.test/a#access_token=***"),
+            ("https://s.test/a?X-Amz-Signature=abc&b=1", "https://s.test/a?X-Amz-Signature=***&b=1"),
+            ("https://s.test/a?apikey=abc", "https://s.test/a?apikey=***"),
+            ("https://s.test/a?auth=abc", "https://s.test/a?auth=***"),
+            ("https://s.test/a?password=abc", "https://s.test/a?password=***"),
+        ] {
+            assert_eq!(scrub(raw, false), want);
+        }
+        assert_eq!(scrub("HTTP 404 https://api.test/v1?CODE=9f8e&lang=en&q=ann", true), "HTTP 404 https://api.test/v1?CODE=***&lang=***&q=***");
+        assert_eq!(scrub("TypeError: x is null at https://shop.test/app.js:3", true), "TypeError: x is null at https://shop.test/app.js:3");
+        assert_eq!(scrub("a && b; c = 1 #ok", true), "a && b; c = 1 #ok");
+    }
+
+    /// Security review PF4 Medium 1 and Low 4: what Release watch sends is worked out again from
+    /// the numbers on this computer, in the window of this run, cleaned; a forged file or a link
+    /// changes nothing.
+    #[test]
+    fn release_watch_speed_is_worked_out_again_and_files_are_safe() {
+        let _g = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("fp-speed-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("shop");
+        std::fs::create_dir_all(&project).expect("dir");
+        // SAFETY: test-only, under the env lock.
+        unsafe { std::env::set_var("FASTPILOT_CONFIG", root.join("home/config.toml")) };
+        let dir = speed_dir(&project);
+        assert!(dir.starts_with(root.join("home/projects")), "{}", dir.display());
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mk = |at: u64, load: u64, flags: Vec<String>| Sample { flags, ..sample(at, Some(load), None, None, 1, &[]) };
+        let write = |v: &[Sample]| std::fs::write(dir.join("shop.test.json"), serde_json::to_string(v).expect("json")).expect("write");
+        // Stored flags with planted text are not believed; a far-future sample is outside the run.
+        write(&[mk(100, 2000, vec![]), mk(300, 2100, vec!["Click https://evil.example now".into()]), mk(u64::MAX / 2, 9000, vec!["x".into()])]);
+        assert!(watch_problems(&project, Some(150), 250, 400).is_empty(), "2.1 s against 2.0 s is not slower");
+        // A real slowdown against the check before the watch.
+        write(&[mk(100, 2000, vec![]), mk(300, 2820, vec![])]);
+        assert_eq!(watch_problems(&project, Some(150), 250, 400), [("Speed · /checkout".to_owned(), "Loads in 2.8 s, up from 2.0 s (41% slower)".to_owned())]);
+        // A file over 1 MB is not read.
+        std::fs::write(dir.join("shop.test.json"), " ".repeat(1_000_001)).expect("big");
+        assert!(watch_problems(&project, Some(150), 250, 400).is_empty());
+        // Saving never writes through a link, and the file is the user's own (0600).
+        std::fs::remove_file(dir.join("shop.test.json")).expect("rm");
+        let file = dir.join("shop.test.json");
+        #[cfg(unix)]
+        {
+            let victim = root.join("victim.txt");
+            std::fs::write(&victim, "mine").expect("victim");
+            std::os::unix::fs::symlink(&victim, dir.join("shop.test.json")).expect("link");
+            assert!(save_to(&file, &mk(500, 1000, vec![])).is_err());
+            assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "mine");
+            std::fs::remove_file(dir.join("shop.test.json")).expect("rm link");
+            save_to(&file, &mk(500, 1000, vec![])).expect("save");
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(dir.join("shop.test.json")).expect("meta").permissions().mode() & 0o777, 0o600);
+            assert_eq!(read_samples(&file).len(), 1);
+        }
+        // SAFETY: test-only, under the env lock.
+        unsafe { std::env::remove_var("FASTPILOT_CONFIG") };
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

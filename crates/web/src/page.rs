@@ -1537,7 +1537,7 @@ impl Driver for WebPage {
                         continue;
                     }
                     s.requests += 1;
-                    if let Some(id) = p["requestId"].as_str() {
+                    if let Some(id) = p["requestId"].as_str().filter(|_| urls.len() < 5_000) {
                         urls.insert(id.to_owned(), u.to_owned());
                     }
                     if doc_ts.is_none() && p["type"] == "Document" && p["frameId"].as_str() == Some(tab.target.as_str()) {
@@ -1588,6 +1588,15 @@ impl Driver for WebPage {
         }
         if timeline {
             let _ = self.call("PerformanceTimeline.enable", json!({ "eventTypes": [] })).await;
+        }
+        // Page text is kept short: at most 50 of each, 300 characters each.
+        for list in [&mut s.errors, &mut s.failed] {
+            list.truncate(50);
+            for t in list.iter_mut() {
+                if t.chars().count() > 300 {
+                    *t = t.chars().take(300).collect::<String>() + "…";
+                }
+            }
         }
         let ms = |secs: f64| (secs.is_finite() && (0.0..600.0).contains(&secs)).then(|| (secs * 1000.0).round() as u64);
         s.load_ms = match (doc_ts, load_ts) {

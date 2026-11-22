@@ -291,8 +291,11 @@ async fn ship_check_measures_speed_and_flags_a_slower_page() {
     assert!(slow.contains("✗ Speed") && slow.contains("% slower") && slow.contains("Loads in ") && slow.contains("Compared with the check of "), "{slow}");
     assert!(slow.contains("Verdict: SHIP WITH FIXES") && !slow.contains("DO NOT SHIP"), "speed alone is a fix, never DO NOT SHIP: {slow}");
     assert!(slow.contains("Details: LCP ") && slow.contains("CLS "), "{slow}");
-    // Stored per site, with what was flagged.
-    let file = dir.join(format!("fp/ship/127.0.0.1_{port}.json"));
+    // Stored per site on this computer (fastpilot's folder, by project), never in the project.
+    let real = std::fs::canonicalize(&dir).expect("real");
+    let hex: String = ring::digest::digest(&ring::digest::SHA256, real.to_string_lossy().as_bytes()).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let file = dir.join("projects").join(hex).join(format!("ship/127.0.0.1_{port}.json"));
+    assert!(!dir.join("fp/ship").exists() && !dir.join(".fastpilot/ship").exists(), "nothing in the project");
     let stored: Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("ship file")).expect("json");
     let samples = stored.as_array().expect("samples");
     assert_eq!(samples.len(), 2, "{stored}");

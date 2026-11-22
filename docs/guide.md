@@ -381,6 +381,7 @@ sent to the browser.
   - After that you hear only about a problem that is new since then (a test that passed before and fails
     now, or the tests no longer running at all), once per problem, on the schedule's notifications.
   - A `shipCheck` page that got slower than before the watch began counts as a new problem too
+    (worked out again from the measured numbers each time)
     ("Speed · /checkout: Loads in 2.8 s, up from 2.0 s (41% slower)"), with the same rules as below.
   - When the hours are up, the watch removes itself from the system scheduler and the list says how it went
     ("Release watch ended: no new problem since the release").
@@ -702,10 +703,14 @@ For each page, fastpilot opens it in Chrome and checks six things:
     their size, and page errors. Always at 1280 × 800 on a normal connection.
   - A value Chrome does not give is "not measured", never estimated.
   - The page is opened once more with a plain `GET`. A page that came from a form, or whose address
-    carries a one-time code or key (`token=`, `code=`, `key=`, ...) or a word for a change (delete,
-    sign out, unsubscribe, confirm, ...) is not opened again: Speed then says "Not measured" and why.
-  - Each result is kept in `.fastpilot/ship/<host>.json` (the last 100, kept out of git; passwords in
-    addresses, one-time codes and test variables masked) and compared
+    (or the address it ended on after a redirect) carries a one-time code or key (a parameter such as
+    `token`, `access_token`, `api_key`, `code`, `session`, `..._id`, also after `#`, or a long random
+    part in the path) or a word for a change (delete, sign out, unsubscribe, confirm, ...) is not opened
+    again: Speed then says "Not measured" and why.
+  - Each result is kept on this computer, not in the project:
+    `~/.fastpilot/projects/<project>/ship/<host>.json` (owner-only, the last 100). Passwords in
+    addresses, test variables, and the values of code or key parameters are masked; in page errors and
+    failed requests every parameter value is. It is compared
     with the previous check of the same page. Flagged: more than 20% **and** more than 0.3 s slower,
     layout jumps up by more than 0.1, a new page error or a new failed request. Within 10% is "no change".
   - Speed alone gives at most SHIP WITH FIXES, never DO NOT SHIP, and "not measured" does not change
