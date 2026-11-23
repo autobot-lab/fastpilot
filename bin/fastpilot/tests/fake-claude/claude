@@ -162,7 +162,9 @@ if "Side by side:" in prompt and "step" in entry["tools"]:
 elif "android" in plan:
     call("finish", {"status": "pass", "notes": plan})
 else:
-    call("session", {"action": "start", "id": "w", "target": "examples/demo/login.html"})
+    # A test whose target is a full file address (a run outside the repo) opens that page.
+    named = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target: file://")), "")
+    call("session", {"action": "start", "id": "w", "target": named or "examples/demo/login.html"})
     # FAKE_CLAUDE_FAIL_FILE: fail only while that file exists (R1: a problem that starts after a release).
     fail_file = os.environ.get("FAKE_CLAUDE_FAIL_FILE")
     failing = os.environ.get("FAKE_CLAUDE_FAIL") == "1" or bool(fail_file and os.path.exists(fail_file))
