@@ -304,6 +304,12 @@ pub trait Driver: Send + Sync {
         None
     }
 
+    /// The address of the document that holds the element `sel` finds: an iframe's own address
+    /// when the element is in one (S-1: a password goes only where its app is).
+    async fn url_of(&self, _sel: &Selector) -> Option<String> {
+        self.current_url().await
+    }
+
     /// Which platform this driver drives (for `when: { platform: ... }`).
     fn platform(&self) -> Platform {
         Platform::Web

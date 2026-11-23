@@ -1034,8 +1034,14 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
         // opens is checked as the place it goes; anything else, the page that is open now). Steps
         // that hold others are checked step by step inside.
         if !matches!(step, Step::Confirmed(_) | Step::RunFlow { .. } | Step::Repeat { .. } | Step::Retry { .. } | Step::Parallel(_)) && holds_app_secret(ctx, &format!("{step:?}")) {
+            // A script can send what it reads anywhere: never with an app's password (L1).
+            if matches!(step, Step::EvalScript(_)) {
+                return Err(Error::Flow("a password of this app is never put into evalScript: a script could send it anywhere".into()));
+            }
             let at = match step {
                 Step::OpenUrl(u) => Some(subst(u)?),
+                // Where it is typed: the field's own document, also inside an iframe (M1).
+                Step::InputText { into, .. } if d.platform() == Platform::Web => d.url_of(into).await,
                 _ => d.current_url().await,
             };
             crate::secrets::allowed_at(at.as_deref(), d.platform()).map_err(Error::Flow)?;
@@ -1360,7 +1366,8 @@ fn set_var(ctx: &Ctx, name: &str, value: String, secret: bool) {
 /// S-1: would this step's text, its variables filled in, carry a password saved for the app?
 /// (A variable that cannot be filled fails the step itself, with its own message.)
 fn holds_app_secret(ctx: &Ctx, text: &str) -> bool {
-    !crate::dsl::var_names(text).is_empty() && ctx.subst(text).is_ok_and(|t| crate::dsl::holds_app_secret(&t))
+    // As written (the value itself, L2), then with its variables filled in.
+    crate::dsl::holds_app_secret(text) || (!crate::dsl::var_names(text).is_empty() && ctx.subst(text).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
 }
 
 async fn http_request(h: &HttpRequest, ctx: &Ctx) -> Result<Option<String>> {

