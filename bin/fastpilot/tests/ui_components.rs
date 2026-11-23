@@ -639,4 +639,20 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert_eq!(got, "\"pw|TEST_USER,TEST_PASSWORD\"");
+    // QA #6103: fastpilot's own card for a run that stopped for them: "Save and run" sends the
+    // same check again, in fastpilot's fixed sentence.
+    eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.body.append(proposalCard({ id: 'rr', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_PASSWORD'], rerun: true, status: 'pending' })); return 'ok'; })()").await;
+    let button = eval(c, "(() => { const b = document.querySelector('[data-pid=\"rr\"] .btn.p'); b.click(); return b.textContent; })()").await;
+    assert_eq!(button, "\"Save and run\"");
+    see(c, "Set TEST_PASSWORD").await;
+    eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'fp-card-pass-2'; i.form.requestSubmit(); return 'ok'; })()").await;
+    let mut sent = String::new();
+    for _ in 0..40 {
+        sent = eval(c, "String(window.__sent)").await;
+        if sent != "\"null\"" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(sent, "\"The test account is saved now. Run that check again with it.\"");
 }

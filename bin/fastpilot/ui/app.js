@@ -1661,7 +1661,10 @@ async function askSecrets(p) {
   }
   await chatDecide(p.id, true);
   toast(`Saved for this app: ${p.names.join(", ")}.`, true);
+  // QA #6103: the run stopped for these: the same check again, in a sentence fastpilot writes.
+  if (p.rerun) await chatSend(RERUN);
 }
+const RERUN = "The test account is saved now. Run that check again with it.";
 
 function proposalCard(p) {
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
@@ -1681,7 +1684,7 @@ function proposalCard(p) {
       // bot wrote).
       // QA #5980 bug 4: a password the user asked for: asked here, one masked dialog per name.
       p.kind === "open" && p.open === "secrets" && (p.names || []).length
-        ? h("button", { class: "btn p", onclick: () => askSecrets(p) }, "Set the password")
+        ? h("button", { class: "btn p", onclick: () => askSecrets(p) }, p.rerun ? "Save and run" : "Set the password")
       : page ? h("a", { class: "btn p", href: page.href, onclick: () => { chatDecide(p.id, true); } }, page.verb)
       // UXA8: a note fastpilot offers on its own ("Remember this?") is kept with "Remember it".
         : h("button", { class: "btn p", onclick: async () => { await chatDecide(p.id, true); if (p.kind === "app" && window.Apps) Apps.reload(); } }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : VERB[p.kind] || "Save changes"),
