@@ -290,6 +290,8 @@ pub async fn revoke() -> Result<(), String> {
             }
         }
     }
+    // The registration (no secret) goes too: a new sign-in registers again.
+    let _ = std::fs::remove_file(client_path());
     super::token::delete_oauth()
 }
 

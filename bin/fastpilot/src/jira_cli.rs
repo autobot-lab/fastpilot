@@ -18,9 +18,13 @@ const USAGE: &str = "usage: fastpilot jira [status | approve]\n  status    the J
 pub async fn run(args: &[String]) -> Res<()> {
     match args.first().map(String::as_str).unwrap_or("status") {
         "status" => {
-            match jira::settings().filter(|_| jira::token::has()) {
+            match jira::connected_settings() {
                 Some(s) => {
-                    println!("Jira: connected to {} as {}", s.site, s.email);
+                    if s.signed_in() {
+                        println!("Jira: connected to {} as {} (Sign in with Atlassian)", s.site, s.display_name);
+                    } else {
+                        println!("Jira: connected to {} as {}", s.site, s.email);
+                    }
                     println!("Default project: {}", if s.project_key.is_empty() { "(none chosen)".to_owned() } else { format!("{} ({})", s.project_key, s.project_name) });
                     if s.needs_attention {
                         println!("Needs attention: Jira refused the saved token. Reconnect in the dashboard: Integrations › Jira.");

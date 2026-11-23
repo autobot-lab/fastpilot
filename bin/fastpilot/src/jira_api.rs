@@ -23,7 +23,7 @@ fn jira_refusal(e: &JiraError) -> Response {
 /// `GET /api/jira`: the connection, never the token.
 pub async fn state() -> Response {
     let s = jira::settings();
-    let connected = s.as_ref().is_some_and(|s| if s.signed_in() { jira::oauth::connected() } else { jira::token::has() });
+    let connected = jira::connected_settings().is_some();
     let choose: Vec<Value> = if connected { Vec::new() } else { choices().into_iter().map(|(h, n)| json!({ "site": h, "name": n })).collect() };
     axum::Json(json!({
         "connected": connected,

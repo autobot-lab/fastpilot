@@ -95,6 +95,12 @@ pub fn save_settings(s: &Settings) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
+/// The saved connection, only when its key is there: the API token, or (E5) the Atlassian sign-in.
+/// Everything that asks "is Jira connected?" uses this one check.
+pub fn connected_settings() -> Option<Settings> {
+    settings().filter(|s| if s.signed_in() { oauth::connected() } else { token::has() })
+}
+
 /// Forget the connection's settings.
 pub fn clear_settings() {
     let _ = std::fs::remove_file(path());
