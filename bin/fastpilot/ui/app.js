@@ -449,7 +449,7 @@ function pageLimits() {
 let secData2 = null;
 async function loadSecrets() {
   try { secData2 = await api("/api/secrets"); } catch (e) { secData2 = { error: e.message, names: [] }; }
-  if (location.hash.startsWith("#/settings/secrets")) render();
+  if (/^#\/settings\/secrets?$/.test(location.hash)) render();
 }
 
 function pageSecret() {
@@ -2284,6 +2284,8 @@ function render() {
 }
 
 window.addEventListener("hashchange", async () => {
+  // Secrets are read again on every visit: one may have been saved elsewhere (Map, the wizard).
+  if (/^#\/settings\/secrets?$/.test(location.hash)) secData2 = null;
   // Settings are read again on the way in: the file may have changed (or broken) meanwhile.
   if (location.hash.startsWith("#/settings")) {
     try { await loadSettings(); } catch (e) { toast("Could not load the settings: " + e.message); }

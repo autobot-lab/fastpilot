@@ -1437,17 +1437,23 @@ fn allowed() -> Vec<String> {
 }
 
 fn lookup(name: &str) -> Result<String, String> {
-    if !allowed().iter().any(|a| a == name) {
+    // QA #5980 bug 1: a value the person saved for the current app (Secrets, the inline password
+    // dialog, Map's sign-in) is allowed by being saved; the list (FASTPILOT_VARS) is for values
+    // from the environment.
+    let saved = crate::secrets::lookup(name);
+    if saved.is_none() && !allowed().iter().any(|a| a == name) {
         return Err(format!(
             "variable `{name}` is not allowed: the user adds it in the dashboard, Settings › Secrets › Add a name, then Set value (or FASTPILOT_VARS and the environment)"
         ));
     }
     // E2: the environment first (CI, power users), then the current app's saved value. A saved
     // value is masked in output from now on, like an environment one.
-    if let Ok(v) = std::env::var(name) {
+    if allowed().iter().any(|a| a == name)
+        && let Ok(v) = std::env::var(name)
+    {
         return Ok(v);
     }
-    match crate::secrets::lookup(name) {
+    match saved {
         Some(v) => {
             add_secret(&v);
             let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());

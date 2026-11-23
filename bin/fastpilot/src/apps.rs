@@ -245,6 +245,14 @@ pub fn enter(make_current: bool) -> Option<App> {
     Some(app)
 }
 
+/// `fastpilot run`: the app whose saved passwords this run may use (the folder's app, else the
+/// current one), without moving out of the folder the test paths are relative to.
+pub fn scope_here() {
+    let here = std::env::current_dir().ok();
+    let app = here.as_deref().and_then(app_at).or_else(|| if here.as_deref().is_some_and(is_project) { None } else { current() });
+    set_scope(app.as_ref());
+}
+
 /// The listed app whose folder `dir` is.
 pub fn app_at(dir: &Path) -> Option<App> {
     let real = |p: &Path| std::fs::canonicalize(p).ok();

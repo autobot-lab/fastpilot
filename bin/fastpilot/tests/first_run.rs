@@ -95,8 +95,16 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
 
     // One click: Chat, with that sentence sent (caught here: no real Claude in this test).
     eval(&c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; [...document.querySelectorAll('.say-row')].find((b) => b.textContent.includes('Check the login')).click(); return 'ok'; })()").await;
+    // QA #5980 bug 1: no test account saved yet, so it is asked here, once, in the masked dialog.
+    see(&c, "User name of the test account").await;
+    eval(&c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'a@b.com'; i.form.requestSubmit(); return 'ok'; })()").await;
+    see(&c, "Password of the test account").await;
+    assert_eq!(eval(&c, "document.querySelector('dialog.cdlg input').type").await, "password");
+    eval(&c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'fp-first-run-pass'; i.form.requestSubmit(); return 'ok'; })()").await;
     assert_eq!(until(&c, "location.hash + '|' + window.__sent", "#/agents/default/chat|Check the login").await, "#/agents/default/chat|Check the login");
     see(&c, "Send").await;
+    let saved = eval(&c, "(async () => (await api('/api/secrets')).names.filter((n) => n.set).map((n) => n.name).join('|'))()").await;
+    assert_eq!(saved, "TEST_USER|TEST_PASSWORD", "both saved for the app");
     // It never comes back.
     eval(&c, "(location.reload(), 'ok')").await;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;

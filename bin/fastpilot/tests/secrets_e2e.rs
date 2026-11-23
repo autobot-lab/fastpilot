@@ -52,8 +52,12 @@ fn raw(port: u16, method: &str, path: &str, headers: &[(&str, String)], body: &s
 
 impl Ui {
     fn start(home: &Path) -> Ui {
+        Ui::start_with(home, &[])
+    }
+    fn start_with(home: &Path, env: &[(&str, String)]) -> Ui {
         let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
             .args(["ui", "--no-open"])
+            .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
             .current_dir(home)
             .env("HOME", home)
             .env("FASTPILOT_KEYSTORE", "file")
@@ -274,4 +278,73 @@ fn site() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         }
     });
     (port, seen)
+}
+
+/// QA #5980 bug 1: a password saved in the dashboard (the same request as the masked dialog, Map's
+/// sign-in or the wizard) is used: a Chat run signs in with it, and so does `fastpilot run`, with no
+/// environment variable anywhere. The Secrets list shows it, as saved (DEMO_PASS).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_saved_in_the_dashboard_is_used_by_chat_and_run() {
+    if !chrome() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-secrets-used-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let root = std::fs::canonicalize(ROOT).expect("root");
+    let login = format!("file://{}/examples/demo/login.html", root.display());
+    let ui = Ui::start_with(&home, &[
+        ("FASTPILOT_CLAUDE", format!("{}/tests/fake-claude-chat/claude", env!("CARGO_MANIFEST_DIR"))),
+        ("FAKE_CHAT_DELAY_MS", "0".into()),
+        ("FAKE_CHAT_TARGET", login.clone()),
+        ("FAKE_CLAUDE_LOG", home.join("claude-log").display().to_string()),
+    ]);
+    let (st, r) = ui.post("/api/apps", json!({ "action": "add", "name": "Demo", "targets": { "web": login } }));
+    assert_eq!(st, 200, "{r}");
+    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "DEMO_PASS", "value": VALUE }));
+    assert_eq!(st, 200, "{r}");
+    let listed = ui.get("/api/secrets");
+    assert_eq!((listed["names"][0]["name"].as_str(), listed["names"][0]["set"].as_bool(), listed["names"][0]["env"].as_bool()), (Some("DEMO_PASS"), Some(true), Some(false)), "{listed}");
+
+    // Chat: the bot signs in with it (fastpilot gives it ${DEMO_PASS}, never the value).
+    let (st, r) = ui.post("/api/chat", json!({ "message": "sign in on the login page with the saved password" }));
+    assert_eq!(st, 200, "{r}");
+    let mut chat = Value::Null;
+    for _ in 0..300 {
+        chat = ui.get("/api/chat");
+        if chat["busy"] == false && chat["messages"].as_array().is_some_and(|m| m.len() >= 2) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let said = chat["messages"][1].to_string();
+    assert!(said.contains("Halaman login terbuka") && !said.contains(VALUE), "{chat}");
+
+    // `fastpilot run`: the test that needs ${DEMO_PASS} runs and passes.
+    // From a plain folder (not a project): the run works for the current app, Demo.
+    std::fs::create_dir_all(home.join("run-log")).expect("log");
+    let work = home.join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let test = std::fs::read_to_string(root.join("tests/login.md")).expect("login.md").replace("target: examples/demo/login.html", &format!("target: {login}"));
+    std::fs::write(work.join("login.md"), test).expect("test");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["run", "login.md"])
+        .current_dir(&work)
+        .env("HOME", &home)
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_CLAUDE", format!("{}/tests/fake-claude/claude", env!("CARGO_MANIFEST_DIR")))
+        .env("FAKE_CLAUDE_LOG", home.join("run-log"))
+        .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("FASTPILOT_DIR")
+        .env_remove("FASTPILOT_VARS")
+        .env_remove("DEMO_PASS")
+        .output()
+        .expect("run");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && text.contains("✓ login-ok") && text.contains("1 passed, 0 failed"), "{text}");
+    assert!(!text.contains(VALUE), "{text}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
 }
