@@ -1173,6 +1173,12 @@ impl Driver for IosDriver {
         Platform::Ios
     }
 
+    /// D07-L3: the runner says whether `app` runs in the foreground (XCUIApplication.state).
+    async fn foreground_is(&self, app: &str) -> Option<bool> {
+        let r = tokio::time::timeout(Duration::from_secs(10), self.agent.call("state", json!({ "bundleId": app }))).await.ok()?.ok()?;
+        r["foreground"].as_bool()
+    }
+
     /// Physical device: quit the runner, stop xcodebuild and the usbmux forward, free the
     /// device. A simulator runner stays up for the next session (it exits when idle).
     async fn close(&self) -> Result<()> {

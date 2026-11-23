@@ -29,8 +29,31 @@ pub struct Scope {
     pub app: String,
     /// The app's website, as stored (already parsed and normalized).
     pub web: Option<String>,
-    pub android: bool,
-    pub ios: bool,
+    /// The app's own Android package and iPhone bundle id (D07-L3): on a phone, its passwords are
+    /// typed only while that app is in front, never into a browser or another app.
+    pub android: Option<String>,
+    pub ios: Option<String>,
+}
+
+/// D07-L3: the app a password of the current app may be typed into on `platform` (its own id),
+/// or `None` when no app is current (values from the environment keep the older rules).
+pub fn own_app(platform: Platform) -> Option<String> {
+    let s = scope()?;
+    match platform {
+        Platform::Android => s.android,
+        Platform::Ios => s.ios,
+        Platform::Web => None,
+    }
+}
+
+/// D07-L3: is the app in front of the phone (`foreground`: is `own` in front, `None` when the
+/// device could not tell) the app the password belongs to?
+pub fn allowed_in_front(own: &str, foreground: Option<bool>) -> Result<(), String> {
+    match foreground {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!("a password of this app is only typed into the app itself ({own}); another app or a browser is in front, so nothing was typed")),
+        None => Err(format!("a password of this app is only typed into the app itself ({own}), and the phone could not tell which app is in front, so nothing was typed")),
+    }
 }
 
 static SCOPE: RwLock<Option<Scope>> = RwLock::new(None);
@@ -186,7 +209,7 @@ pub fn allowed_at(url: Option<&str>, platform: Platform) -> Result<(), String> {
     };
     match platform {
         Platform::Android | Platform::Ios if url.is_none_or(|u| !u.contains("://")) => {
-            let has = if platform == Platform::Android { s.android } else { s.ios };
+            let has = if platform == Platform::Android { s.android.is_some() } else { s.ios.is_some() };
             if has { Ok(()) } else { Err(format!("this app has no {} app, so its passwords are not typed here", if platform == Platform::Android { "Android" } else { "iPhone" })) }
         }
         _ => {
@@ -224,7 +247,9 @@ mod tests {
 
     #[test]
     fn a_password_goes_only_to_its_apps_site() {
-        let shop = Scope { app: "shop".into(), web: Some("https://shop.example/".into()), android: true, ios: false };
+        // The scope is process-wide: one test at a time sets it.
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let shop = Scope { app: "shop".into(), web: Some("https://shop.example/".into()), android: Some("com.shop.app".into()), ios: None };
         set_scope(Some(shop));
         assert!(allowed_at(Some("https://shop.example/login"), Platform::Web).is_ok());
         assert!(allowed_at(Some("https://evil.example/login"), Platform::Web).is_err());
@@ -233,11 +258,25 @@ mod tests {
         assert!(allowed_at(Some("https://shop.example:8443/"), Platform::Web).is_err(), "another port");
         assert!(allowed_at(None, Platform::Web).is_err());
         assert!(allowed_at(None, Platform::Android).is_ok() && allowed_at(None, Platform::Ios).is_err());
-        set_scope(Some(Scope { app: "demo".into(), web: Some("file:///Users/me/demo/login.html".into()), android: false, ios: false }));
+        set_scope(Some(Scope { app: "demo".into(), web: Some("file:///Users/me/demo/login.html".into()), android: None, ios: None }));
         assert!(allowed_at(Some("file:///Users/me/demo/dashboard.html"), Platform::Web).is_ok());
         assert!(allowed_at(Some("file:///Users/me/other/x.html"), Platform::Web).is_err());
         assert!(allowed_at(Some("https://evil.example/"), Platform::Web).is_err());
         set_scope(None);
         assert!(allowed_at(Some("https://anywhere.example/"), Platform::Web).is_ok(), "no app: the old rules");
+    }
+
+    /// D07-L3: on a phone, a password goes only into the app itself; another app, a browser, or a
+    /// phone that cannot tell what is in front gets nothing.
+    #[test]
+    fn on_a_phone_only_the_app_itself_gets_its_password() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        set_scope(Some(Scope { app: "shop".into(), web: None, android: Some("com.shop.app".into()), ios: Some("com.shop.ios".into()) }));
+        assert_eq!((own_app(Platform::Android).as_deref(), own_app(Platform::Ios).as_deref(), own_app(Platform::Web)), (Some("com.shop.app"), Some("com.shop.ios"), None));
+        assert!(allowed_in_front("com.shop.app", Some(true)).is_ok());
+        assert!(allowed_in_front("com.shop.app", Some(false)).is_err_and(|e| e.contains("another app or a browser is in front")));
+        assert!(allowed_in_front("com.shop.app", None).is_err_and(|e| e.contains("could not tell")));
+        set_scope(None);
+        assert_eq!(own_app(Platform::Android), None, "no app: values from the environment keep the older rules");
     }
 }

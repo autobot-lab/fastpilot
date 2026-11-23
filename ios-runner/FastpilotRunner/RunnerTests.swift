@@ -235,6 +235,10 @@ final class RunnerTests: XCTestCase {
             a.activate()
             app = a
             return [:]
+        case "state":
+            // D07-L3: is this app the one in front? (A password of an app is typed only into it.)
+            let a = XCUIApplication(bundleIdentifier: try str("bundleId"))
+            return ["foreground": a.state == .runningForeground]
         case "resetPermissions":
             // Back to "not determined", so the app asks again (simulator and device).
             let a = XCUIApplication(bundleIdentifier: try str("bundleId"))

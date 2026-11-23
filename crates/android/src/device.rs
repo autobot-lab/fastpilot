@@ -143,6 +143,35 @@ pub fn restore_script() -> String {
     )
 }
 
+/// D07-L3: is `package` the app in front, per `dumpsys window` (`mCurrentFocus`, else
+/// `mFocusedApp`)? `None` when neither line names an app window.
+pub fn in_front(dumpsys_window: &str, package: &str) -> Option<bool> {
+    // "mCurrentFocus=Window{1a2b u0 com.shop.app/com.shop.app.MainActivity}" → "com.shop.app".
+    let app_of = |line: &str| -> Option<String> {
+        line.split(|c: char| c.is_whitespace() || c == '{' || c == '}').find_map(|w| w.split_once('/').map(|(p, _)| p.to_owned())).filter(|p| p.contains('.') && !p.is_empty())
+    };
+    let line = |key: &str| dumpsys_window.lines().find(|l| l.trim_start().starts_with(key)).and_then(app_of);
+    line("mCurrentFocus").or_else(|| line("mFocusedApp")).map(|p| p == package)
+}
+
+#[cfg(test)]
+mod in_front_tests {
+    /// D07-L3: the app in front per `dumpsys window`, as Android 10–15 print it.
+    #[test]
+    fn the_app_in_front_is_read_from_dumpsys_window() {
+        let app = "  mCurrentFocus=Window{5e1c2d u0 com.shop.app/com.shop.app.MainActivity}\n  mFocusedApp=ActivityRecord{77a u0 com.shop.app/.MainActivity t12}";
+        assert_eq!(super::in_front(app, "com.shop.app"), Some(true));
+        let browser = "  mCurrentFocus=Window{9f0 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n  mFocusedApp=ActivityRecord{1b u0 com.android.chrome/com.google.android.apps.chrome.Main t3}";
+        assert_eq!(super::in_front(browser, "com.shop.app"), Some(false), "a browser in front");
+        // A window without an app (the keyboard) is in focus: the focused app decides.
+        let ime = "  mCurrentFocus=Window{1 u0 InputMethod}\n  mFocusedApp=ActivityRecord{2 u0 com.shop.app/.Login t4}";
+        assert_eq!(super::in_front(ime, "com.shop.app"), Some(true));
+        // A look-alike package is another app.
+        assert_eq!(super::in_front("  mCurrentFocus=Window{1 u0 com.shop.app.evil/.Main}", "com.shop.app"), Some(false));
+        assert_eq!(super::in_front("  mCurrentFocus=null", "com.shop.app"), None, "cannot tell");
+    }
+}
+
 /// `mWakefulness=Awake` in `dumpsys power`.
 pub fn awake(dumpsys_power: &str) -> bool {
     dumpsys_power.lines().any(|l| l.trim() == "mWakefulness=Awake")

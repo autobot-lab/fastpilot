@@ -310,6 +310,12 @@ pub trait Driver: Send + Sync {
         self.current_url().await
     }
 
+    /// D07-L3: is the app `app` (an Android package or iPhone bundle id) in front on the device?
+    /// `None` when the driver cannot tell (S-1 then types no password of an app).
+    async fn foreground_is(&self, _app: &str) -> Option<bool> {
+        None
+    }
+
     /// Which platform this driver drives (for `when: { platform: ... }`).
     fn platform(&self) -> Platform {
         Platform::Web

@@ -1045,6 +1045,11 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 _ => d.current_url().await,
             };
             crate::secrets::allowed_at(at.as_deref(), d.platform()).map_err(Error::Flow)?;
+            // D07-L3: on a phone, only into the app itself, never a browser or another app in front.
+            if let Some(own) = crate::secrets::own_app(d.platform()) {
+                let front = d.foreground_is(&own).await;
+                crate::secrets::allowed_in_front(&own, front).map_err(Error::Flow)?;
+            }
         }
         match step {
             Step::Confirmed(inner) => return exec_with(d, inner, ctx, true).await,
@@ -2109,6 +2114,98 @@ mod tests {
             live: None,
         };
         exec_with(d, step, &ctx, false).await.map(|_| ())
+    }
+
+    /// D07-L3: a stand-in Android phone with a Password field; `front` is the package in front.
+    struct Phone {
+        front: Mutex<Option<String>>,
+        typed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl Driver for Phone {
+        fn platform(&self) -> Platform {
+            Platform::Android
+        }
+        async fn foreground_is(&self, app: &str) -> Option<bool> {
+            self.front.lock().unwrap_or_else(|p| p.into_inner()).as_deref().map(|f| f == app)
+        }
+        async fn open(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn snapshot(&self) -> Result<Snapshot> {
+            Ok(Snapshot::build("Login", "", vec![node("textfield", "Password")], &mut RefRegistry::default()))
+        }
+        async fn tap(&self, _: &Selector) -> Result<()> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &Selector, text: &str) -> Result<()> {
+            self.typed.lock().unwrap_or_else(|p| p.into_inner()).push(text.to_owned());
+            Ok(())
+        }
+        async fn scroll(&self, _: Direction, _: Option<&Selector>) -> Result<()> {
+            Ok(())
+        }
+        async fn swipe(&self, _: Point, _: Point) -> Result<()> {
+            Ok(())
+        }
+        async fn back(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn screenshot(&self) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        async fn wait_idle(&self, _: Duration) -> Result<()> {
+            Ok(())
+        }
+        async fn eval_script(&self, _: &str) -> Result<Value> {
+            Ok(Value::Null)
+        }
+    }
+
+    /// D07-L3 (Security L3 on #190): on a phone, an app's saved password is typed only while that
+    /// app is in front. A browser (or any other app) in front, or a phone that cannot tell, gets
+    /// nothing; the app itself gets it. Before, "the app has an Android app" was enough.
+    #[tokio::test]
+    // The environment and the process-wide app scope stay as set for the whole test.
+    #[allow(clippy::await_holding_lock)]
+    async fn a_saved_password_goes_only_into_the_app_in_front() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = std::env::temp_dir().join(format!("fp-d07-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let old_home = std::env::var_os("HOME");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("FASTPILOT_KEYSTORE", "file");
+            std::env::set_var("FASTPILOT_VARS", "D07_PASS");
+            std::env::remove_var("D07_PASS");
+        }
+        crate::secrets::set("shop", "D07_PASS", "s3cret-d07").expect("save");
+        crate::secrets::set_scope(Some(crate::secrets::Scope { app: "shop".into(), web: None, android: Some("com.shop.app".into()), ios: None }));
+        let step = Step::InputText { into: Selector::Text("Password".into()), text: "${D07_PASS}".into() };
+        let phone = Phone { front: Mutex::new(Some("com.android.chrome".into())), typed: Mutex::new(Vec::new()) };
+        let browser = type_with_timeout(&phone, &step).await;
+        assert!(browser.as_ref().is_err_and(|e| e.to_string().contains("only typed into the app itself (com.shop.app)")), "{browser:?}");
+        *phone.front.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        assert!(type_with_timeout(&phone, &step).await.is_err_and(|e| e.to_string().contains("could not tell")));
+        assert!(phone.typed.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "nothing typed into the browser");
+        *phone.front.lock().unwrap_or_else(|p| p.into_inner()) = Some("com.shop.app".into());
+        type_with_timeout(&phone, &step).await.expect("the app itself");
+        assert_eq!(*phone.typed.lock().unwrap_or_else(|p| p.into_inner()), vec!["s3cret-d07".to_owned()]);
+        crate::secrets::set_scope(None);
+        // SAFETY: as above.
+        unsafe {
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            for k in ["FASTPILOT_KEYSTORE", "FASTPILOT_VARS"] {
+                std::env::remove_var(k);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Records the order of calls; any platform.
