@@ -230,9 +230,16 @@ fn the_first_fastpilot_adds_it_to_claude_code_for_every_folder_once() {
     assert!(!said.contains("Claude Code"), "{said}");
     assert!(!home.join(".claude.json").exists() && !home.join(".fastpilot/claude-registered").exists());
 
+    // A failed add is not marked done: the next start tries again.
+    let (run, said) = start_with(&home, &bin, "", &[("FAKE_CLAUDE_MCP_FAIL", "1")]);
+    opened(&home, 1);
+    drop(run);
+    assert!(said.contains("Could not add fastpilot to Claude Code") && !home.join(".fastpilot/claude-registered").exists(), "{said}");
+    std::fs::remove_dir_all(home.join("claude-log")).expect("log");
+
     // With Claude Code: added at user scope, from the home folder.
     let (run, said) = start(&home, &bin, "");
-    opened(&home, 1);
+    opened(&home, 2);
     drop(run);
     assert!(said.contains("Added fastpilot to Claude Code, for every folder."), "{said}");
     let calls = mcp_calls(&home);
@@ -246,7 +253,7 @@ fn the_first_fastpilot_adds_it_to_claude_code_for_every_folder_once() {
     // Once: a person who removed it later is not overruled on the next start.
     std::fs::remove_file(home.join(".claude.json")).expect("remove");
     let (run, said) = start(&home, &bin, "");
-    opened(&home, 2);
+    opened(&home, 3);
     drop(run);
     assert!(!said.contains("Claude Code") && mcp_calls(&home).len() == 1, "{said}");
 

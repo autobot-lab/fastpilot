@@ -222,7 +222,7 @@ fn registered(scope: &str, claude: &str) -> bool {
 
 /// QA #5980 bug 3 (E6): the first `fastpilot` adds fastpilot to Claude Code for every folder (user
 /// scope, as `init --global` does), once. Without Claude Code nothing is said or written, and a
-/// later start tries again. Never a project `.mcp.json`: it runs in the home folder.
+/// later start tries again (as after a failed add). Never a project `.mcp.json`: it runs in the home folder.
 pub fn register_for_user_once() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let done = home.join(".fastpilot").join("claude-registered");
@@ -243,7 +243,9 @@ pub fn register_for_user_once() {
         if quiet().args(&args).status().is_ok_and(|s| s.success()) {
             println!("Added fastpilot to Claude Code, for every folder.");
         } else {
+            // Not marked: the next start tries again (Security #206 Info).
             println!("Could not add fastpilot to Claude Code. To add it yourself: claude {}", args.join(" "));
+            return;
         }
     }
     let _ = std::fs::create_dir_all(home.join(".fastpilot"));

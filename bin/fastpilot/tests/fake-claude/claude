@@ -37,6 +37,9 @@ if argv[:1] == ["mcp"]:
         except FileNotFoundError:
             return {"mcpServers": {}}
     if argv[1] == "add":
+        if os.environ.get("FAKE_CLAUDE_MCP_FAIL") == "1":
+            print("add failed (stand-in)", file=sys.stderr)
+            sys.exit(1)
         cut = argv.index("--")
         opts, cmd = argv[2:cut], argv[cut + 1:]
         scope = opts[opts.index("--scope") + 1] if "--scope" in opts else "local"
