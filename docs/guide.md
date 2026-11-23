@@ -325,13 +325,20 @@ readers.
 
 ## Jira
 
-### Connect Jira in the dashboard (fastpilot 0.6)
+### Connect Jira in the dashboard
 
-Open the dashboard, choose **Integrations › Connect Jira**, and enter your Jira address (`yourteam` or
-`yourteam.atlassian.net`; you can paste the whole address), your Atlassian email and an
-[API token](https://id.atlassian.com/manage-profile/security/api-tokens). **Test connection** shows
-"Connected as …" and your projects; choose the default project (and, optionally, the QA status for
-later), then **Save**.
+Open the dashboard, choose **Integrations › Connect Jira**, and click **Sign in with Atlassian**. You
+sign in on Atlassian's own page and accept; the browser comes back to the dashboard with "✓ Connected
+as … · yoursite.atlassian.net". If your account can use several sites, pick one. The default project
+is the one with the most recent issues; change it on the same page.
+
+- fastpilot connects through Atlassian's MCP server, like Claude does: OAuth 2.1 with PKCE, no client
+  secret. The sign-in is kept in this Mac's Keychain (Linux: the secret service), renewed silently,
+  and never reaches the page, the AI, Chat, logs or reports. **Disconnect** revokes it at Atlassian.
+- **Use an API token instead** (a small link on the same page) is for sites whose admin blocks the
+  Atlassian sign-in for apps: your Jira address, Atlassian email and an
+  [API token](https://id.atlassian.com/manage-profile/security/api-tokens), **Test connection**, a
+  default project, then **Connect Jira**.
 
 - **Jira Cloud only** (addresses that end in `.atlassian.net`). Jira Server and Data Center are not
   supported yet.

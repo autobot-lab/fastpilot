@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use std::path::PathBuf;
 
+pub mod oauth;
+
 /// The saved connection (no secret).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -34,6 +36,16 @@ pub struct Settings {
     /// Jira refused the saved token on the last call: the Integrations page says "Needs attention".
     #[serde(default)]
     pub needs_attention: bool,
+    /// E5: `atlassian` when connected with "Sign in with Atlassian" (no email or API token kept),
+    /// empty for an API token.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth: String,
+}
+
+impl Settings {
+    pub fn signed_in(&self) -> bool {
+        self.auth == "atlassian"
+    }
 }
 
 fn path() -> PathBuf {
@@ -266,6 +278,25 @@ pub mod token {
         load("jira").is_some()
     }
 
+    /// E5: the "Sign in with Atlassian" tokens (JSON), kept hex-encoded so no quote reaches
+    /// `security`'s command parser.
+    pub fn set_oauth(json: &str) -> Result<(), String> {
+        store("jira.oauth", &json.bytes().map(|b| format!("{b:02x}")).collect::<String>())
+    }
+
+    pub fn get_oauth() -> Option<String> {
+        let h = load("jira.oauth")?;
+        if !h.len().is_multiple_of(2) || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let bytes: Option<Vec<u8>> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).ok()).collect();
+        String::from_utf8(bytes?).ok()
+    }
+
+    pub fn delete_oauth() -> Result<(), String> {
+        if remove("jira.oauth") { Ok(()) } else { Err("still stored".into()) }
+    }
+
     /// Forget it. `Err` when it is still there afterwards (the person is told, not reassured).
     pub fn delete() -> Result<(), String> {
         let a = remove("jira");
@@ -341,6 +372,8 @@ pub struct Jira {
     email: String,
     token: String,
     client: reqwest::Client,
+    /// E5: calls go through Atlassian's MCP server with the signed-in account.
+    signed_in: bool,
 }
 
 impl std::fmt::Debug for Jira {
@@ -370,12 +403,25 @@ impl Jira {
             .https_only(origin.starts_with("https://"))
             .build()
             .map_err(|_| JiraError::Network)?;
-        Ok(Self { origin, site, email: email.trim().to_owned(), token: token.trim().to_owned(), client })
+        Ok(Self { origin, site, email: email.trim().to_owned(), token: token.trim().to_owned(), client, signed_in: false })
+    }
+
+    /// E5: the account signed in with Atlassian, on `site` (one of its sites).
+    pub fn signed_in(site: &str) -> Result<Self, JiraError> {
+        if !oauth::connected() {
+            return Err(JiraError::NotConnected);
+        }
+        let mut j = Self::new(site, "", "")?;
+        j.signed_in = true;
+        Ok(j)
     }
 
     /// The saved connection, with the stored token, only for the origin the token was saved for.
     pub fn connected() -> Result<Self, JiraError> {
         let s = settings().ok_or(JiraError::NotConnected)?;
+        if s.signed_in() {
+            return Self::signed_in(&s.site);
+        }
         let (token, bound) = token::get().ok_or(JiraError::NotConnected)?;
         let j = Self::new(&s.site, &s.email, &token)?;
         if j.origin != bound {
@@ -426,6 +472,11 @@ impl Jira {
 
     /// "Connected as <name>".
     pub async fn myself(&self) -> Result<String, JiraError> {
+        if self.signed_in {
+            let v = oauth::call("atlassianUserInfo", serde_json::json!({})).await?;
+            let name = ["name", "displayName", "nickname", "email", "accountId"].iter().find_map(|k| v[*k].as_str().filter(|s| !s.is_empty()));
+            return Ok(plain(name.unwrap_or(""), 120));
+        }
         match self.call(reqwest::Method::GET, "/rest/api/3/myself", None).await {
             Err(JiraError::NotFound(_)) => Err(JiraError::SiteNotFound(self.site.clone())),
             r => Ok(r?["displayName"].as_str().unwrap_or("").to_owned()),
@@ -434,6 +485,21 @@ impl Jira {
 
     /// Projects the account can see: (key, name).
     pub async fn projects(&self) -> Result<Vec<(String, String)>, JiraError> {
+        if self.signed_in {
+            // The projects of the latest issues, most recent first (seamless S2: the default
+            // project is the one with the most recent issues).
+            let v = oauth::call("searchJiraIssuesUsingJql", serde_json::json!({ "cloudId": self.site, "jql": "ORDER BY updated DESC", "maxResults": 100, "fields": ["project"] })).await?;
+            let mut out: Vec<(String, String)> = Vec::new();
+            for i in mcp_issues(&v) {
+                let p = mcp_field(&i, "project");
+                let key = p["key"].as_str().map(str::to_owned).or_else(|| i["key"].as_str().and_then(|k| k.split_once('-')).map(|(p, _)| p.to_owned())).unwrap_or_default();
+                if check_project(&key).is_ok() && !out.iter().any(|(k, _)| *k == key) {
+                    let name = plain(p["name"].as_str().unwrap_or(&key), 120);
+                    out.push((key, name));
+                }
+            }
+            return Ok(out);
+        }
         let v = self.call(reqwest::Method::GET, "/rest/api/3/project/search?maxResults=100&orderBy=name", None).await?;
         Ok(v["values"].as_array().into_iter().flatten().filter_map(|p| Some((p["key"].as_str()?.to_owned(), p["name"].as_str()?.to_owned()))).collect())
     }
@@ -441,6 +507,9 @@ impl Jira {
     /// The status names of a project (for the QA status picker), without repeats.
     pub async fn statuses(&self, project: &str) -> Result<Vec<String>, JiraError> {
         check_project(project)?;
+        if self.signed_in {
+            return Ok(Vec::new());
+        }
         let v = self.call(reqwest::Method::GET, &format!("/rest/api/3/project/{project}/statuses"), None).await?;
         let mut out: Vec<String> = Vec::new();
         for t in v.as_array().into_iter().flatten() {
@@ -458,6 +527,22 @@ impl Jira {
     /// A ticket, as data.
     pub async fn issue(&self, key: &str) -> Result<Ticket, JiraError> {
         check_issue(key)?;
+        if self.signed_in {
+            let v = oauth::call("getJiraIssue", serde_json::json!({ "cloudId": self.site, "issueIdOrKey": key, "responseContentFormat": "markdown" })).await.map_err(|e| not_found(e, key))?;
+            let name = |f: &str| {
+                let x = mcp_field(&v, f);
+                x["name"].as_str().or(x.as_str()).unwrap_or("").to_owned()
+            };
+            let d = mcp_field(&v, "description");
+            let description = if d.is_object() { adf_text(d) } else { d.as_str().unwrap_or("").to_owned() };
+            return Ok(Ticket {
+                key: v["key"].as_str().unwrap_or(key).to_owned(),
+                summary: plain(mcp_field(&v, "summary").as_str().unwrap_or(""), 300),
+                status: plain(&name("status"), 60),
+                issue_type: plain(&{ let t = name("issuetype"); if t.is_empty() { name("issueType") } else { t } }, 60),
+                description: plain(&description, 20_000),
+            });
+        }
         let v = self
             .call_patient(reqwest::Method::GET, &format!("/rest/api/3/issue/{key}?fields=summary,description,status,issuetype"), None)
             .await
@@ -480,6 +565,10 @@ impl Jira {
             return Ok(None);
         }
         let jql = format!("project = \"{project}\" AND statusCategory != Done AND summary ~ \"{words}\" ORDER BY created DESC");
+        if self.signed_in {
+            let v = oauth::call("searchJiraIssuesUsingJql", serde_json::json!({ "cloudId": self.site, "jql": jql, "maxResults": 1, "fields": ["summary"] })).await?;
+            return Ok(mcp_issues(&v).first().and_then(|i| Some((i["key"].as_str()?.to_owned(), plain(mcp_field(i, "summary").as_str().unwrap_or(""), 300)))));
+        }
         let v = self.call_patient(reqwest::Method::POST, "/rest/api/3/search/jql", Some(&serde_json::json!({ "jql": jql, "maxResults": 1, "fields": ["summary"] }))).await?;
         Ok(v["issues"].as_array().and_then(|a| a.first()).and_then(|i| Some((i["key"].as_str()?.to_owned(), plain(i["fields"]["summary"].as_str().unwrap_or(""), 300)))))
     }
@@ -487,6 +576,10 @@ impl Jira {
     /// The issue type to use: "Bug" when the project has it, else its first type.
     pub async fn bug_type(&self, project: &str) -> Result<String, JiraError> {
         check_project(project)?;
+        if self.signed_in {
+            // Tried as "Bug"; create_issue falls back to "Task" when the project has no Bug.
+            return Ok("Bug".into());
+        }
         let v = self.call_patient(reqwest::Method::GET, &format!("/rest/api/3/issue/createmeta/{project}/issuetypes"), None).await?;
         let names: Vec<String> = v["issueTypes"].as_array().or(v["values"].as_array()).into_iter().flatten().filter(|t| t["subtask"].as_bool() != Some(true)).filter_map(|t| t["name"].as_str().map(str::to_owned)).collect();
         Ok(names.iter().find(|n| n.eq_ignore_ascii_case("bug")).or(names.first()).cloned().unwrap_or_else(|| "Bug".into()))
@@ -495,6 +588,14 @@ impl Jira {
     /// Create an issue; returns its key.
     pub async fn create_issue(&self, project: &str, issue_type: &str, summary: &str, description: &str) -> Result<String, JiraError> {
         check_project(project)?;
+        if self.signed_in {
+            let make = |t: &str| oauth::call("createJiraIssue", serde_json::json!({ "cloudId": self.site, "projectKey": project, "issueType": t, "summary": summary, "description": description }));
+            let v = match make(issue_type).await {
+                Err(JiraError::Rejected(_)) if issue_type.eq_ignore_ascii_case("bug") => make("Task").await?,
+                r => r?,
+            };
+            return v["key"].as_str().or(v["issue"]["key"].as_str()).map(str::to_owned).filter(|k| check_issue(k).is_ok()).ok_or(JiraError::Other(200));
+        }
         let body = serde_json::json!({ "fields": {
             "project": { "key": project },
             "issuetype": { "name": issue_type },
@@ -508,6 +609,10 @@ impl Jira {
     /// Add a comment to an issue.
     pub async fn comment(&self, key: &str, text: &str) -> Result<(), JiraError> {
         check_issue(key)?;
+        if self.signed_in {
+            oauth::call("addOrEditJiraIssueComment", serde_json::json!({ "cloudId": self.site, "issueIdOrKey": key, "commentBody": text })).await.map_err(|e| not_found(e, key))?;
+            return Ok(());
+        }
         self.call_patient(reqwest::Method::POST, &format!("/rest/api/3/issue/{key}/comment"), Some(&serde_json::json!({ "body": adf(text) })))
             .await
             .map_err(|e| if let JiraError::NotFound(_) = e { JiraError::NotFound(key.to_owned()) } else { e })?;
@@ -517,6 +622,24 @@ impl Jira {
     /// The web link of an issue (for the person, not for the AI to follow).
     pub fn browse(&self, key: &str) -> String {
         format!("https://{}/browse/{key}", self.site)
+    }
+}
+
+/// The issues in an MCP search answer (`issues`, or `issues.nodes`).
+fn mcp_issues(v: &serde_json::Value) -> Vec<serde_json::Value> {
+    v["issues"].as_array().or(v["issues"]["nodes"].as_array()).or(v.as_array()).cloned().unwrap_or_default()
+}
+
+/// A field of an MCP issue, nested under `fields` or flat.
+fn mcp_field<'a>(i: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    let f = &i["fields"][name];
+    if f.is_null() { &i[name] } else { f }
+}
+
+fn not_found(e: JiraError, key: &str) -> JiraError {
+    match e {
+        JiraError::Rejected(why) if why.to_ascii_lowercase().contains("not exist") || why.to_ascii_lowercase().contains("not found") => JiraError::NotFound(key.to_owned()),
+        e => e,
     }
 }
 
