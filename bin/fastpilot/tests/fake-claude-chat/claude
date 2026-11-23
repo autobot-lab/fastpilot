@@ -70,8 +70,12 @@ if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
         return not r.get("isError")
     rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake-chat", "version": "0"}})
     rpc("notifications/initialized", notify=True)
-    ok = call("session", {"action": "start", "id": "chat1", "platform": "web", "target": "examples/demo/login.html"})
-    ok = ok and call("run_flow", {"flow": "- assertVisible: Masuk\n", "session": "chat1"})
+    ok = call("session", {"action": "start", "id": "chat1", "platform": "web", "target": os.environ.get("FAKE_CHAT_TARGET", "examples/demo/login.html")})
+    if "saved password" in low:
+        # QA #5980 bug 1: sign in with the password the user saved in the dashboard (no env var).
+        ok = ok and call("run_flow", {"flow": "- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n- assertVisible: Budi\n", "session": "chat1"})
+    else:
+        ok = ok and call("run_flow", {"flow": "- assertVisible: Masuk\n", "session": "chat1"})
     call("session", {"action": "stop", "id": "chat1"})
     proc.stdin.close()
     proc.wait(timeout=10)

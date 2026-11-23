@@ -88,8 +88,23 @@ function stepOne() {
     h("p", { class: "s muted", id: "wz-where-h" }, "Paste it and fastpilot adds it. Use a test or staging site, not your live shop."), err];
 }
 
+// QA #5980 bug 1: "Check the login" needs the test account: asked here, once, in the masked
+// dialog (the value goes to this app's key store, never into Chat), then the check starts.
+async function askLogin() {
+  let s;
+  try { s = await api("/api/secrets"); } catch (_) { return; }
+  const has = (n) => (s.names || []).some((x) => x.name === n && (x.set || x.env));
+  if (has("TEST_PASSWORD")) return;
+  if (!has("TEST_USER") && !(await UI.passwordAsk({ name: "TEST_USER", label: "User name of the test account", plain: true }))) return;
+  await UI.passwordAsk({ name: "TEST_PASSWORD", label: "Password of the test account" });
+}
+
 function stepTwo(app) {
-  const send = (t) => { finish(); openChat(t); };
+  const send = async (t) => {
+    if (t === CHECKS[0]) await askLogin();
+    finish();
+    openChat(t);
+  };
   const own = h("textarea", { rows: "2", maxlength: "600", "aria-label": "What should we check, in your own words", placeholder: "For example: the voucher SAVE10 gives 10% off" });
   return [steps(2), h("h2", { class: "wz-h", tabindex: "-1" }, "What should we check first?"),
     h("p", {}, `Pick one to start on ${app ? app.name : "your app"}. You can say it in your own words instead.`),

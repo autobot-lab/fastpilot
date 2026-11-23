@@ -400,7 +400,9 @@ pub fn missing_secrets(case: &Case) -> Vec<MissingSecret> {
             continue;
         }
         let bare = text.replace(&format!("${{{name}}}"), "").split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == name);
-        let m = MissingSecret { name: name.to_owned(), allowed: allowed.iter().any(|a| a == name), set: std::env::var(name).is_ok_and(|v| !v.is_empty()) };
+        // QA #5980 bug 1: a value saved for the current app counts as allowed and set.
+        let saved = fastpilot_core::secrets::lookup(name).is_some();
+        let m = MissingSecret { name: name.to_owned(), allowed: saved || allowed.iter().any(|a| a == name), set: saved || std::env::var(name).is_ok_and(|v| !v.is_empty()) };
         if !(bare || m.allowed && m.set) {
             out.push(m);
         }

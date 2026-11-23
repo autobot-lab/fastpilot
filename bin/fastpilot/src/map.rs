@@ -770,7 +770,8 @@ pub async fn explore(opts: Options, progress: Arc<Mutex<AppMap>>, stop: Arc<Atom
             minutes(m.finished_ms.saturating_sub(started)),
             if skipped == 1 { "" } else { "s" },
             if skipped == 1 { " was" } else { "s were" },
-            if m.signed_in { format!("It signed in with the test account. {tested_note}") } else { tested_note }
+            // QA #5980: never "nothing was typed in" next to a sign-in.
+            if m.signed_in { format!("It signed in with the test account; apart from that sign-in, {}", tested_note.replacen("Nothing", "nothing", 1)) } else { tested_note }
         ),
         "stopped" => format!("Stopped after {n} screen{}. The map shows what was found. Screens it did not reach are not on it. {tested_note}.", if n == 1 { "" } else { "s" }),
         "limit" => format!("Stopped at {n} screens or {} minutes, the limit. Your app may have more. Raise the limit or start from a different screen.", m.max_minutes),
