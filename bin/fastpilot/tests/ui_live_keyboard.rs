@@ -91,7 +91,8 @@ async fn live_page_works_with_the_keyboard() {
     let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n", link.trim());
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "{out}");
-    eval(&client, "location.hash = '#/live', 'ok'").await;
+    // Someone who already knows the dashboard: no first-run wizard (E4).
+    eval(&client, "(localStorage.setItem('fastpilot.welcome', 'done'), location.hash = '#/live', 'ok')").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n" })).await;
     assert!(ok, "Live must show the sessions, not hang on 'Membaca sesi…': {out}");
     // Header pill counts the blocked session; the step says why.
@@ -105,7 +106,7 @@ async fn live_page_works_with_the_keyboard() {
     // picked already and the click took it off). The last place picked stays on, with a reason.
     // S4 + U1: with one agent, Chat has no agent list; "New agent" is under More below it.
     eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"More\", timeout: 8000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Send\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let hidden_new = "(() => { const a = [...document.querySelectorAll('#body .more a')].find((x) => x.textContent.includes('New agent')); return a ? String(!!a.closest('[hidden]')) : 'none'; })()";
     assert_eq!(eval(&client, hidden_new).await, "\"true\"", "New agent waits under More");

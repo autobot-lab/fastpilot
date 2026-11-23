@@ -710,3 +710,19 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 
 /* U1: Chat with one agent: no agent list, no tabs. */
 .ag-solo { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
+
+/* E4: first-run wizard and the simple menu */
+.wz{max-width:760px;margin:24px auto;display:flex;flex-direction:column;gap:14px}
+.wz-steps{display:flex;align-items:center;gap:12px;font:500 12px var(--mono);color:var(--muted);text-transform:uppercase}
+.wz-bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.wz-bar>span{display:block;height:100%;background:var(--ok,#1a7f37)}
+.wz-h{font-size:28px;margin:0}
+.wz-kinds{display:flex;gap:8px;flex-wrap:wrap}
+.wz-kind{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card);cursor:pointer}
+.wz-kind[aria-checked="true"]{border-color:var(--ink)}
+.wz-checks{display:flex;flex-direction:column;gap:8px}
+.wz-full{display:flex;gap:6px;align-items:center;margin-top:14px}
+.rail .rail-more{display:none;width:62px;padding:8px 0 7px;border:0;background:none;border-radius:var(--r-sm);flex-direction:column;align-items:center;gap:4px;color:var(--muted);cursor:pointer}
+.rail .rail-more small{font:500 10px var(--mono)}
+.simple-menu .rail .rail-more{display:flex}
+.simple-menu:not(.menu-open) .rail a:is([data-nav=schedules],[data-nav=map],[data-nav=memory],[data-nav=history],[data-nav=integrations]){display:none}

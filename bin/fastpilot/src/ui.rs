@@ -870,7 +870,8 @@ static FOUND: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new())
 /// `{ current, apps }`. A repo app shows only its folder's name, never the full path.
 async fn apps_list() -> Response {
     let apps: Vec<Value> = crate::apps::list().iter().map(app_json).collect();
-    axum::Json(json!({ "current": crate::apps::current().map(|a| a.id), "apps": apps })).into_response()
+    // E4: a developer's fixed folder (FASTPILOT_DIR) is not a first run.
+    axum::Json(json!({ "current": crate::apps::current().map(|a| a.id), "apps": apps, "fixed_dir": std::env::var_os("FASTPILOT_DIR").is_some() })).into_response()
 }
 
 /// `{action: add, name, targets}`, `{action: update, id, name?, targets?}`, `{action: remove, id}`
@@ -1391,6 +1392,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "apps.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/apps.js")),
         "map.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/map.js")),
         "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
+        "welcome.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/welcome.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
         "fonts/bricolage-grotesque-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-700.woff2")),

@@ -84,7 +84,7 @@ async fn the_first_test_press_works_and_replace_token_keeps_the_project() {
             .env_remove("FASTPILOT_BLOCK_ACTIONS");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
-    let (ok, out) = flow(&client, &format!("- session: {{ start: person, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Integrations\", timeout: 10000 }}\n", link.trim())).await;
+    let (ok, out) = flow(&client, &format!("- session: {{ start: person, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Settings\", timeout: 10000 }}\n", link.trim())).await;
     assert!(ok, "{out}");
     eval(&client, "location.hash = '#/apps/jira', 'ok'").await;
 

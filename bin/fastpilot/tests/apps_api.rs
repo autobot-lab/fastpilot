@@ -79,7 +79,7 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
     std::fs::create_dir_all(&home).expect("home");
     let ui = start(&home);
 
-    assert_eq!(ui.get("/api/apps"), json!({ "current": null, "apps": [] }), "a new user has no app yet");
+    assert_eq!(ui.get("/api/apps"), json!({ "current": null, "apps": [], "fixed_dir": false }), "a new user has no app yet");
 
     // Add: a website and an Android app under one app; the first one becomes current.
     let (st, r) = ui.post(json!({ "action": "add", "name": "Shop staging", "targets": { "web": " https://staging.shop.example ", "android": "com.shop.app" }, "repo": "/etc" }));
