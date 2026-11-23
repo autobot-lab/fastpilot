@@ -72,8 +72,10 @@ const get = (key) => (S && S.settings ? S.settings.find((s) => s.key === key) : 
 async function loadSettings() {
   S = await api("/api/settings");
 }
+// The first screen (s6a): Chat, the first item of the menu.
+const HOME = "#/agents";
 function currentPage() {
-  return (location.hash || "#/live").split("/").slice(1, 3).join("/");
+  return (location.hash || HOME).split("/").slice(1, 3).join("/");
 }
 
 // Text typed into a list field whose save failed, put back so it can be corrected.
@@ -1143,14 +1145,13 @@ function takeBanner(sessions) {
 
 // Off the Live page: the Live state every few seconds, for the banner (and the takeover's keep-alive).
 async function globalLive() {
-  if ((location.hash || "#/live").startsWith("#/live")) return;
+  if ((location.hash || HOME).startsWith("#/live")) return;
   try { lastLive = await api("/api/live"); takeBanner(lastLive.sessions); } catch (_) { /* next time */ }
 }
 setInterval(globalLive, 4000);
 
 async function pollLive() {
-  // An empty hash is the Live page too (the first page after the link).
-  if (!(location.hash || "#/live").startsWith("#/live")) return;
+  if (!(location.hash || HOME).startsWith("#/live")) return;
   try {
     renderLive(await api("/api/live"));
   } catch (e) {
@@ -1190,6 +1191,7 @@ async function chatSend(text) {
     chatData = await api("/api/chat", { agent: chatAgent, message: t });
     const box = document.getElementById("chat-input");
     if (box) box.value = "";
+    chatDraft.text = "";
     clearToast();
   } catch (e) { toast(e.message); }
   loadChat();
@@ -1734,6 +1736,7 @@ function chatMsg(m) {
     m.page_attempts && m.page_attempts.length ? pageAttempts(m.page_attempts) : null);
 }
 
+let chatDraft = { agent: null, text: "", focused: false };
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
   const head = [h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● the bot is working" : "● ready"),
@@ -1753,6 +1756,15 @@ function renderChat() {
   let root = document.getElementById("chat-root");
   if (!root) {
     const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Write to the fastpilot bot… for example: \"test the login in Chrome\"", "aria-label": "Message to the fastpilot bot" });
+    // The page is drawn again when apps or settings load (Chat is the first screen): what is
+    // being typed, and the cursor, stay.
+    const kept = chatDraft.agent === chatAgent;
+    if (kept) input.value = chatDraft.text;
+    input.addEventListener("input", () => { chatDraft = { agent: chatAgent, text: input.value, focused: true }; });
+    input.addEventListener("focus", () => { chatDraft = { agent: chatAgent, text: input.value, focused: true }; });
+    // A box taken away by a redraw also blurs: only a box still on the page was left on purpose.
+    input.addEventListener("blur", () => { setTimeout(() => { if (input.isConnected && chatDraft.agent === chatAgent) chatDraft.focused = false; }); });
+    if (kept && chatDraft.focused) queueMicrotask(() => { if (input.isConnected) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(input.value); } });
     root = h("div", { id: "chat-root", class: "chat" },
       h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" }),
@@ -2169,7 +2181,7 @@ function pageSchedules() {
 const PAGES = {};
 function render() {
   if (!S) return;
-  const hash = location.hash || "#/live";
+  const hash = location.hash || HOME;
   // E6: "Apps" (Jira and the rest) is now Integrations; old links still land there.
   if (hash === "#/apps" || hash.startsWith("#/apps/jira")) { location.replace(hash.replace("#/apps", "#/integrations")); return; }
   const [, page, sub] = hash.split("/");

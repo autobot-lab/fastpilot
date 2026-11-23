@@ -82,7 +82,8 @@ async fn take_over_a_web_session_and_give_it_back() {
     let at = eval(&client, "shop", "(() => { const r = document.querySelector('#email').getBoundingClientRect(); return [(r.left + r.width / 2) / innerWidth, (r.top + r.height / 2) / innerHeight].join(','); })()").await;
     let (fx, fy) = at.trim_matches('"').split_once(',').expect("fractions");
 
-    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Take over\", timeout: 10000 }}\n", link.trim());
+    // The link opens Chat (s6a); the sessions are on Live.
+    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}#/live\" }}\n- assertVisible: {{ text: \"Take over\", timeout: 10000 }}\n", link.trim());
     let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "the shop card offers Take over: {out}");
 

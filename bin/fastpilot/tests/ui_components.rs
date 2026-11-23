@@ -329,20 +329,30 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     let menu = eval(c, "[...document.querySelectorAll('.rail a small')].map((t) => t.textContent).join('|')").await;
     assert_eq!(menu, "\"Chat|Live|Schedules|Map|Memory|History|Device|Integrations|Settings\"", "the locked menu (s6a)");
 
-    // No app yet: one button. The dialog takes the name from the address.
+    // The first screen is Chat, the first item of the menu (s6a; design M2).
+    assert_eq!(eval(c, "document.querySelector('.rail a[aria-current=page]')?.textContent || 'none'").await, "\"Chat\"", "opens on Chat");
+    // Typed right away, the message survives the page being drawn again (apps and settings load).
+    see(c, "Send").await;
+    let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); for (let i = 0; i < 40 && document.getElementById('chat-input') === t; i++) await new Promise((r) => setTimeout(r, 100)); await new Promise((r) => setTimeout(r, 50)); const n = document.getElementById('chat-input'); return [n !== t, n.value, document.activeElement === n].join('|'); })()").await;
+    assert_eq!(kept, "\"true|check the login|true\"", "a redraw keeps the draft and the cursor");
+
+    // No app yet: one button. The dialog asks for the address only (design M1). Opened from Live,
+    // a new app still goes to Chat.
+    eval(c, "(location.hash = '#/live', 'ok')").await;
     see(c, "Add your app").await;
     eval(c, "(document.querySelector('#appbar button').click(), 'ok')").await;
     see(c, "What do you want to test?").await;
     let kinds = eval(c, "[...document.querySelectorAll('dialog.appdlg [role=radio]')].map((b) => b.dataset.v + ':' + b.getAttribute('aria-checked')).join('|')").await;
     assert_eq!(kinds, "\"web:true|android:false|ios:false\"");
     let typed = "(v) => { const w = document.getElementById('app-where'); w.value = v; w.dispatchEvent(new Event('input')); const n = document.getElementById('app-name'); return n ? n.value : ''; }";
-    assert_eq!(eval(c, &format!("({typed})('https://staging.shop.example')")).await, "\"Shop staging\"", "the name comes from the address");
+    assert_eq!(eval(c, "String(document.querySelectorAll('dialog.appdlg input').length)").await, "\"1\"", "one field: the address, no Name");
     // A wrong address is said under the field, and the dialog stays.
     eval(c, &format!("(({typed})('staging shop'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
     see(c, "is not a website address").await;
     assert_eq!(eval(c, "String(!!document.querySelector('dialog.appdlg'))").await, "\"true\"");
     eval(c, &format!("(({typed})('https://staging.shop.example'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
     see(c, "Shop staging was added").await;
+    assert_eq!(eval(c, "document.querySelector('.rail a[aria-current=page]')?.textContent || 'none'").await, "\"Chat\"", "a new app goes to Chat");
     let bar = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
     assert!(bar.contains("Shop staging") && bar.contains("Website"), "{bar}");
 
@@ -350,7 +360,7 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     eval(c, "(document.querySelector('#appbar .appbtn').click(), [...document.querySelectorAll('.appmenu button')].find((b) => b.textContent.includes('Add app')).click(), 'ok')").await;
     see(c, "What do you want to test?").await;
     eval(c, "(document.querySelector('dialog.appdlg [data-v=android]').click(), 'ok')").await;
-    assert_eq!(eval(c, &format!("({typed})('com.fastpilot.demo')")).await, "\"Demo\"");
+    eval(c, &format!("({typed})('com.fastpilot.demo')")).await;
     eval(c, "(document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')").await;
     see(c, "Demo was added").await;
     let cur = eval(c, "(async () => (await api('/api/apps')).current)()").await;

@@ -53,32 +53,13 @@ async function use(id) {
   render();
 }
 
-/// "staging.shop.example" → "Shop staging"; "com.shop.app" → "Shop".
-function suggest(kind, value) {
-  const cap = (w) => (w ? w[0].toUpperCase() + w.slice(1) : "");
-  if (kind === "web") {
-    let host;
-    try { host = new URL(value).hostname; } catch (_) { return ""; }
-    if (!host || host === "localhost" || /^[\d.]+$/.test(host)) return host === "localhost" ? "Local site" : "";
-    const parts = host.split(".").filter((p) => p !== "www");
-    const words = parts.length > 1 ? parts.slice(0, -1) : parts;
-    return words.length > 1 ? `${cap(words[1])} ${words[0]}` : cap(words[0]);
-  }
-  const segs = value.split(".").filter(Boolean);
-  const generic = ["app", "android", "ios", "mobile", "client"];
-  const w = segs.length > 1 && generic.includes(segs[segs.length - 1]) ? segs[segs.length - 2] : segs[segs.length - 1];
-  return cap(w || "");
-}
-
 /// The Add app dialog. `app`: add a platform to that app; `kind`: preselected.
 function addDialog({ app, kind }) {
   const existing = app && data && data.apps.find((a) => a.id === app);
   let pick = KIND[kind] ? kind : "web";
-  let named = false;
   const err = (id) => h("p", { class: "err-line", id, role: "alert", hidden: true });
   const where = h("input", { type: "text", id: "app-where", autocomplete: "off", spellcheck: "false", "aria-describedby": "app-where-err app-where-hint" });
-  const name = h("input", { type: "text", id: "app-name", autocomplete: "off", maxlength: "60", "aria-describedby": "app-name-err" });
-  const whereErr = err("app-where-err"), nameErr = err("app-name-err"), formErr = err("app-form-err");
+  const whereErr = err("app-where-err"), formErr = err("app-form-err");
   const label = h("label", { for: "app-where", class: "l" });
   const hint = h("p", { class: "s muted", id: "app-where-hint" });
   const choice = h("div", { class: "seg", role: "radiogroup", "aria-label": "What do you want to test?" },
@@ -92,11 +73,8 @@ function addDialog({ app, kind }) {
     hint.textContent = pick === "web" ? "Use a test or staging site, not your live shop." : "The app id looks like com.company.app. Your developers know it.";
     whereErr.hidden = true;
   }
-  where.addEventListener("input", () => {
-    whereErr.hidden = true;
-    if (!named && !existing) name.value = suggest(pick, where.value.trim());
-  });
-  name.addEventListener("input", () => { named = true; nameErr.hidden = true; });
+  // seamless-v13: the address only; the name comes from it (Rename is in Settings › Your apps).
+  where.addEventListener("input", () => { whereErr.hidden = true; });
   const show = (el, text) => { el.textContent = text; el.hidden = false; };
   const add = h("button", { type: "submit", class: "btn p" }, existing ? `Add ${KIND[pick][2]}` : "Add app");
   const cancel = h("button", { type: "button", class: "btn", onclick: () => done() }, "Cancel");
@@ -105,7 +83,6 @@ function addDialog({ app, kind }) {
     h("p", { class: "s muted" }, existing ? "Tests of this app can then run on it too." : "Takes about a minute. Adding an app tests nothing and changes nothing on your computer."),
     h("fieldset", { class: "fld" }, h("legend", { class: "l" }, "What do you want to test?"), choice),
     h("div", { class: "fld" }, label, where, hint, whereErr),
-    existing ? null : h("div", { class: "fld" }, h("label", { for: "app-name", class: "l" }, "Name"), name, nameErr),
     formErr,
     h("div", { class: "btns" }, add, cancel, existing ? null : h("span", { class: "s muted" }, "You can remove an app later without losing your tests")));
   const dlg = h("dialog", { class: "cdlg appdlg", "aria-labelledby": "app-dlg-t" }, form);
@@ -115,27 +92,31 @@ function addDialog({ app, kind }) {
     if (!value) { show(whereErr, pick === "web" ? "Paste the address of the website, for example https://staging.shop.example." : "Enter the app id, for example com.shop.app."); where.focus(); return; }
     const targets = Object.assign({}, existing ? existing.targets : {}, { [pick]: value });
     try {
-      const r = existing ? await api("/api/apps", { action: "update", id: existing.id, targets }) : await api("/api/apps", { action: "add", name: name.value, targets });
-      done();
+      const r = existing ? await api("/api/apps", { action: "update", id: existing.id, targets }) : await api("/api/apps", { action: "add", targets });
+      // A new app: straight to Chat for it, where its first test is asked for (s7a).
+      done(existing ? null : "#/agents");
       data = null;
       await load();
       render();
       toast(existing ? `${KIND[pick][2]} added to ${r.app.name}.` : `${r.app.name} was added${data && data.current === r.app.id ? ". It is now your current app" : ""}. Tell Chat what to test, for example "check the login".`, true);
     } catch (x) {
       const m = x.message;
-      if (/name/i.test(m) && !existing) { show(nameErr, m); name.focus(); } else if (/address|app id|website|user name/i.test(m)) { show(whereErr, m); where.focus(); } else show(formErr, m);
+      if (/address|app id|website|user name/i.test(m)) { show(whereErr, m); where.focus(); } else show(formErr, m);
     }
   });
   dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(); });
   const back = document.activeElement;
-  function done() {
+  // `next`: the page to go to (a new app: Chat); else back to where the dialog was opened.
+  function done(next) {
     dlg.close();
     dlg.remove();
     if ((location.hash || "").startsWith("#/apps/add")) {
       closing = true;
       window.addEventListener("hashchange", () => { closing = false; }, { once: true });
-      if (history.length > 1) history.back(); else location.replace("#/settings/apps");
+      if (next) location.replace(next); else if (history.length > 1) history.back(); else location.replace("#/settings/apps");
+      return;
     }
+    if (next && location.hash !== next) { location.hash = next; return; }
     if (back && back.isConnected && back.focus) back.focus();
   }
   draw();
