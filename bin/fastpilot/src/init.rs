@@ -209,10 +209,7 @@ fn add_args(scope: &str) -> Vec<String> {
 /// Already registered: project scope reads .mcp.json here; user scope asks Claude Code.
 fn registered(scope: &str, claude: &str) -> bool {
     if scope == "project" {
-        return std::fs::read_to_string(".mcp.json")
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|v| runs_fastpilot(&v["mcpServers"]["fastpilot"]));
+        return project_registered(Path::new("."));
     }
     std::process::Command::new(claude)
         .args(["mcp", "get", "fastpilot"])
@@ -221,6 +218,51 @@ fn registered(scope: &str, claude: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// QA #5980 bug 3 (E6): the first `fastpilot` adds fastpilot to Claude Code for every folder (user
+/// scope, as `init --global` does), once. Without Claude Code nothing is said or written, and a
+/// later start tries again. Never a project `.mcp.json`: it runs in the home folder.
+pub fn register_for_user_once() {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+    let done = home.join(".fastpilot").join("claude-registered");
+    if done.exists() {
+        return;
+    }
+    let claude = crate::run::claude_bin();
+    let quiet = || {
+        let mut c = std::process::Command::new(&claude);
+        c.current_dir(&home).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        c
+    };
+    if !quiet().arg("--version").status().is_ok_and(|s| s.success()) {
+        return;
+    }
+    if user_entry(&home).is_none() {
+        let args = add_args("user");
+        if quiet().args(&args).status().is_ok_and(|s| s.success()) {
+            println!("Added fastpilot to Claude Code, for every folder.");
+        } else {
+            println!("Could not add fastpilot to Claude Code. To add it yourself: claude {}", args.join(" "));
+        }
+    }
+    let _ = std::fs::create_dir_all(home.join(".fastpilot"));
+    let _ = std::fs::write(&done, "");
+}
+
+/// Claude Code's own "fastpilot" entry for every folder (user scope: `~/.claude.json`'s
+/// top-level `mcpServers`, not a project's).
+pub fn user_entry(home: &Path) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).ok()?).ok()?;
+    Some(v["mcpServers"]["fastpilot"].clone()).filter(serde_json::Value::is_object)
+}
+
+/// This folder's `.mcp.json` starts fastpilot (a project registration).
+pub fn project_registered(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(".mcp.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| runs_fastpilot(&v["mcpServers"]["fastpilot"]))
 }
 
 /// A `.mcp.json` server entry that really starts fastpilot's MCP server (`fastpilot mcp`, or
