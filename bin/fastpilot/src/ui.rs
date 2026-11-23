@@ -221,12 +221,14 @@ pub async fn ui(args: &[String]) -> Res<()> {
     let url = format!("http://127.0.0.1:{port}/?code={}", state.code());
     // E1: `fastpilot` typed again finds this dashboard (and only its own user's) through the
     // pidfile, and asks it for a fresh link with SIGUSR1.
-    crate::one::announce(port);
+    // The handler exists before the pidfile names us: SIGUSR1's default action would end the
+    // dashboard (Security, #198 L1).
     #[cfg(unix)]
     {
         let st = state.clone();
+        let sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1());
         tokio::spawn(async move {
-            let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) else { return };
+            let Ok(mut sig) = sig else { return };
             while sig.recv().await.is_some() {
                 if let Ok(c) = st.renew_code() {
                     crate::one::hand_out(&format!("http://127.0.0.1:{}/?code={c}", st.port));
@@ -234,6 +236,7 @@ pub async fn ui(args: &[String]) -> Res<()> {
             }
         });
     }
+    crate::one::announce(port);
     // Whoever started us may stop reading stdout after the link (a script, a test): a closed pipe
     // must not take the server down, so nothing here panics on a failed write.
     let say = |text: &str| {

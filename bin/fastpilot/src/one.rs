@@ -134,7 +134,8 @@ fn yes(question: &str) -> bool {
     print!("{question} (Y/n) ");
     let _ = std::io::stdout().flush();
     let mut line = String::new();
-    if std::io::stdin().lock().read_line(&mut line).is_err() {
+    // End of input (Ctrl-D) is not a yes (Security, #198 L2).
+    if matches!(std::io::stdin().lock().read_line(&mut line), Ok(0) | Err(_)) {
         return false;
     }
     !matches!(line.trim().to_ascii_lowercase().as_str(), "n" | "no")
