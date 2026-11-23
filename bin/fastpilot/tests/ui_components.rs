@@ -622,4 +622,21 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
     see(c, "Changes wait for your click on their card.").await;
     let link = eval(c, "(() => { const s = proposalCard({ id: 'x', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], status: 'pending' }); const bad = proposalCard({ id: 'y', kind: 'open', open: 'https://evil.example', title: 'x', rows: [], status: 'pending' }); return s.querySelector('a.btn').getAttribute('href') + '|' + s.querySelector('a.btn').textContent + '|' + !!bad.querySelector('a[href^=\"http\"]'); })()").await;
     assert_eq!(link, "\"#/settings/secrets|Open Secrets|false\"");
+    // QA #5980 bug 4: a card that names the passwords asks each one here, in the masked dialog.
+    eval(c, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); window.__decided = null; window.chatDecide = async (id) => { window.__decided = id; }; document.body.append(proposalCard({ id: 'pw', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_USER', 'TEST_PASSWORD'], status: 'pending' })); return 'ok'; })()").await;
+    let button = eval(c, "(() => { const b = document.querySelector('[data-pid=\"pw\"] .btn.p'); b.click(); return b.tagName + '|' + b.textContent; })()").await;
+    assert_eq!(button, "\"BUTTON|Set the password\"");
+    see(c, "Set TEST_USER (a user name)").await;
+    assert_eq!(eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); const t = i.type; i.value = 'a@b.com'; i.form.requestSubmit(); return t; })()").await, "\"text\"");
+    see(c, "Set TEST_PASSWORD").await;
+    assert_eq!(eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); const t = i.type; i.value = 'fp-card-pass-1'; i.form.requestSubmit(); return t; })()").await, "\"password\"");
+    let mut got = String::new();
+    for _ in 0..40 {
+        got = eval(c, "(async () => window.__decided + '|' + (await api('/api/secrets')).names.filter((n) => n.set).map((n) => n.name).join(','))()").await;
+        if got.starts_with("\"pw") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(got, "\"pw|TEST_USER,TEST_PASSWORD\"");
 }
