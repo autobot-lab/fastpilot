@@ -83,6 +83,11 @@ async fn a_typed_note_can_be_saved_and_the_tab_is_never_stale() {
     eval(&client, "location.hash = '#/memory', 'ok'").await;
     let btn = |label: &str| format!("[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith({label:?}))");
     eval(&client, &format!("{}.click(), 'ok'", btn("Project notes"))).await;
+    // UXA8: notes come from Chat ("Remember this?"); typing one is under More options, closed.
+    see(&client, "Open Chat").await;
+    let typing = "(() => { const t = document.querySelector('.note-text'); return [document.body.innerText.includes('Remember this?'), !!t && !!t.closest('[hidden]'), document.querySelector('.mem-side .more-btn').textContent].join('|'); })()";
+    assert_eq!(eval(&client, typing).await, "\"true|true|Type a note yourself\"", "the typing form waits under More options");
+    eval(&client, "document.querySelector('.mem-side .more-btn').click(), 'ok'").await;
     see(&client, "Save note").await;
     assert_eq!(eval(&client, "String([...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save note').disabled)").await, "\"true\"", "empty form: off");
 

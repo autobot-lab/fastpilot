@@ -13,6 +13,7 @@ let memTab = "tests"; // tests | notes
 let notesData = null; // { notes, groups, limits, used }
 let noteForm = { group: "addresses", text: "", id: null }; // the add / edit form
 let noteError = null; // { kind, message }
+let noteTyping = false; // UXA8: "Type a note yourself" was opened: it stays open while the page redraws
 
 const STATUS = {
   reliable: ["Reliable", "ok"],
@@ -303,11 +304,18 @@ function pageNotes() {
             h("button", { class: "btn sm", "aria-label": `Remove note: ${title}`, onclick: () => removeNote(x) }, "Remove")));
       })]))
     : h("div", { class: "grp" }, h("div", { class: "empty" }, h("b", {}, "No notes yet"),
-      h("span", {}, "Add the things you keep repeating: where the staging site is, which test account to use, how login works."),
-      h("button", { class: "btn p", onclick: () => document.querySelector(".note-text")?.focus() }, "Add your first note")));
+      h("span", {}, "Just say it in Chat, for example \"staging is https://staging.shop.example\". fastpilot asks \"Remember this?\", and one click keeps it."),
+      h("a", { class: "btn p", href: "#/chat" }, "Open Chat")));
+  // UXA8: notes come from Chat ("Remember this?"); typing one here is under More options, open
+  // while a note is being edited or typed.
+  const more = UI.moreOptions({ label: "Type a note yourself", open: noteTyping || !!(noteForm.id || noteForm.text || noteError) }, notesPanel());
+  more.querySelector(".more-btn").addEventListener("click", (e) => { noteTyping = e.currentTarget.getAttribute("aria-expanded") === "true"; });
+  const side = h("div", { class: "mem-side" },
+    h("p", { class: "s muted note-how" }, "Tell Chat something worth keeping (an address, which test account, how login works). fastpilot offers ", h("b", {}, "Remember this?"), "; nothing is saved until you click."),
+    more);
   $body().replaceChildren(...(notesData.error ? [h("div", { class: "err", role: "alert" }, "Could not read the notes: " + notesData.error)] : []),
     ...(notesData.damaged ? [h("div", { class: "err", role: "alert" }, "The notes file for this project cannot be read, so agents get no notes (and no \"Never do\" rules) until it is fixed. Nothing here can change it; ask for help.")] : []),
-    h("div", { class: "mem-wrap" }, h("div", {}, head, groups), notesPanel()));
+    h("div", { class: "mem-wrap" }, h("div", {}, head, groups), side));
 }
 
 function pageMemory() {

@@ -351,6 +351,9 @@ dialog.hist-dlg p,dialog.cdlg p{margin:0 0 18px;line-height:1.5}
 /* Memory (D6) */
 .mem-wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
 @media (max-width:1100px){.mem-wrap{grid-template-columns:1fr}}
+.mem-side{display:flex;flex-direction:column;gap:10px}
+.mem-side .note-how{margin:0}
+.mem-side .more-body{margin-top:10px}
 .mem-tbl tr.on td{background:var(--soft)}
 .mem-tbl tr.on td:first-child{box-shadow:inset 3px 0 0 var(--ink)}
 .mem-name{background:none;border:0;padding:0;font:600 14px var(--sans);color:var(--ink);cursor:pointer;text-align:left}
