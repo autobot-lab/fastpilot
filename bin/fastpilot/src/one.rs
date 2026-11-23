@@ -182,5 +182,6 @@ pub async fn run() -> Res<()> {
     }
     // L2: what to do with this window, before anything else is printed.
     println!("fastpilot is opening in your browser. Keep this window open: closing it (or Ctrl-C) stops fastpilot.");
+    crate::init::register_for_user_once();
     crate::ui::ui(&[]).await
 }

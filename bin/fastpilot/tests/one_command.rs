@@ -21,8 +21,15 @@ impl Drop for Kill {
     }
 }
 
+/// A stand-in Claude Code: `--version`, and `mcp add` writing `$HOME/.claude.json` (logged).
+const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude/claude");
+
 fn setup() -> (PathBuf, PathBuf) {
-    let home = std::env::temp_dir().join(format!("fp-one-{}", std::process::id()));
+    setup_in("one")
+}
+
+fn setup_in(name: &str) -> (PathBuf, PathBuf) {
+    let home = std::env::temp_dir().join(format!("fp-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).expect("bin");
@@ -43,6 +50,8 @@ fn fastpilot(home: &Path, bin: &Path, tty: bool) -> Command {
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("FASTPILOT_KEYSTORE", "file")
         .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env("FASTPILOT_CLAUDE", FAKE_CLAUDE)
+        .env("FAKE_CLAUDE_LOG", home.join("claude-log"))
         .env_remove("FASTPILOT_CONFIG")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -88,7 +97,11 @@ fn alive(pid: u32) -> bool {
 
 /// Start `fastpilot` alone and wait until it says it is up (its first output line).
 fn start(home: &Path, bin: &Path, answer: &str) -> (Kill, String) {
-    let mut c = fastpilot(home, bin, true).spawn().expect("fastpilot");
+    start_with(home, bin, answer, &[])
+}
+
+fn start_with(home: &Path, bin: &Path, answer: &str, env: &[(&str, &str)]) -> (Kill, String) {
+    let mut c = fastpilot(home, bin, true).envs(env.iter().copied()).spawn().expect("fastpilot");
     let mut stdin = c.stdin.take().expect("stdin");
     stdin.write_all(answer.as_bytes()).expect("answer");
     drop(stdin);
@@ -179,5 +192,80 @@ fn fastpilot_alone_opens_the_dashboard_and_restarts_an_old_one_only_after_yes() 
     drop(third);
     let _ = other.kill();
     let _ = other.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The `.mcp.json` files under `dir`.
+fn mcp_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() && !p.is_symlink() {
+            out.extend(mcp_files(&p));
+        } else if p.file_name().is_some_and(|n| n == ".mcp.json") {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// The `claude mcp …` calls the stand-in saw.
+fn mcp_calls(home: &Path) -> Vec<serde_json::Value> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(home.join("claude-log")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with("-mcp.json")).collect();
+    files.sort();
+    files.iter().map(|f| serde_json::from_str(&std::fs::read_to_string(f).expect("log")).expect("json")).collect()
+}
+
+/// QA #5980 bug 3 (E6): the first `fastpilot` adds fastpilot to Claude Code for every folder (user
+/// scope, as `init --global`), once, and never writes a project `.mcp.json`. Without Claude Code it
+/// says and writes nothing. `doctor` names a double registration (user scope plus a repo copy).
+#[test]
+fn the_first_fastpilot_adds_it_to_claude_code_for_every_folder_once() {
+    let (home, bin) = setup_in("one-reg");
+
+    // No Claude Code: nothing said, nothing written; a later start tries again.
+    let (run, said) = start_with(&home, &bin, "", &[("FASTPILOT_CLAUDE", "/nonexistent/claude")]);
+    opened(&home, 0);
+    drop(run);
+    assert!(!said.contains("Claude Code"), "{said}");
+    assert!(!home.join(".claude.json").exists() && !home.join(".fastpilot/claude-registered").exists());
+
+    // A failed add is not marked done: the next start tries again.
+    let (run, said) = start_with(&home, &bin, "", &[("FAKE_CLAUDE_MCP_FAIL", "1")]);
+    opened(&home, 1);
+    drop(run);
+    assert!(said.contains("Could not add fastpilot to Claude Code") && !home.join(".fastpilot/claude-registered").exists(), "{said}");
+    std::fs::remove_dir_all(home.join("claude-log")).expect("log");
+
+    // With Claude Code: added at user scope, from the home folder.
+    let (run, said) = start(&home, &bin, "");
+    opened(&home, 2);
+    drop(run);
+    assert!(said.contains("Added fastpilot to Claude Code, for every folder."), "{said}");
+    let calls = mcp_calls(&home);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["argv"], serde_json::json!(["mcp", "add", "fastpilot", "--scope", "user", "--", "fastpilot", "mcp"]));
+    assert_eq!(std::fs::canonicalize(calls[0]["cwd"].as_str().expect("cwd")).expect("cwd"), std::fs::canonicalize(&home).expect("home"));
+    let user: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).expect("user scope")).expect("json");
+    assert_eq!((user["mcpServers"]["fastpilot"]["command"].as_str(), user["mcpServers"]["fastpilot"]["args"].clone()), (Some("fastpilot"), serde_json::json!(["mcp"])));
+    assert!(mcp_files(&home).is_empty(), "no project .mcp.json: {:?}", mcp_files(&home));
+
+    // Once: a person who removed it later is not overruled on the next start.
+    std::fs::remove_file(home.join(".claude.json")).expect("remove");
+    let (run, said) = start(&home, &bin, "");
+    opened(&home, 3);
+    drop(run);
+    assert!(!said.contains("Claude Code") && mcp_calls(&home).len() == 1, "{said}");
+
+    // doctor: registered for every folder and again in a repo's .mcp.json.
+    std::fs::write(home.join(".claude.json"), user.to_string()).expect("user");
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers":{"fastpilot":{"type":"stdio","command":"fastpilot","args":["mcp"]}}}"#).expect("repo copy");
+    let o = fastpilot(&home, &bin, false).args(["doctor", "run"]).current_dir(&repo).output().expect("doctor");
+    let out = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
+    assert!(out.contains("registered twice") && out.contains("claude mcp remove fastpilot --scope project"), "{out}");
+    let o = fastpilot(&home, &bin, false).args(["doctor", "run"]).output().expect("doctor");
+    assert!(String::from_utf8_lossy(&o.stdout).contains("for every folder"), "{o:?}");
     let _ = std::fs::remove_dir_all(&home);
 }

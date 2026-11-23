@@ -283,7 +283,24 @@ pub async fn agent() -> Vec<Check> {
         }
         None => check("run", "Claude Code", Status::Warn, format!("`{claude}` not found (only `fastpilot run` needs it)"))
             .hint("install Claude Code (https://claude.com/claude-code) and log in once with `claude`"),
-    }]
+    }, registration()]
+}
+
+/// E6: fastpilot in Claude Code, for every folder and/or in this folder's `.mcp.json`. Both at
+/// once is a double registration (an old repo copy): said, and `fastpilot setup` offers "Remove
+/// the repo copy", asked first; doctor changes nothing itself.
+fn registration() -> Check {
+    let user = std::env::var_os("HOME").map(std::path::PathBuf::from).and_then(|h| crate::init::user_entry(&h)).is_some();
+    let here = crate::init::project_registered(std::path::Path::new("."));
+    match (user, here) {
+        (true, true) => check("run", "Claude Code registration", Status::Warn, "registered twice: for every folder, and again in this folder's .mcp.json")
+            .hint("remove the repo copy: claude mcp remove fastpilot --scope project")
+            .fix("Remove the repo copy", &crate::run::claude_bin(), &["mcp", "remove", "fastpilot", "--scope", "project"]),
+        (true, false) => check("run", "Claude Code registration", Status::Ok, "for every folder"),
+        (false, true) => check("run", "Claude Code registration", Status::Ok, "this folder (.mcp.json)"),
+        (false, false) => check("run", "Claude Code registration", Status::Warn, "Claude Code does not know fastpilot yet")
+            .hint("type `fastpilot` once, or run `fastpilot init --global`"),
+    }
 }
 
 pub async fn checks(areas: &[&str]) -> Vec<Check> {
