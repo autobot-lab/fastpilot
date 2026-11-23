@@ -180,5 +180,7 @@ pub async fn run() -> Res<()> {
         }
         println!("Stopped the older fastpilot. Starting this one…");
     }
+    // L2: what to do with this window, before anything else is printed.
+    println!("fastpilot is opening in your browser. Keep this window open: closing it (or Ctrl-C) stops fastpilot.");
     crate::ui::ui(&[]).await
 }

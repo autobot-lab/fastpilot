@@ -192,7 +192,7 @@ dialog.zoom.steering .screen-box{height:min(68vh,740px)}
 .sched-form .form{padding:16px;display:flex;flex-direction:column;gap:14px;max-width:720px}
 .fld{display:flex;flex-direction:column;gap:6px;border:0;padding:0;margin:0;min-width:0}
 .fld .l{font-weight:600}.fld .s{color:var(--muted);font-size:12.5px}
-.fld input[type=text],.fld input[type=password],.fld input[type=email],.fld input[type=time]{font:inherit;padding:8px 10px;border:var(--bw) solid var(--ink);border-radius:var(--r-sm);background:#fff;max-width:100%}
+.fld input[type=text],.fld input[type=password],.fld input[type=email],.fld input[type=time],.fld input[type=url]{font:inherit;padding:8px 10px;border:var(--bw) solid var(--ink);border-radius:var(--r-sm);background:#fff;max-width:100%}
 .fld input.mono{font-family:var(--mono);font-size:13px}
 .fld input:focus-visible,.ck input:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .row2{display:flex;gap:14px;flex-wrap:wrap}.row2 .fld{flex:1;min-width:160px}
@@ -715,7 +715,13 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .wz{max-width:760px;margin:24px auto;display:flex;flex-direction:column;gap:14px}
 .wz-steps{display:flex;align-items:center;gap:12px;font:500 12px var(--mono);color:var(--muted);text-transform:uppercase}
 .wz-bar{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
-.wz-bar>span{display:block;height:100%;background:var(--ok,#1a7f37)}
+.wz-bar>span{display:block;height:100%;width:0;background:var(--ok,#1a7f37)}
+.wz-bar.step-1>span{width:33%}
+.wz-bar.step-2>span{width:66%}
+.wz-bar.step-3>span{width:100%}
+.wz .fld input[type=url]{width:100%}
+/* A name in a table keeps its case (TEST_USER, not test_user). */
+.tbl th[scope=row]{text-transform:none}
 .wz-h{font-size:28px;margin:0}
 .wz-kinds{display:flex;gap:8px;flex-wrap:wrap}
 .wz-kind{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card);cursor:pointer}
