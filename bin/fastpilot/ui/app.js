@@ -51,7 +51,7 @@ async function api(path, body) {
     r = await fetch(path, opts);
   } catch (_) {
     // The browser's own "Failed to fetch": the fastpilot ui process is not running any more.
-    throw new Error("the fastpilot ui server is not answering; run `fastpilot ui` again in Terminal");
+    throw new Error("fastpilot is not answering: type `fastpilot` in the Terminal to start it again");
   }
   // E3: the session ended (12 hours, forgotten, or the dashboard restarted): the page reloads and a
   // remembered browser signs in again by itself; any other one is told how to sign in.

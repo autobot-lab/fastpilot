@@ -172,7 +172,7 @@ async function notesPost(body) {
   try {
     r = await fetch("/api/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   } catch (_) {
-    throw new Error("the fastpilot ui server is not answering; start `fastpilot ui` again in Terminal");
+    throw new Error("fastpilot is not answering: type `fastpilot` in the Terminal to start it again");
   }
   const text = await r.text();
   let v = null;
