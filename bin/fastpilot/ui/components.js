@@ -96,11 +96,12 @@ function notice(kind, ...text) {
 
 /// E2: ask for one password, once, in a masked field. It goes to this Mac's key store for the
 /// current app and is never shown or sent back to the page. `onSaved()` runs after it is kept.
-function passwordAsk({ name, label, onSaved } = {}) {
+function passwordAsk({ name, label, onSaved, plain = false } = {}) {
   return new Promise((resolve) => {
     const back = document.activeElement;
     const tid = `pw-t-${++moreSeq}`;
-    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": label || `Value of ${name}`, "aria-describedby": `${tid}-d` });
+    // `plain`: a value that is not secret (a test account's user name) is shown as it is typed.
+    const input = h("input", { type: plain ? "text" : "password", autocomplete: "off", spellcheck: "false", "aria-label": label || `Value of ${name}`, "aria-describedby": `${tid}-d` });
     const msg = h("p", { class: "err-line", role: "alert", hidden: true });
     const done = (v) => { dlg.close(); dlg.remove(); if (back && back.isConnected && back.focus) back.focus(); resolve(v); };
     const save = h("button", { type: "submit", class: "btn p" }, "Save password");

@@ -323,6 +323,21 @@ fn link_refusal(url: &str, inside: &str) -> Option<String> {
 /// The test account from the project notes: an email and a `${SECRET}` whose value this process
 /// has (a name listed in FASTPILOT_VARS). Nothing else in the notes is used.
 pub fn test_account() -> Option<(String, String)> {
+    test_account_of().map(|(u, p, _)| (u, p))
+}
+
+/// S1 (v0.7): the current app's own test account first, as saved in the Keychain (E2: Settings ›
+/// Secrets, or asked once on the Map page): `TEST_USER` and `TEST_PASSWORD`. Else the project
+/// notes, as before. The flag says it is the app's: then S-1 holds when signing in (only on the
+/// app's own site, or inside the app itself on a phone).
+pub fn test_account_of() -> Option<(String, String, bool)> {
+    if let (Some(u), Some(p)) = (fastpilot_core::secrets::lookup("TEST_USER"), fastpilot_core::secrets::lookup("TEST_PASSWORD")) {
+        return Some((u, p, true));
+    }
+    notes_account().map(|(u, p)| (u, p, false))
+}
+
+fn notes_account() -> Option<(String, String)> {
     let allowed: Vec<String> = fastpilot_core::config::var("FASTPILOT_VARS").unwrap_or_default().split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
     for n in fastpilot_memory::notes::Notes::from_env().list() {
         if n.problem.is_some() {
@@ -422,6 +437,8 @@ struct Explorer<'a> {
     stop: Arc<AtomicBool>,
     deadline: Instant,
     account: Option<(String, String)>,
+    /// The account is the app's own (E2): S-1 is checked before it is typed.
+    app_account: bool,
 }
 
 impl Explorer<'_> {
@@ -474,6 +491,15 @@ impl Explorer<'_> {
             Some(id) if !id.is_empty() => Selector::Id(id.clone()),
             _ => Selector::Role { role: n.role.clone(), name: Some(n.name.clone()) },
         };
+        // S-1 (E2, D07-L3): the app's own password goes only into a form on its own site, or into
+        // the app itself on a phone; a sign-in on another site (an identity provider) is a wall.
+        if self.app_account {
+            let at = self.d.url_of(&sel(&pass.node)).await;
+            fastpilot_core::secrets::allowed_at(at.as_deref(), self.platform)?;
+            if let Some(own) = fastpilot_core::secrets::own_app(self.platform) {
+                fastpilot_core::secrets::allowed_in_front(&own, self.d.foreground_is(&own).await)?;
+            }
+        }
         self.d.type_text(&sel(&field.node), &email).await.map_err(|e| e.to_string())?;
         self.d.type_text(&sel(&pass.node), &secret).await.map_err(|e| e.to_string())?;
         self.d.tap(&sel(&button.node)).await.map_err(|e| e.to_string())?;
@@ -744,7 +770,7 @@ pub async fn explore(opts: Options, progress: Arc<Mutex<AppMap>>, stop: Arc<Atom
             minutes(m.finished_ms.saturating_sub(started)),
             if skipped == 1 { "" } else { "s" },
             if skipped == 1 { " was" } else { "s were" },
-            if m.signed_in { format!("It signed in with the test account from your project notes. {tested_note}") } else { tested_note }
+            if m.signed_in { format!("It signed in with the test account. {tested_note}") } else { tested_note }
         ),
         "stopped" => format!("Stopped after {n} screen{}. The map shows what was found. Screens it did not reach are not on it. {tested_note}.", if n == 1 { "" } else { "s" }),
         "limit" => format!("Stopped at {n} screens or {} minutes, the limit. Your app may have more. Raise the limit or start from a different screen.", m.max_minutes),
@@ -768,7 +794,10 @@ fn minutes(ms: u64) -> String {
 }
 
 async fn drive(opts: &Options, map: Arc<Mutex<AppMap>>, stop: Arc<AtomicBool>, deadline: Instant) -> Res<()> {
-    let account = test_account();
+    let (account, app_account) = match test_account_of() {
+        Some((u, p, app)) => (Some((u, p)), app),
+        None => (None, false),
+    };
     match opts.platform {
         Platform::Web => {
             let browser = fastpilot_web::Browser::launch(opts.web.clone()).await.map_err(|e| format!("could_not_open: {e}"))?;
@@ -777,7 +806,7 @@ async fn drive(opts: &Options, map: Arc<Mutex<AppMap>>, stop: Arc<AtomicBool>, d
             let inside = inside_of(&start);
             // The read-only guard is on before the first page loads.
             page.read_only(&inside).await.map_err(|e| format!("could_not_open: {e}"))?;
-            let ex = Explorer { d: &page, web: Some(&page), platform: Platform::Web, start, inside, map: map.clone(), stop, deadline, account };
+            let ex = Explorer { d: &page, web: Some(&page), platform: Platform::Web, start, inside, map: map.clone(), stop, deadline, account, app_account };
             let r = ex.run().await;
             map.lock().unwrap_or_else(|p| p.into_inner()).blocked = page.blocked();
             r
@@ -792,7 +821,7 @@ async fn drive(opts: &Options, map: Arc<Mutex<AppMap>>, stop: Arc<AtomicBool>, d
                 _ => Box::new(fastpilot_ios::IosDriver::start(Some(&id)).await.map_err(|e| format!("could_not_open: {e}"))?),
             };
             let package = opts.target.split('/').next().unwrap_or(&opts.target).trim().to_owned();
-            let ex = Explorer { d: driver.as_ref(), web: None, platform: p, start: opts.target.clone(), inside: package, map, stop, deadline, account };
+            let ex = Explorer { d: driver.as_ref(), web: None, platform: p, start: opts.target.clone(), inside: package, map, stop, deadline, account, app_account };
             let r = ex.run().await;
             pool.release(devices);
             r
@@ -926,7 +955,9 @@ pub fn state() -> Value {
     let project = std::env::current_dir().unwrap_or_default();
     let cov = map.as_ref().map(|m| coverage(m, &project));
     let has_account = test_account().is_some();
-    json!({ "mapping": mapping, "map": map, "coverage": cov, "test_account": has_account, "plan": plan() })
+    // S1: which part of the app's test account is saved, so the page asks only for what is missing.
+    let has_user = fastpilot_core::secrets::lookup("TEST_USER").is_some();
+    json!({ "mapping": mapping, "map": map, "coverage": cov, "test_account": has_account, "test_user": has_user, "plan": plan() })
 }
 
 /// S1 (v0.7): what one click maps: the current app (E6), on the kind of device that fits it (its

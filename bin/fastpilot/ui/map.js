@@ -186,16 +186,16 @@ async function skipWall() {
   draw();
 }
 
-// "Sign in with the test account": the password is asked once, in place (E2's field), kept in the
-// Keychain, then the app is mapped again and signs in with it.
+// "Sign in with the test account": what is missing is asked once, in place, then the app is
+// mapped again and signs in with it.
 async function signInAndMap() {
   const m = data.map;
-  if (data.test_account) { form.target = m.target; form.platform = m.platform; startMap(); return; }
-  if (UI.passwordAsk && data.plan) {
-    UI.passwordAsk({ app: data.plan.app.id, name: "TEST_PASSWORD", onSaved: () => { form.target = m.target; form.platform = m.platform; startMap(); } });
-    return;
-  }
-  toast("Add the test account's password in Settings › Secrets, then map again.");
+  const again = () => { form.target = m.target; form.platform = m.platform; startMap(); };
+  if (data.test_account) { again(); return; }
+  // S1 (seamless-v13 s1b, 3b): asked once, in place, kept in the Keychain for this app (E2); the
+  // next map signs in by itself. Only on the app's own site, or inside the app on a phone.
+  if (!data.test_user && !(await UI.passwordAsk({ name: "TEST_USER", label: "The test account's email or user name", plain: true }))) return;
+  if (await UI.passwordAsk({ name: "TEST_PASSWORD", label: "Type the test account's password once" })) again();
 }
 
 // ---- the graph (design: graph, zoom/pan/fit, keyboard) ----
