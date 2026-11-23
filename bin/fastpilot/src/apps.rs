@@ -271,8 +271,15 @@ pub fn scope_here() {
 
 /// QA #6103: `FASTPILOT_APP` (set by the dashboard's Chat for its own fastpilot) names the app
 /// whose passwords this process may use. Only a listed app; nothing moves; S-1 still applies.
+/// Security #208 L1: only with `FASTPILOT_APP_KEY` equal to the running dashboard's key file, which
+/// a repo's `.mcp.json` cannot know.
 pub fn scope_named() {
-    if let Some(app) = std::env::var("FASTPILOT_APP").ok().and_then(|id| get(&id)) {
+    let (Ok(id), Ok(key)) = (std::env::var("FASTPILOT_APP"), std::env::var("FASTPILOT_APP_KEY")) else { return };
+    let kept = std::fs::read_to_string(crate::browsers::dir().join("app-key")).unwrap_or_default();
+    if key.len() < 32 || kept.trim() != key {
+        return;
+    }
+    if let Some(app) = get(&id) {
         set_scope(Some(&app));
     }
 }

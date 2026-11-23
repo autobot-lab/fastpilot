@@ -313,6 +313,10 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             m.text = clean.trim().to_owned();
             // QA #6103: a run that stopped for a password gets fastpilot's own card ("Save and
             // run"), whatever the bot wrote; a Secrets card of the bot's is merged into it.
+            // Security #208 M1: when outside text was read, only the test account, the app's own saved
+            // names or names in the user's message; anything else keeps the normal, gated card.
+            let saved = crate::apps::current().map(|a| a.secrets).unwrap_or_default();
+            m.needs.retain(|n| !t.read_app || n == "TEST_USER" || n == "TEST_PASSWORD" || saved.contains(n) || t.user.contains(n.as_str()));
             if !m.needs.is_empty() {
                 proposals.retain(|p| !(p.kind == "open" && p.open.as_deref() == Some("secrets")));
                 attempts.retain(|a| !(a["kind"] == "action" && a["what"] == "open"));
@@ -583,9 +587,10 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
     // QA #6103: Chat's fastpilot works for the dashboard's current app (its saved passwords, still
     // only on its own site), whatever folder Claude Code starts it in.
     if std::env::var_os("FASTPILOT_DIR").is_none()
-        && let Some(app) = crate::apps::current()
+        && let (Some(app), Some(key)) = (crate::apps::current(), crate::ui::APP_KEY.get())
     {
         env["FASTPILOT_APP"] = json!(app.id);
+        env["FASTPILOT_APP_KEY"] = json!(key);
     }
     if let Some(b) = crate::agents::block_actions(&me) {
         env["FASTPILOT_BLOCK_ACTIONS"] = json!(b);
@@ -653,6 +658,7 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
     let stdout = child.stdout.take().ok_or("no output")?;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
     let mut result: Option<Value> = None;
+    let mut flows: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let read = async {
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
@@ -673,6 +679,12 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
                                 });
                             }
                             Some("tool_use") => {
+                                // Security #208 M1: the flows the bot sent, by call id.
+                                if item["name"].as_str().is_some_and(|n| n.ends_with("run_flow"))
+                                    && let Some(id) = item["id"].as_str()
+                                {
+                                    flows.insert(id.to_owned(), item["input"].to_string());
+                                }
                                 let t = tool_line(item["name"].as_str().unwrap_or(""), &item["input"]);
                                 let outside = brings_outside_text(item["name"].as_str().unwrap_or(""), &item["input"]);
                                 with_bot(agent, bot, |m| {
@@ -686,13 +698,16 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
                 }
                 // QA #6103: what fastpilot's own tools answered: a password the run needs.
                 Some("user") => {
-                    for item in v["message"]["content"].as_array().into_iter().flatten().filter(|i| i["type"] == "tool_result") {
+                    // Security #208 M1: only a failed run_flow, and only names its own flow used as
+                    // ${NAME}: text a page returns (snapshot, run_flow output) cannot name one.
+                    for item in v["message"]["content"].as_array().into_iter().flatten().filter(|i| i["type"] == "tool_result" && i["is_error"] == true) {
+                        let Some(flow) = item["tool_use_id"].as_str().and_then(|id| flows.get(id)) else { continue };
                         let text = match &item["content"] {
                             Value::String(s) => s.clone(),
                             Value::Array(a) => a.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n"),
                             _ => String::new(),
                         };
-                        let found = needed_passwords(&text);
+                        let found: Vec<String> = needed_passwords(&text).into_iter().filter(|n| flow.contains(&format!("${{{n}}}"))).collect();
                         if !found.is_empty() {
                             with_bot(agent, bot, |m| {
                                 for n in found {
