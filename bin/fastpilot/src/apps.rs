@@ -257,8 +257,9 @@ pub fn set_scope(app: Option<&App>) {
     fastpilot_core::secrets::set_scope(app.map(|a| fastpilot_core::secrets::Scope {
         app: a.id.clone(),
         web: a.targets.web.clone(),
-        android: a.targets.android.is_some(),
-        ios: a.targets.ios.is_some(),
+        // D07-L3: the package or bundle id, without an activity (`com.shop.app/.Main`).
+        android: a.targets.android.as_deref().map(|t| t.split('/').next().unwrap_or(t).trim().to_owned()).filter(|t| !t.is_empty()),
+        ios: a.targets.ios.as_deref().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()),
     }));
 }
 

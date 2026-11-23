@@ -962,6 +962,12 @@ impl Driver for AndroidDriver {
         Platform::Android
     }
 
+    /// D07-L3: the app in front, from `dumpsys window` (the focused window, else the focused app).
+    async fn foreground_is(&self, app: &str) -> Option<bool> {
+        let out = self.adb.shell(&self.serial, "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").await.ok()?;
+        device::in_front(&out, app)
+    }
+
     /// Restore the user's animation scales and stay-awake setting, then stop the agent.
     async fn close(&self) -> Result<()> {
         if self.closed.swap(true, std::sync::atomic::Ordering::SeqCst) {

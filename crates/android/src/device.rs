@@ -143,6 +143,50 @@ pub fn restore_script() -> String {
     )
 }
 
+/// D07-L3: is `package` the app in front, per `dumpsys window`? `mFocusedApp` (an activity record,
+/// which no app can name) must be that package, and `mCurrentFocus` that package or a window that
+/// belongs to no app (the keyboard). A window's title can be set by any app (an overlay titled
+/// `com.shop.app/.Main`), so `mCurrentFocus` alone is not trusted (Security, Low 1 on #195).
+/// `None` when the focused app cannot be read.
+pub fn in_front(dumpsys_window: &str, package: &str) -> Option<bool> {
+    // "… u0 com.shop.app/com.shop.app.MainActivity}" → "com.shop.app".
+    let app_of = |line: &str| -> Option<String> {
+        line.split(|c: char| c.is_whitespace() || c == '{' || c == '}').find_map(|w| w.split_once('/').map(|(p, _)| p.to_owned())).filter(|p| p.contains('.') && !p.is_empty())
+    };
+    let line = |key: &str| dumpsys_window.lines().find(|l| l.trim_start().starts_with(key));
+    let focused_app = app_of(line("mFocusedApp")?)?;
+    if focused_app != package {
+        return Some(false);
+    }
+    // The focused window: the app's own, or none that belongs to an app (keyboard, null).
+    Some(line("mCurrentFocus").and_then(app_of).is_none_or(|w| w == package))
+}
+
+#[cfg(test)]
+mod in_front_tests {
+    /// D07-L3: the app in front per `dumpsys window`, as Android 10–15 print it.
+    #[test]
+    fn the_app_in_front_is_read_from_dumpsys_window() {
+        let app = "  mCurrentFocus=Window{5e1c2d u0 com.shop.app/com.shop.app.MainActivity}\n  mFocusedApp=ActivityRecord{77a u0 com.shop.app/.MainActivity t12}";
+        assert_eq!(super::in_front(app, "com.shop.app"), Some(true));
+        let browser = "  mCurrentFocus=Window{9f0 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n  mFocusedApp=ActivityRecord{1b u0 com.android.chrome/com.google.android.apps.chrome.Main t3}";
+        assert_eq!(super::in_front(browser, "com.shop.app"), Some(false), "a browser in front");
+        // A window without an app (the keyboard) is in focus: the focused app decides.
+        let ime = "  mCurrentFocus=Window{1 u0 InputMethod}\n  mFocusedApp=ActivityRecord{2 u0 com.shop.app/.Login t4}";
+        assert_eq!(super::in_front(ime, "com.shop.app"), Some(true));
+        // A look-alike package is another app.
+        assert_eq!(super::in_front("  mCurrentFocus=Window{1 u0 com.shop.app.evil/.Main}\n  mFocusedApp=ActivityRecord{2 u0 com.shop.app.evil/.Main t5}", "com.shop.app"), Some(false));
+        // Security L1: an overlay over a browser titles its window like the app; the focused
+        // activity is still the browser, so nothing is typed.
+        let overlay = "  mCurrentFocus=Window{7 u0 com.shop.app/.Main}\n  mFocusedApp=ActivityRecord{8 u0 com.android.chrome/com.google.android.apps.chrome.Main t3}";
+        assert_eq!(super::in_front(overlay, "com.shop.app"), Some(false));
+        // Another app's window over the app (a chat head): not the app's own field.
+        let other = "  mCurrentFocus=Window{9 u0 com.other.bubble/.Head}\n  mFocusedApp=ActivityRecord{2 u0 com.shop.app/.Login t4}";
+        assert_eq!(super::in_front(other, "com.shop.app"), Some(false));
+        assert_eq!(super::in_front("  mCurrentFocus=null", "com.shop.app"), None, "no focused app: cannot tell");
+    }
+}
+
 /// `mWakefulness=Awake` in `dumpsys power`.
 pub fn awake(dumpsys_power: &str) -> bool {
     dumpsys_power.lines().any(|l| l.trim() == "mWakefulness=Awake")
