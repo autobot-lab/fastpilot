@@ -45,12 +45,14 @@ press Enter.
 **3. Open the dashboard** (every time)
 
 ```bash
-fastpilot ui
+fastpilot
 ```
 
 Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl-C` closes it.
 
-- The link works **once**, for **10 minutes**. If it expired, press `Ctrl-C` and run `fastpilot ui` again.
+- Typed again while the dashboard runs, `fastpilot` opens the same dashboard with a fresh link.
+  After an update it offers to restart an older dashboard (it asks first, and only stops its own).
+- The link works **once**, for **10 minutes**. If it expired, type `fastpilot` again.
 - On the first open the dashboard asks **Remember this browser?** Say yes, and a bookmark of the
   dashboard opens it again without a new link, even after `fastpilot ui` restarts (it keeps its
   port). It stays signed in for 30 days after its last use, at most 90 days, only on this Mac. See
@@ -176,7 +178,7 @@ fastpilot doctor
 
 | Problem | Try |
 |---|---|
-| The dashboard link doesn't work | It works once, for 10 minutes. Press `Ctrl-C`, then run `fastpilot ui` again. Choose "Remember this browser" so a bookmark works next time |
+| The dashboard link doesn't work | It works once, for 10 minutes. Type `fastpilot` again for a fresh one. Choose "Remember this browser" so a bookmark works next time |
 | Chrome or Android isn't ready | **Device** › Fix buttons, or `fastpilot setup web` / `fastpilot setup android` |
 | iPhone isn't ready | `fastpilot setup ios` (once, with Xcode) |
 | fastpilot doesn't show up in Claude | Run `fastpilot init` again |

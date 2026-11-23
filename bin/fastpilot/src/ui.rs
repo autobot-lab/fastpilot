@@ -112,6 +112,14 @@ impl Ui {
         }
     }
 
+    /// E1: a new one-time link code (the old one stops working), for `fastpilot` typed again
+    /// while this dashboard runs.
+    fn renew_code(&self) -> Res<String> {
+        let c = random_hex(32)?;
+        *self.code.lock().unwrap_or_else(|e| e.into_inner()) = Some((c.clone(), std::time::Instant::now()));
+        Ok(c)
+    }
+
     fn code(&self) -> String {
         self.code.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(c, _)| c.clone()).unwrap_or_default()
     }
@@ -211,6 +219,21 @@ pub async fn ui(args: &[String]) -> Res<()> {
     }
     let state = Arc::new(Ui::new(port)?);
     let url = format!("http://127.0.0.1:{port}/?code={}", state.code());
+    // E1: `fastpilot` typed again finds this dashboard (and only its own user's) through the
+    // pidfile, and asks it for a fresh link with SIGUSR1.
+    crate::one::announce(port);
+    #[cfg(unix)]
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) else { return };
+            while sig.recv().await.is_some() {
+                if let Ok(c) = st.renew_code() {
+                    crate::one::hand_out(&format!("http://127.0.0.1:{}/?code={c}", st.port));
+                }
+            }
+        });
+    }
     // Whoever started us may stop reading stdout after the link (a script, a test): a closed pipe
     // must not take the server down, so nothing here panics on a failed write.
     let say = |text: &str| {
@@ -301,7 +324,7 @@ fn random_hex(bytes: usize) -> Res<String> {
 
 /// Open `url` in the default browser through an owner-only redirect file, so the link (and its
 /// code) is not in the opener's arguments, where other processes could read it.
-fn open_browser(url: &str) -> Res<()> {
+pub(crate) fn open_browser(url: &str) -> Res<()> {
     let dir = std::env::temp_dir().join(format!("fastpilot-ui-{}", random_hex(8)?));
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
@@ -348,7 +371,7 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
     let ours = [format!("127.0.0.1:{}", ui.port), format!("localhost:{}", ui.port)];
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
     if !ours.iter().any(|o| o == host) {
-        return refuse(StatusCode::MISDIRECTED_REQUEST, "wrong host: open the 127.0.0.1 link that `fastpilot ui` printed");
+        return refuse(StatusCode::MISDIRECTED_REQUEST, "wrong host: open the 127.0.0.1 link that `fastpilot` printed");
     }
     // localhost is another origin with its own localStorage, and [::1] is not ours (#178 L1): the
     // page moves to 127.0.0.1, and a key is never traded or handed out under localhost.
@@ -433,7 +456,7 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
                 return r;
             }
         }
-        return refuse(StatusCode::UNAUTHORIZED, "open the link that `fastpilot ui` printed (it holds a one-time access code)");
+        return refuse(StatusCode::UNAUTHORIZED, "open the link that `fastpilot` printed (it holds a one-time access code)");
     }
     let mut r = next.run(req).await;
     harden(&mut r);

@@ -14,6 +14,7 @@ mod fix;
 mod history_api;
 mod memory_api;
 mod offer;
+mod one;
 mod init;
 mod jira_api;
 mod jira_cli;
@@ -412,6 +413,9 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("fastpilot {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        // E1: `fastpilot` alone, typed by a person, opens the dashboard; scripts and MCP still
+        // get the help.
+        None if one::interactive() => one::run().await,
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
