@@ -2292,12 +2292,19 @@ fn mcp_secrets() -> Vec<(String, String)> {
 /// settings and environment, or the project's `.mcp.json`).
 pub fn project_secrets() -> Vec<(String, bool)> {
     let mcp = mcp_secrets();
-    let mut out: Vec<(String, bool)> = config::var("FASTPILOT_VARS")
-        .unwrap_or_default()
+    // QA #5980 bug 1: the names as the settings file has them now (a name saved after the
+    // dashboard started included), and a value saved for the current app counts as set.
+    let listed = match config::current("vars") {
+        config::Source::File(v) | config::Source::Env(v) => v,
+        config::Source::Default => String::new(),
+    };
+    let app = crate::apps::current();
+    let saved = |n: &str| app.as_ref().is_some_and(|a| fastpilot_core::secrets::has(&a.id, n));
+    let mut out: Vec<(String, bool)> = listed
         .split(',')
         .map(str::trim)
         .filter(|n| !n.is_empty())
-        .map(|n| (n.to_owned(), std::env::var(n).is_ok_and(|v| !v.is_empty()) || mcp.iter().any(|(m, _)| m == n)))
+        .map(|n| (n.to_owned(), std::env::var(n).is_ok_and(|v| !v.is_empty()) || mcp.iter().any(|(m, _)| m == n) || saved(n)))
         .collect();
     for (n, _) in &mcp {
         if !out.iter().any(|(o, _)| o == n) {

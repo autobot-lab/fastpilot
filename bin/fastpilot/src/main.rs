@@ -331,6 +331,8 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             stability::run(path, runs.max(1), web).await
         }
         Some("run") => {
+            // QA #5980 bug 1: the app's saved passwords (Secrets, the inline dialog) for this run.
+            apps::scope_here();
             const RUN_USAGE: &str = "usage: fastpilot run <tests dir|file.md> [--changed [BASE]] [--all-after] [--all-platforms] [--workers N] [--record] [--reset] [--report-github[=dry]] [--model ID] [--max-steps N] [--junit out.xml] [--html out.html] [--headful]";
             let Some(path) = args.get(1).filter(|a| !a.starts_with("--")) else {
                 eprintln!("{RUN_USAGE}");
