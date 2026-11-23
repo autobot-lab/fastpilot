@@ -587,3 +587,39 @@ async fn the_limits_page_says_what_protects_you_and_changes_go_through_chat() {
     let less = eval(c, "document.querySelector('.protect').textContent").await;
     assert!(less.contains("Less protected: no button is blocked") && less.contains("Tests only open shop.example.") && !less.contains("never pressed"), "{less}");
 }
+
+/// C1 (v0.7): every page says "or just say it" with fixed sentences that go to the one Chat; an
+/// empty Chat offers three; a card that only opens a page goes to one of fastpilot's own pages; the
+/// Chat footer is one line.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-c1", |_| {}).await;
+    let c = &d.client;
+    for (hash, wait, want) in [
+        ("#/device", "Device", "Start the Android emulator"),
+        ("#/integrations", "Integrations", "Connect Jira"),
+    ] {
+        open(c, hash, wait).await;
+        see(c, "or just say it in chat").await;
+        let rows = eval(c, "[...document.querySelectorAll('.limit-say .say-row')].map((b) => b.firstChild.textContent).join('|')").await;
+        assert!(rows.contains(want), "{hash}: {rows}");
+    }
+    // A sentence goes to the one Chat page (sending is caught: no real Claude here).
+    eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; [...document.querySelectorAll('.limit-say .say-row')][0].click(); return 'ok'; })()").await;
+    let mut got = String::new();
+    for _ in 0..40 {
+        got = eval(c, "location.hash + '|' + window.__sent").await;
+        if got.contains("agents") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(got, "\"#/agents/default/chat|Connect Jira\"");
+    // The footer is one line; an "open" card links only to our page, whatever the bot wrote.
+    see(c, "Changes wait for your click on their card.").await;
+    let link = eval(c, "(() => { const s = proposalCard({ id: 'x', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], status: 'pending' }); const bad = proposalCard({ id: 'y', kind: 'open', open: 'https://evil.example', title: 'x', rows: [], status: 'pending' }); return s.querySelector('a.btn').getAttribute('href') + '|' + s.querySelector('a.btn').textContent + '|' + !!bad.querySelector('a[href^=\"http\"]'); })()").await;
+    assert_eq!(link, "\"#/settings/secrets|Open Secrets|false\"");
+}

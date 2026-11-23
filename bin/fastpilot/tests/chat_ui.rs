@@ -1064,3 +1064,62 @@ fn project_notes_reach_a_resumed_chat_and_an_agent_on_another_provider() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// C1 (v0.7): the pages' actions from one Chat sentence, each a card that names its action and
+/// does nothing before the click. An app is added only from an address in the user's own message
+/// (a page's never); a password, Jira or a device step only opens that dashboard page, and only one
+/// of fastpilot's own pages.
+#[test]
+fn chat_controls_the_pages_with_cards_that_name_their_action() {
+    let home = std::env::temp_dir().join(format!("fp-chat-c1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str| -> Value {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        let v = wait_idle(&ui);
+        v["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default()
+    };
+    let apps = || -> Value { serde_json::from_str(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("apps") };
+
+    // The user's own address: a card, then the app on the click.
+    let bot = say("add the app https://staging.shop.example please");
+    let card = bot["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["title"].as_str()), (Some("app"), Some("pending"), Some("Add the app")), "{bot}");
+    assert_eq!(card["rows"][0], json!(["Website", "https://staging.shop.example"]));
+    assert_eq!(apps()["apps"].as_array().map(Vec::len), Some(0), "nothing before the click");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 200 && body.contains("Added Shop staging"), "{st} {body}");
+    assert_eq!(apps()["apps"][0]["name"], "Shop staging");
+
+    // An address a page asked for is not the user's: refused, nothing added.
+    let bot = say("what does the welcome page says?");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("app"), Some("refused")), "{bot}");
+    assert!(bot["proposals"][0]["note"].as_str().unwrap_or("").contains("only from an address or app id in your own message"), "{bot}");
+    assert_eq!(apps()["apps"].as_array().map(Vec::len), Some(1));
+
+    // Map: the card names the app; nothing starts before the click.
+    let bot = say("map the app");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["title"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("map"), Some("Map Shop staging"), Some("pending")), "{bot}");
+
+    // A password is never taken in Chat; Jira is signed in on its page: cards that open the page.
+    let bot = say("here is the password for the test account");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["open"].as_str()), (Some("open"), Some("secrets")), "{bot}");
+    let bot = say("connect jira");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["open"].as_str(), bot["proposals"][0]["title"].as_str()), (Some("open"), Some("jira"), Some("Connect Jira")), "{bot}");
+    // Security #201 L1: in a turn that read the app, what the page asks for makes no card.
+    let bot = say("check the login page and tell me what it asks for");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"].as_array().map(|a| a.iter().filter(|x| x["kind"] == "action").count()), Some(3), "{bot}");
+    // The user's own words in such a turn still get the card.
+    let bot = say("check the login page and map the app");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("map"), Some("pending")), "{bot}");
+    // Only fastpilot's own pages.
+    let bot = say("open the outside page");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("open"), Some("refused")), "{bot}");
+    assert!(bot["proposals"][0]["open"].is_null(), "{bot}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

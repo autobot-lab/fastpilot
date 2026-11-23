@@ -153,12 +153,12 @@ async fn live_page_works_with_the_keyboard() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     assert!(at.contains("#/agents/device-pick/chat"), "Create opens the new agent: {at}");
-    // v0.4.1 (the user): the empty Chat shows no suggestion chips ("Test the login page in
-    // Chrome", …), only its title and help line.
+    // v0.4.1 (the user): none of the old suggestion chips ("Test the login page in Chrome", …).
+    // C1 / DC1 (accepted 22 Nov 2026): three one-click suggestions that name what they do.
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Ask or tell the fastpilot bot\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    let empty = eval(&client, "(() => { const e = document.querySelector('.empty'); return [e.querySelectorAll('button, .chip').length, /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|'); })()").await;
-    assert_eq!(empty, "\"0|false\"", "no suggestion chips in the empty Chat");
+    let empty = eval(&client, "(() => { const e = document.querySelector('.empty'); return [[...e.querySelectorAll('.say-row')].map((b) => b.firstChild.textContent).join(','), /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|'); })()").await;
+    assert_eq!(empty, "\"Check the login,Map the app,Can we release?|false\"", "three suggestions, none of the old chips");
     // S4: one click on a focus makes the agent and opens its Chat; a second click opens the same one.
     for _ in 0..2 {
         eval(&client, "location.hash = '#/agents/new', 'ok'").await;
