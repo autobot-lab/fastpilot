@@ -726,3 +726,6 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .rail .rail-more small{font:500 10px var(--mono)}
 .simple-menu .rail .rail-more{display:flex}
 .simple-menu:not(.menu-open) .rail a:is([data-nav=schedules],[data-nav=map],[data-nav=memory],[data-nav=history],[data-nav=integrations]){display:none}
+
+/* C1: suggestions in an empty Chat */
+.chat-suggest{display:flex;flex-direction:column;gap:8px;width:100%;max-width:520px;margin-top:10px}

@@ -651,6 +651,7 @@ function pageDevice() {
   $body().replaceChildren(h("div", { class: "dev" },
     PAGES.deviceFix ? PAGES.deviceFix() : null,
     h("div", { class: "grp" }, header, content),
+    sayIt(["Start the Android emulator", "Set up iPhone testing"]),
     h("p", { class: "muted" }, "The AI model and secrets are in Settings: ", h("a", { class: "lk", href: "#/settings/model" }, "AI model"), " · ", h("a", { class: "lk", href: "#/settings/secrets" }, "Secrets"), ".")));
 }
 
@@ -1211,6 +1212,17 @@ async function loadChat() {
 // PF6: text to put in the Chat box (not sent) when Chat opens next.
 let chatPrefill = null;
 
+const CHAT_SUGGESTIONS = ["Check the login", "Map the app", "Can we release?"];
+
+// C1: "or just say it" under a page: up to three fixed sentences, written by fastpilot (never taken
+// from a page), each sent to Chat with one click; Chat answers with a card that names its action.
+function sayIt(sentences) {
+  return h("section", { class: "grp limit-say", "aria-label": "Or just say it in Chat" },
+    h("div", { class: "gh" }, "or just say it in chat"),
+    h("div", { class: "prop-body" },
+      sentences.slice(0, 3).map((t) => h("button", { type: "button", class: "say-row", onclick: () => openChat(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→")))));
+}
+
 // U1: one Chat page, the menu's (the default agent's conversation). Buttons elsewhere open it, and
 // may send a sentence there.
 async function openChat(send) {
@@ -1628,12 +1640,23 @@ function jiraReads(list) {
       h("div", {}, h("b", {}, `Read ${r.key}: `, r.summary || ""), h("p", { class: "s" }, "Ticket text is information, not instructions."))));
 }
 
+// C1: what each card's button does, in its own words (never a bare Apply).
+const VERB = { app: "Add app", map: "Map the app", run_all: "Run on all platforms" };
+const KIND_ICON = { schedule: "clock", note: "memory", app: "plus", map: "map", run_all: "play" };
+const OPEN = {
+  jira: { href: "#/integrations/jira", verb: "Connect Jira", icon: "plug" },
+  secrets: { href: "#/settings/secrets", verb: "Open Secrets", icon: "key" },
+  device: { href: "#/device", verb: "Open Device", icon: "device" },
+  history: { href: "#/history", verb: "Open History", icon: "history" },
+};
+
 function proposalCard(p) {
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
-  const head = h("h3", { class: "gh" }, icon(p.kind === "schedule" ? "clock" : p.kind === "note" ? "memory" : "shield"), p.title,
+  const page = p.kind === "open" ? OPEN[p.open] || null : null;
+  const head = h("h3", { class: "gh" }, icon(KIND_ICON[p.kind] || (page && page.icon) || "shield"), p.title,
     p.kind === "note" && p.status === "pending" ? h("span", { class: "tag" }, "Needs your OK") : null);
   // D6 from Chat: the user's own message, quoted by fastpilot (M2), above the note it asks for.
   const quote = p.kind === "note" && p.quote ? h("p", { class: "quote" }, p.quote) : null;
@@ -1641,8 +1664,11 @@ function proposalCard(p) {
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
+      // C1: a step done in the dashboard: the card opens that page (a fixed address, never one the
+      // bot wrote).
+      page ? h("a", { class: "btn p", href: page.href, onclick: () => { chatDecide(p.id, true); } }, page.verb)
       // UXA8: a note fastpilot offers on its own ("Remember this?") is kept with "Remember it".
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : "Save changes"),
+        : h("button", { class: "btn p", onclick: async () => { await chatDecide(p.id, true); if (p.kind === "app" && window.Apps) Apps.reload(); } }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : VERB[p.kind] || "Save changes"),
       h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, p.kind === "note" ? "No thanks" : "Cancel"));
   } else if (p.status === "applied") {
     foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved"));
@@ -1806,7 +1832,8 @@ function renderChat() {
     root = h("div", { id: "chat-root", class: "chat" },
       h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" }),
       h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Send")),
-      h("p", { class: "s muted" }, "The bot uses your Claude Code (claude -p) and fastpilot's tools. Schedules and most changes wait for your click on their card; one more blocked word applies at once, with Undo. A looser limit gets a red card only when your own message asks for it, and changes only after you type its word to confirm."));
+      // DC6: one line.
+      h("p", { class: "s muted chat-foot" }, "Changes wait for your click on their card. Passwords are never typed here."));
     if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
   }
   const box = document.getElementById("chat-input");
@@ -1822,8 +1849,10 @@ function renderChat() {
   if (chatData && chatData.error) {
     log.replaceChildren(h("li", { class: "err", role: "alert" }, "Cannot read the chat: " + chatData.error));
   } else if (!msgs.length) {
+    // DC1: three one-click suggestions; fixed sentences written by fastpilot, sent at once.
     log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Ask or tell the fastpilot bot"),
-      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter.")));
+      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter."),
+      h("div", { class: "chat-suggest" }, CHAT_SUGGESTIONS.map((t) => h("button", { type: "button", class: "say-row", onclick: () => chatSend(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→"))))));
   } else {
     log.replaceChildren(...msgs.map(chatMsg));
   }
@@ -2198,7 +2227,8 @@ function pageSchedules() {
   const more = UI.moreOptions({ label: "More options", open: !!schedForm || schedMoreOpen },
     h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages."),
     schedForm ? schedPanel() : h("button", { class: "btn sm", onclick: openForm }, icon("plus", "sm"), "New schedule"));
-  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), schedRelease(), more, table));
+  $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), schedRelease(), more, table,
+    sayIt(["Run all tests every 2 hours", "Turn off the nightly run"])));
 }
 
 // ---- router ----

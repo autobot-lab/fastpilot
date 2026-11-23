@@ -103,7 +103,7 @@ fn client_path() -> std::path::PathBuf {
 
 fn saved_client(redirect_uri: &str) -> Option<Client> {
     let c: Client = serde_json::from_str(&std::fs::read_to_string(client_path()).ok()?).ok()?;
-    (c.redirect_uri == redirect_uri && c.authorize.starts_with(&base())).then_some(c)
+    (c.redirect_uri == redirect_uri && c.authorize.starts_with(&format!("{}/", base()))).then_some(c)
 }
 
 fn save_client(c: &Client) -> Result<(), JiraError> {
@@ -257,7 +257,7 @@ pub async fn finish(state: &str, code: &str) -> Result<(), JiraError> {
 
 fn any_client() -> Option<Client> {
     let c: Client = serde_json::from_str(&std::fs::read_to_string(client_path()).ok()?).ok()?;
-    c.token.starts_with(&base()).then_some(c)
+    c.token.starts_with(&format!("{}/", base())).then_some(c)
 }
 
 /// A working access token: the kept one, or a fresh one when it expires within a minute.

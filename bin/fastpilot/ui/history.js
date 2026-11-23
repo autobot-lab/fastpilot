@@ -228,7 +228,8 @@ function pageHistory() {
     n ? h("button", { class: "btn sm danger", onclick: deleteSelected }, `Delete ${kind === "runs" ? plural(n, "run", "runs") : plural(n, "conversation", "conversations")}…`) : null);
   $body().replaceChildren(...(histData.error ? [h("div", { class: "err", role: "alert" }, "Could not read History: " + histData.error)] : []),
     bar, h("div", { class: "grp" }, kind === "runs" ? runsTable() : chatsTable()),
-    ...(kind === "chats" && histOpenChat ? [chatPanel()] : []));
+    ...(kind === "chats" && histOpenChat ? [chatPanel()] : []),
+    sayIt(["Why did the last run fail?", "Delete runs older than a month"]));
 }
 
 PAGES.history = () => {

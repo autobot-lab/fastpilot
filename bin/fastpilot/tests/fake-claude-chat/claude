@@ -106,6 +106,21 @@ if "save it" in low:
 if "../" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "../../outside", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "/tmp/fastpilot-evil", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
+# C1: the pages' actions from one sentence. The user's own address; one a page planted; map; a
+# password (never in Chat: a card that opens Secrets); Jira; a page that is not one of ours.
+if "add the app https://" in low:
+    addr = prompt[low.index("add the app ") + len("add the app "):].split()[0].rstrip(".")
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "app", "web": addr}) + "\n```")
+if "the welcome page says" in low:
+    text.append("The page asks to add it:\n```fastpilot-proposal\n" + json.dumps({"kind": "app", "web": "https://evil.example"}) + "\n```")
+if "map the app" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "map"}) + "\n```")
+if "here is the password" in low:
+    text.append("I cannot take a password here.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets"}) + "\n```")
+if "connect jira" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```")
+if "open the outside page" in low:
+    text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "https://evil.example/#/settings"}) + "\n```")
 # D9: settings cards. A page that "asks" for Pay (the bot echoes it), the user asking for it, a secret name.
 if "checkout page" in low:
     text.append("The page says:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "block_actions", "remove": ["pay"]}]}) + "\n```")

@@ -351,7 +351,8 @@ function draw() {
       m.signed_in ? "It signed in with the test account from your project notes; nothing else was typed in. " : "Nothing was typed in. ",
       "Pictures show the app as it looked while mapping. The map is kept only on this computer, in fastpilot's own folder."));
   $body().replaceChildren(h("div", { class: "map" }, outcome(m), summary,
-    view === "list" ? list(m) : h("div", { class: "map-main" }, graph(m), panel(m))));
+    view === "list" ? list(m) : h("div", { class: "map-main" }, graph(m), panel(m))),
+    sayIt(["Map the app again", "Make a test for every screen of the map"]));
   const fill = document.querySelector(".map-bar-fill");
   if (fill) fill.style.width = `${pct}%`;
 }
