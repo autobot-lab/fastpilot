@@ -182,7 +182,20 @@ fn write() {
         let shown: Vec<u64> = s.proc.sessions.iter().filter_map(|x| x.flow).collect();
         let last = s.proc.flows.last().map(|f| f.id);
         s.proc.flows.retain(|f| shown.contains(&f.id) || Some(f.id) == last);
-        (s.path.clone(), serde_json::to_string(&s.proc).unwrap_or_default())
+        // What a step says can hold a password (an agent may write the value itself): masked like
+        // every other output before it reaches the file the dashboard reads.
+        let mut shown = s.proc.clone();
+        let r = crate::dsl::redact;
+        for st in shown.flows.iter_mut().flat_map(|f| f.steps.iter_mut()) {
+            st.label = r(&st.label);
+            st.note = st.note.as_deref().map(r);
+            st.will_block = st.will_block.as_deref().map(r);
+        }
+        for t in shown.side_by_side.iter_mut().flat_map(|x| x.tiles.iter_mut()) {
+            t.label = r(&t.label);
+            t.note = r(&t.note);
+        }
+        (s.path.clone(), serde_json::to_string(&shown).unwrap_or_default())
     };
     let Some(dir) = path.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {

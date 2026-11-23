@@ -94,5 +94,38 @@ function notice(kind, ...text) {
   return h("div", { class: `notice ${NOTICE[kind] ? kind : "info"}`, role }, h("b", {}, `${word}: `), ...kids(text));
 }
 
-window.UI = { kids, pageHeader, moreOptions, confirmDialog, empty, notice };
+/// E2: ask for one password, once, in a masked field. It goes to this Mac's key store for the
+/// current app and is never shown or sent back to the page. `onSaved()` runs after it is kept.
+function passwordAsk({ name, label, onSaved } = {}) {
+  return new Promise((resolve) => {
+    const back = document.activeElement;
+    const tid = `pw-t-${++moreSeq}`;
+    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": label || `Value of ${name}`, "aria-describedby": `${tid}-d` });
+    const msg = h("p", { class: "err-line", role: "alert", hidden: true });
+    const done = (v) => { dlg.close(); dlg.remove(); if (back && back.isConnected && back.focus) back.focus(); resolve(v); };
+    const save = h("button", { type: "submit", class: "btn p" }, "Save password");
+    const form = h("form", { class: "form" },
+      h("h2", { id: tid }, label || `Set ${name}`),
+      h("p", { id: `${tid}-d`, class: "s muted" }, "It is saved in this Mac's Keychain for the current app and never shown again. fastpilot types it only on this app's own website."),
+      input, msg,
+      h("div", { class: "btns tight" }, h("button", { type: "button", class: "btn", onclick: () => done(false) }, "Cancel"), save));
+    const dlg = h("dialog", { class: "cdlg", "aria-labelledby": tid }, form);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      save.disabled = true;
+      try {
+        await api("/api/secrets", { action: "set", name, value: input.value });
+        input.value = "";
+        done(true);
+        if (onSaved) onSaved();
+      } catch (x) { msg.textContent = x.message; msg.hidden = false; save.disabled = false; input.focus(); }
+    });
+    dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+    document.body.append(dlg);
+    dlg.showModal();
+    input.focus();
+  });
+}
+
+window.UI = { kids, pageHeader, moreOptions, confirmDialog, empty, notice, passwordAsk };
 })();

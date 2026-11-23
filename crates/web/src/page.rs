@@ -1202,6 +1202,17 @@ fn key_info(key: &str) -> Option<(&'static str, &'static str, u32, &'static str)
 
 #[async_trait]
 impl Driver for WebPage {
+    async fn current_url(&self) -> Option<String> {
+        self.location().await.ok().map(|(_, url)| url)
+    }
+
+    async fn url_of(&self, sel: &Selector) -> Option<String> {
+        // The element's own document: a same-process iframe's, or (in its own session) a
+        // cross-site iframe's. Unknown: `None`, which S-1 refuses.
+        let obj = self.object_for(sel, Intent::Type).await.ok()?;
+        self.call_on(&obj, "function() { return this.ownerDocument ? this.ownerDocument.URL : null; }", Value::Null).await.ok()?.as_str().map(str::to_owned)
+    }
+
     fn is_gone(&self) -> bool {
         self.browser.is_closed()
     }

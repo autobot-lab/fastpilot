@@ -13,6 +13,7 @@ mod error;
 mod recording;
 mod selector;
 pub mod policy;
+pub mod secrets;
 pub mod ship;
 mod snapshot;
 pub mod state;
@@ -298,6 +299,17 @@ pub trait Driver: Send + Sync {
         }
         Err(Error::Unsupported("launchApp `arguments` / `env` are for Android and iOS apps".into()))
     }
+    /// The address of the page that is open now (web); `None` where there is none (phones).
+    async fn current_url(&self) -> Option<String> {
+        None
+    }
+
+    /// The address of the document that holds the element `sel` finds: an iframe's own address
+    /// when the element is in one (S-1: a password goes only where its app is).
+    async fn url_of(&self, _sel: &Selector) -> Option<String> {
+        self.current_url().await
+    }
+
     /// Which platform this driver drives (for `when: { platform: ... }`).
     fn platform(&self) -> Platform {
         Platform::Web

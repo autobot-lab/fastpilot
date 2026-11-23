@@ -48,7 +48,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { key: "allow_app_reset", help: "clearState / clearKeychain may wipe app data (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_physical_devices", help: "sessions may use real phones; false = emulators and simulators only (default true)", rule: Rule::TightenOnly },
     Setting { key: "allow_device_settings", help: "android/ios steps may change device settings: setNetwork, setLocation, setPermissions, setLocale (default true)", rule: Rule::TightenOnly },
-    Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages; not set: off while block_actions is on (a script could press a blocked button), on otherwise; `true` = on even then (people only)", rule: Rule::TightenOnly },
+    Setting { key: "allow_eval_script", help: "evalScript steps may run JavaScript in pages; not set: off while block_actions is on (a script could press a blocked button, or read a password typed into the page), on otherwise; `true` = on even then (people only)", rule: Rule::TightenOnly },
     Setting { key: "allow_takeover", help: "the user may take sessions over in `fastpilot ui` (Take over); off for agents with a shell (default true)", rule: Rule::TightenOnly },
     Setting { key: "upload_dirs", help: "uploadFile only takes files inside these folders; empty = any", rule: Rule::TightenOnly },
     Setting { key: "max_steps", help: "`fastpilot run`: tool calls the AI may make per test (default 30)", rule: Rule::TightenOnly },
