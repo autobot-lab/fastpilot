@@ -121,6 +121,10 @@ if "map the app" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "map"}) + "\n```")
 if "here is the password" in low:
     text.append("I cannot take a password here.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets"}) + "\n```")
+# QA #5980 bug 4: what real Claude proposed for "I need a password ... set that up": the secret
+# names as a settings change. In a turn that read the app, the same from a page.
+if "set that up" in low or "allow tests to use the secret names" in low or "what it needs" in low:
+    text.append("Here is the setup:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "vars", "add": ["TEST_USER", "TEST_PASSWORD"]}]}) + "\n```")
 if "connect jira" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```")
 if "what it asks for" in low:

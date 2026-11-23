@@ -1443,7 +1443,7 @@ fn lookup(name: &str) -> Result<String, String> {
     let saved = crate::secrets::lookup(name);
     if saved.is_none() && !allowed().iter().any(|a| a == name) {
         return Err(format!(
-            "variable `{name}` is not allowed: the user adds it in the dashboard, Settings › Secrets › Add a name, then Set value (or FASTPILOT_VARS and the environment)"
+            "setup needed: the test needs the password {name} and it is not saved for this app. The user sets it once in the dashboard (ask for it in Chat, or Settings › Secrets), or lists it in FASTPILOT_VARS and gives it in the environment fastpilot starts in; nothing was typed"
         ));
     }
     // E2: the environment first (CI, power users), then the current app's saved value. A saved
@@ -2003,7 +2003,7 @@ mod tests {
         assert!(substitute("${HOME}").expect_err("not allowlisted").contains("FASTPILOT_VARS"));
         // V051: what a plugin user (no .mcp.json) sees in Claude Code says where the name and the value go.
         let e = substitute("${HOME}").expect_err("not allowlisted");
-        assert!(e.contains("Settings › Secrets › Add a name, then Set value"), "{e}");
+        assert!(e.contains("ask for it in Chat, or Settings › Secrets") && e.contains("nothing was typed"), "{e}");
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }

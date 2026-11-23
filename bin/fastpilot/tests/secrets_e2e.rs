@@ -149,7 +149,7 @@ async fn a_password_set_once_is_used_only_on_its_apps_site_and_never_written_out
     std::fs::write(home.join("elsewhere/page.html"), "<!doctype html><label>Password <input type=password aria-label=Password></label>").expect("page");
     let other = format!("file://{}/elsewhere/page.html", std::fs::canonicalize(&home).expect("home").display());
 
-    // The dashboard: an app, then its password, typed once (a new name joins the list).
+    // The dashboard: an app, then its password, typed once (kept with the app).
     let ui = Ui::start(&home);
     let (st, r) = ui.post("/api/apps", json!({ "action": "add", "name": "Demo", "targets": { "web": login } }));
     assert_eq!(st, 200, "{r}");
@@ -345,6 +345,54 @@ async fn a_password_saved_in_the_dashboard_is_used_by_chat_and_run() {
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && text.contains("✓ login-ok") && text.contains("1 passed, 0 failed"), "{text}");
     assert!(!text.contains(VALUE), "{text}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Security #205 M1: a password saved for the app (the Secrets card's dialog, the Secrets page)
+/// is kept with the app, not on the environment allow-list. A flow that uses that name gets the
+/// saved value, never an environment variable of the same name, which may hold a real key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_name_never_makes_an_environment_value_readable() {
+    if !chrome() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-secrets-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let (port, seen) = site();
+    let ui = Ui::start(&home);
+    let (st, r) = ui.post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": format!("http://127.0.0.1:{port}/app.html") } }));
+    assert_eq!(st, 200, "{r}");
+    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "PROBE_ENV_KEY", "value": "my-test-password" }));
+    assert_eq!(st, 200, "{r}");
+    let config = std::fs::read_to_string(home.join(".fastpilot/config.toml")).unwrap_or_default();
+    assert!(!config.contains("PROBE_ENV_KEY"), "not on the environment list: {config}");
+    let listed = ui.get("/api/secrets");
+    assert_eq!((listed["names"][0]["name"].as_str(), listed["names"][0]["set"].as_bool(), listed["names"][0]["env"].as_bool()), (Some("PROBE_ENV_KEY"), Some(true), Some(false)), "{listed}");
+
+    // Claude Code's fastpilot, whose environment has a value of the same name.
+    let h = home.clone();
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |x| {
+        x.arg("mcp")
+            .current_dir(&h)
+            .env("HOME", &h)
+            .env("FASTPILOT_KEYSTORE", "file")
+            .env("PROBE_ENV_KEY", "env-only-value-123")
+            .env_remove("FASTPILOT_CONFIG")
+            .env_remove("FASTPILOT_DIR")
+            .env_remove("FASTPILOT_VARS")
+            .env("FASTPILOT_LIVE_DIR", h.join("live"));
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "w", "target": format!("http://127.0.0.1:{port}/app.html") })).await;
+    assert!(ok, "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"http://127.0.0.1:{port}/collect?k=${{PROBE_ENV_KEY}}\"\n") })).await;
+    assert!(ok, "{out}");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "w" })).await;
+    let _ = client.cancel().await;
+    let got: Vec<String> = seen.lock().expect("seen").iter().filter(|p| p.starts_with("/collect")).cloned().collect();
+    assert_eq!(got, ["/collect?k=my-test-password"], "the saved value, never the environment's");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

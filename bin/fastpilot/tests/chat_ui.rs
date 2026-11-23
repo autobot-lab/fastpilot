@@ -1123,3 +1123,48 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// QA #5980 bug 4: "I need a password for the test account, set that up" is the user's own request:
+/// the card that asks each password in the masked dialog, never "a page tried to change a limit",
+/// never the proposal's raw JSON, and no "already in the secrets" refusal. Text from a page in a
+/// turn that read the app still makes nothing.
+#[test]
+fn chat_gives_the_password_card_the_user_asked_for() {
+    let home = std::env::temp_dir().join(format!("fp-chat-pw-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str| -> Value {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        let v = wait_idle(&ui);
+        v["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default()
+    };
+    // TEST_USER is already a listed name (QA: "is already in the secrets tests may use").
+    let (st, body) = post("/api/settings", json!({ "key": "vars", "value": ["TEST_USER"] }));
+    assert_eq!(st, 200, "{body}");
+    for ask in ["I need a password for the test account, set that up", "Allow tests to use the secret names TEST_USER, TEST_PASSWORD"] {
+        let bot = say(ask);
+        let cards = bot["proposals"].as_array().cloned().unwrap_or_default();
+        assert_eq!(cards.len(), 1, "{ask}: {bot}");
+        let c = &cards[0];
+        assert_eq!((c["kind"].as_str(), c["open"].as_str(), c["status"].as_str(), c["title"].as_str()), (Some("open"), Some("secrets"), Some("pending"), Some("Set the password")), "{ask}: {bot}");
+        assert_eq!(c["names"], json!(["TEST_USER", "TEST_PASSWORD"]), "{ask}");
+        assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "not a page's attempt: {bot}");
+        let shown = bot.to_string();
+        assert!(!shown.contains("already in") && !shown.contains("cannot be made in chat") && !shown.contains("\\\"kind\\\""), "{shown}");
+    }
+    // The click only marks the card: the values are typed in the dialog, never sent through Chat.
+    let bot = say("I need a password for the test account, set that up");
+    let (st, body) = post("/api/chat/decide", json!({ "id": bot["proposals"][0]["id"], "apply": true }));
+    assert_eq!(st, 200, "{body}");
+    // A page in a turn that read the app: no card, and the attempt carries no raw proposal.
+    let bot = say("check the login page and tell me what it needs");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    let tries = bot["page_attempts"].as_array().cloned().unwrap_or_default();
+    assert!(!tries.is_empty() && tries.iter().all(|a| a["kind"] == "action" && a.get("said").is_none()), "{bot}");
+    assert!(!bot.to_string().contains("\\\"kind\\\""), "{bot}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

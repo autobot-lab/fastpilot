@@ -1512,7 +1512,7 @@ function pageAttempts(list) {
     out.push(h("div", { class: "page-try", role: "status" }, icon("alert", "sm"),
       h("div", {}, words,
         h("details", {}, h("summary", {}, "See what it said"),
-          list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, " (not asked by you, untrusted text):"), h("pre", {}, a.said)))))));
+          list.map((a) => h("div", { class: "said" }, h("p", { class: "s" }, a.what, a.said ? " (not asked by you, untrusted text):" : ""), a.said ? h("pre", {}, a.said) : null))))));
   });
   return out;
 }
@@ -1653,6 +1653,16 @@ const OPEN = {
   history: { href: "#/history", verb: "Open History", icon: "history" },
 };
 
+// The names a secrets card asks for, in turn; a user name is shown as it is typed.
+async function askSecrets(p) {
+  for (const name of p.names) {
+    const plain = /(USER|USERNAME|EMAIL|LOGIN)$/.test(name);
+    if (!(await UI.passwordAsk({ name, label: plain ? `Set ${name} (a user name)` : `Set ${name}`, plain }))) return;
+  }
+  await chatDecide(p.id, true);
+  toast(`Saved for this app: ${p.names.join(", ")}.`, true);
+}
+
 function proposalCard(p) {
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
@@ -1669,7 +1679,10 @@ function proposalCard(p) {
     foot = h("div", { class: "btns" },
       // C1: a step done in the dashboard: the card opens that page (a fixed address, never one the
       // bot wrote).
-      page ? h("a", { class: "btn p", href: page.href, onclick: () => { chatDecide(p.id, true); } }, page.verb)
+      // QA #5980 bug 4: a password the user asked for: asked here, one masked dialog per name.
+      p.kind === "open" && p.open === "secrets" && (p.names || []).length
+        ? h("button", { class: "btn p", onclick: () => askSecrets(p) }, "Set the password")
+      : page ? h("a", { class: "btn p", href: page.href, onclick: () => { chatDecide(p.id, true); } }, page.verb)
       // UXA8: a note fastpilot offers on its own ("Remember this?") is kept with "Remember it".
         : h("button", { class: "btn p", onclick: async () => { await chatDecide(p.id, true); if (p.kind === "app" && window.Apps) Apps.reload(); } }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : VERB[p.kind] || "Save changes"),
       h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, p.kind === "note" ? "No thanks" : "Cancel"));
