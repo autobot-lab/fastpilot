@@ -855,6 +855,8 @@ function stepsPanel(s) {
     items.length ? h("ul", { class: "steps", "aria-live": "polite" }, items) : h("div", { class: "empty small" }, "This session has not run a step yet."));
 }
 
+const LIVE_SAY = ["Run all my tests now", "Why did the last run fail?"];
+
 function liveEmpty() {
   return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · empty"),
     h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "No test is running yet"),
@@ -1106,7 +1108,7 @@ function renderLive(data) {
     liveCards.clear();
     stepsSig = "";
     closeZoom(false);
-    $body().replaceChildren(liveExtras(data), liveEmpty());
+    $body().replaceChildren(liveExtras(data), liveEmpty(), sayIt(LIVE_SAY));
     return;
   }
   const keys = new Set(sessions.map((s) => `${s.pid}:${s.id}`));
@@ -1120,7 +1122,7 @@ function renderLive(data) {
     for (const c of liveCards.values()) stopWatching(c.el);
     liveCards.clear();
     stepsSig = "";
-    root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }));
+    root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }), sayIt(LIVE_SAY));
     $body().replaceChildren(root);
   }
   if (!root.contains(document.getElementById("live-extra"))) root.prepend(liveExtras(data)); else liveExtras(data);

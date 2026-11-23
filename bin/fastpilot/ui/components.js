@@ -104,7 +104,7 @@ function passwordAsk({ name, label, onSaved, plain = false } = {}) {
     const input = h("input", { type: plain ? "text" : "password", autocomplete: "off", spellcheck: "false", "aria-label": label || `Value of ${name}`, "aria-describedby": `${tid}-d` });
     const msg = h("p", { class: "err-line", role: "alert", hidden: true });
     const done = (v) => { dlg.close(); dlg.remove(); if (back && back.isConnected && back.focus) back.focus(); resolve(v); };
-    const save = h("button", { type: "submit", class: "btn p" }, "Save password");
+    const save = h("button", { type: "submit", class: "btn p" }, plain ? "Save user name" : "Save password");
     const form = h("form", { class: "form" },
       h("h2", { id: tid }, label || `Set ${name}`),
       h("p", { id: `${tid}-d`, class: "s muted" }, "It is saved in this Mac's Keychain for the current app and never shown again. fastpilot types it only on this app's own website."),

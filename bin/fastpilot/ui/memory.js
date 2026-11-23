@@ -4,6 +4,8 @@
 // from app.js. Values from the server are always set as text, never as HTML. Everything is inside
 // one function, so no name here meets one in app.js; only PAGES.memory is shared.
 (() => {
+// C1 / L6: what can be said about Memory in Chat (fixed sentences, sent with one click).
+const MEM_SAY = ["Remember that login uses a code", "What do you remember about this app?"];
 "use strict";
 
 let memData = null; // { tests: [...], mode }
@@ -334,7 +336,7 @@ function pageMemory() {
   const remembered = tests.some((t) => t.status !== "new");
   if (!tests.length || !remembered) {
     $body().replaceChildren(...notes, h("div", { class: "grp" }, h("div", { class: "empty" }, icon("memory", "big"), h("b", {}, "Nothing remembered yet"),
-      h("span", {}, "After a test passes once, fastpilot remembers how, and runs get faster."))));
+      h("span", {}, "After a test passes once, fastpilot remembers how, and runs get faster.")), MEM_SAY ? sayIt(MEM_SAY) : null));
     return;
   }
   const pick = tests.find((t) => t.id === memPick) || tests.find((t) => t.status === "unstable" || t.status === "failing") || tests[0];
@@ -350,7 +352,7 @@ function pageMemory() {
         h("td", {}, h("span", { class: "mem-st " + cls }, label)),
         h("td", { class: "acts" }, rowAction(t)));
     })))));
-  $body().replaceChildren(...notes, h("div", { class: "mem-wrap" }, table, panel(pick)));
+  $body().replaceChildren(...notes, h("div", { class: "mem-wrap" }, table, panel(pick)), sayIt(MEM_SAY));
 }
 
 PAGES.memory = () => {

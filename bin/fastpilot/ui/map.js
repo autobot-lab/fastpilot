@@ -348,7 +348,7 @@ function draw() {
     h("ul", { class: "map-legend", "aria-label": "Legend" }, Object.values(STATUS).map(([, cls, text]) => h("li", {}, h("span", { class: `map-key ${cls}`, "aria-hidden": "true" }), text))),
     h("p", { class: "s muted" }, "Screens are found by exploring. ",
       m.platform === "web" ? (m.blocked ? `${m.blocked} request${m.blocked === 1 ? "" : "s"} that would have changed something ${m.blocked === 1 ? "was" : "were"} blocked. ` : "Nothing was submitted. ") : "Only links and buttons that move around were pressed. ",
-      m.signed_in ? "It signed in with the test account from your project notes; nothing else was typed in. " : "Nothing was typed in. ",
+      m.signed_in ? "It signed in with the app's test account; nothing else was typed in. " : "Nothing was typed in. ",
       "Pictures show the app as it looked while mapping. The map is kept only on this computer, in fastpilot's own folder."));
   $body().replaceChildren(h("div", { class: "map" }, outcome(m), summary,
     view === "list" ? list(m) : h("div", { class: "map-main" }, graph(m), panel(m))),

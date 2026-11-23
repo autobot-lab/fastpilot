@@ -89,6 +89,9 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     eval(&c, &format!("(() => {{ const w = document.getElementById('wz-where'); w.value = {}; w.dispatchEvent(new Event('paste')); return 'ok'; }})()", serde_json::to_string(&demo).expect("demo"))).await;
     see(&c, "What should we check first?").await;
     assert_eq!(until(&c, "(async () => (await api('/api/apps')).apps.map((a) => a.name).join('|'))()", "Demo").await, "Demo");
+    // L3: the app bar shows it at once; L1: the bar is two thirds full at step 2.
+    assert_eq!(until(&c, "String((document.querySelector('#appbar .appbtn')?.textContent || '').includes('Demo'))", "true").await, "true");
+    assert_eq!(eval(&c, "(() => { const b = document.querySelector('.wz-bar'); return String(Math.round(100 * b.firstChild.getBoundingClientRect().width / b.getBoundingClientRect().width)); })()").await, "66");
 
     // One click: Chat, with that sentence sent (caught here: no real Claude in this test).
     eval(&c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; [...document.querySelectorAll('.say-row')].find((b) => b.textContent.includes('Check the login')).click(); return 'ok'; })()").await;
@@ -118,6 +121,58 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     see(&c, "Send").await;
     assert_eq!(eval(&c, "String(!!document.querySelector('.wz'))").await, "false", "skipped for good");
 
+    let _ = c.cancel().await;
+    let _ = ui.kill();
+    let _ = ui.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Design Critic's final check M1: the wizard is the first screen even when the page opens at the
+/// Chat address (a reload, a bookmark). That Chat page used to start drawing before the wizard knew
+/// it was a first run and, when it finished last, drew over the wizard. Five fresh loads, sampled
+/// without navigating: Chat never shows, and each ends on the wizard at step 1 (its bar a third
+/// full, L1).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wizard_is_the_first_screen_even_at_the_chat_address() {
+    if !["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].iter().any(|p| Path::new(p).exists()) {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-first-screen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("person")).expect("home");
+    let mut ui = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["ui", "--no-open"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("FASTPILOT_DIR")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("ui");
+    let mut link = String::new();
+    BufReader::new(ui.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
+    let p = home.join("person");
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+        c.arg("mcp").current_dir(ROOT).env("HOME", &p).env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").env("FASTPILOT_LIVE_DIR", p.join("live")).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
+    });
+    let c: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let (ok, out) = flow(&c, &format!("- session: {{ start: person, platform: web, target: \"{}#/agents/default/chat\" }}\n", link.trim())).await;
+    assert!(ok, "{out}");
+    let state = "document.querySelector('.wz') ? 'WIZ' : (document.querySelector('#chat-input') ? 'CHAT' : 'wait')";
+    for round in 0..5 {
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            seen.push(eval(&c, state).await);
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        assert!(!seen.iter().any(|s| s == "CHAT") && seen.last().map(String::as_str) == Some("WIZ"), "load {round}: {seen:?}");
+        assert_eq!(eval(&c, "(() => { const b = document.querySelector('.wz-bar'); return String(Math.round(100 * b.firstChild.getBoundingClientRect().width / b.getBoundingClientRect().width)); })()").await, "33", "step 1 of 3");
+        eval(&c, "(location.reload(), 'ok')").await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
     let _ = c.cancel().await;
     let _ = ui.kill();
     let _ = ui.wait();

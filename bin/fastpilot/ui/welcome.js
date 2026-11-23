@@ -13,6 +13,7 @@ const FULL = "fastpilot.fullmenu"; // "1": the person asked for every menu item
 const CHECKS = ["Check the login", "Add a product to the cart", "Search for something and open the first result", "Fill in the contact form"];
 let info = null; // { apps, tests, at }
 let busy = false;
+let failures = 0;
 
 async function load() {
   if (busy) return;
@@ -20,8 +21,12 @@ async function load() {
   try {
     const [a, s] = await Promise.all([api("/api/apps"), api("/api/schedules")]);
     info = { apps: a.apps || [], current: a.current, fixed: !!a.fixed_dir, tests: (s.tests || []).length, at: Date.now() };
+    failures = 0;
   } catch (_) {
-    info = { apps: [], tests: 1, at: Date.now() }; // unknown: no wizard, full menu
+    // Try again a few times before giving up (then: no wizard, the full menu).
+    failures += 1;
+    if (failures < 4) { busy = false; setTimeout(load, 1500); return; }
+    info = { apps: [], tests: 1, at: Date.now() };
   }
   busy = false;
   render();
@@ -30,10 +35,13 @@ async function load() {
 const done = () => localStorage.getItem(DONE) === "done";
 const finish = () => localStorage.setItem(DONE, "done");
 
-/// The wizard replaces the first screen while nothing is saved yet and it was not skipped.
+/// The wizard replaces the first screen while nothing is saved yet and it was not skipped. Until
+/// that is known (the first load), the first screen waits too: a Chat page that started drawing
+/// meanwhile would draw over the wizard when it finishes (Design Critic, final check M1).
 function wants(page) {
   if (done() || page !== "agents") return false;
   if (!info || Date.now() - info.at > 5000) load();
+  if (!info) return true;
   // A real first run: no app yet (not a developer's fixed folder), or step 2 of a wizard this
   // browser started.
   return !!info && info.tests === 0 && ((!info.apps.length && !info.fixed) || localStorage.getItem(DONE) === "step2");
@@ -45,7 +53,8 @@ function header() {
 }
 
 function steps(n) {
-  return h("div", { class: "wz-steps" }, h("span", {}, `Step ${n} of 3`), h("span", { class: "wz-bar", "aria-hidden": "true" }, h("span", { style: `width:${n * 33}%` })), h("span", {}, n === 1 ? "about 1 minute" : "about 1 minute"));
+  // A class per step: the page's CSP allows no inline style (Design Critic, final check L1).
+  return h("div", { class: "wz-steps" }, h("span", {}, `Step ${n} of 3`), h("span", { class: `wz-bar step-${n}`, "aria-hidden": "true" }, h("span", {})), h("span", {}, "about 1 minute"));
 }
 
 function stepOne() {
@@ -60,6 +69,8 @@ function stepOne() {
     try {
       await api("/api/apps", { action: "add", targets: { web: value } });
       localStorage.setItem(DONE, "step2");
+      // The app switcher shows the new app at once (L3).
+      if (window.Apps) Apps.reload();
       info = null;
       load();
     } catch (e) { err.textContent = e.message; err.hidden = false; where.focus(); }
@@ -88,8 +99,12 @@ function stepTwo(app) {
 }
 
 function page() {
+  if (!info) {
+    $top().replaceChildren(h("h1", { tabindex: "-1" }, "Chat"));
+    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Getting ready…")));
+    return;
+  }
   header();
-  if (!info) { $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }))); return; }
   const app = info.apps.find((a) => a.id === info.current) || info.apps[0] || null;
   $body().replaceChildren(h("section", { class: "wz", "aria-label": "First test" }, ...(info.apps.length ? stepTwo(app) : stepOne())));
   document.querySelector(".wz-h")?.focus();
