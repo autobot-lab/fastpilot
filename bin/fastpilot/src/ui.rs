@@ -993,7 +993,7 @@ async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
 
 /// Integrations (Jira, schedule webhooks): what is connected and waiting.
 async fn integrations_api() -> Response {
-    let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()).map(|s| {
+    let jira = fastpilot_core::jira::connected_settings().map(|s| {
         json!({ "site": s.site, "email": s.email, "project_key": s.project_key, "project_name": s.project_name,
                 "checked_ms": s.checked_ms, "needs_attention": s.needs_attention })
     });

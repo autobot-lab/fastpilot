@@ -250,7 +250,7 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             Some([Some(note.as_str()), before.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n\n"))
         };
         let error = turn(&agent, &text, before.as_deref(), bot, resume).await.err();
-        let jira = fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has());
+        let jira = fastpilot_core::jira::connected_settings();
         let mut c = chat_of(&agent);
         let now = change::now_ms();
         c.loosen_times.retain(|t| now.saturating_sub(*t) < 3_600_000);
@@ -490,7 +490,7 @@ fn context() -> String {
     let secrets: Vec<String> = project_secrets().into_iter().filter(|(_, has)| *has).map(|(n, _)| format!("${{{n}}}")).collect();
     // QA (v0.4): with the demo password at hand, the demo account is said, never guessed or asked.
     let demo = if secrets.iter().any(|s| s == "${DEMO_PASS}") { format!("\n{}", fastpilot_mcp::DEMO_ACCOUNT) } else { String::new() };
-    let jira = match fastpilot_core::jira::settings().filter(|_| fastpilot_core::jira::token::has()) {
+    let jira = match fastpilot_core::jira::connected_settings() {
         Some(j) if j.project_key.is_empty() => format!("\nJira: connected to {} (no default project chosen yet).", j.site),
         Some(j) => format!("\nJira: connected to {}, default project {} ({}).", j.site, j.project_key, if j.project_name.is_empty() { &j.project_key } else { &j.project_name }),
         None => "\nJira: not connected (the user connects it in Integrations › Connect Jira; until then a Jira card can only show its text).".to_owned(),

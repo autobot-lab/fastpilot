@@ -160,7 +160,10 @@ fn atlassian() -> (String, Shared) {
                             let text = match name.as_str() {
                                 "getAccessibleAtlassianResources" => tool_result(json!([{ "id": "cloud-1", "url": "https://acme.atlassian.net", "name": "Acme", "scopes": ["read:jira-work"] }])),
                                 "atlassianUserInfo" => tool_result(json!({ "accountId": "acc-1", "name": "Budi QA", "email": "budi@acme.test" })),
+                                // A duplicate search (summary ~ …) finds nothing.
+                                "searchJiraIssuesUsingJql" if body.contains("summary ~") => tool_result(json!({ "issues": [] })),
                                 "searchJiraIssuesUsingJql" => tool_result(json!({ "issues": [{ "key": "KAN-1", "fields": { "summary": "Login fails", "project": { "key": "KAN", "name": "Kanban" } } }] })),
+                                "createJiraIssue" => tool_result(json!({ "key": "KAN-7" })),
                                 "getJiraIssue" => tool_result(json!({ "key": "KAN-1", "fields": { "summary": "Login fails", "status": { "name": "To Do" }, "issuetype": { "name": "Bug" }, "description": "Open the login page and sign in." } })),
                                 _ => tool_result(json!({ "error": "unexpected tool" })),
                             };
@@ -220,6 +223,9 @@ impl Ui {
             .env_remove("FASTPILOT_CONFIG")
             .env_remove("FASTPILOT_JIRA_TEST_BASE")
             .env("FASTPILOT_LIVE_DIR", home.join("live"))
+            .env("FASTPILOT_CLAUDE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude-chat/claude"))
+            .env("FAKE_CHAT_DELAY_MS", "0")
+            .env("FAKE_CHAT_NO_RUN", "1")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -234,9 +240,16 @@ impl Ui {
         Ui { child, port, cookie }
     }
     fn post(&self, body: Value) -> (u16, Value) {
+        self.post_to("/api/jira", body)
+    }
+    fn post_to(&self, path: &str, body: Value) -> (u16, Value) {
         let h = [("Cookie", self.cookie.clone()), ("Origin", format!("http://127.0.0.1:{}", self.port)), ("Content-Type", "application/json".to_owned())];
-        let (st, _, text) = raw(self.port, "POST", "/api/jira", &h, &body.to_string());
+        let (st, _, text) = raw(self.port, "POST", path, &h, &body.to_string());
         (st, serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+    fn get(&self, path: &str) -> Value {
+        let (_, _, text) = raw(self.port, "GET", path, &[("Cookie", self.cookie.clone())], "");
+        serde_json::from_str(&text).unwrap_or(Value::Null)
     }
     fn state(&self) -> Value {
         let (_, _, text) = raw(self.port, "GET", "/api/jira", &[("Cookie", self.cookie.clone())], "");
@@ -331,6 +344,35 @@ async fn sign_in_with_atlassian_connects_reads_refreshes_and_disconnect_revokes(
         assert!(holding(&home, t).is_empty(), "{t} is written out as text");
     }
 
+    // QA #5980 bug 2: everything that asks "is Jira connected?" knows the sign-in. The terminal…
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["jira", "status"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_ATLASSIAN_TEST_BASE", &base)
+        .env_remove("FASTPILOT_CONFIG")
+        .output()
+        .expect("status");
+    let said = String::from_utf8_lossy(&status.stdout);
+    assert!(said.contains("connected to acme.atlassian.net as Budi QA (Sign in with Atlassian)"), "{said}");
+    // …and Chat: a "Create Jira issue" card, and the issue on the click.
+    let (st, r) = ui.post_to("/api/chat", json!({ "message": "make a jira ticket for the voucher bug" }));
+    assert_eq!(st, 200, "{r}");
+    let mut chat = Value::Null;
+    for _ in 0..200 {
+        chat = ui.get("/api/chat");
+        if chat["busy"] == false && chat["messages"].as_array().is_some_and(|m| m.len() >= 2) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    let card = chat["messages"][1]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str()), (Some("jira_issue"), Some("pending")), "{chat}");
+    let (st, r) = ui.post_to("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 200 && r.to_string().contains("KAN-7"), "{st} {r}");
+    assert!(seen.lock().expect("seen").tools.iter().any(|t| t == "createJiraIssue"));
+
     // Disconnect: revoked at Atlassian, then gone here.
     let (st, r) = ui.post(json!({ "action": "disconnect" }));
     assert_eq!(st, 200, "{r}");
@@ -339,6 +381,7 @@ async fn sign_in_with_atlassian_connects_reads_refreshes_and_disconnect_revokes(
     assert!(revoked.iter().any(|t| t.starts_with("RT-")), "the refresh token was revoked: {revoked:?}");
     assert_eq!(ui.state()["connected"], false);
     assert!(!home.join(".fastpilot/keys/jira.oauth").exists(), "removed from the key store");
+    assert!(!home.join(".fastpilot/jira-oauth.json").exists(), "the registration is forgotten too");
 
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
