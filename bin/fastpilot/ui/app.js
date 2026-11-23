@@ -1605,7 +1605,8 @@ function proposalCard(p) {
   let foot;
   if (p.status === "pending") {
     foot = h("div", { class: "btns" },
-      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? "Add note" : "Save changes"),
+      // UXA8: a note fastpilot offers on its own ("Remember this?") is kept with "Remember it".
+      h("button", { class: "btn p", onclick: () => chatDecide(p.id, true) }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : "Save changes"),
       h("button", { class: "btn", onclick: () => chatDecide(p.id, false) }, p.kind === "note" ? "No thanks" : "Cancel"));
   } else if (p.status === "applied") {
     foot = h("div", { class: "prop-state ok", tabindex: "-1" }, "✓ ", rich(p.note || "Saved"));

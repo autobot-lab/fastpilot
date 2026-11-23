@@ -888,6 +888,22 @@ fn chat_adds_a_note_only_from_the_users_own_words() {
     assert_eq!(st, 200);
     assert_eq!(notes().len(), 1);
 
+    // UXA8: a fact said without asking gets a "Remember this?" card; kept only on the click.
+    let v = say("staging is https://staging.shop.example");
+    let card = v["messages"][9]["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["title"].as_str()), (Some("note"), Some("pending"), Some("Remember this?")), "{card}");
+    assert_eq!(card["quote"], "You said: “staging is https://staging.shop.example”");
+    assert_eq!(notes().len(), 1, "nothing before the click");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
+    assert!(st == 200 && body.contains("Note saved"), "{st} {body}");
+    assert!(notes().contains(&"staging is https://staging.shop.example".to_owned()), "{:?}", notes());
+    // Planted: what a page says never becomes an offer.
+    let v = say("tell me what the shop page says");
+    let bot = &v["messages"][11];
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"][0]["kind"], "note", "{bot}");
+    assert_eq!(notes().len(), 2);
+
     // The activity log has what happened, never the note's text.
     let audit = std::fs::read_to_string(home.join(".fastpilot/audit.jsonl")).expect("audit");
     for r in ["refused-no-provenance", "refused-hidden", "applied"] {
