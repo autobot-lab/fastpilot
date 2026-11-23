@@ -33,6 +33,11 @@ pub struct App {
     pub repo: Option<PathBuf>,
     #[serde(default)]
     pub created_ms: u64,
+    /// Security #205 M1: the names this app has a saved password for (names only, the values are in
+    /// the key store). Never the environment allow-list (`vars`): a saved name does not make an
+    /// environment value readable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
 }
 
 impl App {
@@ -79,6 +84,18 @@ fn save(s: &Store) -> Result<(), String> {
     crate::filestore::write_atomic(&root(), "apps.json", serde_json::to_string_pretty(s).unwrap_or_default().as_bytes(), false)
 }
 
+/// Note that app `id` has (`saved`) or no longer has a saved password called `name`.
+pub fn note_secret(id: &str, name: &str, saved: bool) -> Result<(), String> {
+    let _held = hold();
+    let mut s = load();
+    let Some(a) = s.apps.iter_mut().find(|a| a.id == id) else { return Err("That app is not listed any more.".into()) };
+    a.secrets.retain(|n| n != name);
+    if saved {
+        a.secrets.push(name.to_owned());
+    }
+    save(&s)
+}
+
 /// All apps, in the order they were added.
 pub fn list() -> Vec<App> {
     let _held = hold();
@@ -117,7 +134,7 @@ pub fn add(name: &str, targets: Targets) -> Result<App, String> {
     // A fresh id: not in use, not retired, and no folder of that name left on disk.
     let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
     let id = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(free).unwrap_or(base);
-    let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms() };
+    let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms(), secrets: Vec::new() };
     // Its own folder for tests, memory and map, owner-only (#180 L3).
     crate::filestore::ensure_dir(&app.dir(), true)?;
     s.apps.push(app.clone());
@@ -204,7 +221,7 @@ pub fn add_repo(folder: &Path) -> Result<App, String> {
     let slugged = slug(&name);
     let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
     let id = (1..).map(|n| if n == 1 { slugged.clone() } else { format!("{slugged}-{n}") }).find(free).unwrap_or(slugged);
-    let app = App { id: id.clone(), name, targets: Targets::default(), repo: Some(folder), created_ms: now_ms() };
+    let app = App { id: id.clone(), name, targets: Targets::default(), repo: Some(folder), created_ms: now_ms(), secrets: Vec::new() };
     s.apps.push(app.clone());
     if s.current.is_none() {
         s.current = Some(id);
@@ -490,7 +507,7 @@ mod tests {
         let t = check_targets(Targets { web: Some(" https://staging.shop.example ".into()), android: Some("com.shop.app".into()), ios: Some(String::new()) }).expect("ok");
         assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example/"), Some("com.shop.app"), None));
         assert_eq!(name_from(&t), "Shop staging");
-        let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0 };
+        let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0, secrets: Vec::new() };
         assert_eq!(a.kinds(), ["web", "android"]);
     }
 }

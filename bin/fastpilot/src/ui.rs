@@ -941,16 +941,24 @@ async fn secrets_list() -> Response {
         Source::File(v) | Source::Env(v) => v,
         Source::Default => String::new(),
     };
-    let names: Vec<String> = listed.split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
+    // The environment allow-list, then the names saved for the current app (Security #205 M1: a
+    // saved name is not on the allow-list; an environment value counts only for a listed name).
+    let env_names: Vec<String> = listed.split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
+    let mut names = env_names.clone();
+    for n in app.iter().flat_map(|a| a.secrets.iter()) {
+        if !names.contains(n) {
+            names.push(n.clone());
+        }
+    }
     let rows: Vec<Value> = names
         .iter()
-        .map(|n| json!({ "name": n, "set": app.as_ref().is_some_and(|a| secrets::has(&a.id, n)), "env": std::env::var_os(n).is_some() }))
+        .map(|n| json!({ "name": n, "set": app.as_ref().is_some_and(|a| secrets::has(&a.id, n)), "env": env_names.contains(n) && std::env::var_os(n).is_some() }))
         .collect();
     axum::Json(json!({ "app": app.map(|a| json!({ "id": a.id, "name": a.name })), "names": rows, "kept_in": fastpilot_core::jira::token::kept_in() })).into_response()
 }
 
-/// `{action: set, name, value}` (only from this page: the person types it; a new name joins the
-/// list) and `{action: remove, name}`, for the current app. The activity log says only "set" or
+/// `{action: set, name, value}` (only from this page: the person types it; the name is kept with
+/// the app, never on the environment list) and `{action: remove, name}`, for the current app. The activity log says only "set" or
 /// "removed", never the value.
 async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
     use fastpilot_core::secrets;
@@ -965,22 +973,17 @@ async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
         "set" => (|| {
             let value = body["value"].as_str().unwrap_or("");
             secrets::check_value(value)?;
-            let listed = match config::current("vars") {
-                Source::File(v) | Source::Env(v) => v,
-                Source::Default => String::new(),
-            };
-            let mut names: Vec<&str> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-            if !names.contains(&name.as_str()) {
-                names.push(&name);
-                config::write("vars", Some(&names.join(","))).map_err(|e| e.to_string())?;
-            }
+            // Security #205 M1: kept as the app's own name, never added to the environment
+            // allow-list (that would make an environment value of the same name readable).
             fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), None, Some("set"), "dashboard", "done")?;
             secrets::set(&app.id, &name, value)?;
+            crate::apps::note_secret(&app.id, &name, true)?;
             Ok(json!({ "name": name, "set": true }))
         })(),
         "remove" => (|| {
             fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), Some("set"), None, "dashboard", "done")?;
             secrets::remove(&app.id, &name)?;
+            crate::apps::note_secret(&app.id, &name, false)?;
             Ok(json!({ "name": name, "set": false }))
         })(),
         _ => Err("unknown action".to_owned()),

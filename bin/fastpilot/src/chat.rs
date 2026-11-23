@@ -562,7 +562,14 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
     // Chat's fastpilot too; only FASTPILOT_VARS and the values it names.
     let mcp_env = mcp_secrets();
     if !mcp_env.is_empty() {
-        let names: Vec<String> = project_secrets().into_iter().map(|(n, _)| n).collect();
+        // The environment allow-list and the .mcp.json names only: a name saved for the app is not
+        // on it (Security #205 M1).
+        let mut names: Vec<String> = listed_vars();
+        for (n, _) in &mcp_env {
+            if !names.contains(n) {
+                names.push(n.clone());
+            }
+        }
         env["FASTPILOT_VARS"] = json!(names.join(","));
         for (n, val) in mcp_env {
             env[n] = json!(val);
@@ -2323,24 +2330,32 @@ fn mcp_secrets() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The environment allow-list (`vars`) as the settings file has it now.
+fn listed_vars() -> Vec<String> {
+    match config::current("vars") {
+        config::Source::File(v) | config::Source::Env(v) => v.split(',').map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect(),
+        config::Source::Default => Vec::new(),
+    }
+}
+
 /// QA B2/B3: every secret name this project can use, and whether it has a value here (fastpilot's
 /// settings and environment, or the project's `.mcp.json`).
 pub fn project_secrets() -> Vec<(String, bool)> {
     let mcp = mcp_secrets();
     // QA #5980 bug 1: the names as the settings file has them now (a name saved after the
     // dashboard started included), and a value saved for the current app counts as set.
-    let listed = match config::current("vars") {
-        config::Source::File(v) | config::Source::Env(v) => v,
-        config::Source::Default => String::new(),
-    };
     let app = crate::apps::current();
     let saved = |n: &str| app.as_ref().is_some_and(|a| fastpilot_core::secrets::has(&a.id, n));
-    let mut out: Vec<(String, bool)> = listed
-        .split(',')
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| (n.to_owned(), std::env::var(n).is_ok_and(|v| !v.is_empty()) || mcp.iter().any(|(m, _)| m == n) || saved(n)))
+    let mut out: Vec<(String, bool)> = listed_vars()
+        .into_iter()
+        .map(|n| (n.clone(), std::env::var(&n).is_ok_and(|v| !v.is_empty()) || mcp.iter().any(|(m, _)| m == &n) || saved(&n)))
         .collect();
+    // The names saved for the current app (not on the environment list, Security #205 M1).
+    for n in app.iter().flat_map(|a| a.secrets.iter()) {
+        if !out.iter().any(|(o, _)| o == n) {
+            out.push((n.clone(), saved(n)));
+        }
+    }
     for (n, _) in &mcp {
         if !out.iter().any(|(o, _)| o == n) {
             out.push((n.clone(), true));
