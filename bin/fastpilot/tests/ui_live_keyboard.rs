@@ -103,8 +103,23 @@ async fn live_page_works_with_the_keyboard() {
 
     // FastTest final report: "click Web, fill in, Create" said "Pick where it tests" (Web was
     // picked already and the click took it off). The last place picked stays on, with a reason.
+    // S4: in the agents list, "New agent" is under More.
+    eval(&client, "location.hash = '#/agents/default/settings', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"agent settings\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let hidden_new = "(() => { const a = [...document.querySelectorAll('.ag-col a')].find((x) => x.textContent.includes('New agent')); return a ? String(!!a.closest('[hidden]')) : 'none'; })()";
+    assert_eq!(eval(&client, hidden_new).await, "\"true\"", "New agent waits under More");
+    eval(&client, "document.querySelector('.ag-col .more-btn').click(), 'ok'").await;
+    assert_eq!(eval(&client, hidden_new).await, "\"false\"", "More shows it");
+
+    // S4: New agent needs no typing: three focuses, the form under "Describe it yourself".
     eval(&client, "location.hash = '#/agents/new', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Create agent\", timeout: 8000 }\n", "session": "viewer" })).await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Checkout and payments\", timeout: 8000 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let quick = eval(&client, "[[...document.querySelectorAll('.ag-new button[data-focus]')].map((b) => b.textContent.replace('→', '').trim()).join('|'), [...document.querySelectorAll('.ag-new input, .ag-new textarea')].filter((e) => !e.closest('[hidden]')).length, document.activeElement.dataset.focus].join(' / ')").await;
+    assert_eq!(quick, "\"Regression of everything|Checkout and payments|Login and accounts / 0 / regression\"", "no field to type in on the main path, the first focus has the keyboard");
+    eval(&client, "document.querySelector('.ag-new .more-btn').click(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Create agent\", timeout: 5000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let chip = |id: &str| format!("document.querySelector('.ag-new button[data-device=\"{id}\"]')");
     let state = |id: &str| format!("(() => {{ const b = {}; return b.getAttribute('aria-pressed'); }})()", chip(id));
@@ -115,7 +130,7 @@ async fn live_page_works_with_the_keyboard() {
     eval(&client, &format!("{}.click(), {}.click(), 'ok'", chip("android_emulator"), chip("web"))).await;
     assert_eq!((eval(&client, &state("web")).await, eval(&client, &state("android_emulator")).await), ("\"false\"".to_owned(), "\"true\"".to_owned()), "switched to the emulator");
     eval(&client, &format!("{}.click(), 'ok'", chip("web"))).await;
-    let fill = "(() => { for (const [l, v] of [['Name', 'Device pick'], ['What it does', 'Check the shop on the web and Android']]) { const e = document.querySelector(`.ag-new [aria-label=\"${l}\"]`); e.value = v; e.dispatchEvent(new Event('input')); } [...document.querySelectorAll('.top button')].find((b) => b.textContent.includes('Create agent')).click(); return 'ok'; })()";
+    let fill = "(() => { for (const [l, v] of [['Name', 'Device pick'], ['What it does', 'Check the shop on the web and Android']]) { const e = document.querySelector(`.ag-new [aria-label=\"${l}\"]`); e.value = v; e.dispatchEvent(new Event('input')); } [...document.querySelectorAll('.ag-new button')].find((b) => b.textContent.includes('Create agent')).click(); return 'ok'; })()";
     eval(&client, fill).await;
     let mut saved = String::new();
     for _ in 0..40 {
@@ -143,6 +158,27 @@ async fn live_page_works_with_the_keyboard() {
     assert!(ok, "{out}");
     let empty = eval(&client, "(() => { const e = document.querySelector('.empty'); return [e.querySelectorAll('button, .chip').length, /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|'); })()").await;
     assert_eq!(empty, "\"0|false\"", "no suggestion chips in the empty Chat");
+    // S4: one click on a focus makes the agent and opens its Chat; a second click opens the same one.
+    for _ in 0..2 {
+        eval(&client, "location.hash = '#/agents/new', 'ok'").await;
+        // Clicked from the page: the viewer's own limits rightly block a tap on "checkout".
+        let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Login and accounts\", timeout: 8000 }\n", "session": "viewer" })).await;
+        assert!(ok, "{out}");
+        eval(&client, "document.querySelector('.ag-new button[data-focus=\"checkout\"]').click(), 'ok'").await;
+        let mut at = String::new();
+        for _ in 0..40 {
+            at = eval(&client, "location.hash").await;
+            if at.contains("checkout-tester/chat") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        assert!(at.contains("#/agents/checkout-tester/chat"), "one click opens the new agent: {at}");
+    }
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/agents.json")).unwrap_or_default()).unwrap_or_default();
+    let made: Vec<&Value> = saved["agents"].as_array().map(|a| a.iter().filter(|x| x["name"] == "Checkout tester").collect()).unwrap_or_default();
+    assert_eq!(made.len(), 1, "{saved}");
+    assert!(made[0]["skills"].as_array().is_some_and(|s| s.iter().any(|x| x == "safe-checkout")), "skills picked by itself: {saved}");
     eval(&client, "location.hash = '#/live', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Step 5/5\", timeout: 10000 }\n", "session": "viewer" })).await;
     assert!(ok, "back on Live: {out}");

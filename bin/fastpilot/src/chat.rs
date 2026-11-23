@@ -1783,7 +1783,8 @@ fn setting_card(op: Result<(String, change::Op), String>, body: &str, t: &mut Tu
 /// D10a: the agent a `kind: agent` proposal describes, checked like the Create agent form.
 fn agent_of_proposal(v: &Value) -> Res<crate::agents::Agent> {
     let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
-    crate::agents::check(crate::agents::Agent {
+    // S4: what the sentence left out (where, which app, skills) comes from the current app.
+    crate::agents::check(crate::agents::prefill(crate::agents::Agent {
         name: v["name"].as_str().unwrap_or("").to_owned(),
         job: v["job"].as_str().unwrap_or("").to_owned(),
         devices: list("devices"),
@@ -1792,7 +1793,7 @@ fn agent_of_proposal(v: &Value) -> Res<crate::agents::Agent> {
         skills: list("skills"),
         blocked: list("blocked"),
         ..Default::default()
-    })
+    }))
 }
 
 /// "New agent · Mobile Payments" (v7 #s4, right side): what fastpilot will create, on a click.

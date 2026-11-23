@@ -147,7 +147,144 @@ fn write(s: &Store) -> Res<()> {
 
 pub fn list() -> Vec<Agent> {
     let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    read().agents
+    let mut agents = read().agents;
+    drop(_l);
+    if let (Some(app), Some(d)) = (worked_on(), agents.iter_mut().find(|a| a.id == DEFAULT)) {
+        *d = for_app(d.clone(), &app);
+    }
+    agents
+}
+
+/// S4 (v0.7): the app being worked on, which the default agent tests (none while `FASTPILOT_DIR`
+/// pins a folder: then "here" is that folder, not an app).
+fn worked_on() -> Option<crate::apps::App> {
+    if std::env::var_os("FASTPILOT_DIR").is_some() {
+        return None;
+    }
+    crate::apps::current()
+}
+
+/// Where each platform of an app is tested, as [`DEVICES`] keys.
+fn app_devices(app: &crate::apps::App) -> Vec<String> {
+    let d: Vec<String> = app.kinds().into_iter().map(|k| match k { "android" => "android_emulator", "ios" => "ios_simulator", _ => "web" }.to_owned()).collect();
+    if d.is_empty() { vec!["web".into()] } else { d }
+}
+
+/// The app's start point in the user's terms: its address, else its Android or iPhone app id.
+fn app_address(app: &crate::apps::App) -> String {
+    app.targets.web.clone().or_else(|| app.targets.android.clone()).or_else(|| app.targets.ios.clone()).unwrap_or_default()
+}
+
+/// The skills picked for an agent: the technique chooser plus the suggested ones.
+fn auto_skills(job: &str, app: &str, devices: &[String]) -> Vec<String> {
+    std::iter::once(crate::skills_catalog::CHOOSER.to_owned()).chain(crate::skills_catalog::suggest(job, app, devices).into_iter().map(|(id, _)| id)).collect()
+}
+
+/// "<app> <what>", within the 40 characters a name may have (the app name is shortened).
+fn app_named(app: &str, what: &str) -> String {
+    let room = 40usize.saturating_sub(what.chars().count() + 1);
+    let short: String = app.chars().take(room).collect();
+    format!("{} {what}", short.trim_end()).trim().to_owned()
+}
+
+/// S4: the default agent as each app sees it, "<app> tester", with the app's platforms, address and
+/// auto-picked skills. Only fields the user never changed (still the built-in value) are filled, and
+/// [`update`] turns them back into the built-in value, so one app's name or address is never saved
+/// into the agent the next app sees.
+fn for_app(mut a: Agent, app: &crate::apps::App) -> Agent {
+    let built = default_agent();
+    if a.name == built.name {
+        a.name = app_named(&app.name, "tester");
+    }
+    if a.job == built.job {
+        a.job = format!("Tests {}.", app.name);
+    }
+    if a.app.is_empty() {
+        a.app = app_address(app);
+    }
+    if a.devices == built.devices {
+        a.devices = app_devices(app);
+    }
+    if a.skills.is_empty() {
+        a.skills = auto_skills(&a.job, &a.app, &a.devices);
+    }
+    a
+}
+
+/// The reverse of [`for_app`]: values that are only the app's go back to the built-in ones.
+fn without_app(mut a: Agent, app: &crate::apps::App) -> Agent {
+    let built = default_agent();
+    let shown = for_app(built.clone(), app);
+    if a.skills == auto_skills(&a.job, &a.app, &a.devices) {
+        a.skills = vec![];
+    }
+    if a.name == shown.name {
+        a.name = built.name;
+    }
+    if a.job == shown.job {
+        a.job = built.job;
+    }
+    if a.app == shown.app {
+        a.app = String::new();
+    }
+    if a.devices == shown.devices {
+        a.devices = built.devices;
+    }
+    a
+}
+
+/// S4: what "New agent" offers in one click: (key, button text, name, job). The name and job say the
+/// app; where it tests and its skills come from the app too.
+pub const FOCUSES: &[(&str, &str, &str, &str)] = &[
+    ("regression", "Regression of everything", "regression", "Runs every saved test of {app} and says what broke since the last run."),
+    ("checkout", "Checkout and payments", "checkout", "Keeps the cart, checkout and payment of {app} working, and never pays."),
+    ("login", "Login and accounts", "login", "Keeps sign-in, sign-up and the account pages of {app} working."),
+];
+
+/// S4: a new agent with one focus, the rest from the current app. Clicking the same focus again
+/// opens the agent made the first time.
+pub fn create_focus(key: &str) -> Res<Agent> {
+    let (_, _, what, job) = FOCUSES.iter().find(|(k, ..)| *k == key).ok_or("Unknown focus")?;
+    let app = worked_on();
+    let name = match &app {
+        Some(a) => app_named(&a.name, what),
+        None => format!("{}{} tester", what[..1].to_uppercase(), &what[1..]),
+    };
+    if let Some(a) = list().into_iter().find(|a| a.name.eq_ignore_ascii_case(&name)) {
+        return Ok(a);
+    }
+    let job = job.replace("{app}", app.as_ref().map_or("this app", |a| a.name.as_str()));
+    let (address, devices) = app.as_ref().map_or((String::new(), vec!["web".to_owned()]), |a| (app_address(a), app_devices(a)));
+    let skills = auto_skills(&job, &address, &devices);
+    create(Agent { name, job, app: address, devices, skills, ..Default::default() })
+}
+
+/// S4: what a Chat sentence leaves out ("an agent for checkout"), taken from the current app: its
+/// address, its platforms and the skills that fit.
+pub fn prefill(mut a: Agent) -> Agent {
+    if let Some(app) = worked_on() {
+        if a.app.trim().is_empty() {
+            a.app = app_address(&app);
+        }
+        if a.devices.is_empty() {
+            a.devices = app_devices(&app);
+        }
+    }
+    if a.skills.is_empty() && !a.job.trim().is_empty() {
+        let devices = if a.devices.is_empty() { vec!["web".to_owned()] } else { a.devices.clone() };
+        a.skills = auto_skills(&a.job, &a.app, &devices);
+    }
+    a
+}
+
+/// What the "Describe it yourself" form starts with: the current app's address and platforms.
+pub fn new_defaults() -> serde_json::Value {
+    let app = worked_on();
+    serde_json::json!({
+        "app_name": app.as_ref().map(|a| a.name.clone()),
+        "app": app.as_ref().map(app_address).unwrap_or_default(),
+        "devices": app.as_ref().map_or(vec!["web".to_owned()], app_devices),
+    })
 }
 
 pub fn get(id: &str) -> Option<Agent> {
@@ -271,7 +408,12 @@ pub fn create(a: Agent) -> Res<Agent> {
 
 /// Change an agent's fields (not its id, conversations or creation time).
 pub fn update(a: Agent) -> Res<Agent> {
-    let a = check(a)?;
+    let mut a = check(a)?;
+    if a.id == DEFAULT
+        && let Some(app) = worked_on()
+    {
+        a = without_app(a, &app);
+    }
     let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut s = read();
     if s.agents.iter().any(|x| x.id != a.id && x.name.eq_ignore_ascii_case(&a.name)) {
