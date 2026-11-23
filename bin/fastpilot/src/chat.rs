@@ -957,7 +957,15 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
                 found.push(p);
             }
         }
-        // C1: the page actions, also from one Chat sentence.
+        // C1: the page actions, also from one Chat sentence. In a turn that read the app or a
+        // ticket, an action card only when the user's own message asks for it (Security #201 L1):
+        // a tested page or a ticket cannot make one.
+        Some(kind @ ("map" | "run_all" | "open")) if (t.read_app || !t.tickets.is_empty()) && !asked_for_action(&t.user, kind, &v) => {
+            if attempts.iter().filter(|a| a["kind"] == "action").count() < 3 {
+                change::audit("chat_action", None, Some(kind), "dashboard", "not-asked");
+                attempts.push(json!({ "kind": "action", "what": kind }));
+            }
+        }
         Some("app") => found.push(app_card(&v, &t.user).unwrap_or_else(|e| refused("app", "This app cannot be added", e))),
         Some("map") => found.push(map_card().unwrap_or_else(|e| refused("map", "The app cannot be mapped", e))),
         Some("run_all") => found.push(run_all_card(&v).unwrap_or_else(|e| refused("run_all", "This test cannot run on every platform", e))),
@@ -1705,6 +1713,23 @@ fn app_card(v: &Value, user: &str) -> Res<Proposal> {
         data: json!({ "kind": "app", kind: value }),
         ..Default::default()
     })
+}
+
+/// Security #201 L1: the user's own message asks for this action (its own words, not a page's).
+fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
+    let u = user.to_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| u.contains(w));
+    match kind {
+        "map" => any(&["map", "peta"]),
+        "run_all" => any(&["all platforms", "every platform", "each platform", "side by side", "semua platform"]),
+        _ => match v["page"].as_str().unwrap_or("") {
+            "jira" => any(&["jira"]),
+            "secrets" => any(&["password", "secret", "sandi"]),
+            "device" => any(&["device", "emulator", "simulator", "phone", "iphone", "android", "perangkat"]),
+            "history" => any(&["history", "riwayat", "delete", "hapus"]),
+            _ => false,
+        },
+    }
 }
 
 /// C1: map the current app (the Map page's one button, from Chat).

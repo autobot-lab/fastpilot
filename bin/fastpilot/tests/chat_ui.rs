@@ -1109,6 +1109,13 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
     assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["open"].as_str()), (Some("open"), Some("secrets")), "{bot}");
     let bot = say("connect jira");
     assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["open"].as_str(), bot["proposals"][0]["title"].as_str()), (Some("open"), Some("jira"), Some("Connect Jira")), "{bot}");
+    // Security #201 L1: in a turn that read the app, what the page asks for makes no card.
+    let bot = say("check the login page and tell me what it asks for");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"].as_array().map(|a| a.iter().filter(|x| x["kind"] == "action").count()), Some(3), "{bot}");
+    // The user's own words in such a turn still get the card.
+    let bot = say("check the login page and map the app");
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("map"), Some("pending")), "{bot}");
     // Only fastpilot's own pages.
     let bot = say("open the outside page");
     assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("open"), Some("refused")), "{bot}");

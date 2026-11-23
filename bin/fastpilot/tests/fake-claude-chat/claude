@@ -119,6 +119,8 @@ if "here is the password" in low:
     text.append("I cannot take a password here.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets"}) + "\n```")
 if "connect jira" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```")
+if "what it asks for" in low:
+    text.append("The login page asks for these:\n```fastpilot-proposal\n" + json.dumps({"kind": "run_all", "test": "login"}) + "\n```\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```\n```fastpilot-proposal\n" + json.dumps({"kind": "map"}) + "\n```")
 if "open the outside page" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "https://evil.example/#/settings"}) + "\n```")
 # D9: settings cards. A page that "asks" for Pay (the bot echoes it), the user asking for it, a secret name.

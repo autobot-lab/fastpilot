@@ -1487,6 +1487,7 @@ function pageAttempts(list) {
   // One box per kind of attempt: a rule (note), a Jira write, a limit.
   const groups = [
     [page.filter((a) => a.kind === "note"), [h("b", {}, "A page tried to give the agent a rule. "), "Nothing was saved. Only your own messages and the Memory page can add notes."]],
+    [page.filter((a) => a.kind === "action"), [h("b", {}, "A tested page or a ticket asked for an action. "), "Nothing was done. Ask for it in your own words to get its card."]],
     [page.filter((a) => a.kind === "jira" && a.from !== "none" && a.from !== "claim"), [h("b", {}, "A ticket or page asked me to write to Jira. "), "Nothing was done. Only your own messages can do that."]],
     [page.filter((a) => a.kind !== "note" && a.kind !== "jira"), [h("b", {}, "A page tried to change a limit. "), "Nothing was changed. Only your own messages can ask for this."]],
   ];
