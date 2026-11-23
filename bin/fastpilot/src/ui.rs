@@ -269,6 +269,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/run-all", get(run_all_info).post(run_all_start))
         .route("/api/map/thumb", get(map_thumb))
         .route("/api/jira", get(crate::jira_api::state).post(crate::jira_api::change))
+        .route("/oauth/atlassian/callback", get(crate::jira_api::callback))
         .route("/api/live", get(live_api))
         .route("/api/live/frames", get(frames))
         .route("/api/live/control", post(control_api))
@@ -371,6 +372,14 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
         if origin.is_none() || !json {
             return refuse(StatusCode::FORBIDDEN, "changes are only accepted from the fastpilot ui page");
         }
+    }
+    // E5: the browser back from Atlassian's sign-in. Its `code` is Atlassian's, not the dashboard's
+    // access code, and a cross-site return carries no SameSite=Strict cookie: the single-use
+    // `state` this dashboard handed out is checked by the handler instead.
+    if req.method() == Method::GET && req.uri().path() == "/oauth/atlassian/callback" {
+        let mut r = next.run(req).await;
+        harden(&mut r);
+        return r;
     }
     let code = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("code="))).map(str::to_owned);
     let current = cookie(headers, &cookie_name(ui.port)).and_then(|c| ui.session(&c));

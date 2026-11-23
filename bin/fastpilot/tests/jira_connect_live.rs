@@ -88,10 +88,14 @@ async fn the_first_test_press_works_and_replace_token_keeps_the_project() {
     assert!(ok, "{out}");
     eval(&client, "location.hash = '#/apps/jira', 'ok'").await;
 
+    // E5: the page offers one button, Sign in with Atlassian; the token form is the small link.
+    let (ok, out) = flow(&client, "- assertVisible: { text: \"Sign in with Atlassian\", timeout: 8000 }\n- assertNotVisible: QA status\n- assertNotVisible: Test connection\n- tapOn: Use an API token instead\n").await;
+    assert!(ok, "{out}");
+
     // Bug 2: type the three fields one after another, then one press of Test connection.
     let (ok, out) = flow(
         &client,
-        "- assertVisible: { text: \"Connect Jira\", timeout: 8000 }\n- inputText: { into: Jira address, text: yourteam }\n- inputText: { into: Email, text: alex@yourteam.com }\n- inputText: { into: { role: textfield, name: API token }, text: \"${JIRA_TOKEN}\" }\n- tapOn: Test connection\n- assertVisible: { text: \"Connected as\", timeout: 8000 }\n",
+        "- assertVisible: { text: \"Connect Jira\", timeout: 8000 }\n- assertNotVisible: QA status\n- inputText: { into: Jira address, text: yourteam }\n- inputText: { into: Email, text: alex@yourteam.com }\n- inputText: { into: { role: textfield, name: API token }, text: \"${JIRA_TOKEN}\" }\n- tapOn: Test connection\n- assertVisible: { text: \"Connected as\", timeout: 8000 }\n",
     )
     .await;
     assert!(ok, "the first press must test the connection: {out}");

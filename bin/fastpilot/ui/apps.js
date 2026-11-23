@@ -149,18 +149,17 @@ function pageApps() {
     h("aside", { class: "apps-side", "aria-label": "How Jira works with fastpilot" },
       h("h2", { class: "app-sec-t" }, "How Jira works with fastpilot"),
       h("ol", { class: "app-how" },
-        h("li", {}, h("b", {}, "You connect once"), h("p", {}, "Your Jira address, email and a token from Atlassian, here on this page. Takes about 2 minutes.")),
+        h("li", {}, h("b", {}, "You connect once"), h("p", {}, "Sign in with Atlassian and pick your site. No token to create.")),
         h("li", {}, h("b", {}, "You ask, you approve"), h("p", {}, "Ask the bot or Claude Code: “make a Jira ticket for this”. You always see the exact text first, and nothing is sent until you click.")),
         h("li", {}, h("b", {}, "Read a ticket, test it"), h("p", {}, "Say “test KAN-12” in Chat. fastpilot reads the ticket and proposes tests. You can then add the result to the ticket as a comment."))),
-      h("div", { class: "app-note info" }, h("b", {}, "Coming soon: "), "when someone moves a ticket to QA, fastpilot tests it by itself. For now, every test starts with you."),
-      h("div", { class: "app-note ok" }, `Your Jira token is stored in ${kept} and is never shown again. Jira's text can never change your limits.`))));
+      h("div", { class: "app-note ok" }, `Your Jira sign-in is stored in ${kept} and is never shown. Jira's text can never change your limits.`))));
 }
 
 // ---- Apps › Connect Jira / Manage (design 02) ----
 let jiraState = null; // { connected, settings, kept_in }
-let jf = null; // the form: { site, email, token, project, qa, replacing }
+let jf = null; // the form: { site, email, token, project, replacing, useToken }
 let jt = null; // the last test: { kind, message, ok, name, projects, wait }
-let jStatuses = [];
+let jProjects = null; // E5: the signed-in account's projects, read when the page shows them
 let jBusy = false;
 let jWaitTimer = null;
 
@@ -175,9 +174,9 @@ async function jiraPost(body) {
 async function loadJira() {
   try { jiraState = await api("/api/jira"); } catch (e) { jiraState = { error: e.message }; }
   const s = jiraState.settings || {};
-  jf = { site: s.site || "", email: s.email || "", token: "", project: s.project_key || "", qa: s.qa_status || "", replacing: false };
+  jf = { site: s.site || "", email: s.email || "", token: "", project: s.project_key || "", replacing: false, useToken: jiraState.connected && s.auth !== "atlassian" };
   jt = jiraState.connected && s.display_name ? { ok: true, name: s.display_name, projects: null, saved: true } : null;
-  jStatuses = s.qa_status ? [s.qa_status] : [];
+  jProjects = null;
   if ((location.hash || "").startsWith("#/integrations/jira")) PAGES.appsJira();
 }
 
@@ -197,7 +196,6 @@ async function testConnection(again) {
     const savedProject = ((jiraState && jiraState.settings) || {}).project_key;
     if (!jf.project && savedProject && r.projects.some((p) => p.key === savedProject)) jf.project = savedProject;
     if (!r.projects.some((p) => p.key === jf.project)) jf.project = r.projects.length === 1 ? r.projects[0].key : "";
-    if (jf.project) loadStatuses();
   } catch (e) {
     jt = { kind: e.kind || "other", message: e.message, wait: e.wait };
     if (e.kind === "busy" && !again) {
@@ -212,17 +210,10 @@ async function testConnection(again) {
   PAGES.appsJira();
 }
 
-async function loadStatuses() {
-  if (!jf.project) { jStatuses = []; return; }
-  try { jStatuses = (await jiraPost({ action: "statuses", ...creds(), project: jf.project })).statuses; } catch (_) { jStatuses = []; }
-  if (jf.qa && !jStatuses.includes(jf.qa)) jf.qa = "";
-  PAGES.appsJira();
-}
-
 async function saveJira() {
   jBusy = true; PAGES.appsJira();
   try {
-    const r = await jiraPost({ action: "save", ...creds(), project: jf.project, qa_status: jf.qa });
+    const r = await jiraPost({ action: "save", ...creds(), project: jf.project });
     toast(r.ok, true);
     PAGES.appsReload();
     jiraState = null;
@@ -283,10 +274,87 @@ function field(label, input, hint, id) {
   return h("label", { class: "fld" }, h("span", { class: "l" }, label), input, hint ? h("span", { class: "s", id }, hint) : null);
 }
 
+// ---- E5: Sign in with Atlassian (no token) ----
+async function signIn() {
+  if (jBusy) return;
+  jBusy = true; jt = null; PAGES.appsJira();
+  try {
+    const r = await jiraPost({ action: "connect" });
+    // Atlassian's own sign-in page; it comes back to this dashboard.
+    location.assign(r.url);
+    return;
+  } catch (e) { jt = { kind: e.kind || "other", message: e.message }; }
+  jBusy = false; PAGES.appsJira();
+}
+
+async function jiraChoose(action, key, value) {
+  if (jBusy) return;
+  jBusy = true; PAGES.appsJira();
+  try { toast((await jiraPost({ action, [key]: value })).ok, true); jiraState = null; PAGES.appsReload(); }
+  catch (e) { toast(e.message); }
+  jBusy = false; PAGES.appsJira();
+}
+
+async function loadProjects() {
+  try { jProjects = (await jiraPost({ action: "projects" })).projects; } catch (e) { jProjects = { error: e.message }; }
+  PAGES.appsJira();
+}
+
+function pageSignIn(signedIn) {
+  const s = jiraState.settings || {};
+  const choose = jiraState.choose_site || [];
+  const failed = (location.hash || "").endsWith("/failed");
+  $top().replaceChildren(icon("plug"), h("div", {}, h("a", { class: "lk s", href: "#/integrations" }, "Integrations /"), h("h1", { tabindex: "-1" }, signedIn ? "Jira" : "Connect Jira")),
+    h("span", { class: "s muted" }, signedIn ? "Connected" : "one click"),
+    h("span", { class: "right btns tight" }, h("a", { class: "btn", href: "#/integrations" }, "Back to Integrations")));
+  let main;
+  if (signedIn) {
+    if (!jProjects) loadProjects();
+    const list = Array.isArray(jProjects) ? jProjects : [];
+    const proj = h("select", { class: "sel", "aria-label": "Default project", disabled: !list.length || jBusy },
+      list.length ? null : h("option", { value: "" }, s.project_key ? `${s.project_name} (${s.project_key})` : "Reading projects…"),
+      list.map((p) => h("option", { value: p.key, selected: p.key === s.project_key }, `${p.name} (${p.key})`)));
+    proj.addEventListener("change", () => jiraChoose("project", "project", proj.value));
+    main = [
+      h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, "your jira account"),
+        h("div", { class: "ag-pad" }, h("div", { class: "jt ok", role: "status" }, "✓ Connected as ", h("b", {}, s.display_name || "you"), ` · ${s.site}`),
+          h("p", { class: "s muted" }, "Signed in with Atlassian. Nothing to renew: fastpilot keeps the sign-in fresh by itself."))),
+      h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, "where tickets go"),
+        h("div", { class: "form ag-pad" }, field("Default project", proj, null), h("span", { class: "s" }, jProjects && jProjects.error ? jProjects.error : "Used when the bot or Claude Code files a bug. You can name another project each time."))),
+      h("section", { class: "grp jira-sec danger-zone" }, h("h2", { class: "gh" }, "disconnect"),
+        h("div", { class: "ag-pad" }, h("p", {}, "fastpilot's access is revoked at Atlassian and forgotten here. Tickets already created stay in Jira."),
+          h("button", { class: "btn danger", onclick: disconnectJira }, "Disconnect Jira…"))),
+    ];
+  } else if (choose.length) {
+    main = [h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, "which jira site?"),
+      h("div", { class: "ag-pad" }, h("p", {}, "Your Atlassian account can use more than one site. Pick the one fastpilot files bugs in."),
+        h("div", { class: "btns" }, choose.map((c) => h("button", { class: "btn", disabled: jBusy, onclick: () => jiraChoose("site", "site", c.site) }, `Use ${c.name || c.site}`, h("span", { class: "s muted" }, ` · ${c.site}`))))))];
+  } else {
+    main = [h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, "connect jira"),
+      h("div", { class: "ag-pad" },
+        failed && !jt ? h("div", { class: "jt warn", role: "alert" }, "! The last sign-in did not finish. Nothing was saved. Try again.") : null,
+        jt && jt.message ? h("div", { class: "jt warn", role: "alert" }, "! " + jt.message) : null,
+        h("p", {}, "You sign in on Atlassian's page and pick your site. No token to create, nothing to copy."),
+        h("button", { class: "btn p", disabled: jBusy, onclick: signIn }, icon("plug", "sm"), jBusy ? "Opening Atlassian…" : "Sign in with Atlassian"),
+        h("p", { class: "s muted" }, h("button", { class: "lk", type: "button", onclick: () => { jf.useToken = true; jt = null; PAGES.appsJira(); } }, "Use an API token instead"), " (if your admin blocks Atlassian sign-in for apps)")))];
+  }
+  $body().replaceChildren(h("div", { class: "apps" },
+    h("div", { class: "apps-main" }, ...main),
+    h("aside", { class: "apps-side" },
+      h("h2", { class: "app-sec-t" }, "What happens"),
+      h("ol", { class: "app-how" },
+        h("li", {}, h("b", {}, "You sign in at Atlassian"), h("p", {}, "fastpilot never sees your password.")),
+        h("li", {}, h("b", {}, "The sign-in is kept safe"), h("p", {}, `In ${jiraState.kept_in || "this computer's key store"}, only on this computer. Disconnect revokes it.`)),
+        h("li", {}, h("b", {}, "You approve every write"), h("p", {}, "The bot and Claude Code file bugs and comments only after your click."))),
+      h("div", { class: "app-note warn" }, h("b", {}, "Jira Cloud only. "), "Sites that end in .atlassian.net."))));
+}
+
 function pageJira() {
   if (!jiraState) { loadJira(); $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading the Jira connection…"))); return; }
   if (jiraState.error) { $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Could not read the Jira connection: " + jiraState.error)); return; }
   const connected = jiraState.connected;
+  const signedIn = connected && (jiraState.settings || {}).auth === "atlassian";
+  if (signedIn || !jf.useToken) return pageSignIn(signedIn);
   const kept = jiraState.kept_in || "this computer's key store";
   const clear = () => { clearTimeout(jWaitTimer); if (jt && !jt.saved) jt = null; else if (jt && jt.saved) jt = null; };
   const input = (key, attrs) => {
@@ -317,10 +385,7 @@ function pageJira() {
     h("option", { value: "" }, projects ? "Choose a project" : connected ? `${(jiraState.settings || {}).project_name || ""} (${jf.project})` : "Test the connection first"),
     (projects || []).map((p) => h("option", { value: p.key, selected: p.key === jf.project }, `${p.name} (${p.key})`)));
   if (!projects && connected && jf.project) proj.value = "";
-  proj.addEventListener("change", () => { jf.project = proj.value; jf.qa = ""; loadStatuses(); PAGES.appsJira(); });
-  const qa = h("select", { class: "sel", "aria-label": "QA status", disabled: !jStatuses.length },
-    h("option", { value: "" }, "None"), jStatuses.map((st) => h("option", { value: st, selected: st === jf.qa }, st)));
-  qa.addEventListener("change", () => { jf.qa = qa.value; redrawControls(); });
+  proj.addEventListener("change", () => { jf.project = proj.value; PAGES.appsJira(); });
   const canSave = jt && jt.ok && jt.projects && jt.projects.length && jf.project && !jBusy;
   const saveBtn = h("button", { class: "btn p", disabled: !canSave, onclick: saveJira }, connected ? "Save changes" : "Connect Jira");
   const pastedText = () => (/^https?:\/\//i.test(jf.site) || jf.site.includes("/") ? "We use only the address and ignore the rest of what you paste." : "");
@@ -346,9 +411,8 @@ function pageJira() {
           h("div", { class: "jira-two" }, h("div", {}, field("Email", email, null), h("span", { class: "s", id: "jira-email-h" }, "The email you use to sign in to Atlassian.")), tokenRow),
           h("div", { class: "jira-test" }, testBtn, why, h("div", { id: "jira-result" }, ...[testResult()].filter(Boolean))))),
       h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, connected ? "where tickets go" : "2 · where tickets go"),
-        h("div", { class: "form ag-pad jira-two" },
-          h("div", {}, field("Default project", proj, null), h("span", { class: "s" }, "Used when the bot or Claude Code files a bug. You can name another project each time.")),
-          h("div", {}, field("QA status (optional)", qa, null), h("span", { class: "s" }, "Saved for later: automatic testing when a ticket moves here is coming soon.")))),
+        h("div", { class: "form ag-pad" },
+          h("div", {}, field("Default project", proj, null), h("span", { class: "s" }, "Used when the bot or Claude Code files a bug. You can name another project each time.")))),
       connected ? h("section", { class: "grp jira-sec danger-zone" }, h("h2", { class: "gh" }, "disconnect"),
         h("div", { class: "ag-pad" }, h("p", {}, "fastpilot forgets the token and these settings. Tickets already created stay in Jira. You can connect again whenever you like."),
           h("button", { class: "btn danger", onclick: disconnectJira }, "Disconnect Jira…"))) : null,

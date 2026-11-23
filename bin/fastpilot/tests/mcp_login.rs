@@ -177,7 +177,8 @@ async fn assert_report_and_path_memory_over_mcp() {
     client.cancel().await.expect("shutdown");
 
     let memo = std::fs::read_to_string(dir.join("memory/login-ok.json")).expect("memory file");
-    assert!(memo.contains("role: button") && memo.contains("name: Masuk") && !memo.contains("e5"), "{memo}");
+    // No ref (`e5`) is kept as the selector; the folder path may contain those letters.
+    assert!(memo.contains("role: button") && memo.contains("name: Masuk") && !memo.contains("tapOn: e5") && !memo.contains(": e5\\n"), "{memo}");
     assert!(memo.contains("${DEMO_PASS}") && !memo.contains("rahasia123"), "{memo}");
 
     // Next run: the hint comes back and replays in one round-trip.

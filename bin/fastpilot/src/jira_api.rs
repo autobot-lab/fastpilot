@@ -23,12 +23,94 @@ fn jira_refusal(e: &JiraError) -> Response {
 /// `GET /api/jira`: the connection, never the token.
 pub async fn state() -> Response {
     let s = jira::settings();
+    let connected = s.as_ref().is_some_and(|s| if s.signed_in() { jira::oauth::connected() } else { jira::token::has() });
+    let choose: Vec<Value> = if connected { Vec::new() } else { choices().into_iter().map(|(h, n)| json!({ "site": h, "name": n })).collect() };
     axum::Json(json!({
-        "connected": s.is_some() && jira::token::has(),
+        "connected": connected,
         "settings": s,
         "kept_in": jira::token::kept_in(),
+        "choose_site": choose,
     }))
     .into_response()
+}
+
+// ---- E5: Sign in with Atlassian ----------------------------------------------------------------
+
+/// The sites to choose from after a sign-in that can use more than one (until one is chosen).
+static CHOICES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn choices() -> Vec<(String, String)> {
+    if !jira::oauth::connected() {
+        return Vec::new();
+    }
+    CHOICES.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// This dashboard's own return address: always 127.0.0.1 (the page's origin) and its port.
+fn redirect_uri(host: &str) -> Option<String> {
+    let port: u16 = host.rsplit_once(':')?.1.parse().ok()?;
+    Some(format!("http://127.0.0.1:{port}/oauth/atlassian/callback"))
+}
+
+/// `{action: connect}`: where the browser goes to sign in (Atlassian's page). Nothing is kept
+/// until the person comes back with a valid `state`.
+async fn connect(host: &str) -> Response {
+    let Some(r) = redirect_uri(host) else { return refuse(StatusCode::BAD_REQUEST, "other", "Open the dashboard at its 127.0.0.1 address, then click Connect again.") };
+    match jira::oauth::begin(&r).await {
+        Ok(url) => axum::Json(json!({ "url": url })).into_response(),
+        Err(e) => refuse(StatusCode::CONFLICT, e.kind(), &format!("Could not reach Atlassian's sign-in. Check your internet connection, then try again. ({e})")),
+    }
+}
+
+/// Save the connection for `site` (one of the account's sites), with its most recent project.
+async fn use_site(site: &str) -> Result<jira::Settings, Response> {
+    let j = jira::Jira::signed_in(site).map_err(|e| jira_refusal(&e))?;
+    let name = j.myself().await.map_err(|e| jira_refusal(&e))?;
+    let projects = j.projects().await.unwrap_or_default();
+    let (key, pname) = projects.first().cloned().unwrap_or_default();
+    let was = jira::settings();
+    let s = jira::Settings { site: j.site().to_owned(), display_name: name, project_key: key, project_name: pname, checked_ms: jira::now_ms(), auth: "atlassian".into(), ..Default::default() };
+    jira::save_settings(&s).map_err(|e| refuse(StatusCode::CONFLICT, "other", &format!("The settings could not be saved: {e}")))?;
+    CHOICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    fastpilot_core::change::audit("jira", was.as_ref().map(|w| w.site.clone()).as_deref(), Some(&format!("{} (Sign in with Atlassian)", s.site)), "dashboard", if was.is_some() { "changed" } else { "connected" });
+    Ok(s)
+}
+
+/// `GET /oauth/atlassian/callback?code=…&state=…`: the browser back from Atlassian. Open without
+/// the dashboard cookie (a cross-site return does not carry a SameSite=Strict cookie); the
+/// single-use `state` of a sign-in this dashboard started is what lets it in.
+pub async fn callback(axum::extract::RawQuery(q): axum::extract::RawQuery) -> Response {
+    let q = q.unwrap_or_default();
+    let param = |k: &str| reqwest::Url::parse(&format!("http://x/?{q}")).ok().and_then(|u| u.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned()));
+    let outcome = match (param("state"), param("code"), param("error")) {
+        (_, _, Some(_)) => Err("Atlassian did not connect: the sign-in was cancelled or not allowed. Nothing was saved.".to_owned()),
+        (Some(state), Some(code), None) => match jira::oauth::finish(&state, &code).await {
+            Ok(()) => match jira::oauth::sites().await {
+                Ok(sites) if sites.len() == 1 => use_site(&sites[0].0).await.map(|_| ()).map_err(|_| "Signed in, but Jira did not answer. Open Integrations › Jira and try again.".to_owned()),
+                Ok(sites) if sites.is_empty() => Err("Signed in, but this Atlassian account has no Jira Cloud site.".to_owned()),
+                Ok(sites) => {
+                    *CHOICES.lock().unwrap_or_else(|e| e.into_inner()) = sites;
+                    Ok(())
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            Err(e) => Err(e.to_string()),
+        },
+        _ => Err("This page is only for returning from Atlassian's sign-in. Nothing was saved.".to_owned()),
+    };
+    let (title, line) = match &outcome {
+        Ok(()) => ("Jira is connected", "Back to fastpilot…".to_owned()),
+        Err(why) => ("Jira is not connected", why.clone()),
+    };
+    let to = if outcome.is_ok() { "/#/integrations/jira" } else { "/#/integrations/jira/failed" };
+    let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let page = format!(
+        "<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer><meta http-equiv=refresh content=\"{}; url={to}\"><title>{title}</title><p><b>{title}.</b> {}</p><p><a href=\"{to}\">Open fastpilot</a></p>",
+        if outcome.is_ok() { 0 } else { 5 },
+        esc(&line)
+    );
+    let status = if outcome.is_ok() { StatusCode::OK } else { StatusCode::BAD_REQUEST };
+    (status, [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], page).into_response()
 }
 
 fn text(body: &Value, k: &str) -> String {
@@ -56,13 +138,32 @@ fn account(body: &Value) -> Result<Jira, Box<Response>> {
     Jira::new(&site, &email, &token).map_err(|e| Box::new(jira_refusal(&e)))
 }
 
-/// `POST /api/jira`: `{action: test|statuses|save|disconnect, …}`.
-pub async fn change(axum::Json(body): axum::Json<Value>) -> Response {
+/// `POST /api/jira`: `{action: connect|site|project|test|statuses|save|disconnect, …}`.
+pub async fn change(headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>) -> Response {
     match body["action"].as_str().unwrap_or("") {
+        "connect" => connect(headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("")).await,
+        "site" => {
+            let site = text(&body, "site");
+            if !choices().iter().any(|(h, _)| *h == site) {
+                return refuse(StatusCode::BAD_REQUEST, "site", "Choose one of the sites your Atlassian account can use.");
+            }
+            match use_site(&site).await {
+                Ok(s) => axum::Json(json!({ "ok": format!("Connected to {}.", s.site), "settings": s })).into_response(),
+                Err(r) => r,
+            }
+        }
+        "project" => project(&body).await,
+        "projects" => match jira::Jira::connected() {
+            Ok(j) => match j.projects().await {
+                Ok(p) => axum::Json(json!({ "projects": p.iter().map(|(k, n)| json!({ "key": k, "name": n })).collect::<Vec<_>>() })).into_response(),
+                Err(e) => jira_refusal(&e),
+            },
+            Err(e) => jira_refusal(&e),
+        },
         "test" => test(&body).await,
         "statuses" => statuses(&body).await,
         "save" => save(&body).await,
-        "disconnect" => disconnect(),
+        "disconnect" => disconnect().await,
         "approve" => decide(&body, true).await,
         "decline" => decide(&body, false).await,
         _ => refuse(StatusCode::BAD_REQUEST, "other", "Unknown Jira action."),
@@ -178,6 +279,7 @@ async fn save(body: &Value) -> Response {
         display_name: jira::plain(&name, 120),
         checked_ms: jira::now_ms(),
         needs_attention: false,
+        auth: String::new(),
     };
     if let Err(e) = jira::save_settings(&s) {
         return refuse(StatusCode::CONFLICT, "other", &format!("The settings could not be saved: {e}"));
@@ -188,9 +290,39 @@ async fn save(body: &Value) -> Response {
     axum::Json(json!({ "ok": format!("Saved. Jira is connected to {site} · {} ({key}).", s.project_name), "settings": s })).into_response()
 }
 
-fn disconnect() -> Response {
+/// `{action: project, project}`: the default project of a signed-in connection.
+async fn project(body: &Value) -> Response {
+    let Some(mut s) = jira::settings().filter(|s| s.signed_in()) else { return jira_refusal(&JiraError::NotConnected) };
+    let key = text(body, "project");
+    let projects = match jira::Jira::connected() {
+        Ok(j) => match j.projects().await {
+            Ok(p) => p,
+            Err(e) => return jira_refusal(&e),
+        },
+        Err(e) => return jira_refusal(&e),
+    };
+    let Some((_, name)) = projects.iter().find(|(k, _)| *k == key) else { return refuse(StatusCode::BAD_REQUEST, "project", "Choose one of the projects in the list.") };
+    s.project_key = key;
+    s.project_name = jira::plain(name, 120);
+    match jira::save_settings(&s) {
+        Ok(()) => axum::Json(json!({ "ok": format!("Default project: {} ({}).", s.project_name, s.project_key), "settings": s })).into_response(),
+        Err(e) => refuse(StatusCode::CONFLICT, "other", &format!("The settings could not be saved: {e}")),
+    }
+}
+
+async fn disconnect() -> Response {
     let was = jira::settings();
     jira::clear_settings();
+    CHOICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    // Signed in with Atlassian: revoked there, then forgotten here. An API token: removed.
+    let revoked = jira::oauth::revoke().await;
+    if was.as_ref().is_some_and(jira::Settings::signed_in) {
+        fastpilot_core::change::audit("jira", was.as_ref().map(|w| w.site.clone()).as_deref(), None, "dashboard", "disconnected");
+        return match revoked {
+            Ok(()) => axum::Json(json!({ "ok": "Jira disconnected. fastpilot's access was revoked at Atlassian and removed from this computer. Tickets already created are still in Jira." })).into_response(),
+            Err(_) => refuse(StatusCode::CONFLICT, "keychain", "Could not remove the sign-in from the key store. On a Mac, open Keychain Access and delete \"fastpilot jira\"."),
+        };
+    }
     let removed = jira::token::delete();
     let what = was.as_ref().map(|w| format!("{} {}", w.site, w.email));
     fastpilot_core::change::audit("jira", what.as_deref(), None, "dashboard", "disconnected");
