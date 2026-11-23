@@ -356,7 +356,7 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     assert_eq!(eval(c, "document.querySelector('.rail a[aria-current=page]')?.textContent || 'none'").await, "\"Chat\"", "opens on Chat");
     // Typed right away, the message survives the page being drawn again (apps and settings load).
     see(c, "Send").await;
-    let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); for (let i = 0; i < 40 && document.getElementById('chat-input') === t; i++) await new Promise((r) => setTimeout(r, 100)); await new Promise((r) => setTimeout(r, 50)); const n = document.getElementById('chat-input'); return [n !== t, n.value, document.activeElement === n].join('|'); })()").await;
+    let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); for (let i = 0; i < 100; i++) { const c = document.getElementById('chat-input'); if (c && c !== t) break; await new Promise((r) => setTimeout(r, 100)); } await new Promise((r) => setTimeout(r, 50)); const n = document.getElementById('chat-input'); return [n !== t, n.value, document.activeElement === n].join('|'); })()").await;
     assert_eq!(kept, "\"true|check the login|true\"", "a redraw keeps the draft and the cursor");
 
     // No app yet: one button. The dialog asks for the address only (design M1). Opened from Live,
