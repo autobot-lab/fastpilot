@@ -294,3 +294,84 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// S1 (v0.7): "Sign in with the test account". The app's own test account, saved once through the
+/// dashboard (E2, Keychain; the file store here), lets the map sign in and map the pages behind
+/// the sign-in page. S-1 holds: when the app's website is elsewhere, the form is a wall and
+/// nothing is typed. No project notes are involved.
+#[tokio::test]
+async fn the_app_test_account_signs_the_map_in_on_its_own_site_only() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-map-signin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["demo", "shop"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env_remove("FASTPILOT_CONFIG")
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("demo");
+    let start = home.join("shop/demo/index.html");
+    assert!(start.is_file(), "{}", String::from_utf8_lossy(&out.stdout));
+    let start_url = format!("file://{}", start.display());
+    let apps = |web: &str| format!(r#"{{ "current": "shop", "apps": [ {{ "id": "shop", "name": "Shop", "targets": {{ "web": "{web}" }}, "repo": null, "created_ms": 1 }} ] }}"#);
+    std::fs::create_dir_all(home.join("fastpilot")).expect("ws");
+    std::fs::write(home.join("fastpilot/apps.json"), apps(&start_url)).expect("apps");
+    // Not a project folder: the dashboard works in the app's own folder (E6c). No DEMO_PASS here.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["ui", "--no-open"])
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("FASTPILOT_DIR")
+        .env_remove("FASTPILOT_VARS")
+        .env_remove("DEMO_PASS")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("ui");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut line).expect("link");
+    let rest = line.trim().strip_prefix("http://127.0.0.1:").expect("link").to_owned();
+    let (port, code) = rest.split_once("/?code=").expect("code");
+    let port: u16 = port.parse().expect("port");
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.write_all(format!("GET /?code={code} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).expect("write");
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).expect("read");
+    let cookie = raw.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.trim().to_owned())).and_then(|c| c.split(';').next().map(str::to_owned)).expect("cookie");
+    let ui = Ui { child, port, cookie, link: line.trim().to_owned() };
+
+    // Nothing saved yet: the page asks for the user name and the password.
+    let (_, v) = json_of(ui.port, "GET", "/api/map", &ui.cookie, Value::Null);
+    assert!(v["test_account"] == false && v["test_user"] != true, "{v}");
+    for (name, value) in [("TEST_USER", "a@b.com"), ("TEST_PASSWORD", "rahasia123")] {
+        let (st, r) = json_of(ui.port, "POST", "/api/secrets", &ui.cookie, json!({ "action": "set", "name": name, "value": value }));
+        assert_eq!(st, 200, "{name}: {r}");
+    }
+    // Mapped behind the sign-in page with the app's own account.
+    let v = map(&ui, &start_url);
+    let m = &v["map"];
+    assert!(m["signed_in"] == true && m["wall"].is_null(), "{m}");
+    let (_, v) = json_of(ui.port, "GET", "/api/map", &ui.cookie, Value::Null);
+    assert!(v["test_account"] == true && v["test_user"] == true, "{v}");
+    assert!(m["screens"].as_array().into_iter().flatten().any(|s| s["title"] == "Dashboard"), "the page behind the sign-in: {m}");
+    assert!(m["message"].as_str().is_some_and(|t| t.contains("signed in with the test account") && !t.contains("project notes")), "{m}");
+
+    // S-1: the app's website is somewhere else, so its password is not typed into this form.
+    std::fs::write(home.join("fastpilot/apps.json"), apps("https://shop.example/")).expect("apps");
+    let (_, _) = json_of(ui.port, "POST", "/api/apps", &ui.cookie, json!({ "action": "use", "id": "shop" }));
+    let v = map(&ui, &start_url);
+    let m = &v["map"];
+    assert!(m["signed_in"] == false && m["wall"] == "Masuk ke Akun", "not the app's site: a wall, nothing typed: {m}");
+    assert!(!m["screens"].as_array().into_iter().flatten().any(|s| s["title"] == "Dashboard"), "{m}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
