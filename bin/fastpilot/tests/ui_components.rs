@@ -262,7 +262,7 @@ async fn settings_menu_says_secrets() {
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
         "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
-        open(c, hash, "No password yet").await;
+        open(c, hash, "Nothing saved yet").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
         assert_eq!(page, "\"Secrets|Secrets\"", "{hash}");
     }
@@ -286,15 +286,86 @@ async fn a_password_is_asked_in_the_page_and_kept_for_the_app() {
     let c = &d.client;
     let seeded = eval(c, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example/' } }); await api('/api/settings', { key: 'vars', value: ['DEMO_PASS'] }); return 'ok'; })()").await;
     assert_eq!(seeded, "\"ok\"");
-    open(c, "#/settings/secrets", "Passwords for Shop").await;
-    see(c, "⚠ Not set").await;
-    let flow = "- tapOn: Set value\n- assertVisible: Set DEMO_PASS\n- inputText: { into: Set DEMO_PASS, text: kunci-rahasia-9 }\n- tapOn: Save password\n- assertVisible: ✓ Set\n";
+    open(c, "#/settings/secrets", "a test of Shop needs it").await;
+    see(c, "Not set yet").await;
+    let flow = "- tapOn: Set value\n- assertVisible: Set DEMO_PASS\n- inputText: { into: Set DEMO_PASS, text: kunci-rahasia-9 }\n- tapOn: Save password\n- assertVisible: Saved on this\n";
     let (ok, out) = call(c, "run_flow", json!({ "flow": flow })).await;
     assert!(ok, "{out}");
     let kept = std::fs::read_to_string(d.home.join(".fastpilot/keys/secrets/shop/DEMO_PASS")).expect("kept for the app");
     assert!(!kept.contains("kunci-rahasia-9"), "kept encoded, not as typed");
     let page = eval(c, "(async () => { const t = document.body.innerHTML + JSON.stringify(await api('/api/secrets')); const i = t.indexOf('kunci-rahasia-9'); return i < 0 ? 'clean DEMO_PASS' : t.slice(Math.max(0, i - 300), i + 50); })()").await;
     assert!(page.contains("DEMO_PASS") && !page.contains("kunci-rahasia-9"), "never shown again: {page}");
+}
+
+/// U1 (v0.7): one look everywhere (Design Critic's Lows, FastUI/UX's HANDOFF-lows-v07). No terminal
+/// command on the main view of Live, Device or Secrets; one Chat page for every way in; with one
+/// agent no agent list or tabs; a local website is called "Your website", its address under it.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_chat_no_commands_and_no_tabs_for_one_agent() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let d = dashboard("ui-u1", |_| {}).await;
+    let c = &d.client;
+    // Visible text of the main view: hidden "More options" panels do not count.
+    let shown = "(() => { const out = []; const w = document.createTreeWalker(document.getElementById('body'), NodeFilter.SHOW_TEXT); while (w.nextNode()) { const n = w.currentNode; if (n.parentElement && !n.parentElement.closest('[hidden]')) out.push(n.textContent); } return out.join(' '); })()";
+    let command = |t: &str| ["fastpilot open", "fastpilot run", "fastpilot doctor", "claude mcp add", "brew install", "sudo ", "export FASTPILOT"].iter().find(|w| t.contains(*w)).map(|w| (*w).to_owned());
+
+    // Live, nothing running: one button to Chat, no command.
+    open(c, "#/live", "No test is running yet").await;
+    let live = eval(c, shown).await;
+    assert_eq!(command(&live), None, "{live}");
+    see(c, "Make a test in Chat").await;
+    eval(c, "([...document.querySelectorAll('#body button')].find((b) => b.textContent.includes('Make a test in Chat')).click(), 'ok')").await;
+    see(c, "Send").await;
+    assert_eq!(eval(c, "location.hash + '|' + (document.querySelector('.rail a[aria-current=page]')?.textContent || '')").await, "\"#/agents/default/chat|Chat\"");
+
+    // One agent: Chat is just Chat, no agent list, no tabs; the rest under More.
+    let solo = eval(c, "[!!document.querySelector('.ag-tabs'), !!document.querySelector('.ag-col'), document.querySelector('.top h1').textContent, !!document.querySelector('#body .more-btn')].join('|')").await;
+    assert_eq!(solo, "\"false|false|Chat|true\"");
+
+    // An old #/chat link lands on the same page.
+    eval(c, "(location.hash = '#/chat', 'ok')").await;
+    let mut at = String::new();
+    for _ in 0..40 {
+        at = eval(c, "location.hash").await;
+        if at.contains("agents") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(at, "\"#/agents/default/chat\"");
+
+    // Device and Secrets: no command on the main view.
+    open(c, "#/device", "Device").await;
+    for _ in 0..100 {
+        if eval(c, "String(!document.querySelector('#body .spin'))").await == "\"true\"" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let device = eval(c, shown).await;
+    assert_eq!(command(&device), None, "{device}");
+    open(c, "#/settings/secrets", "Secrets").await;
+    let secrets = eval(c, shown).await;
+    assert_eq!(command(&secrets), None, "{secrets}");
+    assert_eq!(eval(c, "String([...document.querySelectorAll('#body input')].filter((i) => !i.closest('[hidden]')).length)").await, "\"0\"", "no text box on the main view");
+
+    // A local website gets a readable name, its address under it.
+    let added = eval(c, "(async () => { const r = await api('/api/apps', { action: 'add', targets: { web: 'http://127.0.0.1:3000/' } }); return r.app.name; })()").await;
+    assert_eq!(added, "\"Your website\"");
+    // The app bar reads the list when the page loads.
+    eval(c, "(location.hash = '#/live', location.reload(), 'ok')").await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let mut bar = String::new();
+    for _ in 0..40 {
+        bar = eval(c, "document.querySelector('#appbar .appbtn')?.textContent || ''").await;
+        if bar.contains("Your website") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert!(bar.contains("Your website") && bar.contains("127.0.0.1:3000"), "{bar}");
 }
 
 /// UXA3 (v0.7): one set of button words. New thing: Create + the thing; an edit: Save changes; into a
@@ -503,7 +574,7 @@ async fn the_limits_page_says_what_protects_you_and_changes_go_through_chat() {
     assert_eq!(more, "\"false|true\"", "every limit is under More options, closed");
     // A sentence goes to Chat (sending is caught here: no real Claude in this test).
     eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.querySelectorAll('.say-row')[1].click(); return 'ok'; })()").await;
-    assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/chat|Never press \\\"Log out\\\"\"");
+    assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/agents/default/chat|Never press \\\"Log out\\\"\"", "the one Chat page (U1)");
     // Security #187 L1: page scripts allowed means a script can press any button: not "protected".
     eval(c, "(async () => { await api('/api/settings', { key: 'allow_eval_script', value: true }); await loadSettings(); location.hash = '#/settings/limits'; render(); return 'ok'; })()").await;
     open(c, "#/settings/limits", "Less protected").await;

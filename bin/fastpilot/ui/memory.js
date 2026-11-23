@@ -305,7 +305,7 @@ function pageNotes() {
       })]))
     : h("div", { class: "grp" }, h("div", { class: "empty" }, h("b", {}, "No notes yet"),
       h("span", {}, "Just say it in Chat, for example \"staging is https://staging.shop.example\". fastpilot asks \"Remember this?\", and one click keeps it."),
-      h("a", { class: "btn p", href: "#/chat" }, "Open Chat")));
+      h("a", { class: "btn p", href: "#/agents/default/chat" }, "Open Chat")));
   // UXA8: notes come from Chat ("Remember this?"); typing one here is under More options, open
   // while a note is being edited or typed.
   const more = UI.moreOptions({ label: "Type a note yourself", open: noteTyping || !!(noteForm.id || noteForm.text || noteError) }, notesPanel());

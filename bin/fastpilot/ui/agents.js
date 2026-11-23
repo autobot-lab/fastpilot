@@ -280,11 +280,23 @@ function page(id, tab) {
   if (!x) { location.hash = "#/agents/default/chat"; return; }
   const a = x.agent;
   tab = TABS.some(([k]) => k === tab) ? tab : "chat";
-  $top().replaceChildren(avatar(x, "lg"), h("div", { class: "ag-head" }, h("h1", { tabindex: "-1" }, a.name),
-    h("span", { class: "s" }, `${a.devices.map(deviceName).join(" + ")} · ${modelLabel(x)}`, " ", untested(x))),
-  h("nav", { class: "ag-tabs right", "aria-label": `${a.name}: sections` }, TABS.map(([k, t]) => h("a", { href: `#/agents/${a.id}/${k}`, class: k === tab ? "on" : "", "aria-current": k === tab ? "page" : null }, t))));
   const box = h("div", { class: "ag-main" });
-  $body().replaceChildren(h("div", { class: "ag-wrap" }, list(a.id), box));
+  // U1 (DC5): with one agent, Chat is just Chat: no agent list, no tabs. Its other sections and
+  // New agent are under More.
+  if ((agData.agents || []).length < 2) {
+    const title = TABS.find(([k]) => k === tab)[1];
+    $top().replaceChildren(...[icon("chat"), h("h1", { tabindex: "-1" }, tab === "chat" ? "Chat" : title),
+      tab === "chat" ? null : h("a", { class: "btn sm right", href: `#/agents/${a.id}/chat` }, "Back to Chat")].filter(Boolean));
+    const more = UI.moreOptions({ label: "More" }, h("div", { class: "btns tight" },
+      TABS.filter(([k]) => ["instructions", "skills", "settings"].includes(k)).map(([k, t]) => h("a", { class: "btn sm", href: `#/agents/${a.id}/${k}` }, t)),
+      h("a", { class: "btn sm", href: "#/agents/new" }, icon("plus", "sm"), "New agent")));
+    $body().replaceChildren(h("div", { class: "ag-solo" }, box, tab === "chat" ? more : null));
+  } else {
+    $top().replaceChildren(avatar(x, "lg"), h("div", { class: "ag-head" }, h("h1", { tabindex: "-1" }, a.name),
+      h("span", { class: "s" }, `${a.devices.map(deviceName).join(" + ")} · ${modelLabel(x)}`, " ", untested(x))),
+    h("nav", { class: "ag-tabs right", "aria-label": `${a.name}: sections` }, TABS.map(([k, t]) => h("a", { href: `#/agents/${a.id}/${k}`, class: k === tab ? "on" : "", "aria-current": k === tab ? "page" : null }, t))));
+    $body().replaceChildren(h("div", { class: "ag-wrap" }, list(a.id), box));
+  }
   if (tab === "chat") {
     if (chatAgent !== a.id || chatHost !== box) { chatData = null; chatSig = ""; }
     chatAgent = a.id;

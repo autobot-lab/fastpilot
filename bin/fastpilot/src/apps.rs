@@ -314,7 +314,7 @@ fn now_ms() -> u64 {
 }
 
 /// A name for an app from its address: "https://staging.shop.example" → "Shop staging",
-/// "http://127.0.0.1:8080" → "127.0.0.1", "file:///…/demo/login.html" → "Demo",
+/// "http://127.0.0.1:8080" → "Your website", "file:///…/demo/login.html" → "Demo",
 /// "com.shop.app" → "Shop".
 fn name_from(t: &Targets) -> String {
     let cap = |w: &str| w.chars().take(1).flat_map(char::to_uppercase).chain(w.chars().skip(1)).collect::<String>();
@@ -330,7 +330,9 @@ fn name_from(t: &Targets) -> String {
                 let words = if parts.len() > 1 { &parts[..parts.len() - 1] } else { &parts[..] };
                 if words.len() > 1 { format!("{} {}", cap(words[1]), words[0]) } else { cap(words.first().copied().unwrap_or("Website")) }
             }
-            Some(h) => h.to_string(),
+            // A local address or a bare IP reads like a technical value (U1): the switcher shows
+            // the address under the name.
+            Some(_) => "Your website".into(),
             None => "Website".into(),
         };
     }
@@ -447,8 +449,8 @@ mod tests {
         let web = |w: &str| name_from(&check_targets(Targets { web: Some(w.into()), ..Default::default() }).expect("ok"));
         assert_eq!(web("https://staging.shop.example"), "Shop staging");
         assert_eq!(web("https://www.tokoku.co"), "Tokoku");
-        assert_eq!(web("http://127.0.0.1:8080/login"), "127.0.0.1");
-        assert_eq!(web("http://localhost:3000"), "localhost");
+        assert_eq!(web("http://127.0.0.1:8080/login"), "Your website");
+        assert_eq!(web("http://localhost:3000"), "Your website");
         assert_eq!(web("file:///Users/me/my%20demo/login.html"), "My demo");
         let phone = |a: &str| name_from(&Targets { android: Some(a.into()), ..Default::default() });
         assert_eq!((phone("com.shop.app"), phone("com.fastpilot.demo")), ("Shop".into(), "Demo".into()));

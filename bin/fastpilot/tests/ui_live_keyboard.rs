@@ -103,13 +103,13 @@ async fn live_page_works_with_the_keyboard() {
 
     // FastTest final report: "click Web, fill in, Create" said "Pick where it tests" (Web was
     // picked already and the click took it off). The last place picked stays on, with a reason.
-    // S4: in the agents list, "New agent" is under More.
-    eval(&client, "location.hash = '#/agents/default/settings', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"agent settings\", timeout: 8000 }\n", "session": "viewer" })).await;
+    // S4 + U1: with one agent, Chat has no agent list; "New agent" is under More below it.
+    eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"More\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    let hidden_new = "(() => { const a = [...document.querySelectorAll('.ag-col a')].find((x) => x.textContent.includes('New agent')); return a ? String(!!a.closest('[hidden]')) : 'none'; })()";
+    let hidden_new = "(() => { const a = [...document.querySelectorAll('#body .more a')].find((x) => x.textContent.includes('New agent')); return a ? String(!!a.closest('[hidden]')) : 'none'; })()";
     assert_eq!(eval(&client, hidden_new).await, "\"true\"", "New agent waits under More");
-    eval(&client, "document.querySelector('.ag-col .more-btn').click(), 'ok'").await;
+    eval(&client, "[...document.querySelectorAll('#body .more-btn')].find((b) => b.textContent.includes('More')).click(), 'ok'").await;
     assert_eq!(eval(&client, hidden_new).await, "\"false\"", "More shows it");
 
     // S4: New agent needs no typing: three focuses, the form under "Describe it yourself".
