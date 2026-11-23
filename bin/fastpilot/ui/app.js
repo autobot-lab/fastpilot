@@ -386,7 +386,7 @@ function limitsSummary() {
   const head = blocked.length && !scripts
     ? h("div", { class: "protect ok", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "✓"), h("div", {}, h("b", {}, "You are protected"), h("p", {}, parts.join(" "))))
     : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, blocked.length ? "Less protected: page scripts may run" : "Less protected: no button is blocked"), h("p", {}, parts.join(" "), blocked.length ? " Turn \"Run any JavaScript\" off under More options." : " Turn the built-in list back on under More options.")));
-  const say = (t) => async () => { location.hash = "#/chat"; await chatSend(t); };
+  const say = (t) => () => openChat(t);
   return [head,
     h("section", { class: "grp limit-say", "aria-label": "Change something in Chat" },
       h("div", { class: "gh" }, "want to change something? just say it in chat"),
@@ -403,7 +403,7 @@ function pageLimits() {
     limitsSummary(),
     UI.moreOptions({ label: "More options", changed: S.settings.filter((s) => ["allowed_domains", "block_actions", "confirm_actions", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script", "allow_takeover", "upload_dirs", "state_expire_days", "max_steps", "test_timeout"].includes(s.key) && s.source === "file").length },
     h("p", { class: "s muted" }, "See and change every limit by hand."),
-    h("p", { class: "sub" }, "These rules apply to every test: from Claude Code, Cursor, the CLI, or ", code("fastpilot run"), "."),
+    h("p", { class: "sub" }, "These rules apply to every test: from Chat, Claude Code, Cursor, the terminal and schedules."),
     h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, a looser rule needs your own words and your typed confirmation on its red card. Saved in ", code(S.path), ".")),
     h("div", { class: "grp" },
       h("div", { class: "gh" }, icon("globe"), "domains that may be opened"),
@@ -457,8 +457,8 @@ function pageSecret() {
   const reload = () => { secData2 = null; render(); };
   const app = secData2.app;
   const row = (r) => h("tr", { "data-name": r.name },
-    h("th", { scope: "row" }, code(r.name)),
-    h("td", {}, r.env ? "✓ from the environment" : r.set ? "✓ Set" : "⚠ Not set: tests that use it stop before they type anything"),
+    h("th", { scope: "row" }, r.name),
+    h("td", {}, r.env ? "From the environment" : r.set ? `Saved on this ${secData2.kept_in === "this Mac's Keychain" ? "Mac" : "computer"}` : "Not set yet: you will be asked when a test needs it"),
     h("td", {}, app ? h("span", { class: "btns tight" },
       h("button", { type: "button", class: "btn sm" + (r.set ? "" : " p"), onclick: () => UI.passwordAsk({ name: r.name, label: r.set ? `Replace ${r.name}` : `Set ${r.name}`, onSaved: () => { toast(`${r.name} is saved for ${app.name}.`, true); reload(); } }) }, r.set ? "Replace" : "Set value"),
       r.set ? h("button", { type: "button", class: "btn sm", onclick: async () => {
@@ -469,15 +469,16 @@ function pageSecret() {
   return h("section", { class: "panel" },
     h("h2", {}, "Secrets", savedNote()),
     app
-      ? h("p", { class: "sub" }, `Passwords for ${app.name}. Tests write them as `, code("${NAME}"), ". Values are kept in " + secData2.kept_in + ", show as *** in output, and are typed only on this app's own website.")
+      ? h("p", { class: "sub" }, `fastpilot asks for a password the first time a test of ${app.name} needs it, then remembers it on this ${secData2.kept_in === "this Mac's Keychain" ? "Mac" : "computer"}. It is never shown again, and it is typed only on this app's own website.`)
       : h("p", { class: "sub" }, "Add or choose an app first: passwords belong to an app."),
     secData2.names.length
       ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Secrets"),
         h("thead", {}, h("tr", {}, ["Name", "Value", ""].map((t) => h("th", { scope: "col" }, t)))), h("tbody", {}, secData2.names.map(row))))
-      : UI.empty({ icon: "key", title: "No password yet", text: "fastpilot asks for one the first time a test needs it." }),
-    UI.moreOptions({ label: "Add a name" },
-      opt("Secret name", "Only the name is saved here; set its value with Set value.",
-        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars"))));
+      : UI.empty({ icon: "key", title: "Nothing saved yet", text: "You will be asked when a test needs one." }),
+    UI.moreOptions({ label: "Use a secret from the environment instead" },
+      opt("Secret name", "For CI and scripts: list the name here, and give the value in the environment fastpilot starts in. Or add a name and press Set value.",
+        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars")),
+      UI.moreOptions({ label: "Show the command" }, h("p", { class: "s" }, code("export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=…"), " before starting fastpilot or Claude Code."))));
 }
 
 // The settings file does not parse: say what and where, and offer nothing to change (the server
@@ -595,6 +596,8 @@ async function askRemember() {
 }
 
 // ---- device ----
+// U1 (DC3): a hint that is a terminal command stays behind "Show the command".
+const COMMAND = /`|\b(sudo|brew|xcode-select|fastpilot (setup|config|ui))\b|build\.sh|--remote-debugging/;
 const AREAS = { web: "web · chrome", android: "android", ios: "ios", run: "fastpilot run · claude code" };
 let doctorBusy = false;
 
@@ -638,7 +641,7 @@ function pageDevice() {
           h("div", {},
             h("div", { class: "t" }, h("span", { class: "dot " + c.status }), c.name),
             h("div", { class: "s" }, c.detail),
-            c.hint ? h("div", { class: "hint" }, "→ ", c.hint) : null,
+            c.hint ? (COMMAND.test(c.hint) ? UI.moreOptions({ label: "Show the command" }, h("div", { class: "hint" }, c.hint)) : h("div", { class: "hint" }, "→ ", c.hint)) : null,
             null),
           h("span", { class: "tag" + (c.status === "ok" ? "" : " " + c.status) }, c.status === "ok" ? "Ready" : c.status === "warn" ? "Attention" : "Not ready"))),
       a === "android" && physOff ? h("div", { class: "row" }, h("div", { class: "s" }, "Phones plugged in stay off until you allow them in Limits, so only emulators are used. ", h("a", { class: "lk", href: "#/settings/limits" }, "Change it in Limits"))) : null,
@@ -647,7 +650,6 @@ function pageDevice() {
   $body().replaceChildren(h("div", { class: "dev" },
     PAGES.deviceFix ? PAGES.deviceFix() : null,
     h("div", { class: "grp" }, header, content),
-    h("p", { class: "muted" }, "The same checks as ", code("fastpilot doctor"), " in Terminal."),
     h("p", { class: "muted" }, "The AI model and secrets are in Settings: ", h("a", { class: "lk", href: "#/settings/model" }, "AI model"), " · ", h("a", { class: "lk", href: "#/settings/secrets" }, "Secrets"), ".")));
 }
 
@@ -854,8 +856,8 @@ function stepsPanel(s) {
 function liveEmpty() {
   return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · empty"),
     h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "No test is running yet"),
-      h("span", {}, "Sessions from Claude Code (MCP), the CLI or ", code("fastpilot run"), " show here live, without getting in the way of your Chrome or phone."),
-      h("span", {}, "Try: ", code("fastpilot open https://example.com"))));
+      h("span", {}, "Start one from Chat and watch it here."),
+      h("button", { type: "button", class: "btn p", onclick: () => openChat() }, icon("chat", "sm"), "Make a test in Chat")));
 }
 
 // ---- Take over (C7b) ----
@@ -1192,7 +1194,7 @@ const chatEdits = {}; // proposal id -> what the user is changing with Edit
 // null = the Chat page itself).
 let chatAgent = "default", chatHost = null;
 const chatQ = () => `?agent=${encodeURIComponent(chatAgent)}`;
-const chatShown = () => (location.hash || "").startsWith("#/chat") || (chatHost !== null && document.body.contains(chatHost));
+const chatShown = () => chatHost !== null && document.body.contains(chatHost);
 
 async function loadChat() {
   const agent = chatAgent;
@@ -1207,6 +1209,14 @@ async function loadChat() {
 
 // PF6: text to put in the Chat box (not sent) when Chat opens next.
 let chatPrefill = null;
+
+// U1: one Chat page, the menu's (the default agent's conversation). Buttons elsewhere open it, and
+// may send a sentence there.
+async function openChat(send) {
+  chatAgent = "default";
+  location.hash = "#/agents/default/chat";
+  if (send) await chatSend(send);
+}
 
 async function chatSend(text) {
   const t = (text || "").trim();
@@ -1818,17 +1828,6 @@ function renderChat() {
   if (atBottom || msgs.length) log.scrollTop = log.scrollHeight;
 }
 
-function pageChat() {
-  // The Chat page is the first agent's conversation.
-  if (chatHost || chatAgent !== "default") { chatHost = null; chatAgent = "default"; chatData = null; chatSig = ""; }
-  if (!chatData) {
-    $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"));
-    $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading the conversation…")));
-  } else {
-    renderChat();
-  }
-  loadChat();
-}
 
 // ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
@@ -2147,8 +2146,7 @@ function schedRelease() {
   const app = schedData.app || {};
   const w = schedData.watching;
   const check = h("button", { class: "btn sm p", onclick: async () => {
-    location.hash = "#/chat";
-    await chatSend("Can we release?");
+    await openChat("Can we release?");
   } }, "Check before release");
   const tg = h("button", { class: "tg", role: "switch", "aria-checked": String(!!w), "aria-label": "Watch for 2 hours after a release",
     onclick: () => schedAction({ action: "watch", on: !w }, (r) => toast(r.on ? "Watching for 2 hours: the first run, the \"before\", is running now." : "The release watch is off.", true)) });
@@ -2229,8 +2227,8 @@ function render() {
       pollLive();
     }
   } else if (page === "chat") {
-    chatSig = "";
-    pageChat();
+    // Links made before U1: the one Chat page.
+    location.replace("#/agents/default/chat");
   } else if (page === "schedules") {
     if (!schedData) loadSchedules(); else pageSchedules();
   } else if (page === "device") {

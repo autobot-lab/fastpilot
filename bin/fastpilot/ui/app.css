@@ -707,3 +707,6 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .protect.warn .protect-mark{background:#8a520a}
 .say-row{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;padding:12px 14px;margin:0 0 8px;border:1px solid var(--line);border-radius:10px;background:var(--card);font:inherit;color:var(--ink);cursor:pointer}
 .say-row:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+/* U1: Chat with one agent: no agent list, no tabs. */
+.ag-solo { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }

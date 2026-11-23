@@ -18,7 +18,9 @@ async function load() {
   if ((location.hash || "").startsWith("#/settings/apps")) render();
 }
 
-const kinds = (a) => (a.kinds || []).map((k) => KIND[k][2]).join(" + ");
+// U1: a local website shows its address under the name ("Your website · 127.0.0.1:3000 · Website").
+const local = (a) => { try { const u = new URL((a.targets || {}).web || ""); return /^(localhost|127\.|\d+\.\d+\.\d+\.\d+$|\[)/.test(u.hostname) ? `${u.host} · ` : ""; } catch (_) { return ""; } };
+const kinds = (a) => local(a) + (a.kinds || []).map((k) => KIND[k][2]).join(" + ");
 const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "A";
 
 /// The bar above every page: the current app and its kind; the list, Add app and Manage apps.

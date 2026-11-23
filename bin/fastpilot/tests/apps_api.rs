@@ -131,9 +131,9 @@ fn apps_are_kept_for_the_user_and_changed_only_through_the_page() {
 
     // Design M1 (seamless-v13): the address alone is enough; the name comes from it.
     let (st, r) = ui.post(json!({ "action": "add", "targets": { "web": "http://127.0.0.1:8080/login" } }));
-    assert_eq!((st, r["app"]["name"].as_str()), (200, Some("127.0.0.1")), "{r}");
+    assert_eq!((st, r["app"]["name"].as_str()), (200, Some("Your website")), "{r}");
     let (_, r2) = ui.post(json!({ "action": "add", "name": "  ", "targets": { "web": "http://127.0.0.1:9090/" } }));
-    assert_eq!(r2["app"]["name"], "127.0.0.1 (2)", "{r2}");
+    assert_eq!(r2["app"]["name"], "Your website (2)", "{r2}");
     for a in [&r, &r2] {
         assert_eq!(ui.post(json!({ "action": "remove", "id": a["app"]["id"] })).0, 200);
     }
