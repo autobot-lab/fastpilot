@@ -208,7 +208,8 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"), item("apps", "Your apps"));
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"), item("apps", "Your apps"),
+    window.Welcome ? Welcome.fullMenuToggle() : null);
 }
 
 function topSettings() {
@@ -1214,7 +1215,8 @@ let chatPrefill = null;
 // may send a sentence there.
 async function openChat(send) {
   chatAgent = "default";
-  location.hash = "#/agents/default/chat";
+  // Already there (the first-run wizard covers it): no hash change, so draw it now.
+  if (location.hash === "#/agents/default/chat") render(); else location.hash = "#/agents/default/chat";
   if (send) await chatSend(send);
 }
 
@@ -2215,11 +2217,18 @@ function render() {
     return;
   }
   if (page !== "live") stopLive();
+  // E4: the simple menu until the first saved test.
+  if (window.Welcome) Welcome.menu();
   document.querySelectorAll(".rail a").forEach((a) => {
     const on = a.dataset.nav === page;
     a.classList.toggle("on", on);
     if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
+  // E4: the first screen is the first-run wizard until a test is saved (or it is skipped).
+  if (window.Welcome && Welcome.wants(page)) {
+    Welcome.page();
+    return;
+  }
   if (page === "live") {
     if (!liveTimer) {
       $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"));

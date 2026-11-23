@@ -349,7 +349,7 @@ async fn one_chat_no_commands_and_no_tabs_for_one_agent() {
     open(c, "#/settings/secrets", "Secrets").await;
     let secrets = eval(c, shown).await;
     assert_eq!(command(&secrets), None, "{secrets}");
-    assert_eq!(eval(c, "String([...document.querySelectorAll('#body input')].filter((i) => !i.closest('[hidden]')).length)").await, "\"0\"", "no text box on the main view");
+    assert_eq!(eval(c, "String([...document.querySelectorAll('#body .panel input')].filter((i) => !i.closest('[hidden]')).length)").await, "\"0\"", "no text box on the main view");
 
     // A local website gets a readable name, its address under it.
     let added = eval(c, "(async () => { const r = await api('/api/apps', { action: 'add', targets: { web: 'http://127.0.0.1:3000/' } }); return r.app.name; })()").await;
