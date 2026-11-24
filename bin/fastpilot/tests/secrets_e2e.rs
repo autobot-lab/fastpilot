@@ -82,7 +82,11 @@ impl Ui {
         let cookie = head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie")).map(|(_, v)| v.trim().split(';').next().unwrap_or("").to_owned())).expect("cookie");
         Ui { child, port, cookie }
     }
-    fn post(&self, path: &str, body: Value) -> (u16, Value) {
+    fn post(&self, path: &str, mut body: Value) -> (u16, Value) {
+        // A password goes to the app the page shows (Security #221 M1): the one in use here.
+        if path == "/api/secrets" && body["app"].is_null() {
+            body["app"] = self.get("/api/secrets")["app"]["id"].clone();
+        }
         let h = [("Cookie", self.cookie.clone()), ("Origin", format!("http://127.0.0.1:{}", self.port)), ("Content-Type", "application/json".to_owned())];
         let (st, text) = raw(self.port, "POST", path, &h, &body.to_string());
         (st, serde_json::from_str(&text).unwrap_or(Value::String(text)))

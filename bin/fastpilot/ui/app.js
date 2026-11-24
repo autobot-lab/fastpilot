@@ -460,10 +460,10 @@ function pageSecret() {
     h("th", { scope: "row" }, r.name),
     h("td", {}, r.env ? "From the environment" : r.set ? `Saved on this ${secData2.kept_in === "this Mac's Keychain" ? "Mac" : "computer"}` : "Not set yet: you will be asked when a test needs it"),
     h("td", {}, app ? h("span", { class: "btns tight" },
-      h("button", { type: "button", class: "btn sm" + (r.set ? "" : " p"), onclick: () => UI.passwordAsk({ name: r.name, label: r.set ? `Replace ${r.name}` : `Set ${r.name}`, onSaved: () => { toast(`${r.name} is saved for ${app.name}.`, true); reload(); } }) }, r.set ? "Replace" : "Set value"),
+      h("button", { type: "button", class: "btn sm" + (r.set ? "" : " p"), onclick: () => UI.passwordAsk({ name: r.name, label: r.set ? `Replace ${r.name}` : `Set ${r.name}`, app, onSaved: () => { toast(`${r.name} is saved for ${app.name}.`, true); reload(); } }) }, r.set ? "Replace" : "Set value"),
       r.set ? h("button", { type: "button", class: "btn sm", onclick: async () => {
         if (!(await UI.confirmDialog({ title: `Remove ${r.name}?`, text: `Its value is deleted from this Mac's key store for ${app.name}. Tests that use it stop before they type anything, until you set it again.`, verb: "Remove value", danger: false }))) return;
-        try { await api("/api/secrets", { action: "remove", name: r.name }); toast(`${r.name} was removed.`, true); } catch (e) { toast(e.message); }
+        try { await api("/api/secrets", { action: "remove", app: app.id, name: r.name }); toast(`${r.name} was removed.`, true); } catch (e) { toast(e.message); }
         reload();
       } }, "Remove") : null) : null));
   return h("section", { class: "panel" },
@@ -1748,7 +1748,7 @@ const OPEN = {
 async function askSecrets(p) {
   for (const name of p.names) {
     const plain = /(USER|USERNAME|EMAIL|LOGIN)$/.test(name);
-    if (!(await UI.passwordAsk({ name, label: plain ? `Set ${name} (a user name)` : `Set ${name}`, plain }))) return;
+    if (!(await UI.passwordAsk({ name, label: plain ? `Set ${name} (a user name)` : `Set ${name}`, plain, app: p.app }))) return;
   }
   await chatDecide(p.id, true);
   toast(`Saved for this app: ${p.names.join(", ")}.`, true);

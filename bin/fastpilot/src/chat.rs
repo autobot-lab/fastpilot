@@ -87,6 +87,10 @@ pub struct Proposal {
     /// saved, the page asks for the same check again ("Save and run").
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rerun: bool,
+    /// `open` Secrets with names: the chat's own app (`{id, name}`), where the passwords are saved
+    /// (Security #221 M1: never the app in use, which can be another agent's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<Value>,
     /// v0.7.1 FC5: an app added from Chat made a new agent: its id (the line's "Open").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_agent: Option<String>,
@@ -446,6 +450,12 @@ fn move_to(s: &Slots, app: &str) -> bool {
     }
 }
 
+/// Run `f` only while no answer runs (the app in use may change in it); `None` while one runs.
+pub fn while_idle<R>(f: impl FnOnce() -> R) -> Option<R> {
+    let s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+    (s.running == 0).then(f)
+}
+
 /// Make sure the dashboard is in chat `key`'s app (moving there when no answer runs), for a card
 /// clicked after its answer.
 fn in_own_app(key: &str) -> Res<()> {
@@ -659,6 +669,8 @@ pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
 /// after a Stop: nothing half-made), and the chat is kept in History.
 fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<String>, stopped: bool) {
     let jira = fastpilot_core::jira::connected_settings();
+    // The chat's own app, for its password cards (read before the chat lock: `chat_app` takes it).
+    let own = chat_app(key).and_then(|id| crate::apps::get(&id)).or_else(crate::apps::current).map(|a| json!({ "id": a.id, "name": a.name }));
     let mut c = chat_of(key);
     let now = change::now_ms();
     c.loosen_times.retain(|t| now.saturating_sub(*t) < 3_600_000);
@@ -735,10 +747,10 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
         }
         // FastTest 7013: the bot's own password card after it ran a check: saving it runs the check
         // again, as the bot says it will ("Save and run").
-        if m.tools.iter().any(|t| ["session", "run_flow", "check_flow", "tests", "ship_check"].contains(&t.split(" · ").next().unwrap_or(""))) {
-            for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
-                p.rerun = true;
-            }
+        let ran = m.tools.iter().any(|t| ["session", "run_flow", "check_flow", "tests", "ship_check"].contains(&t.split(" · ").next().unwrap_or("")));
+        for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
+            p.rerun |= ran;
+            p.app.clone_from(&own);
         }
         // S8: the release verdict and a bug report as cards, built from their fields.
         if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
@@ -3490,15 +3502,16 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             return done_line(id, r);
         }
         Some("switch_app") => {
-            // Never under another chat's running answer (#217 L4): the app it works in stays.
-            let slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+            // Never under another chat's running answer (#217 L4): checked and switched with the
+            // slots held (#221 L6), in `move_to`'s order (slots, apps, map).
+            let mut slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
             if slots.others(&key) > 0 && data["app"].as_str() != crate::apps::current().map(|a| a.id).as_deref() {
                 drop(slots);
                 set("failed", Some("Chat is answering for this app. Wait for it to finish (or stop it), then switch apps.".into()));
                 return Err("Chat is answering for this app. Wait for it to finish (or stop it), then switch apps.".into());
             }
-            drop(slots);
             if crate::map::is_mapping() {
+                drop(slots);
                 set("failed", Some("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into()));
                 return Err("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into());
             }
@@ -3506,13 +3519,12 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
                 if std::env::var_os("FASTPILOT_DIR").is_none() {
                     crate::apps::go(&app);
                 }
-                let mut slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
                 if slots.running > 0 {
                     slots.app = Some(app.id.clone());
                 }
-                drop(slots);
                 crate::control::Done { line: if changed { format!("Switched to {}", app.name) } else { format!("{} is already in use. Nothing changed.", app.name) }, undo: None }
             });
+            drop(slots);
             return done_line(id, r);
         }
         Some("run_tests") => {

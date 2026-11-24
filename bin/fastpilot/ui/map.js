@@ -191,8 +191,9 @@ async function signInAndMap() {
   if (data.test_account) { again(); return; }
   // S1 (seamless-v13 s1b, 3b): asked once, in place, kept in the Keychain for this app (E2); the
   // next map signs in by itself. Only on the app's own site, or inside the app on a phone.
-  if (!data.test_user && !(await UI.passwordAsk({ name: "TEST_USER", label: "The test account's email or user name", plain: true }))) return;
-  if (await UI.passwordAsk({ name: "TEST_PASSWORD", label: "Type the test account's password once" })) again();
+  const app = data.plan && data.plan.app;
+  if (!data.test_user && !(await UI.passwordAsk({ name: "TEST_USER", label: "The test account's email or user name", plain: true, app }))) return;
+  if (await UI.passwordAsk({ name: "TEST_PASSWORD", label: "Type the test account's password once", app })) again();
 }
 
 // ---- the graph (design: graph, zoom/pan/fit, keyboard) ----

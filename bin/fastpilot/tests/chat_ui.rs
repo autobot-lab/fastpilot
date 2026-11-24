@@ -1671,7 +1671,8 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
 /// website; an address added from its Chat makes a new agent for the second site, and opening that
 /// agent makes its app the one in use. My tester's About still says its own app, and its next
 /// answer (sent while the other agent's chat is answering: it waits for it) is given its own app,
-/// its folder and its address, never the other agent's.
+/// its folder and its address, never the other agent's. Its password card names its own app, and
+/// a password saved from it while the other agent answers goes to that app (Security #221 M1).
 #[test]
 fn each_chat_works_in_its_own_agents_app() {
     let home = std::env::temp_dir().join(format!("fp-chat-ownapp-{}", std::process::id()));
@@ -1717,13 +1718,14 @@ fn each_chat_works_in_its_own_agents_app() {
     // The other agent's chat answers; My tester's message meanwhile waits for it, then answers.
     let theirs_chat = send(&made, "hello");
     std::thread::sleep(Duration::from_millis(300));
-    let mine_chat = send("default", "which app do you test?");
+    let mine_chat = send("default", "I need a password for the test account, set that up");
     let mut waited = false;
     while get(&format!("/api/chat?agent={made}&chat={theirs_chat}"))["busy"] == true {
         waited |= !get(&format!("/api/chat?agent=default&chat={mine_chat}"))["waiting"].is_null();
         std::thread::sleep(Duration::from_millis(100));
     }
-    done("default", &mine_chat);
+    let card = done("default", &mine_chat)["proposals"][0].clone();
+    assert_eq!((card["open"].as_str(), card["app"]["id"].as_str()), (Some("secrets"), mine["id"].as_str()), "the card is for My tester's app: {card}");
     assert!(waited, "My tester's answer waits while the other agent's chat answers in its app");
     // What each answer was given: its own agent's app (address and folder), never the other's.
     let calls: Vec<Value> = std::fs::read_dir(home.join("claude-log")).expect("log").filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.ok()?.path()).ok()?).ok()).collect();
@@ -1739,6 +1741,24 @@ fn each_chat_works_in_its_own_agents_app() {
     let folder = |app: &Value| format!("apps/{}", app["id"].as_str().unwrap_or_default());
     assert!(mine_said.contains(&login) && !mine_said.contains(&orders) && mine_said.contains(&folder(&mine)), "My tester's answer is given its own app: {mine_said}");
     assert!(theirs_said.contains(&orders) && !theirs_said.contains(&login) && theirs_said.contains(&folder(&theirs)), "{theirs_said}");
+    // The card saved while the other agent answers (its app is in use, and cannot be left): the
+    // password goes to My tester's app, never the app in use; without an app nothing is saved.
+    let theirs_chat = send(&made, "hello again");
+    let until = Instant::now() + Duration::from_secs(30);
+    while get("/api/apps")["current"] != theirs["id"] {
+        assert!(Instant::now() < until, "the other agent's answer moves to its app");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(post("/api/apps", json!({ "action": "use", "id": mine["id"] })).0, 409, "not under a running answer");
+    assert_eq!(post("/api/secrets", json!({ "action": "set", "name": "TEST_PASSWORD", "value": "only-mine-1" })).0, 409, "a password needs its app");
+    let (st, v) = post("/api/secrets", json!({ "action": "set", "app": card["app"]["id"], "name": "TEST_PASSWORD", "value": "only-mine-1" }));
+    assert_eq!(st, 200, "{v}");
+    done(&made, &theirs_chat);
+    let set_in = |app: &Value| -> bool {
+        assert_eq!(post("/api/apps", json!({ "action": "use", "id": app["id"] })).0, 200);
+        get("/api/secrets")["names"].as_array().is_some_and(|n| n.iter().any(|r| r["name"] == "TEST_PASSWORD" && r["set"] == true))
+    };
+    assert!(set_in(&mine) && !set_in(&theirs), "saved in My tester's app only");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

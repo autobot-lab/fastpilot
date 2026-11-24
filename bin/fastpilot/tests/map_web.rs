@@ -353,7 +353,8 @@ async fn the_app_test_account_signs_the_map_in_on_its_own_site_only() {
     let (_, v) = json_of(ui.port, "GET", "/api/map", &ui.cookie, Value::Null);
     assert!(v["test_account"] == false && v["test_user"] != true, "{v}");
     for (name, value) in [("TEST_USER", "a@b.com"), ("TEST_PASSWORD", "rahasia123")] {
-        let (st, r) = json_of(ui.port, "POST", "/api/secrets", &ui.cookie, json!({ "action": "set", "name": name, "value": value }));
+        let app = json_of(ui.port, "GET", "/api/secrets", &ui.cookie, Value::Null).1["app"]["id"].clone();
+        let (st, r) = json_of(ui.port, "POST", "/api/secrets", &ui.cookie, json!({ "action": "set", "app": app, "name": name, "value": value }));
         assert_eq!(st, 200, "{name}: {r}");
     }
     // Mapped behind the sign-in page with the app's own account.
