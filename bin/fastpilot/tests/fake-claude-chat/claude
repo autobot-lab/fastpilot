@@ -159,6 +159,28 @@ if "connect jira" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```")
 if "what it asks for" in low:
     text.append("The login page asks for these:\n```fastpilot-proposal\n" + json.dumps({"kind": "run_all", "test": "login"}) + "\n```\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```\n```fastpilot-proposal\n" + json.dumps({"kind": "map"}) + "\n```")
+# v0.7.1 FC3: the Schedules page, Ship check, release watch, app switcher and Run now as cards.
+# The schedule is the one named in quotes in the message.
+def card(obj):
+    text.append("```fastpilot-proposal\n" + json.dumps(obj) + "\n```")
+quoted = prompt.split('"')[1] if prompt.count('"') >= 2 else ""
+for phrase, do in [("turn off the schedule", "pause"), ("turn on the schedule", "resume"), ("remove the schedule", "remove"), ("clean up the schedule", "remove"), ("run the schedule now", "run_now")]:
+    if phrase in low:
+        card({"kind": "schedule_change", "schedule": quoted, "do": do})
+if "make the schedule two-hourly" in low:
+    card({"kind": "schedule_change", "schedule": quoted, "do": "change", "preset": "every_2h_work_hours"})
+if "can we release" in low:
+    card({"kind": "ship_check"})
+if "turn on the release watch" in low:
+    card({"kind": "release_watch", "on": True})
+if "switch to shop android" in low or "switch apps please" in low:
+    card({"kind": "switch_app", "app": "Shop Android"})
+if "run the login test" in low:
+    card({"kind": "run_tests", "test": "login"})
+if "see what it wants" in low:
+    card({"kind": "schedule_change", "schedule": "All tests · every night", "do": "pause"})
+    card({"kind": "switch_app", "app": "Shop Android"})
+    card({"kind": "run_tests", "test": "all"})
 if "open the outside page" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "https://evil.example/#/settings"}) + "\n```")
 # D9: settings cards. A page that "asks" for Pay (the bot echoes it), the user asking for it, a secret name.

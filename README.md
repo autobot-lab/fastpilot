@@ -185,6 +185,10 @@ release?"*, *"make a checkout tester"*. fastpilot's tools `apps`, `tests`, `sche
 `ship_check`, `secrets`, `memory`, `history` and `agents` do it. No tool takes a password's value:
 Claude tells you to set it in the dashboard or with `fastpilot secret set`.
 
+In the dashboard Chat, what you ask for is done at once and shows as one line, such as
+*Paused schedule “Every night” · its history is kept*, with **Undo** on it. Loosening a safety limit
+still needs your click on its red card, and a password is still typed only in its masked field.
+
 Every change can be undone: the terminal prints `Undo: fastpilot undo <id>`, and `fastpilot undo --list`
 shows what you can undo. Removing an app or a schedule keeps it 7 days (History › Recently removed,
 with Restore). A password is kept for its app in this Mac's Keychain

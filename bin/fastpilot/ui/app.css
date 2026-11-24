@@ -739,3 +739,12 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 
 /* C1: suggestions in an empty Chat */
 .chat-suggest{display:flex;flex-direction:column;gap:8px;width:100%;max-width:520px;margin-top:10px}
+
+/* FC6: a result line (what Chat did at once), with Undo */
+.result-line{display:flex;align-items:center;gap:12px;max-width:640px;margin:6px 0;padding:8px 8px 8px 14px;background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:14px}
+.result-line .rl-text{flex:1}
+.result-line .rl-text::before{content:"✓";color:var(--acc);font-weight:700;margin-right:8px}
+.result-line.bad .rl-text::before,.result-line.undone .rl-text::before{content:none}
+.result-line.bad{border-color:var(--bad);color:var(--bad)}
+.result-line.undone{color:var(--muted)}
+.result-line .rl-undo{min-height:32px;border-color:var(--line)}

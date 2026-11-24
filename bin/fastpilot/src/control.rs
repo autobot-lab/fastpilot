@@ -349,7 +349,7 @@ pub fn next_run(w: &schedule::When) -> Option<String> {
 }
 
 /// "all tests of Shop staging", or the saved test's title.
-fn what_runs(s: &Schedule) -> String {
+pub fn what_runs(s: &Schedule) -> String {
     if Path::new(&s.tests).is_file() {
         schedule::tests_label(&s.tests)
     } else {
@@ -358,7 +358,7 @@ fn what_runs(s: &Schedule) -> String {
 }
 
 /// "next run 02:00", or "runs when you check a release".
-fn when_next(s: &Schedule) -> String {
+pub fn when_next(s: &Schedule) -> String {
     match (s.when.every, next_run(&s.when)) {
         (Every::Release, _) => "runs when you check a release".into(),
         (_, Some(t)) => format!("next run {t}"),
@@ -462,6 +462,52 @@ pub fn remove_schedule(typed: &str, s: Surface) -> Result<(Schedule, Done), Fail
     let line = format!("Removed schedule {} · kept 7 days", q(&schedule_title(&sched)));
     let undo = crate::undo::remove_schedule(&sched, &line, true)?;
     Ok((sched, Done { line, undo }))
+}
+
+/// Give a schedule another of the one-click timings (its tests stay; its name follows the timing).
+pub fn change_schedule(typed: &str, preset: &str, s: Surface) -> Result<(Schedule, Done), Fail> {
+    let key = preset_key(preset).map_err(|_| fail("bad_preset", format!("{} is not a preset. Use every_2h_work_hours, nightly or before_release. Custom times are not supported yet.", q(preset.trim()))))?;
+    let (_, _, _, when) = schedule::presets().into_iter().find(|p| p.0 == key).ok_or_else(|| fail("bad_preset", "Unknown preset"))?;
+    let mut sched = find_schedule(typed, s)?;
+    if sched.when == when {
+        return Ok((sched.clone(), Done::plain(format!("{} is already {}. Nothing changed.", q(&schedule_title(&sched)), schedule::describe(&when)))));
+    }
+    let before = (sched.name.clone(), sched.when.clone());
+    sched.name = schedule::auto_name(&schedule::tests_label(&sched.tests), &when);
+    sched.when = when;
+    let sched = schedule::save(sched, None)?;
+    let line = format!("Changed schedule {} · {}", q(&schedule_title(&sched)), when_next(&sched));
+    let done = Done::undoable(line, &format!("schedule:{}", sched.id), crate::undo::Op::SetWhen { id: sched.id.clone(), name: before.0, when: before.1 });
+    Ok((sched, done))
+}
+
+/// Run the app's saved tests now, in the background (one by its name, or "all").
+pub fn run_tests(name: &str, s: Surface) -> Result<Done, Fail> {
+    let (title, path) = if name.eq_ignore_ascii_case("all") {
+        let (_, dir, _) = saved_tests(s)?;
+        ("Run all tests".to_owned(), dir)
+    } else {
+        let p = find_test(name, s)?;
+        (schedule::tests_label(&p.to_string_lossy()), p)
+    };
+    let stem = if name.eq_ignore_ascii_case("all") { "all".to_owned() } else { path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
+    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}"))?;
+    Ok(Done::plain(format!("Running {} · {}", q(&title), watch_in_live())))
+}
+
+/// One release verdict for `urls` (default: the app's website): "Verdict: … · …". Waits for it.
+pub fn ship_check(urls: Vec<String>) -> Result<String, Fail> {
+    let urls = if urls.is_empty() {
+        vec![apps::current().and_then(|a| a.targets.web).ok_or_else(|| fail("no_address", "There is no web address to check. Add a website app first, or give the address to check."))?]
+    } else {
+        urls
+    };
+    if let Some(bad) = urls.iter().find(|u| !(u.starts_with("https://") || u.starts_with("http://") || u.starts_with("file://"))) {
+        return Err(fail("no_address", format!("{} is not a web address. Add a website app first, or give the address to check.", q(bad))));
+    }
+    let exe = std::env::current_exe().map_err(|e| fail("failed", e.to_string()))?;
+    let out = std::process::Command::new(exe).arg("ship-check").args(&urls).stdin(std::process::Stdio::null()).output().map_err(|e| fail("failed", format!("The ship check could not start: {e}.")))?;
+    Ok(verdict_line(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// Release watch on or off for the app in use (FC1, FC3): every 10 minutes for 2 hours.

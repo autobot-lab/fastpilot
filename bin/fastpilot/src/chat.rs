@@ -70,6 +70,12 @@ pub struct Proposal {
     /// `setting`, applied: Undo / Block again is offered.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub undo: bool,
+    /// FC6: the change this result line undoes (`fastpilot undo`'s id), while it can be undone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo_id: Option<String>,
+    /// FC6: a newer change of the same thing came later: no Undo on this line.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub changed_later: bool,
     /// `jira_issue` and `jira_comment` (v0.6): what the card shows and sends (the site, the project
     /// or ticket, the exact cleaned text) and, after the click, the issue and its link.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,7 +195,17 @@ fn card_agent(id: &str) -> Option<String> {
 /// An agent's conversation as the page shows it.
 pub fn state(agent: &str) -> Value {
     let c = chat_of(agent);
-    json!({ "agent": agent, "messages": c.msgs, "busy": c.busy })
+    let (mut msgs, busy) = (c.msgs.clone(), c.busy);
+    drop(c);
+    // FC6: an older result line whose thing changed later has no Undo.
+    let ids: Vec<String> = msgs.iter().flat_map(|m| &m.proposals).filter_map(|p| p.undo_id.clone()).collect();
+    if !ids.is_empty() {
+        let later = crate::undo::later(&ids);
+        for p in msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()) {
+            p.changed_later = p.undo_id.as_ref().is_some_and(|u| later.contains(u));
+        }
+    }
+    json!({ "agent": agent, "messages": msgs, "busy": busy })
 }
 
 /// Which agents are answering now (the agent list shows them as running).
@@ -306,6 +322,7 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             .filter_map(|p| p.jira.as_ref().and_then(|j| j["result"]["key"].as_str()).map(str::to_owned))
             .collect();
         let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None, taking_offer: false, from_kept: false };
+        let mut auto: Vec<(String, Option<&'static str>)> = Vec::new();
         if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
             // A page, app or ticket text came in only through a tool that brings it (QA 6103).
             t.read_app = m.outside;
@@ -345,6 +362,7 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
                     attempts.push(json!({ "kind": "jira", "from": "claim", "what": "A claim that a Jira card was made", "said": clip(&removed.join(" "), 600) }));
                 }
             }
+            auto = proposals.iter().filter(|p| p.status == "pending").filter_map(|p| acts_at_once(p, &t.user).map(|mode| (p.id.clone(), mode))).collect();
             m.proposals = proposals;
             m.page_attempts = attempts;
             m.error = error.or(m.error.take());
@@ -355,6 +373,19 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
             d
         });
         c.loosen_times.extend(std::iter::repeat_n(now, t.made));
+        // FC6: what the user asked for is done now, before the answer counts as finished.
+        drop(c);
+        for (id, mode) in auto {
+            if let Err(e) = decide(&id, true, mode, None, None) {
+                set_card(&id, |p| {
+                    if p.status == "pending" {
+                        p.status = "failed".into();
+                        p.note = Some(e.clone());
+                    }
+                });
+            }
+        }
+        let mut c = chat_of(&agent);
         c.busy = false;
         // D7: kept in History after every answer, so it outlives this page and this process.
         let saved = c.conv.clone().map(|id| (id, serde_json::to_value(&c.msgs).unwrap_or_default()));
@@ -993,6 +1024,13 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
         return;
     };
     match v["kind"].as_str() {
+        // FC6: a schedule is made at once, so only from the user's own words when a page was read.
+        Some("schedule") if (t.read_app || !t.tickets.is_empty()) && !asked_for_action(&t.user, "schedule", &v) => {
+            if attempts.iter().filter(|a| a["kind"] == "action").count() < 3 {
+                change::audit("chat_action", None, Some("schedule"), "dashboard", "not-asked");
+                attempts.push(json!({ "kind": "action", "what": "schedule" }));
+            }
+        }
         Some("schedule") => found.push(match schedule_of(&v) {
             Ok(s) => {
                 let mut notify = Vec::new();
@@ -1046,7 +1084,11 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
         // C1: the page actions, also from one Chat sentence. In a turn that read the app or a
         // ticket, an action card only when the user's own message asks for it (Security #201 L1):
         // a tested page or a ticket cannot make one.
-        Some(kind @ ("map" | "run_all" | "open")) if (t.read_app || !t.tickets.is_empty()) && !asked_for_action(&t.user, kind, &v) => {
+        // FC3/FC6: these act at once, so a page or a ticket can never start one (#201 L1); removing a
+        // schedule needs the user's own words even when nothing was read.
+        Some(kind @ ("map" | "run_all" | "open" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests"))
+            if (t.read_app || !t.tickets.is_empty() || (kind == "schedule_change" && v["do"] == "remove")) && !asked_for_action(&t.user, kind, &v) =>
+        {
             if attempts.iter().filter(|a| a["kind"] == "action").count() < 3 {
                 change::audit("chat_action", None, Some(kind), "dashboard", "not-asked");
                 attempts.push(json!({ "kind": "action", "what": kind }));
@@ -1056,6 +1098,7 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
         Some("map") => found.push(map_card().unwrap_or_else(|e| refused("map", "The app cannot be mapped", e))),
         Some("run_all") => found.push(run_all_card(&v).unwrap_or_else(|e| refused("run_all", "This test cannot run on every platform", e))),
         Some("open") => found.push(open_card(&v).unwrap_or_else(|e| refused("open", "This step is not in the dashboard", e))),
+        Some(kind @ ("schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests")) => found.push(control_card(kind, &v, &t.user).unwrap_or_else(|e| refused(kind, "This cannot be done from here", e))),
         Some("limits" | "settings") => {
             // QA #5980 bug 4: a secret name to add is a password the user needs: the C1 card that
             // asks for it in the masked dialog (same rules as any `open` card), not a limit. A name
@@ -1872,6 +1915,19 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
     match kind {
         "map" => any(&["map", "peta"]),
         "run_all" => any(&["all platforms", "every platform", "each platform", "side by side", "semua platform"]),
+        "schedule" => any(&["schedule", "jadwal", "every", "nightly", "night", "malam", "hour", "jam", "daily", "weekly", "watch", "pantau"]),
+        "schedule_change" => match v["do"].as_str().unwrap_or("") {
+            "pause" => any(&["pause", "turn off", "turn it off", "stop", "matikan", "jeda", "hentikan"]),
+            "resume" => any(&["resume", "turn on", "turn it on", "on again", "nyalakan", "aktifkan", "lanjutkan"]),
+            "remove" => any(&["remove", "delete", "hapus"]),
+            "run_now" => any(&["run", "jalankan"]),
+            "change" => any(&["change", "make it", "every", "nightly", "night", "malam", "ganti", "ubah"]),
+            _ => false,
+        },
+        "ship_check" => any(&["release", "ship", "rilis"]),
+        "release_watch" => any(&["watch", "pantau"]),
+        "switch_app" => any(&["switch", "work on", "use ", "ganti", "pindah", "pakai"]),
+        "run_tests" => any(&["run", "jalankan"]),
         _ => match v["page"].as_str().unwrap_or("") {
             "jira" => any(&["jira"]),
             "secrets" => any(&["password", "secret", "sandi"]),
@@ -1915,6 +1971,82 @@ fn run_all_card(v: &Value) -> Res<Proposal> {
         data: json!({ "kind": "run_all", "test": test, "app": app.id }),
         ..Default::default()
     })
+}
+
+/// v0.7.1 FC3: the Schedules page, Ship check, the release watch, the app switcher and Run now from
+/// one Chat sentence. Checked here; done right after the answer (FC6: no confirm), as a result line.
+/// `user` is the user's own message (an app to switch to must be named there).
+fn control_card(kind: &str, v: &Value, user: &str) -> Res<Proposal> {
+    use crate::control::{Surface, q, schedule_title};
+    let card = |title: String, data: Value| Proposal { id: new_id(), kind: kind.into(), title, status: "pending".into(), data, ..Default::default() };
+    let f = |e: crate::control::Fail| e.msg;
+    match kind {
+        "schedule_change" => {
+            let s = crate::control::find_schedule(v["schedule"].as_str().unwrap_or(""), Surface::Cli).map_err(f)?;
+            let what = v["do"].as_str().unwrap_or("");
+            let preset = match what {
+                "pause" | "resume" | "remove" | "run_now" => Value::Null,
+                "change" => json!(crate::control::preset_key(v["preset"].as_str().unwrap_or(""))?),
+                _ => return Err("Say what to do with the schedule: pause, resume, remove, run_now or change.".into()),
+            };
+            Ok(card(schedule_title(&s), json!({ "kind": kind, "schedule": s.id, "do": what, "preset": preset })))
+        }
+        "ship_check" => {
+            let app = crate::apps::current().ok_or("No app is in use. Add one first.")?;
+            let url = app.targets.web.clone().ok_or("There is no web address to check. Add a website app first, or give the address to check.")?;
+            Ok(card(format!("Checking {url}"), json!({ "kind": kind, "app": app.id, "url": url })))
+        }
+        "release_watch" => {
+            let on = v["on"].as_bool().ok_or("Say on (true) or off (false).")?;
+            Ok(card("Release watch".into(), json!({ "kind": kind, "on": on })))
+        }
+        "switch_app" => {
+            let app = crate::control::resolve_app(v["app"].as_str().unwrap_or(""), Surface::Cli).map_err(f)?;
+            let u = user.to_lowercase();
+            if !u.contains(&app.name.to_lowercase()) && !u.contains(&app.id) {
+                return Err(format!("{} is switched to only when your own message names it.", q(&app.name)));
+            }
+            Ok(card(app.name.clone(), json!({ "kind": kind, "app": app.id })))
+        }
+        "run_tests" => {
+            let which = v["test"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("all").to_owned();
+            if which != "all" {
+                crate::control::find_test(&which, Surface::Cli).map_err(f)?;
+            }
+            Ok(card(which.clone(), json!({ "kind": kind, "test": which })))
+        }
+        _ => Err("fastpilot does not know this action".into()),
+    }
+}
+
+/// FC6: a result line: done (its line, with its Undo when it can be undone) or failed.
+fn done_line(id: &str, r: Result<crate::control::Done, crate::control::Fail>) -> Res<String> {
+    match r {
+        Ok(d) => {
+            set_card(id, |p| {
+                p.status = "applied".into();
+                p.note = Some(d.line.clone());
+                p.undo_id.clone_from(&d.undo);
+            });
+            Ok(d.line)
+        }
+        Err(f) => {
+            set_card(id, |p| {
+                p.status = "failed".into();
+                p.note = Some(f.msg.clone());
+            });
+            Err(f.msg)
+        }
+    }
+}
+
+/// FC6: the kinds Chat does at once (with a result line).
+fn acts_at_once(p: &Proposal, _user: &str) -> Option<Option<&'static str>> {
+    match p.kind.as_str() {
+        "app" | "map" | "run_all" | "schedule" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" => Some(None),
+        // A drafted test keeps its card (Edit, and Save & schedule) until the new card design (FC4).
+        _ => None,
+    }
 }
 
 /// QA #6103: the password names in a fastpilot tool's answer ("setup needed: the test needs the
@@ -2642,6 +2774,8 @@ fn test_card(id: String, v: &Value) -> Res<Proposal> {
 /// A `test` card: `mode` is `schedule` (Save & schedule) or `test` (Save test only), and `edit` holds
 /// what the user changed with Edit (title, id, target, steps), checked like the bot's. A `setting`
 /// card: `confirm` is the word the user typed, when the card asks for one.
+// Each kind ends in its own `return` (they set the card's state first).
+#[allow(clippy::needless_return)]
 pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, confirm: Option<&str>) -> Res<String> {
     let agent = card_agent(id).ok_or("This card is not in this conversation any more.")?;
     let data = {
@@ -2671,15 +2805,15 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         set("cancelled", None);
         return Ok("Dismissed.".into());
     }
-    let done = match data["kind"].as_str() {
+    match data["kind"].as_str() {
         Some("test") => return save_test(&agent, id, &data, mode, edit),
         Some("note") => return save_note(&agent, id, &data),
         Some("app") => {
             let targets = crate::apps::Targets { web: data["web"].as_str().map(str::to_owned), android: data["android"].as_str().map(str::to_owned), ios: data["ios"].as_str().map(str::to_owned) };
             let a = crate::apps::add("", targets).inspect_err(|e| set("failed", Some(e.clone())))?;
-            let note = if crate::apps::current().is_some_and(|c| c.id == a.id) { format!("Added {}. It is your current app.", a.name) } else { format!("Added {}. Switch to it in the app switcher.", a.name) };
-            set("applied", Some(note.clone()));
-            return Ok(note);
+            let line = format!("Added {}", crate::control::app_what(&a));
+            let undo = crate::undo::record(&line, &format!("app:{}", a.id), crate::undo::Op::RemoveApp { id: a.id.clone() });
+            return done_line(id, Ok(crate::control::Done { line, undo }));
         }
         Some("map") => {
             let app = crate::apps::current().filter(|a| data["app"].as_str() == Some(a.id.as_str())).ok_or("The current app changed since this card was made. Ask again.")?;
@@ -2698,6 +2832,57 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         Some("open") => {
             set("applied", None);
             return Ok("Opened.".into());
+        }
+        // v0.7.1 FC3: the Schedules page, Ship check, release watch, app switcher and Run now.
+        Some("schedule_change") => {
+            use crate::control::Surface;
+            let sid = data["schedule"].as_str().unwrap_or("");
+            let r = match data["do"].as_str().unwrap_or("") {
+                "pause" => crate::control::set_schedule(sid, false, Surface::Cli).map(|(_, d)| d),
+                "resume" => crate::control::set_schedule(sid, true, Surface::Cli).map(|(_, d)| d),
+                "remove" => crate::control::remove_schedule(sid, Surface::Cli).map(|(_, d)| d),
+                "change" => crate::control::change_schedule(sid, data["preset"].as_str().unwrap_or(""), Surface::Cli).map(|(_, d)| d),
+                "run_now" => crate::control::find_schedule(sid, Surface::Cli).and_then(|s| {
+                    schedule::start_now(&s.id).map_err(crate::control::Fail::from)?;
+                    Ok(crate::control::Done { line: format!("Running {} now · {}", crate::control::q(&crate::control::schedule_title(&s)), crate::control::watch_in_live()), undo: None })
+                }),
+                _ => Err(crate::control::fail("usage", "This card has no action.")),
+            };
+            return done_line(id, r);
+        }
+        Some("release_watch") => {
+            let r = crate::control::release_watch(data["on"] == true, crate::control::Surface::Cli);
+            return done_line(id, r);
+        }
+        Some("switch_app") => {
+            if crate::map::is_mapping() {
+                set("failed", Some("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into()));
+                return Err("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into());
+            }
+            let r = crate::control::switch_app(data["app"].as_str().unwrap_or(""), crate::control::Surface::Cli).map(|(app, changed)| {
+                if std::env::var_os("FASTPILOT_DIR").is_none() {
+                    crate::apps::go(&app);
+                }
+                crate::control::Done { line: if changed { format!("Switched to {}", app.name) } else { format!("{} is already in use. Nothing changed.", app.name) }, undo: None }
+            });
+            return done_line(id, r);
+        }
+        Some("run_tests") => {
+            let r = crate::control::run_tests(data["test"].as_str().unwrap_or("all"), crate::control::Surface::Cli);
+            return done_line(id, r);
+        }
+        Some("ship_check") => {
+            crate::apps::current().filter(|a| data["app"].as_str() == Some(a.id.as_str())).ok_or("The current app changed since this card was made. Ask again.")?;
+            let url = data["url"].as_str().unwrap_or("").to_owned();
+            let line = format!("Checking {url} · {}", crate::control::watch_in_live());
+            set("applied", Some(line.clone()));
+            let (agent, id) = (agent.clone(), id.to_owned());
+            std::thread::spawn(move || {
+                let verdict = crate::control::ship_check(vec![url]).unwrap_or_else(|e| e.msg);
+                set_card(&id, |p| p.note = Some(verdict));
+                drop(agent);
+            });
+            return Ok(line);
         }
         Some("agent") => {
             let a = crate::agents::create(agent_of_proposal(&data)?)?;
@@ -2725,16 +2910,16 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
                 set("applied", Some(done.clone()));
                 return Ok(done);
             }
+            // FC6: a result line with Undo.
+            let mut line = format!("Created schedule {} · {} · {}", crate::control::q(&crate::control::schedule_title(&saved)), crate::control::what_runs(&saved), crate::control::when_next(&saved));
             if wants_hook {
-                format!("Schedule \"{}\" saved. Enter the webhook URL in Schedules › Edit to turn its notification on.", saved.name)
-            } else {
-                format!("Schedule \"{}\" saved and registered with {}.", saved.name, schedule::backend().name())
+                line.push_str(" · enter the webhook URL in Schedules › Edit to turn its notification on");
             }
+            let undo = crate::undo::record(&line, &format!("schedule:{}", saved.id), crate::undo::Op::RemoveSchedule { id: saved.id.clone() });
+            return done_line(id, Ok(crate::control::Done { line, undo }));
         }
-        _ => return Err("fastpilot does not know this kind of card.".into()),
-    };
-    set("applied", Some(done.clone()));
-    Ok(done)
+        _ => Err("fastpilot does not know this kind of card.".into()),
+    }
 }
 
 /// Save the test of card `id` (and its schedule, starting the first run). Nothing is written until
@@ -2888,14 +3073,24 @@ fn decide_setting(id: &str, data: &Value, apply: bool, confirm: Option<&str>) ->
 /// only while the setting is still what the card set.
 pub fn undo(id: &str) -> Res<String> {
     let agent = card_agent(id).ok_or("This card is not in this conversation any more.")?;
-    let data = {
+    let (data, journal) = {
         let c = chat_of(&agent);
         let p = c.msgs.iter().flat_map(|m| &m.proposals).find(|p| p.id == id).ok_or("This card is not in this conversation any more.")?;
-        if p.status != "applied" || !p.undo {
+        if p.status != "applied" || !(p.undo || p.undo_id.is_some()) {
             return Err("There is nothing to undo on this card.".into());
         }
-        p.data.clone()
+        (p.data.clone(), p.undo_id.clone())
     };
+    // FC6: a result line's Undo: the newest change of that thing only.
+    if let Some(change) = journal {
+        let line = crate::undo::undo(Some(&change), crate::control::Surface::Cli).map_err(|f| f.msg)?;
+        set_card(id, |p| {
+            p.status = "undone".into();
+            p.undo_id = None;
+            p.note = Some(line.clone());
+        });
+        return Ok(line);
+    }
     let c: change::Change = serde_json::from_value(data["change"].clone()).map_err(|e| e.to_string())?;
     if change::raw(&c.key)? != c.after {
         return Err("This setting changed again since, so nothing was undone.".into());
