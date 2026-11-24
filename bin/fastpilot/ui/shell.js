@@ -15,6 +15,7 @@ let chats = { agent: null, list: [] }; // /api/chats of the open agent
 let showAll = false;
 let timer = null;
 let lastFocus = null;
+let switched = null; // the agent and app the app in use was last moved to
 
 const agentId = () => localStorage.getItem(KEY) || "default";
 function setAgent(id) {
@@ -33,6 +34,13 @@ async function load() {
     data = a;
     chats = { agent: id, list: c.chats || [] };
     if (!byId(id) && id !== "default") { localStorage.removeItem(KEY); return load(); }
+    // FC5: an agent tests its own app: opening it makes that app the one in use (refused, and
+    // left as it is, while a chat is answering or a map is being made).
+    const mine = byId(id);
+    if (mine && mine.app_id && mine.app_id !== a.current_app && switched !== `${id}:${mine.app_id}`) {
+      switched = `${id}:${mine.app_id}`;
+      try { await api("/api/apps", { action: "use", id: mine.app_id }); data.current_app = mine.app_id; } catch (_) { /* stays */ }
+    }
   } catch (_) { /* the sidebar keeps what it had */ }
   draw();
   clearTimeout(timer);

@@ -449,7 +449,7 @@ fn live_says_where_a_session_came_from() {
     let label = |id: &str| v["sessions"].as_array().and_then(|a| a.iter().find(|s| s["id"] == id)).map(|s| (s["agent_name"].as_str().unwrap_or("").to_owned(), s["model_label"].is_null()));
     assert_eq!(label("term1"), Some(("Started from the terminal".to_owned(), true)), "{v}");
     assert_eq!(label("sched1"), Some(("Scheduled · Checkout every 2 hours".to_owned(), true)), "{v}");
-    assert_eq!(label("chat1").map(|l| l.0), Some("My agent".to_owned()), "Chat keeps its agent: {v}");
+    assert_eq!(label("chat1").map(|l| l.0), Some("My tester".to_owned()), "Chat keeps its agent: {v}");
 }
 
 /// V051 (QA Lows 1, 3, 4): the words people read agree with what fastpilot does.

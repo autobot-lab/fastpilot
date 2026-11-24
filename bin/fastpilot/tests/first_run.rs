@@ -1,8 +1,7 @@
-//! E4 (v0.7): the first run, in Chrome, as a new user (temp HOME, no app, no developer folder).
-//! The first screen asks what to test; pasting the address adds the app (no Next); one click on
-//! "Check the login" goes to Chat with that sentence; the wizard never comes back. "I know my way
-//! around" skips it for good. Until a test is saved the menu is simple (Chat, Live, Device,
-//! Settings, More), and Settings › "Show all menus" brings the rest. Skips without Chrome.
+//! v0.7.1 FC5: the first run, in Chrome, as a new user (temp HOME, no app, no developer folder).
+//! There is no wizard and no "Add your app": the first screen is Chat, "What should I test?" with
+//! the hint line; pasting the address in the box adds the app at once (a result line, then the hint
+//! how to try it), and the agent's line shows it. Skips without Chrome.
 
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
@@ -49,7 +48,7 @@ async fn until(c: &Client, js: &str, want: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
+async fn a_new_user_pastes_an_address_in_chat_and_it_is_added() {
     if !["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].iter().any(|p| Path::new(p).exists()) {
         return eprintln!("skipping: no Chrome");
     }
@@ -78,104 +77,27 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     let (ok, out) = flow(&c, &format!("- session: {{ start: person, platform: web, target: \"{}\" }}\n", link.trim())).await;
     assert!(ok, "{out}");
 
-    // The first screen: what to test, and the simple menu.
-    see(&c, "What do you want to test?").await;
-    see(&c, "Welcome to fastpilot").await;
-    // FC4: the agents sidebar, with Live, Device and Settings at its foot (no hidden menu items).
-    let side = "[...document.querySelectorAll('.side .sidefoot a')].map((a) => a.textContent.trim()).join('|')";
-    assert_eq!(eval(&c, side).await, "Live|Device|Settings", "the sidebar");
-
-    // Paste the address: the app is added, no Next to click.
-    let demo = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
-    eval(&c, &format!("(() => {{ const w = document.getElementById('wz-where'); w.value = {}; w.dispatchEvent(new Event('paste')); return 'ok'; }})()", serde_json::to_string(&demo).expect("demo"))).await;
-    see(&c, "What should we check first?").await;
-    assert_eq!(until(&c, "(async () => (await api('/api/apps')).apps.map((a) => a.name).join('|'))()", "Demo").await, "Demo");
-    // L3: the app bar shows it at once; L1: the bar is two thirds full at step 2.
-    assert_eq!(until(&c, "String((document.querySelector('#appbar .appbtn')?.textContent || '').includes('Demo'))", "true").await, "true");
-    assert_eq!(eval(&c, "(() => { const b = document.querySelector('.wz-bar'); return String(Math.round(100 * b.firstChild.getBoundingClientRect().width / b.getBoundingClientRect().width)); })()").await, "66");
-
-    // One click: Chat, with that sentence sent (caught here: no real Claude in this test).
-    eval(&c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; [...document.querySelectorAll('.say-row')].find((b) => b.textContent.includes('Check the login')).click(); return 'ok'; })()").await;
-    // QA #5980 bug 1: no test account saved yet, so it is asked here, once, in the masked dialog.
-    see(&c, "User name of the test account").await;
-    eval(&c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'a@b.com'; i.form.requestSubmit(); return 'ok'; })()").await;
-    see(&c, "Password of the test account").await;
-    assert_eq!(eval(&c, "document.querySelector('dialog.cdlg input').type").await, "password");
-    eval(&c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'fp-first-run-pass'; i.form.requestSubmit(); return 'ok'; })()").await;
-    assert_eq!(until(&c, "location.hash + '|' + window.__sent", "#/agents/default/chat/new|Check the login").await, "#/agents/default/chat/new|Check the login");
+    // The first screen is Chat: the greeting, the hint line and the box. No wizard, no form.
     see(&c, "What should I test?").await;
-    let saved = eval(&c, "(async () => (await api('/api/secrets')).names.filter((n) => n.set).map((n) => n.name).join('|'))()").await;
-    assert_eq!(saved, "TEST_USER|TEST_PASSWORD", "both saved for the app");
-    // It never comes back.
+    see(&c, "Paste your website address, or say “test my Android app”.").await;
+    assert_eq!(eval(&c, "[!!document.querySelector('.wz, #appbar, dialog.appdlg'), document.body.textContent.includes('Add your app'), document.querySelector('.hdr2 .sub')?.textContent].join('|')").await, "false|false|No app yet");
+
+    // Paste the address and send: added at once, then how to try it.
+    let demo = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
+    let (ok, out) = flow(&c, &format!("- inputText: {{ into: {{ role: textfield }}, text: {} }}\n", serde_json::to_string(&demo).expect("demo"))).await;
+    assert!(ok, "{out}");
+    eval(&c, "(document.getElementById('chat-send').click(), 'ok')").await;
+    see(&c, "Say “check the login” to try it.").await;
+    let line = eval(&c, "(() => { const l = document.querySelector('.result-line'); return [l.getAttribute('role'), l.querySelector('.rl-text').textContent.startsWith('Added '), !!l.querySelector('.rl-undo')].join('|'); })()").await;
+    assert_eq!(line, "status|true|true");
+    assert_eq!(until(&c, "String(document.querySelector('.hdr2 .sub')?.textContent.endsWith('· Website'))", "true").await, "true", "the agent shows its app");
+    assert_eq!(until(&c, "(async () => (await api('/api/apps')).apps.length)().then(String)", "1").await, "1");
+    // It never asks again: a reload is Chat with that chat.
     eval(&c, "(location.reload(), 'ok')").await;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    see(&c, "What should I test?").await;
+    see(&c, "Say “check the login” to try it.").await;
     assert_eq!(eval(&c, "String(!!document.querySelector('.wz'))").await, "false");
 
-    // A new user who knows their way around: skipped for good.
-    eval(&c, "(async () => { localStorage.clear(); const a = await api('/api/apps'); for (const x of a.apps) await api('/api/apps', { action: 'remove', id: x.id }); location.hash = '#/agents'; location.reload(); return 'ok'; })()").await;
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    see(&c, "What do you want to test?").await;
-    let (ok, out) = flow(&c, "- tapOn: I know my way around\n").await;
-    assert!(ok, "{out}");
-    see(&c, "What should I test?").await;
-    eval(&c, "(location.reload(), 'ok')").await;
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    see(&c, "What should I test?").await;
-    assert_eq!(eval(&c, "String(!!document.querySelector('.wz'))").await, "false", "skipped for good");
-
-    let _ = c.cancel().await;
-    let _ = ui.kill();
-    let _ = ui.wait();
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-/// Design Critic's final check M1: the wizard is the first screen even when the page opens at the
-/// Chat address (a reload, a bookmark). That Chat page used to start drawing before the wizard knew
-/// it was a first run and, when it finished last, drew over the wizard. Five fresh loads, sampled
-/// without navigating: Chat never shows, and each ends on the wizard at step 1 (its bar a third
-/// full, L1).
-#[tokio::test(flavor = "multi_thread")]
-async fn the_wizard_is_the_first_screen_even_at_the_chat_address() {
-    if !["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"].iter().any(|p| Path::new(p).exists()) {
-        return eprintln!("skipping: no Chrome");
-    }
-    let home = std::env::temp_dir().join(format!("fp-first-screen-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(home.join("person")).expect("home");
-    let mut ui = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
-        .args(["ui", "--no-open"])
-        .current_dir(&home)
-        .env("HOME", &home)
-        .env("FASTPILOT_KEYSTORE", "file")
-        .env("FASTPILOT_LIVE_DIR", home.join("live"))
-        .env_remove("FASTPILOT_CONFIG")
-        .env_remove("FASTPILOT_DIR")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("ui");
-    let mut link = String::new();
-    BufReader::new(ui.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
-    let p = home.join("person");
-    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
-        c.arg("mcp").current_dir(ROOT).env("HOME", &p).env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").env("FASTPILOT_LIVE_DIR", p.join("live")).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
-    });
-    let c: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
-    let (ok, out) = flow(&c, &format!("- session: {{ start: person, platform: web, target: \"{}#/agents/default/chat\" }}\n", link.trim())).await;
-    assert!(ok, "{out}");
-    let state = "document.querySelector('.wz') ? 'WIZ' : (document.querySelector('#chat-input') ? 'CHAT' : 'wait')";
-    for round in 0..5 {
-        let mut seen = Vec::new();
-        for _ in 0..10 {
-            seen.push(eval(&c, state).await);
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
-        assert!(!seen.iter().any(|s| s == "CHAT") && seen.last().map(String::as_str) == Some("WIZ"), "load {round}: {seen:?}");
-        assert_eq!(eval(&c, "(() => { const b = document.querySelector('.wz-bar'); return String(Math.round(100 * b.firstChild.getBoundingClientRect().width / b.getBoundingClientRect().width)); })()").await, "33", "step 1 of 3");
-        eval(&c, "(location.reload(), 'ok')").await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
     let _ = c.cancel().await;
     let _ = ui.kill();
     let _ = ui.wait();

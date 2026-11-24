@@ -1,5 +1,5 @@
 //! S4 (v0.7): no agent setup in the main path. Each app has a working tester with no clicks,
-//! "<app> tester", with the app's platforms, address and auto-picked skills; a change the user makes
+//! "My tester" (v0.7.1 FC5: the name stays; the app shows under it), with the app's platforms, address and auto-picked skills; a change the user makes
 //! in Agent settings keeps working on every app, and one app's name or address never sticks to the
 //! next app's tester. "New agent" makes an agent with one focus in one click, from the current app.
 //! Temp HOME throughout.
@@ -98,7 +98,7 @@ fn each_app_has_its_own_tester_and_new_agent_takes_one_click() {
 
     // A fresh app has a working agent with no clicks: its name, platforms, address and skills.
     let t = ui.tester();
-    assert_eq!(t["name"], "Shop tester", "{t}");
+    assert_eq!(t["name"], "My tester", "{t}");
     assert_eq!(strs(&t["devices"]), ["web", "android_emulator"], "{t}");
     assert_eq!(t["app"], "https://shop.example/", "{t}");
     let skills = strs(&t["skills"]);
@@ -107,7 +107,7 @@ fn each_app_has_its_own_tester_and_new_agent_takes_one_click() {
     // The other app's tester is its own.
     ui.post("/api/apps", json!({ "action": "use", "id": "blog" }));
     let t = ui.tester();
-    assert_eq!((t["name"].as_str(), strs(&t["devices"]), t["app"].as_str()), (Some("Blog tester"), vec!["web".to_owned()], Some("https://blog.example/")), "{t}");
+    assert_eq!((t["name"].as_str(), strs(&t["devices"]), t["app"].as_str()), (Some("My tester"), vec!["web".to_owned()], Some("https://blog.example/")), "{t}");
 
     // Agent settings sends back what it shows; one app's values must not stick to the next app's
     // tester, while the user's own change (an instruction) stays on every app.
@@ -119,7 +119,7 @@ fn each_app_has_its_own_tester_and_new_agent_takes_one_click() {
     assert!(!d.to_string().contains("Blog") && !d.to_string().contains("blog.example"), "no app value is saved into the shared agent: {d}");
     ui.post("/api/apps", json!({ "action": "use", "id": "shop" }));
     let t = ui.tester();
-    assert_eq!((t["name"].as_str(), t["app"].as_str()), (Some("Shop tester"), Some("https://shop.example/")), "{t}");
+    assert_eq!((t["name"].as_str(), t["app"].as_str()), (Some("My tester"), Some("https://shop.example/")), "{t}");
     assert_eq!(strs(&t["instructions"]), ["Stop at the first failure and report"], "the user's own change stays: {t}");
 
     // A name the user picked is kept on every app.

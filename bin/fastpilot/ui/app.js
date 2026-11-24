@@ -208,7 +208,7 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"), item("apps", "Your apps"),
+  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"),
     // FC4: Integrations (Jira, webhook) are global, so they are under Settings.
     h("a", { href: "#/integrations" }, "Integrations"));
 }
@@ -505,13 +505,15 @@ function pageBroken() {
 
 function pageSettings(sub) {
   if (sub === "secret") sub = "secrets"; // links made before v0.7
+  // FC5: no "Your apps": apps come from Chat; the way back is History › Recently removed.
+  if (sub === "apps") sub = "limits";
   topSettings();
   if (S.error) {
-    $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security", "apps"].includes(sub) ? sub : "limits"), pageBroken()));
+    $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), pageBroken()));
     return;
   }
-  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : sub === "apps" ? Apps.page() : pageLimits();
-  $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security", "apps"].includes(sub) ? sub : "limits"), page));
+  const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : pageLimits();
+  $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), page));
   if (sub === "model" && !doctorCache) loadDoctor(false);
 }
 
@@ -1306,6 +1308,8 @@ async function chatDecide(id, apply, mode, edit, confirm) {
     delete chatEdits[id];
     chatData = r.chat;
     toast(r.message, true);
+    // A click may have made an agent or added an app: the sidebar shows it now.
+    if (window.Shell) Shell.refresh();
   } catch (e) { chatRefused[id] = e.message; toast(e.message); await loadChat(); }
   chatSig = "";
   renderChat();
@@ -1759,16 +1763,54 @@ const RERUN = "The test account is saved now. Run that check again with it.";
 // it can be undone ("Changed later" once a newer change of the same thing came). No Apply step.
 const RESULT_KINDS = new Set(["app", "map", "run_all", "schedule", "schedule_change", "ship_check", "release_watch", "switch_app", "run_tests"]);
 
+// FC5 hint copy (HANDOFF item 3, the recommended sentences; the user did not choose, so the team
+// follows FastProduct's recommendation). One constant: either choice is a one-line change.
+const HINT = {
+  empty: "Paste your website address, or say “test my Android app”.",
+  added: "Say “check the login” to try it.",
+};
+
 function resultLine(p) {
   const ok = p.status === "applied";
   const cls = "result-line" + (p.status === "undone" ? " undone" : "") + (ok || p.status === "undone" ? "" : " bad");
-  return h("div", { class: cls, role: "status", "data-pid": String(p.id) },
+  const line = h("div", { class: cls, role: "status", "data-pid": String(p.id) },
     h("span", { class: "rl-text", tabindex: "-1" }, p.note || p.title),
+    // FC5: an app that made a new agent: Open it.
+    ok && p.new_agent ? h("a", { class: "btn sm rl-open", href: `#/agents/${encodeURIComponent(p.new_agent)}/chat` }, "Open") : null,
     ok && p.undo_id ? (p.changed_later ? h("span", { class: "muted rl-later" }, "Changed later") : h("button", { class: "btn sm rl-undo", onclick: () => chatUndo(p.id) }, "Undo")) : null);
+  return ok && p.hint ? [line, h("p", { class: "md hint-after" }, HINT.added)] : line;
+}
+
+// FC5: "test my Android app" with several apps on the device: one click on an app adds it (a
+// choice, not a confirmation). The names and ids are the device's, shown as text.
+function pickCard(p) {
+  return h("section", { class: "grp prop pick-card", "aria-label": p.title, "data-pid": String(p.id) },
+    h("h3", { class: "gh" }, icon("device"), p.title),
+    h("div", { class: "prop-body" }, p.note ? h("p", { class: "s" }, p.note) : null,
+      h("ul", { class: "pick" }, (p.rows || []).map(([name, id]) => h("li", {}, h("button", { type: "button", class: "row", "aria-label": `Add ${name} (${id})`, onclick: () => chatDecide(p.id, true, id) },
+        h("span", {}, h("b", {}, name), h("small", {}, id)), icon("chev", "sm")))))));
+}
+
+// FC5: no emulator or simulator running: the only button starts it (the person's click).
+function startCard(p) {
+  const android = p.open === "android";
+  const state = h("p", { class: "s", role: "status" });
+  const btn = h("button", { type: "button", class: "btn p", onclick: async () => {
+    btn.disabled = true;
+    try {
+      await api("/api/fix", android ? { action: "start", area: "android", confirmed: true } : { action: "boot-simulator", confirmed: true });
+      state.replaceChildren(h("span", { class: "spin", "aria-hidden": "true" }), android ? " Starting the emulator… about a minute" : " Starting the simulator… about a minute");
+    } catch (e) { btn.disabled = false; toast(e.message); }
+  } }, android ? "Start the Android emulator" : "Start the iPhone simulator");
+  return h("section", { class: "grp prop start-card", "aria-label": p.title, "data-pid": String(p.id) },
+    h("h3", { class: "gh" }, icon("device"), p.title),
+    h("div", { class: "prop-body" }, p.note ? h("p", { class: "s" }, p.note) : null, h("div", { class: "btns" }, btn), state));
 }
 
 function proposalCard(p) {
   if (RESULT_KINDS.has(p.kind) && p.status !== "pending") return resultLine(p);
+  if (p.kind === "pick_app" && p.status === "pending") return pickCard(p);
+  if (p.kind === "start_device" && p.status === "pending") return startCard(p);
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
@@ -2023,7 +2065,7 @@ function renderChat() {
     log.replaceChildren(h("li", { class: "res bd", role: "alert" }, "Cannot read the chat: " + chatData.error));
   } else if (!msgs.length) {
     // FC4 empty state: a greeting and the box. No suggestions.
-    log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?")));
+    log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?"), h("p", { class: "sub" }, HINT.empty)));
   } else {
     log.replaceChildren(...msgs.map((m, i) => chatMsg(m, i === msgs.length - 1)));
   }
@@ -2430,7 +2472,6 @@ function render() {
   // E6: "Apps" (Jira and the rest) is now Integrations; old links still land there.
   if (hash === "#/apps" || hash.startsWith("#/apps/jira")) { location.replace(hash.replace("#/apps", "#/integrations")); return; }
   const [, page, sub] = hash.split("/");
-  if (window.Apps) Apps.bar();
   if (page === "apps" && (sub || "").startsWith("add")) {
     pageSettings("apps");
     Apps.route();
@@ -2439,11 +2480,6 @@ function render() {
   if (page !== "live") stopLive();
   // FC4: the sidebar and the title row (agent and tabs, or the page's name).
   if (window.Shell) Shell.frame();
-  // E4: the first screen is the first-run wizard until a test is saved (or it is skipped).
-  if (window.Welcome && Welcome.wants(page)) {
-    Welcome.page();
-    return;
-  }
   if (page === "agents") {
     const [, , id, tab, extra] = hash.split("/");
     if (!id) { location.replace(`#/agents/${window.Shell ? Shell.agent() : "default"}/chat`); return; }

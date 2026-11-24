@@ -44,6 +44,8 @@ pub enum Op {
     RemoveAgent { id: String },
     /// v0.7.1 FC4: "Chat removed": bring it back.
     RestoreChat { id: String },
+    /// v0.7.1 FC5: "Added … as a new agent": the agent goes, and the app when it was added then.
+    RemoveNewAgent { agent: String, app: Option<String> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -217,6 +219,13 @@ pub fn undo(id: Option<&str>, by: Surface) -> Result<String, Fail> {
         }
         Op::RemoveAgent { id } => {
             crate::agents::delete(id)?;
+            undone
+        }
+        Op::RemoveNewAgent { agent, app } => {
+            crate::agents::delete(agent)?;
+            if let Some(a) = app.as_deref().and_then(apps::get) {
+                remove_app(&a, "", false)?;
+            }
             undone
         }
         Op::RestoreChat { id } => restore_chat(id).map_err(|e| if e.code == "expired" { expired(&c) } else { e })?,

@@ -294,7 +294,7 @@ fn wait_agent(ui: &Ui, agent: &str) -> Value {
     }
 }
 
-/// D10a: agents. Someone who used fastpilot before finds one agent ("My agent") holding their
+/// D10a: agents. Someone who used fastpilot before finds one agent ("My tester") holding their
 /// schedules; a new agent gets its own conversation, its own instructions and extra blocked words
 /// in what its bot is told and runs with; one sentence in Chat makes a "New agent" card that
 /// creates nothing before Create; deleting an agent moves its schedules to the first one.
@@ -316,7 +316,7 @@ fn agents_have_their_own_chat_rules_and_schedules() {
 
     let v = get("/api/agents");
     assert_eq!(v["agents"][0]["agent"]["id"], "default", "{v}");
-    assert_eq!(v["agents"][0]["agent"]["name"], "My agent");
+    assert_eq!(v["agents"][0]["agent"]["name"], "My tester");
     assert_eq!(v["agents"][0]["schedules"], json!(["daily 09:00"]), "the old schedule belongs to the first agent: {v}");
     assert!(v["suggestions"].as_array().is_some_and(|s| s.iter().any(|x| x == "Stop at the first failure and report")));
 
@@ -1141,12 +1141,16 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
     };
     let apps = || -> Value { serde_json::from_str(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("apps") };
 
+    // FC5: an address that does not load is not added.
+    let bot = say("add the app https://staging.shop.invalid please");
+    assert_eq!((bot["proposals"][0]["status"].as_str(), bot["proposals"][0]["note"].as_str()), (Some("failed"), Some("Not added. https://staging.shop.invalid did not load")), "{bot}");
     // The user's own address: added at once (FC6), a result line with Undo.
-    let bot = say("add the app https://staging.shop.example please");
+    let demo = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
+    let bot = say(&format!("add the app {demo} please"));
     let card = bot["proposals"][0].clone();
-    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["note"].as_str()), (Some("app"), Some("applied"), Some("Added Shop staging https://staging.shop.example/")), "{bot}");
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["note"].as_str()), (Some("app"), Some("applied"), Some(format!("Added Demo {demo}").as_str())), "{bot}");
     assert!(card["undo_id"].is_string(), "{card}");
-    assert_eq!(apps()["apps"][0]["name"], "Shop staging");
+    assert_eq!(apps()["apps"][0]["name"], "Demo");
 
     // An address a page asked for is not the user's: refused, nothing added.
     let bot = say("what does the welcome page says?");
@@ -1409,6 +1413,169 @@ fn chats_answer_side_by_side_wait_for_a_slot_stop_and_come_back() {
     let agents = get("/api/agents");
     assert!(agents["agents"].as_array().is_some_and(|l| l.iter().any(|x| x["agent"]["id"] == agent.as_str() && x["agent"]["name"] == "Checkout QA")), "{agents}");
     assert_eq!(get(&format!("/api/chats?agent={agent}"))["chats"].as_array().map(Vec::len), Some(1));
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// A fake adb server with one emulator (`emulator-5590`, no real device) whose third-party apps are
+/// `apps` (newest first); `down` makes it say no device is there.
+fn fake_adb(apps: std::sync::Arc<std::sync::Mutex<Vec<String>>>, down: std::sync::Arc<std::sync::atomic::AtomicBool>) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    std::thread::spawn(move || {
+        for sock in listener.incoming().flatten() {
+            let (apps, down) = (apps.clone(), down.clone());
+            std::thread::spawn(move || {
+                let mut sock = sock;
+                loop {
+                    let mut len = [0u8; 4];
+                    if sock.read_exact(&mut len).is_err() {
+                        return;
+                    }
+                    let n = usize::from_str_radix(std::str::from_utf8(&len).unwrap_or("0"), 16).unwrap_or(0);
+                    let mut req = vec![0u8; n];
+                    if sock.read_exact(&mut req).is_err() {
+                        return;
+                    }
+                    let req = String::from_utf8_lossy(&req).into_owned();
+                    if req == "host:devices" || req == "host:devices-l" {
+                        let list = if down.load(std::sync::atomic::Ordering::SeqCst) { String::new() } else { "emulator-5590\tdevice\n".to_owned() };
+                        let _ = sock.write_all(format!("OKAY{:04x}{list}", list.len()).as_bytes());
+                        return;
+                    } else if req.starts_with("host:transport:") {
+                        let _ = sock.write_all(b"OKAY");
+                    } else if req.starts_with("shell:pm list packages") {
+                        let list = apps.lock().expect("apps").clone();
+                        let mut out: String = list.iter().map(|p| format!("package:{p} versionCode:1 installer=null\n")).collect();
+                        for (i, p) in list.iter().enumerate() {
+                            out.push_str(&format!("  Package [{p}] (1a2b):\n    firstInstallTime=2026-11-{:02} 10:00:00\n", 24 - i));
+                        }
+                        let _ = sock.write_all(format!("OKAY{out}").as_bytes());
+                        return;
+                    } else {
+                        let _ = sock.write_all(b"FAIL0004nope");
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// v0.7.1 FC5: the app comes from Chat, never from a form. An address in the person's message is
+/// added at once as the agent's app (with Undo and the hint how to try it); one that does not load
+/// is not added; a new address in an agent that has an app makes a new agent. "test my Android app"
+/// lists the apps on the running emulator: none says how to put one on it, several are a one-click
+/// choice (only a listed app can be added), and with no emulator the one button starts it. The
+/// default agent is "My tester"; there is no wizard and no "Add your app".
+#[test]
+fn the_app_comes_from_chat_and_a_new_address_makes_a_new_agent() {
+    let home = std::env::temp_dir().join(format!("fp-chat-fc5-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let apps = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let adb = fake_adb(apps.clone(), down.clone());
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1"), ("FASTPILOT_ADB_SERVER", adb.as_str()), ("FASTPILOT_ANDROID_SERIAL", "emulator-5590")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+    // One message in a new chat of `agent`: the bot's answer when it is done.
+    let say = |agent: &str, text: &str| -> Value {
+        let (st, v) = post("/api/chat", json!({ "agent": agent, "new": true, "message": text }));
+        assert_eq!(st, 200, "{v}");
+        let id = v["chat"].as_str().expect("chat").to_owned();
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            let v = get(&format!("/api/chat?agent={agent}&chat={id}"));
+            if v["busy"] == false {
+                return v["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot");
+            }
+            assert!(Instant::now() < until, "busy: {v}");
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    };
+    let agents = || get("/api/agents")["agents"].as_array().cloned().unwrap_or_default();
+    let bot_calls = || std::fs::read_dir(home.join("claude-log")).map(|d| d.count()).unwrap_or(0);
+
+    // No wizard, no "Add your app"; the default agent is "My tester" with no app yet.
+    let (_, page) = request(ui.port, "GET", "/", &ui.cookie, "", false);
+    assert!(!page.contains("welcome.js") && !page.contains("appbar"), "{page}");
+    assert_eq!(request(ui.port, "GET", "/assets/welcome.js", &ui.cookie, "", false).0, 404);
+    let (_, js) = request(ui.port, "GET", "/assets/app.js", &ui.cookie, "", false);
+    assert!(js.contains("empty: \"Paste your website address, or say “test my Android app”.\"") && js.contains("added: \"Say “check the login” to try it.\"") && !js.contains("Add your app"), "the hint copy is one constant");
+    assert_eq!((agents()[0]["agent"]["name"].as_str(), agents()[0]["app_line"].as_str()), (Some("My tester"), Some("No app yet")));
+
+    // An address that does not load: not added, nothing changes.
+    let bot = say("default", "http://127.0.0.1:9/");
+    assert_eq!((bot["proposals"][0]["status"].as_str(), bot["proposals"][0]["note"].as_str()), (Some("failed"), Some("Not added. http://127.0.0.1:9/ did not load")), "{bot}");
+    assert!(get("/api/apps")["apps"].as_array().is_some_and(Vec::is_empty));
+
+    // The address alone: added at once as this agent's app, with Undo and the hint; no bot needed.
+    let root = std::fs::canonicalize(ROOT).expect("root").display().to_string();
+    let login = format!("file://{root}/examples/demo/login.html");
+    let bot = say("default", &login);
+    let line = &bot["proposals"][0];
+    assert!(line["status"] == "applied" && line["note"].as_str().is_some_and(|n| n.starts_with("Added ") && n.ends_with(&login)) && line["undo_id"].is_string() && line["hint"] == true, "{bot}");
+    assert_eq!(bot_calls(), 0, "fastpilot added it itself");
+    let me = agents()[0].clone();
+    assert!(me["app_id"].is_string() && me["app_line"].as_str().is_some_and(|l| l.ends_with("· Website")), "{me}");
+    // The same site again: nothing to add; the bot answers.
+    say("default", &format!("check {login} please"));
+    assert_eq!(get("/api/apps")["apps"].as_array().map(Vec::len), Some(1));
+
+    // A new address in an agent that has an app: a new agent for it, with Open and Undo.
+    let orders = format!("file://{root}/examples/demo/orders.html");
+    let bot = say("default", &format!("test {orders}"));
+    let line = bot["proposals"][0].clone();
+    assert!(line["note"].as_str().is_some_and(|n| n.ends_with(" as a new agent")) && line["new_agent"].is_string() && line["undo_id"].is_string(), "{bot}");
+    let made = line["new_agent"].as_str().expect("agent").to_owned();
+    assert!(agents().iter().any(|a| a["agent"]["id"] == made.as_str() && a["app_line"].as_str().is_some_and(|l| l.ends_with("· Website"))), "{:?}", agents());
+    assert_eq!(get("/api/apps")["apps"].as_array().map(Vec::len), Some(2));
+    let (st, undone) = post("/api/undo", json!({ "id": line["undo_id"] }));
+    assert_eq!(st, 200, "{undone}");
+    assert!(!agents().iter().any(|a| a["agent"]["id"] == made.as_str()), "Undo removes the new agent");
+    assert_eq!(get("/api/apps")["apps"].as_array().map(Vec::len), Some(1), "and the app it added");
+
+    // "test my Android app", none on the emulator: say how to put it there (final copy).
+    let (st, v) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "test my Android app" }));
+    assert_eq!(st, 200, "{v}");
+    let chat = v["chat"].as_str().expect("chat").to_owned();
+    let answer = |chat: &str| -> Value {
+        for _ in 0..200 {
+            let s = get(&format!("/api/chat?agent=default&chat={chat}"));
+            if s["busy"] == false {
+                return s["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot");
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        panic!("still busy");
+    };
+    assert_eq!(answer(&chat)["text"], "The emulator is ready, but none of your apps are on it. Drag your app's .apk file onto the emulator window, then say “look again”.");
+    // Two apps put on it; "look again" in that chat: a choice; a click adds one (only a listed one).
+    *apps.lock().expect("apps") = vec!["com.example.shop".into(), "com.example.wallet".into()];
+    let (st, v) = post("/api/chat", json!({ "agent": "default", "chat": chat, "message": "look again" }));
+    assert_eq!(st, 200, "{v}");
+    let bot = answer(&chat);
+    assert_eq!(bot["text"], "I found 2 apps on your Android emulator. Which one?", "{bot}");
+    let card = bot["proposals"][0].clone();
+    assert_eq!((card["kind"].as_str(), card["title"].as_str(), card["rows"][0][1].as_str(), card["rows"][1][1].as_str()), (Some("pick_app"), Some("Which app?"), Some("com.example.shop"), Some("com.example.wallet")), "{card}");
+    let (st, _) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "com.evil.app" }));
+    assert_eq!(st, 422, "only an app the card listed");
+    let (st, r) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "com.example.wallet" }));
+    assert_eq!(st, 200, "{r}");
+    assert!(r["message"].as_str().is_some_and(|m| m.contains("com.example.wallet") && m.ends_with(" as a new agent")), "the default agent has its website, so a new agent: {r}");
+    assert!(get("/api/apps")["apps"].as_array().is_some_and(|a| a.iter().any(|x| x["targets"]["android"] == "com.example.wallet")));
+
+    // No emulator running: one button to start it (nothing starts without that click).
+    down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let bot = say("default", "test my Android app");
+    let card = &bot["proposals"][0];
+    assert_eq!((card["kind"].as_str(), card["title"].as_str(), card["open"].as_str(), card["status"].as_str()), (Some("start_device"), Some("No Android emulator is running"), Some("android"), Some("pending")), "{bot}");
+    assert_eq!(bot_calls(), 1, "only \"check … please\" needed the bot");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

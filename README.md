@@ -189,6 +189,10 @@ In the dashboard Chat, what you ask for is done at once and shows as one line, s
 *Paused schedule “Every night” · its history is kept*, with **Undo** on it. Loosening a safety limit
 still needs your click on its red card, and a password is still typed only in its masked field.
 
+There is no setup form: paste your website's address in the dashboard Chat and it is added (an
+address that does not load is not added), or say *"test my Android app"* and pick it from the apps
+on the running emulator. A new address in an agent that already has an app makes a new agent.
+
 The dashboard works like a chat app: the agents are on the left, each with its chats (**+ New chat**
 starts another; several can work at once, up to your "tests at once" limit, and the next one waits
 for a free slot). **Stop** ends an answer and makes nothing it was about to make. Removing a chat
