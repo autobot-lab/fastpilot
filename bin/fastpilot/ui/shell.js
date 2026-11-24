@@ -195,10 +195,7 @@ async function stopAll(a) {
   try { r = await api("/api/agents", { action: "stop_all", id: a.id }); } catch (e) { toast(e.message); return; }
   closeAbout();
   await load();
-  const log = document.getElementById("chat-log");
-  const line = h("li", { class: "msg bot" }, h("div", { class: "res", role: "status" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("stop", "sm")), h("span", { class: "rt" }, r.message)), r.next ? h("p", { class: "md" }, r.next) : null);
-  if (log) { log.append(line); } else toast(r.message, true);
-  if (window.chatAfterStop) window.chatAfterStop();
+  if (document.getElementById("chat-log") && window.setChatNotice) window.setChatNotice(r); else toast(r.message, true);
 }
 // Remove agent: at once, kept 7 days, Undo in the sidebar toast.
 async function removeAgent(a) {

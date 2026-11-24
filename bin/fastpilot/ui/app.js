@@ -2024,6 +2024,10 @@ function sendState() {
   send.disabled = !busy && !(box && box.value.trim());
 }
 
+// FC-STOP: "Stopped 2 chats in …" after Stop all, shown under the open chat until another opens.
+let chatNotice = null; // { key, message, next }
+window.setChatNotice = (r) => { chatNotice = { key: draftKey(), message: r.message, next: r.next }; chatSig = ""; if (chatShown()) renderChat(); };
+
 let chatDraft = { key: null, text: "", focused: false };
 const draftKey = () => `${chatAgent}/${chatId || "new"}`;
 function renderChat() {
@@ -2068,6 +2072,10 @@ function renderChat() {
     log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?"), h("p", { class: "sub" }, HINT.empty)));
   } else {
     log.replaceChildren(...msgs.map((m, i) => chatMsg(m, i === msgs.length - 1)));
+  }
+  if (chatNotice && chatNotice.key === draftKey()) {
+    log.append(h("li", { class: "msg bot" }, h("div", { class: "res", role: "status" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("stop", "sm")), h("span", { class: "rt" }, chatNotice.message)),
+      chatNotice.next ? h("p", { class: "md" }, chatNotice.next) : null));
   }
   if (atBottom || msgs.length) scroll.scrollTop = scroll.scrollHeight;
 }
