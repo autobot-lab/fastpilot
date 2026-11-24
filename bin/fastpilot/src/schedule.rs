@@ -779,6 +779,16 @@ pub fn move_agent(from: &str, to: &str) -> Res<()> {
     })
 }
 
+/// v0.7.1 FC-STOP: these schedules work for `agent` again (an agent brought back).
+pub fn give_back(ids: &[String], agent: &str) -> Res<()> {
+    update(|store| {
+        for s in store.schedules.iter_mut().filter(|s| ids.contains(&s.id)) {
+            s.agent = (agent != crate::agents::DEFAULT).then(|| agent.to_owned());
+        }
+        Ok(())
+    })
+}
+
 pub fn set_enabled(id: &str, on: bool) -> Res<()> {
     update(|store| {
         let s = store.schedules.iter_mut().find(|x| x.id == id).ok_or("Schedule not found")?;

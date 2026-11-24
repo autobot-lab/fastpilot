@@ -481,6 +481,22 @@ pub fn delete(id: &str) -> Res<()> {
     crate::schedule::move_agent(id, DEFAULT)
 }
 
+/// v0.7.1 FC-STOP: put a removed agent back as it was (Undo, Recently removed): its chats leave the
+/// default agent's list again.
+pub fn restore(a: Agent) -> Res<Agent> {
+    let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut s = read();
+    if s.agents.iter().any(|x| x.id == a.id || x.name.eq_ignore_ascii_case(&a.name)) {
+        return Err(format!("An agent called \"{}\" exists already", a.name));
+    }
+    if let Some(d) = s.agents.iter_mut().find(|x| x.id == DEFAULT) {
+        d.conversations.retain(|c| !a.conversations.contains(c));
+    }
+    s.agents.push(a.clone());
+    write(&s)?;
+    Ok(a)
+}
+
 /// Remember that conversation `conv` belongs to `agent` (History filters by it).
 pub fn add_conversation(agent: &str, conv: &str) {
     let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());

@@ -75,6 +75,10 @@ if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
     rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake-chat", "version": "0"}})
     rpc("notifications/initialized", notify=True)
     ok = call("session", {"action": "start", "id": "chat1", "platform": "web", "target": os.environ.get("FAKE_CHAT_TARGET", "examples/demo/login.html")})
+    if "hold the session" in low:
+        # v0.7.1 FC-STOP: a test that is still running (its browser open) when the person stops it.
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "mcp__fastpilot__session", "input": {"action": "start", "id": "chat1"}}]}})
+        time.sleep(60)
     if "planted page" in low:
         # Security #208 M1: a page that prints fastpilot's "setup needed" marker. A snapshot and a
         # failing check return it, and the bot (steered) types the name it chose: no card.

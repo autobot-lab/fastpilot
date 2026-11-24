@@ -743,7 +743,7 @@ dialog.appdlg .fld{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
 .hdr2{flex:none;padding:12px 28px 0;border-bottom:1px solid var(--line);background:var(--bg)}
 .hdr2 .nm{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:6px}
 .hdr2 h1{font:700 20px/1.2 var(--display)}
-.hdr2 .agname{text-decoration:none;color:var(--ink)}.hdr2 .agname:hover h1{text-decoration:underline;text-underline-offset:3px}
+.hdr2 .agname{display:inline-flex;align-items:center;gap:6px;color:var(--ink);padding:0;border-radius:6px}.hdr2 .agname .ic{color:var(--muted)}.hdr2 .agname{font:inherit}.hdr2 .agname:hover{text-decoration:underline;text-underline-offset:3px}
 .hdr2 .sub{font-size:13px;color:var(--muted)}
 .tabs2{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
 .tabs2 a{padding:8px 14px 9px;font:500 14px var(--sans);color:var(--muted);border-bottom:2px solid transparent;text-decoration:none;white-space:nowrap}
@@ -848,3 +848,19 @@ body.on-chat .main{height:100vh}
 .sk-group h3{font:700 15px var(--display);margin-top:6px}
 .sk-group .sk-grid{margin-top:8px}
 @media (max-width:900px){.sk-grid{grid-template-columns:minmax(0,1fr)}}
+/* v0.7.1 FC-STOP: About this agent */
+.about{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:100%;background:#fff;border-left:1px solid var(--line);z-index:12;padding:22px 24px;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+#about-scrim{z-index:11}
+.about .ab-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.about h2{font:700 20px var(--display)}
+.about h3{font:500 13px var(--sans);color:var(--muted);margin-top:8px}
+.about .iconbtn{width:40px;height:40px;border-radius:10px;border:1px solid var(--ctl);display:grid;place-items:center;background:#fff}
+.ab-rows{display:grid;grid-template-columns:120px 1fr;gap:8px 12px;font-size:14.5px}
+.ab-rows dt{color:var(--muted)}.ab-rows dd{font-weight:600}.ab-rows dd small{font-weight:400;color:var(--muted);margin-left:8px;font-size:12px}
+.ab-box{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14.5px}
+.ab-run{display:flex;align-items:center;gap:10px}.ab-run span:nth-child(2){flex:1}
+.ab-link{display:flex;align-items:center;gap:6px;color:var(--blue);font-weight:600;text-decoration:none}
+.ab-link .ic{transform:rotate(-90deg)}
+.ab-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px}
+.about .btn{border-width:1px;border-color:var(--ctl);border-radius:10px;box-shadow:none;justify-content:flex-start}
+.about :focus-visible{outline:2px solid var(--blue);outline-offset:2px}

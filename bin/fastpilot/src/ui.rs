@@ -827,7 +827,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id) })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "running": crate::chat::running(&a.id), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
@@ -921,6 +921,45 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
         "create_focus" => agents::create_focus(body["focus"].as_str().unwrap_or("")).map(|a| json!({ "agent": a })),
         "update" => parse().and_then(agents::update).map(|a| json!({ "agent": a })),
         "delete" => agents::delete(body["id"].as_str().unwrap_or("")).map(|()| json!({})),
+        // v0.7.1 FC-STOP: Stop all (About this agent): every chat of this agent ends (its claude, its
+        // tests, their browsers and devices) and so do its other fastpilot processes (a scheduled run);
+        // nothing they were about to make is made. No Undo: a stopped test is run again.
+        "stop_all" => {
+            let id = body["id"].as_str().unwrap_or("");
+            match crate::control::resolve_agent(id) {
+                Err(f) => Err(f.msg),
+                Ok(a) => {
+                    let chats = crate::chat::stop_agent(&a.id);
+                    crate::chat::settled(&a.id, 15).await;
+                    // Its other processes (not this dashboard): the same safe stop as `fastpilot agent stop`.
+                    let others = tokio::task::spawn_blocking({
+                        let id = a.id.clone();
+                        move || crate::control::stop_agent(&id, crate::control::Surface::Cli)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|f| f.msg));
+                    match others {
+                        Err(e) => Err(e),
+                        Ok(_) if chats == 0 => Ok(json!({ "stopped": 0, "message": format!("Nothing to stop. {} has no running chats.", a.name) })),
+                        Ok(_) => Ok(json!({ "stopped": chats, "message": format!("Stopped {} in {}", if chats == 1 { "1 chat".to_owned() } else { format!("{chats} chats") }, a.name), "next": "Say “run it again” to start them again." })),
+                    }
+                }
+            }
+        }
+        // FC-STOP: About › Remove agent: its chats stop first; kept 7 days, with Undo.
+        "remove" => {
+            let id = body["id"].as_str().unwrap_or("");
+            match crate::control::resolve_agent(id) {
+                Err(f) => Err(f.msg),
+                Ok(a) if a.id == agents::DEFAULT => Err("The first agent cannot be removed; rename it instead.".into()),
+                Ok(a) => {
+                    crate::chat::stop_agent(&a.id);
+                    crate::chat::settled(&a.id, 15).await;
+                    crate::undo::remove_agent(&a).map(|(line, undo)| json!({ "message": line, "undo": undo })).map_err(|f| f.msg)
+                }
+            }
+        }
         // D10c: the skills to tick for a new agent, each with its reason.
         "suggest" => {
             let a = &body["agent"];
@@ -1080,6 +1119,7 @@ async fn removed_restore(axum::Json(body): axum::Json<Value>) -> Response {
         (Some("restore"), Some("app")) => crate::undo::restore_app(id),
         (Some("restore"), Some("schedule")) => crate::undo::restore_schedule(id),
         (Some("restore"), Some("chat")) => crate::undo::restore_chat(id),
+        (Some("restore"), Some("agent")) => crate::undo::restore_agent(id),
         _ => return refuse(StatusCode::BAD_REQUEST, "unknown action"),
     };
     if r.is_ok()
