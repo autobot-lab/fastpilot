@@ -618,6 +618,21 @@ fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
         assert_eq!((cards[0]["status"].as_str(), &cards[0]["names"], cards[0]["rerun"].as_bool()), (Some("pending"), &names, Some(true)), "{said}: {bot}");
         assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "{said}: not a page's attempt: {bot}");
     }
+/// FastTest 7044 M2 (v0.7.1): what Chat does at once is never described as waiting for a click.
+/// The bot's "It needs your click to be saved" above a schedule made at once is dropped; its test
+/// result ("When you click Pay … nothing happens") stays.
+#[test]
+fn chat_never_says_a_click_is_needed_for_what_it_did_at_once() {
+    let home = std::env::temp_dir().join(format!("fp-chat-noclick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "run all my tests every night" }).to_string(), true);
+    assert_eq!(st, 200, "{body}");
+    let bot = wait_idle(&ui)["messages"][1].clone();
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("schedule"), Some("applied")), "{bot}");
+    let text = bot["text"].as_str().unwrap_or_default();
+    assert!(!text.contains("needs your click") && text.contains("I set it up.") && text.contains("When you click Pay on the shop page, nothing happens."), "{text}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

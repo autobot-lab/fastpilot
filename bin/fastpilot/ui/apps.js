@@ -1,5 +1,5 @@
 // fastpilot ui: Apps (v0.6, spec SPEC-apps-jira.md, design apps-jira-v10). What fastpilot is
-// connected to: Jira (connected only from this page, by a click), the schedules' Slack/webhook
+// connected to: Jira (connected only from this page, by a click), the schedules' webhook
 // notifications, GitHub pull request comments, and what comes later. Uses h(), icon(), api(),
 // toast() from app.js. Values from the server are set as text, never as HTML. Everything is inside
 // one function; only PAGES.integrations is shared.
@@ -53,11 +53,11 @@ function when(ms) {
 }
 
 // FC4b (g9a): the webhook as it really is: set on schedules (each has its own), or not set.
-// Slack is not listed until it is built (no "Coming soon").
+// Only what exists is listed (no "Coming soon").
 function slackCard(n) {
   return h("div", { class: "app-card", "data-app": "webhook" },
     h("div", { class: "app-head" }, badge("W", "slack"), h("div", {}, h("b", {}, "Webhook"),
-      h("p", {}, n ? `Set · used by ${n} ${n === 1 ? "schedule" : "schedules"}` : "Not set. Say “send results to https://…” in Chat.")), n ? pill("Set", "ok") : null),
+      h("p", {}, n ? `Set · used by ${n} ${n === 1 ? "schedule" : "schedules"}` : "Not set. Add a webhook URL to a schedule on the Schedules page.")), n ? pill("Set", "ok") : null),
     n ? h("div", { class: "app-acts" }, h("a", { class: "btn", href: "#/schedules" }, "Manage")) : null);
 }
 
@@ -142,7 +142,7 @@ function pageApps() {
       reqs.length ? section("Waiting for your OK", [h("div", { class: "app-grid" }, reqs.map(requestCard))]) : null,
       section("Connected", connected.length ? [h("div", { class: "app-grid" }, connected)]
         : [h("div", { class: "app-none" }, h("b", {}, "Nothing is connected yet"),
-          h("p", {}, "Connect Jira to send failed tests to your team's board. Slack and webhook notifications you set on a schedule show up here too."))]),
+          h("p", {}, "Connect Jira to send failed tests to your team's board. Webhook notifications you set on a schedule show up here too."))]),
       section("Available", [h("div", { class: "app-grid" }, available)]),
       sayIt(j ? ["File the last failure in Jira"] : ["Connect Jira"])),
     h("aside", { class: "apps-side", "aria-label": "How Jira works with fastpilot" },

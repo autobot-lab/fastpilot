@@ -307,7 +307,7 @@ async fn every_page_has_one_look_and_no_more_options() {
     let _ = std::fs::remove_dir_all(&home);
     let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
     let txt = |s: String| s.trim_matches('"').to_owned();
-    let check = "(() => { const shadow = [...document.querySelectorAll('.grp, .btn')].filter((e) => { const s = getComputedStyle(e).boxShadow; return s && s !== 'none' && /\\d+px \\d+px 0px/.test(s) && !/^rgba\\(0, 0, 0, 0\\)/.test(s); }).length; const more = document.querySelectorAll('.more-btn').length + (document.body.innerText.includes('More options') ? 1 : 0); const ctl = [...document.querySelectorAll('#body .btn')].every((b) => b.disabled || b.classList.contains('p') || b.classList.contains('d') || b.classList.contains('danger') || getComputedStyle(b).borderTopColor === 'rgb(115, 124, 138)'); return [more, shadow, ctl].join('|'); })()";
+    let check = "(() => { const shadow = [...document.querySelectorAll('.grp, .btn')].filter((e) => { const s = getComputedStyle(e).boxShadow; return s && s !== 'none' && /\\d+px \\d+px 0px/.test(s) && !/^rgba\\(0, 0, 0, 0\\)/.test(s); }).length; const more = document.querySelectorAll('.more-btn').length + (/More options|Slack|send results to/.test(document.body.innerText) ? 1 : 0); const ctl = [...document.querySelectorAll('#body .btn')].every((b) => b.disabled || b.classList.contains('p') || b.classList.contains('d') || b.classList.contains('danger') || getComputedStyle(b).borderTopColor === 'rgb(115, 124, 138)'); return [more, shadow, ctl].join('|'); })()";
     for (hash, wait) in [
         ("#/agents/default/chat", "What should I test?"),
         ("#/agents/default/skills", "Specialist skills"),
@@ -326,12 +326,12 @@ async fn every_page_has_one_look_and_no_more_options() {
         eval(&client, &format!("location.hash = '{hash}', 'ok'")).await;
         see(&client, wait).await;
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        assert_eq!(txt(eval(&client, check).await), "0|0|true", "{hash}: More options | hard shadows | control borders");
+        assert_eq!(txt(eval(&client, check).await), "0|0|true", "{hash}: More options, Slack or \"send results to\" | hard shadows | control borders");
     }
     // Settings: one tab bar, Integrations in it (and marked there).
     let tabs = txt(eval(&client, "[...document.querySelectorAll('.snav.tabs2 a')].map((a) => a.textContent + (a.getAttribute('aria-current') ? '*' : '')).join('|')").await);
     assert_eq!(tabs, "AI model|Limits & permissions|Secrets|Security|Integrations*");
-    let integ = txt(eval(&client, "[document.body.innerText.includes('Coming soon'), !!document.querySelector('[data-app=slack]'), document.querySelector('[data-app=webhook]')?.textContent.includes('Not set. Say “send results to https://…” in Chat.')].join('|')").await);
+    let integ = txt(eval(&client, "[document.body.innerText.includes('Coming soon'), !!document.querySelector('[data-app=slack]'), document.querySelector('[data-app=webhook]')?.textContent.includes('Not set. Add a webhook URL to a schedule on the Schedules page.')].join('|')").await);
     assert_eq!(integ, "false|false|true");
     eval(&client, "location.hash = '#/history', 'ok'").await;
     see(&client, "Recently removed").await;

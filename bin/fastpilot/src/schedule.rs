@@ -1513,7 +1513,7 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             println!("Release watch \"{}\" ({}): every {minutes} minutes until {until}.", s.name, s.id);
             println!("The first run starts now: it is the \"before\". After that you hear only about a problem that is new since then, once.");
             if !s.notify.os && s.notify.github.is_none() {
-                println!("No notification is set: add --os or --github owner/repo, or a Slack webhook on the Schedules page.");
+                println!("No notification is set: add --os or --github owner/repo, or a webhook on the Schedules page.");
             }
             println!("Stop it early: fastpilot schedule remove {}", s.id);
             Ok(())
