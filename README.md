@@ -179,6 +179,12 @@ type in a terminal. All three use the same apps, tests, schedules and passwords.
 | Agents | `fastpilot agent skills "My tester" +safe-checkout` (General QA is always on), `agent stop NAME` (stops that agent's running chats) |
 | Test passwords | `fastpilot secret set TEST_PASSWORD` (typed hidden, or piped in; never on the command line), `secret list`, `secret remove NAME` |
 
+In Claude Code, just ask in your own words: *"add my app https://shop.example"*, *"run the login
+test"*, *"schedule all tests every night"*, *"pause that schedule"*, *"map the app"*, *"can we
+release?"*, *"make a checkout tester"*. fastpilot's tools `apps`, `tests`, `schedules`, `map`,
+`ship_check`, `secrets`, `memory`, `history` and `agents` do it. No tool takes a password's value:
+Claude tells you to set it in the dashboard or with `fastpilot secret set`.
+
 Removing an app or a schedule asks first. A password is kept for its app in this Mac's Keychain
 and typed only on that app's own website, wherever you set it from.
 

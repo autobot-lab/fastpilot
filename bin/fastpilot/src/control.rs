@@ -34,8 +34,6 @@ impl From<String> for Fail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     Cli,
-    // Claude Code's tools use it (FC1).
-    #[allow(dead_code)]
     Mcp,
 }
 
@@ -991,6 +989,367 @@ pub fn agent_cli(args: &[String]) -> Result<(), Fail> {
             Ok(())
         }
         _ => Err(usage(AGENT_USAGE)),
+    }
+}
+
+// ---- Claude Code (FC1): the MCP tools apps, tests, schedules, map, ship_check, secrets, memory,
+// history and agents. Who may change things is decided by the MCP server (a person's own Claude Code).
+
+/// The fastpilot program's side of the MCP Control tools.
+pub struct McpControl;
+
+type Answer = Result<serde_json::Value, serde_json::Value>;
+
+fn said(message: impl Into<String>) -> Answer {
+    Ok(serde_json::json!({ "ok": true, "message": message.into() }))
+}
+
+fn said_with(message: impl Into<String>, extra: serde_json::Value) -> Answer {
+    let mut v = serde_json::json!({ "ok": true, "message": message.into() });
+    if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+        o.extend(e.clone());
+    }
+    Ok(v)
+}
+
+fn refused(f: Fail) -> serde_json::Value {
+    serde_json::json!({ "ok": false, "error": f.code, "message": f.msg })
+}
+
+fn arg(args: &serde_json::Value, k: &str) -> Option<String> {
+    args[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+fn no_app_mcp() -> Fail {
+    fail("no_current_app", "No app is in use. Add one first with apps (a web address or an app id).")
+}
+
+fn unknown_action(action: &str, actions: &[&str]) -> Fail {
+    fail("unknown_action", format!("This tool has no action {}. Actions: {}.", q(action), actions.join(", ")))
+}
+
+/// Start `fastpilot ARGS` in the background (the log goes to ~/fastpilot/logs/NAME.log), as the
+/// dashboard's buttons do. Returns the log's name, the run's id for Claude.
+pub fn start_background(args: &[&str], log_name: &str) -> Result<String, Fail> {
+    let log = apps::root().join("logs").join(format!("{log_name}.log"));
+    let could_not = |e: String| fail("failed", format!("The run could not start: {e}."));
+    crate::filestore::ensure_dir(log.parent().unwrap_or(&apps::root()), true).map_err(could_not)?;
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| could_not(e.to_string()))?;
+    let err = out.try_clone().map_err(|e| could_not(e.to_string()))?;
+    let exe = std::env::current_exe().map_err(|e| could_not(e.to_string()))?;
+    let mut child = std::process::Command::new(exe).args(args).env("FASTPILOT_RUN_BY_PERSON", "1").stdin(std::process::Stdio::null()).stdout(out).stderr(err).spawn().map_err(|e| could_not(e.to_string()))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(log_name.to_owned())
+}
+
+/// "Verdict: DO NOT SHIP · 2 problems: …" from `fastpilot ship-check`'s report.
+fn verdict_line(report: &str) -> String {
+    let verdict = report.lines().rev().find_map(|l| l.strip_prefix("Verdict for the ").and_then(|r| r.split_once(": ")).map(|(_, v)| v.trim().to_owned())).or_else(|| report.lines().find_map(|l| l.strip_prefix("Verdict: ").map(|v| v.trim().to_owned()))).unwrap_or_else(|| "INCONCLUSIVE".into());
+    let problems: Vec<String> = report.lines().filter_map(|l| l.strip_prefix("✗ ")).map(|p| p.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+    match (verdict.as_str(), problems.len()) {
+        ("SHIP", _) => "Verdict: SHIP · nothing blocking".into(),
+        (_, 0) => format!("Verdict: {verdict} · {}", report.lines().find_map(|l| l.strip_prefix("Why: ")).unwrap_or("").trim()),
+        (_, n) => format!("Verdict: {verdict} · {}: {}", plural(n, "problem", "problems"), problems.join("; ")),
+    }
+}
+
+/// A run's time, on this computer's clock.
+fn when(ms: u64) -> String {
+    format!("{} {}", fastpilot_core::claim::local_date(ms), fastpilot_core::claim::local_hm(ms))
+}
+
+/// "Checkout QA" from "only the checkout".
+fn agent_name_from(sentence: &str) -> String {
+    const SKIP: &[&str] = &["only", "the", "a", "an", "my", "our", "this", "that", "test", "tests", "testing", "check", "checks", "of", "for", "and", "to", "in", "on", "it", "just", "please", "should", "agent", "app"];
+    let words: Vec<String> = sentence.split(|c: char| !c.is_alphanumeric()).map(str::to_lowercase).filter(|w| !w.is_empty() && !SKIP.contains(&w.as_str())).take(3).collect();
+    let mut name = words.join(" ");
+    if let Some(c) = name.get(..1) {
+        name = c.to_uppercase() + &name[1..];
+    }
+    if name.is_empty() { "New agent".into() } else { format!("{name} QA").chars().take(40).collect() }
+}
+
+/// What an agent tests on, for the agents list.
+fn agent_kind(a: &crate::agents::Agent) -> &'static str {
+    match a.devices.first().map(String::as_str) {
+        Some("android_emulator" | "android_device") => "Android app",
+        Some("ios_simulator" | "ios_device") => "iPhone app",
+        _ => "Website",
+    }
+}
+
+impl fastpilot_mcp::Control for McpControl {
+    fn call(&self, tool: &str, args: serde_json::Value) -> Answer {
+        let s = Surface::Mcp;
+        let action = arg(&args, "action").unwrap_or_default();
+        let current = || apps::current().ok_or_else(no_app_mcp);
+        let rt = tokio::runtime::Handle::current();
+        let r: Answer = (|| match (tool, action.as_str()) {
+            // ---- apps
+            ("apps", "list") => {
+                let all = apps::list();
+                if all.is_empty() {
+                    return said("No apps yet. Add one by giving a web address or an app id.");
+                }
+                let used = apps::current();
+                let items: Vec<serde_json::Value> = all.iter().map(|a| serde_json::json!({ "name": a.name, "kind": kind_label(a), "address": address(a), "in_use": used.as_ref().is_some_and(|u| u.id == a.id) })).collect();
+                let msg = match &used {
+                    Some(u) => format!("{}. In use: {}.", plural(all.len(), "app", "apps"), u.name),
+                    None => format!("{}.", plural(all.len(), "app", "apps")),
+                };
+                said_with(msg, serde_json::json!({ "items": items }))
+            }
+            ("apps", "add") => {
+                let target = arg(&args, "target").unwrap_or_default();
+                let (app, new) = add_app(&target, arg(&args, "platform").as_deref() == Some("ios"), s).map_err(refused)?;
+                if !new {
+                    return said(format!("{} is already added. Nothing changed.", app.name));
+                }
+                let note = if rt.block_on(seen_on_device(&app)) == Some(false) { " · not seen on a running device yet" } else { "" };
+                said(format!("Added {}{note}", app_what(&app)))
+            }
+            ("apps", "installed") => {
+                let platform = arg(&args, "platform").unwrap_or_else(|| "android".into());
+                let list = rt.block_on(installed(&platform)).map_err(refused)?;
+                let place = if platform == "ios" { "the iPhone simulator" } else { "the Android emulator" };
+                let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+                let msg = if names.is_empty() { format!("0 apps on {place}.") } else { format!("{} on {place}: {}", plural(names.len(), "app", "apps"), names.join(", ")) };
+                said_with(msg, serde_json::json!({ "items": list.iter().map(|(n, id)| serde_json::json!({ "name": n, "id": id })).collect::<Vec<_>>() }))
+            }
+            ("apps", "switch") => {
+                let (app, changed) = switch_app(&arg(&args, "name").unwrap_or_default(), s).map_err(refused)?;
+                said(if changed { format!("Switched to {}", app.name) } else { format!("{} is already in use. Nothing changed.", app.name) })
+            }
+            ("apps", "remove") => {
+                let app = resolve_app(&arg(&args, "name").unwrap_or_default(), s).map_err(refused)?;
+                // Until removing keeps the app for 7 days with Undo (FC6), it is done after the user's yes.
+                if args["confirm"] != true {
+                    return Err(refused(fail("needs_confirm", format!("Not removed yet. Ask the user whether to remove {}; call again with confirm: true after they say yes.", q(&app.name)))));
+                }
+                let holds = app_holds(&app);
+                apps::remove(&app.id).map_err(|e| refused(e.into()))?;
+                said(format!("Removed app {}{}", q(&app.name), if holds.is_empty() { String::new() } else { format!(" · {holds}") }))
+            }
+            ("apps", other) => Err(refused(unknown_action(other, &["list", "add", "installed", "switch", "remove"]))),
+            // ---- tests
+            ("tests", "list") => {
+                let (app, _, tests) = saved_tests(s).map_err(refused)?;
+                let runs = fastpilot_memory::history::History::from_env().runs();
+                let items: Vec<serde_json::Value> = tests
+                    .iter()
+                    .map(|(_, title)| {
+                        let last = runs.iter().find(|r| &r.title == title).map(|r| if r.failed > 0 { "failed" } else if r.passed > 0 { "passed" } else { "not run" });
+                        serde_json::json!({ "name": title, "last_result": last })
+                    })
+                    .collect();
+                said_with(format!("{} in {}.", plural(tests.len(), "saved test", "saved tests"), app.name), serde_json::json!({ "items": items }))
+            }
+            ("tests", "run") => {
+                let name = arg(&args, "name").unwrap_or_else(|| "all".into());
+                let (title, path) = if name.eq_ignore_ascii_case("all") {
+                    let (_, dir, _) = saved_tests(s).map_err(refused)?;
+                    ("Run all tests".to_owned(), dir)
+                } else {
+                    let p = find_test(&name, s).map_err(refused)?;
+                    (schedule::tests_label(&p.to_string_lossy()), p)
+                };
+                let id = if args["all_platforms"] == true {
+                    let test = path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                    crate::run_all::start(&test).map_err(|e| refused(e.into()))?;
+                    format!("run-all-{test}")
+                } else {
+                    let stem = if name.eq_ignore_ascii_case("all") { "all".to_owned() } else { path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
+                    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}")).map_err(refused)?
+                };
+                said_with(format!("Running {} · {}", q(&title), watch_in_live()), serde_json::json!({ "run_id": id }))
+            }
+            ("tests", other) => Err(refused(unknown_action(other, &["list", "run"]))),
+            // ---- schedules
+            ("schedules", "list") => {
+                let store = schedule::load();
+                if store.schedules.is_empty() {
+                    return said_with("0 schedules.", serde_json::json!({ "items": [] }));
+                }
+                let failed = store.schedules.iter().filter(|x| store.last.get(&x.id).is_some_and(|l| l.passed == Some(false))).count();
+                let items: Vec<serde_json::Value> = store
+                    .schedules
+                    .iter()
+                    .map(|x| serde_json::json!({ "id": x.id, "name": schedule_title(x), "state": if x.enabled { "on" } else { "paused" }, "next_run": if x.enabled { next_run(&x.when) } else { None }, "last_result": store.last.get(&x.id).map(|l| l.summary.clone()) }))
+                    .collect();
+                let msg = if failed > 0 { format!("{}. {failed} failed last time.", plural(items.len(), "schedule", "schedules")) } else { format!("{}.", plural(items.len(), "schedule", "schedules")) };
+                said_with(msg, serde_json::json!({ "items": items }))
+            }
+            ("schedules", "add") => {
+                let preset = arg(&args, "preset").unwrap_or_else(|| "every_2h_work_hours".into());
+                add_schedule(&preset, arg(&args, "tests").as_deref(), s).map(|(_, line)| said(line)).map_err(refused)?
+            }
+            ("schedules", a @ ("pause" | "resume")) => set_schedule(&arg(&args, "id").unwrap_or_default(), a == "resume", s).map(|(_, line)| said(line)).map_err(refused)?,
+            ("schedules", "remove") => {
+                let sched = find_schedule(&arg(&args, "id").unwrap_or_default(), s).map_err(refused)?;
+                if args["confirm"] != true {
+                    return Err(refused(fail("needs_confirm", format!("Not removed yet. Ask the user whether to remove the schedule {}; call again with confirm: true after they say yes.", q(&schedule_title(&sched))))));
+                }
+                remove_schedule(&sched.id, s).map(|(_, line)| said(line)).map_err(refused)?
+            }
+            ("schedules", "run_now") => {
+                let sched = find_schedule(&arg(&args, "id").unwrap_or_default(), s).map_err(refused)?;
+                schedule::start_now(&sched.id).map_err(|e| refused(e.into()))?;
+                said(format!("Running {} now · {}", q(&schedule_title(&sched)), watch_in_live()))
+            }
+            ("schedules", "release_watch") => {
+                let on = args["on"].as_bool().ok_or_else(|| refused(fail("usage", "Say on: true or on: false.")))?;
+                let app = current().map_err(refused)?;
+                let (_, dir, _) = saved_tests(s).map_err(refused)?;
+                let tests = dir.to_string_lossy().into_owned();
+                let running = schedule::load().schedules.into_iter().any(|x| x.tests == tests && x.enabled && x.watch.as_ref().is_some_and(|w| !w.ended && w.until_ms > schedule::now_ms()));
+                if running == on {
+                    return said(format!("Release watch for {} is already {}. Nothing changed.", app.name, if on { "on" } else { "off" }));
+                }
+                schedule::release_watch(&tests, on).map_err(|e| refused(e.into()))?;
+                said(format!("Turned {} release watch for {}", if on { "on" } else { "off" }, app.name))
+            }
+            ("schedules", other) => Err(refused(unknown_action(other, &["list", "add", "pause", "resume", "remove", "run_now", "release_watch"]))),
+            // ---- map
+            ("map", "run") => {
+                let app = current().map_err(refused)?;
+                let (target, flag) = match (&app.targets.web, &app.targets.android, &app.targets.ios) {
+                    (Some(w), _, _) => (w.clone(), None),
+                    (None, Some(a), _) => (a.clone(), Some("--android")),
+                    (None, None, Some(i)) => (i.clone(), Some("--ios")),
+                    _ => return Err(refused(no_app_mcp())),
+                };
+                let screens = args["screens"].as_u64().unwrap_or(30).clamp(1, 200).to_string();
+                let minutes = args["minutes"].as_u64().unwrap_or(10).clamp(1, 60).to_string();
+                let mut a = vec!["map", target.as_str(), "--screens", screens.as_str(), "--minutes", minutes.as_str()];
+                a.extend(flag);
+                start_background(&a, &format!("map-{}", app.id)).map_err(refused)?;
+                said(format!("Mapping {} · up to {screens} screens or {minutes} minutes · {}", app.name, watch_in_live()))
+            }
+            ("map", "status") => {
+                let Some(m) = crate::map::latest() else { return said("No map yet.") };
+                said(if m.state == "mapping" { format!("Mapping {} · {} · {}", m.name, plural(m.screens.len(), "screen", "screens"), watch_in_live()) } else { format!("Mapped {} · {}", m.name, plural(m.screens.len(), "screen", "screens")) })
+            }
+            ("map", other) => Err(refused(unknown_action(other, &["run", "status"]))),
+            // ---- ship check (reads pages only)
+            ("ship_check", _) => {
+                let urls: Vec<String> = args["urls"].as_array().map(|l| l.iter().filter_map(|u| u.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let urls = if urls.is_empty() { vec![current().map_err(refused)?.targets.web.ok_or_else(|| refused(fail("no_address", "There is no web address to check. Add a website app first, or give the address to check.")))?] } else { urls };
+                if let Some(bad) = urls.iter().find(|u| !(u.starts_with("https://") || u.starts_with("http://") || u.starts_with("file://"))) {
+                    return Err(refused(fail("no_address", format!("{} is not a web address. Add a website app first, or give the address to check.", q(bad)))));
+                }
+                let exe = std::env::current_exe().map_err(|e| refused(fail("failed", e.to_string())))?;
+                let out = std::process::Command::new(exe).arg("ship-check").args(&urls).stdin(std::process::Stdio::null()).output().map_err(|e| refused(fail("failed", format!("The ship check could not start: {e}."))))?;
+                said(verdict_line(&String::from_utf8_lossy(&out.stdout)))
+            }
+            // ---- secrets: names only
+            ("secrets", a) if !args.as_object().is_some_and(|o| o.keys().all(|k| k == "action" || k == "name")) || !matches!(a, "list" | "request") => {
+                Err(refused(fail("value_refused", "This tool cannot take a password. To save one, use action “request” and give the user the link or the command.")))
+            }
+            ("secrets", "list") => {
+                let app = current().map_err(refused)?;
+                let names = secret_names(&app);
+                said(if names.is_empty() { format!("No passwords saved for {}.", app.name) } else { format!("{} saved for {}: {}. Values are never shown.", plural(names.len(), "password", "passwords"), app.name, names.join(", ")) })
+            }
+            ("secrets", _) => {
+                let name = arg(&args, "name").unwrap_or_default();
+                fastpilot_core::secrets::check_name(&name).map_err(|_| refused(fail("bad_name", format!("{} is not a valid name. Use letters, numbers and underscores, like TEST_PASSWORD.", q(&name)))))?;
+                let app = current().map_err(refused)?;
+                let link = std::fs::read_to_string(crate::browsers::dir().join("port")).ok().and_then(|p| p.trim().parse::<u16>().ok()).map(|p| format!("http://127.0.0.1:{p}/#/settings/secrets")).unwrap_or_else(|| "Settings › Secrets".into());
+                let command = format!("fastpilot secret set {name}");
+                said_with(
+                    format!("fastpilot never takes a password through chat. To save {name} for {}, open Secrets in the dashboard: {link}. Or run this in Terminal: {command}", app.name),
+                    serde_json::json!({ "dashboard_link": link, "command": command }),
+                )
+            }
+            // ---- memory
+            ("memory", "add_note") => {
+                let app = current().map_err(refused)?;
+                let text = arg(&args, "text").ok_or_else(|| refused(fail("empty_note", "The note is empty. Give the sentence to remember.")))?;
+                fastpilot_memory::notes::Notes::from_env().add("how", &text).map_err(|r| refused(fail("refused", r.message)))?;
+                said(format!("Remembered for {}: {}", app.name, q(&text)))
+            }
+            ("memory", "list") => {
+                let app = current().map_err(refused)?;
+                let notes = fastpilot_memory::notes::Notes::from_env().list();
+                // What fastpilot learned from runs (a saved test that never ran has nothing learned yet).
+                let learned: Vec<_> = crate::memory_api::rows(&fastpilot_memory::Memory::from_env()).into_iter().filter(|r| r.status != "new").collect();
+                let items: Vec<serde_json::Value> = notes.iter().map(|n| serde_json::json!({ "type": "note", "text": n.text })).chain(learned.iter().map(|r| serde_json::json!({ "type": "learned", "text": r.summary }))).collect();
+                said_with(format!("{} and {} for {}.", plural(notes.len(), "note", "notes"), plural(learned.len(), "thing learned", "things learned"), app.name), serde_json::json!({ "items": items }))
+            }
+            ("memory", other) => Err(refused(unknown_action(other, &["add_note", "list"]))),
+            // ---- history
+            ("history", "runs") => {
+                let runs = fastpilot_memory::history::History::from_env().runs();
+                let take = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+                let shown: Vec<_> = runs.into_iter().take(take).collect();
+                let failed = shown.iter().filter(|r| r.failed > 0).count();
+                let place = apps::current().map(|a| format!(" in {}", a.name)).unwrap_or_default();
+                let items: Vec<serde_json::Value> = shown.iter().map(|r| serde_json::json!({ "id": r.id, "test": r.title, "result": if r.failed > 0 { "failed" } else { "passed" }, "when": when(r.finished_ms) })).collect();
+                let msg = if failed > 0 { format!("{}{place}. {failed} failed.", plural(shown.len(), "recent run", "recent runs")) } else { format!("{}{place}.", plural(shown.len(), "recent run", "recent runs")) };
+                said_with(msg, serde_json::json!({ "items": items }))
+            }
+            ("history", "show") => {
+                let id = arg(&args, "run_id").unwrap_or_default();
+                let r = fastpilot_memory::history::History::from_env().runs().into_iter().find(|r| r.id == id).ok_or_else(|| refused(fail("run_not_found", format!("No run with id {}. Use history runs to see recent runs.", q(&id)))))?;
+                said(format!("{} of {} passed · {} · {}", r.passed, r.tests, r.title, when(r.finished_ms)))
+            }
+            ("history", other) => Err(refused(unknown_action(other, &["runs", "show"]))),
+            // ---- agents
+            ("agents", "list") => {
+                let all = crate::agents::list();
+                let live = fastpilot_core::live::read_all();
+                let parts: Vec<String> = all
+                    .iter()
+                    .map(|a| {
+                        let n = live.iter().filter(|p| p.agent.as_deref() == Some(a.id.as_str()) && p.kind != "ui").count();
+                        if n > 0 { format!("{} ({}, {} running)", a.name, agent_kind(a), plural(n, "chat", "chats")) } else { format!("{} ({})", a.name, agent_kind(a)) }
+                    })
+                    .collect();
+                said(format!("{}: {}.", plural(all.len(), "agent", "agents"), parts.join(", ")))
+            }
+            ("agents", "create") => {
+                let sentence = arg(&args, "sentence").ok_or_else(|| refused(fail("usage", "Say what the new agent should test.")))?;
+                let app = apps::current();
+                let devices: Vec<String> = app.as_ref().map(|a| a.kinds().into_iter().map(|k| match k { "android" => "android_emulator", "ios" => "ios_simulator", _ => "web" }.to_owned()).collect()).filter(|d: &Vec<String>| !d.is_empty()).unwrap_or_else(|| vec!["web".into()]);
+                let spec: Vec<String> = crate::skills_catalog::suggest(&sentence, app.as_ref().map(address).as_deref().unwrap_or(""), &devices).into_iter().map(|(id, _)| id).filter(|id| specialists().iter().any(|(x, _)| x == id) && (!jira_skill(id) || jira_connected())).collect();
+                let base = agent_name_from(&sentence);
+                let taken: Vec<String> = crate::agents::list().into_iter().map(|a| a.name.to_lowercase()).collect();
+                let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|n| !taken.contains(&n.to_lowercase())).unwrap_or(base);
+                let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), ..Default::default() };
+                crate::agents::create(agent).map_err(|e| refused(e.into()))?;
+                said(if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) })
+            }
+            ("agents", "skills") => {
+                let agent = arg(&args, "agent").unwrap_or_default();
+                let list = |k: &str| args[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+                let mut changes: Vec<SkillChange> = Vec::new();
+                if args["reset"] == true {
+                    changes.push(SkillChange::Reset);
+                }
+                changes.extend(list("add").into_iter().map(SkillChange::Add));
+                changes.extend(list("remove").into_iter().map(SkillChange::Remove));
+                if changes.is_empty() {
+                    let a = resolve_agent(&agent).map_err(refused)?;
+                    let on = specialists_on(&a);
+                    let items: Vec<serde_json::Value> = GENERAL_QA
+                        .iter()
+                        .map(|id| serde_json::json!({ "name": skill_name(id), "id": id, "on": true, "group": "General QA" }))
+                        .chain(specialists().into_iter().filter(|(id, _)| !jira_skill(id) || jira_connected()).map(|(id, g)| serde_json::json!({ "name": skill_name(id), "id": id, "on": on.iter().any(|x| x == id), "group": GROUPS.iter().find(|x| x.0 == g).map(|x| x.1).unwrap_or(g) })))
+                        .collect();
+                    return said_with(skills_header(&a), serde_json::json!({ "items": items }));
+                }
+                change_skills(&agent, &changes, s).map(said).map_err(refused)?
+            }
+            ("agents", "stop") => {
+                let line = stop_agent(&arg(&args, "agent").unwrap_or_default(), s).map_err(refused)?;
+                said(if line.starts_with("Stopped") { format!("{line}\nSay “run it again” to start them again.") } else { line })
+            }
+            ("agents", other) => Err(refused(unknown_action(other, &["list", "create", "skills", "stop"]))),
+            (other, _) => Err(refused(fail("unknown_tool", format!("fastpilot has no tool {}.", q(other))))),
+        })();
+        r
     }
 }
 

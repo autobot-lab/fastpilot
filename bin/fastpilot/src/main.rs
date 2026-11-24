@@ -277,6 +277,8 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             apps::enter(false);
             // QA #6103: started by the dashboard's Chat: the app the dashboard works on.
             apps::scope_named();
+            // v0.7.1 FC1: the dashboard's pages as tools (apps, tests, schedules, map, … agents).
+            fastpilot_mcp::set_control(std::sync::Arc::new(control::McpControl));
             live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await
         }
         Some("config") if args.get(1).is_some_and(|a| a == "test-provider") => match provider::test_provider().await {
