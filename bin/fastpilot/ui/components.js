@@ -23,6 +23,9 @@ function pageHeader({ icon: ic, title, sub, crumb, actions } = {}) {
   return top;
 }
 
+// Ids for the dialogs' labels.
+let moreSeq = 0;
+
 /// v0.7.1 FC4b: no hidden "More options" anywhere (the user, 24 Nov): what was behind one is a
 /// visible section with its own heading.
 function section(label, ...content) {

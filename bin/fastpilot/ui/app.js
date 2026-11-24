@@ -475,9 +475,9 @@ function pageSecret() {
       ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Secrets"),
         h("thead", {}, h("tr", {}, ["Name", "Value", ""].map((t) => h("th", { scope: "col" }, t)))), h("tbody", {}, secData2.names.map(row))))
       : UI.empty({ icon: "key", title: "Nothing saved yet", text: "You will be asked when a test needs one." }),
-    UI.section("Secrets from the environment",
-      opt("Secret name", "For CI and scripts: list the name here, and give the value in the environment fastpilot starts in. Or add a name and press Set value.",
-        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars"))));
+    // FC4b: no text box and no command on the main view (U1); a secret from the environment, for
+    // CI and scripts, is added in Chat (the `vars` setting).
+    null);
 }
 
 // The settings file does not parse: say what and where, and offer nothing to change (the server
