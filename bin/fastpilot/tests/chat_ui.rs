@@ -55,6 +55,10 @@ fn start_ui_in(home: &Path, cwd: &Path, env: &[(&str, &str)]) -> Ui {
     // working directory of `cargo test`.
     cmd.env("FASTPILOT_DIR", home.join("project-fastpilot"));
     cmd.envs(env.iter().copied());
+    // An empty FASTPILOT_DIR: none, so the dashboard works in its apps' folders.
+    if env.iter().any(|(k, v)| *k == "FASTPILOT_DIR" && v.is_empty()) {
+        cmd.env_remove("FASTPILOT_DIR");
+    }
     let mut child = cmd
         .args(["ui", "--no-open"])
         .current_dir(cwd)
@@ -1209,6 +1213,8 @@ fn chat_gives_the_password_card_the_user_asked_for() {
         let c = &cards[0];
         assert_eq!((c["kind"].as_str(), c["open"].as_str(), c["status"].as_str(), c["title"].as_str()), (Some("open"), Some("secrets"), Some("pending"), Some("Set the password")), "{ask}: {bot}");
         assert_eq!(c["names"], json!(["TEST_USER", "TEST_PASSWORD"]), "{ask}");
+        // FastTest 7013: the bot ran a check in this answer, so saving runs it again ("Save and run").
+        assert_eq!(c["rerun"], true, "{ask}: {bot}");
         assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "not a page's attempt: {bot}");
         let shown = bot.to_string();
         assert!(!shown.contains("already in") && !shown.contains("cannot be made in chat") && !shown.contains("\\\"kind\\\""), "{shown}");
@@ -1657,6 +1663,82 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     assert_eq!(get(&format!("/api/chats?agent={other}"))["chats"].as_array().map(Vec::len), Some(1), "its chat is back with it");
     let (st, _) = post("/api/agents", json!({ "action": "remove", "id": "default" }));
     assert_eq!(st, 422, "the first agent stays");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// FastTest 7019-7020 (v0.7.1): each agent's Chat works in its own agent's app. "My tester" has a
+/// website; an address added from its Chat makes a new agent for the second site, and opening that
+/// agent makes its app the one in use. My tester's About still says its own app, and its next
+/// answer (sent while the other agent's chat is answering: it waits for it) is given its own app,
+/// its folder and its address, never the other agent's.
+#[test]
+fn each_chat_works_in_its_own_agents_app() {
+    let home = std::env::temp_dir().join(format!("fp-chat-ownapp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    // Started in the temp HOME: not a project folder, so only the apps added here are listed.
+    let ui = start_ui_in(&home, &home, &[("FASTPILOT_DIR", ""), ("FASTPILOT_KEYSTORE", "file"), ("FAKE_CHAT_NO_RUN", "1"), ("FAKE_CHAT_DELAY_MS", "2000")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+    let send = |agent: &str, text: &str| -> String {
+        let (st, v) = post("/api/chat", json!({ "agent": agent, "new": true, "message": text }));
+        assert_eq!(st, 200, "{v}");
+        v["chat"].as_str().expect("chat").to_owned()
+    };
+    let done = |agent: &str, chat: &str| -> Value {
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            let v = get(&format!("/api/chat?agent={agent}&chat={chat}"));
+            if v["busy"] == false {
+                return v["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot");
+            }
+            assert!(Instant::now() < until, "busy: {v}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let root = std::fs::canonicalize(ROOT).expect("root").display().to_string();
+    let (login, orders) = (format!("file://{root}/examples/demo/login.html"), format!("file://{root}/examples/demo/orders.html"));
+    done("default", &send("default", &login));
+    let made = done("default", &send("default", &format!("test {orders}")))["proposals"][0]["new_agent"].as_str().expect("a new agent").to_owned();
+    let apps = get("/api/apps")["apps"].as_array().cloned().unwrap_or_default();
+    let app_of = |url: &str| apps.iter().find(|a| a["targets"]["web"] == url).cloned().expect("app");
+    let (mine, theirs) = (app_of(&login), app_of(&orders));
+    // The other agent opened (as the sidebar does): its app is the one in use.
+    let (st, v) = post("/api/apps", json!({ "action": "use", "id": theirs["id"] }));
+    assert_eq!(st, 200, "{v}");
+    // My tester's About and sidebar line: its own app.
+    let me = get("/api/agents")["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "default").cloned()).expect("default");
+    assert_eq!(me["agent"]["job"].as_str(), Some(format!("Tests {}.", mine["name"].as_str().unwrap_or_default()).as_str()), "{me}");
+    assert!(me["app_line"].as_str().is_some_and(|l| l.starts_with(&format!("{} ·", mine["name"].as_str().unwrap_or_default()))), "{me}");
+    // The other agent's chat answers; My tester's message meanwhile waits for it, then answers.
+    let theirs_chat = send(&made, "hello");
+    std::thread::sleep(Duration::from_millis(300));
+    let mine_chat = send("default", "which app do you test?");
+    let mut waited = false;
+    while get(&format!("/api/chat?agent={made}&chat={theirs_chat}"))["busy"] == true {
+        waited |= !get(&format!("/api/chat?agent=default&chat={mine_chat}"))["waiting"].is_null();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    done("default", &mine_chat);
+    assert!(waited, "My tester's answer waits while the other agent's chat answers in its app");
+    // What each answer was given: its own agent's app (address and folder), never the other's.
+    let calls: Vec<Value> = std::fs::read_dir(home.join("claude-log")).expect("log").filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.ok()?.path()).ok()?).ok()).collect();
+    let opt = |c: &Value, name: &str| -> Option<String> {
+        let argv: Vec<&str> = c["argv"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        argv.iter().position(|a| *a == name).and_then(|i| argv.get(i + 1)).map(|s| (*s).to_owned())
+    };
+    let system_of = |agent: &str| -> String {
+        let call = calls.iter().find(|c| opt(c, "--mcp-config").and_then(|m| serde_json::from_str::<Value>(&m).ok()).is_some_and(|m| m["mcpServers"]["fastpilot"]["env"]["FASTPILOT_AGENT"] == agent)).expect("a call");
+        opt(call, "--append-system-prompt").expect("prompt")
+    };
+    let (mine_said, theirs_said) = (system_of("default"), system_of(&made));
+    let folder = |app: &Value| format!("apps/{}", app["id"].as_str().unwrap_or_default());
+    assert!(mine_said.contains(&login) && !mine_said.contains(&orders) && mine_said.contains(&folder(&mine)), "My tester's answer is given its own app: {mine_said}");
+    assert!(theirs_said.contains(&orders) && !theirs_said.contains(&login) && theirs_said.contains(&folder(&theirs)), "{theirs_said}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

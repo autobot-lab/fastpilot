@@ -37,9 +37,9 @@ async function load() {
     // FC5: an agent tests its own app: opening it makes that app the one in use (refused, and
     // left as it is, while a chat is answering or a map is being made).
     const mine = byId(id);
+    // Refused: tried again on the next load (its answer moves there itself anyway).
     if (mine && mine.app_id && mine.app_id !== a.current_app && switched !== `${id}:${mine.app_id}`) {
-      switched = `${id}:${mine.app_id}`;
-      try { await api("/api/apps", { action: "use", id: mine.app_id }); data.current_app = mine.app_id; } catch (_) { /* stays */ }
+      try { await api("/api/apps", { action: "use", id: mine.app_id }); data.current_app = mine.app_id; switched = `${id}:${mine.app_id}`; } catch (_) { /* stays */ }
     }
   } catch (_) { /* the sidebar keeps what it had */ }
   draw();

@@ -363,18 +363,37 @@ struct Slots {
     running: usize,
     /// Chats waiting for a free slot, first come first served.
     waiting: Vec<String>,
+    /// The app the running answers work in (`None` while none runs). The dashboard works in one app
+    /// at a time (its folder, its tests, its History), so an answer of an agent with another app
+    /// waits until these are done, then the dashboard moves to its app.
+    app: Option<String>,
+    /// The chats that hold the running slots.
+    holders: Vec<String>,
+}
+
+impl Slots {
+    /// How many answers other than chat `key`'s run now.
+    fn others(&self, key: &str) -> usize {
+        self.holders.iter().filter(|k| *k != key).count()
+    }
 }
 
 static SLOTS: LazyLock<Mutex<Slots>> = LazyLock::new(Default::default);
 static SLOT_FREE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
 
 /// An answer that holds one of the `max_parallel` slots; dropping it frees the slot.
-struct Slot;
+struct Slot(String);
 
 impl Drop for Slot {
     fn drop(&mut self) {
         let mut s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
         s.running = s.running.saturating_sub(1);
+        if let Some(i) = s.holders.iter().position(|k| *k == self.0) {
+            s.holders.remove(i);
+        }
+        if s.running == 0 {
+            s.app = None;
+        }
         drop(s);
         SLOT_FREE.notify_waiters();
     }
@@ -397,8 +416,50 @@ fn slot_wait(key: &str) -> Option<usize> {
     SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.iter().position(|k| k == key)
 }
 
+/// The app chat `key` works in: its agent's app (`None` while `FASTPILOT_DIR` pins a folder, or the
+/// agent has no app yet).
+fn chat_app(key: &str) -> Option<String> {
+    if std::env::var_os("FASTPILOT_DIR").is_some() {
+        return None;
+    }
+    crate::agents::app_of(&crate::agents::get_or_default(&chat_agent(key))).map(|a| a.id)
+}
+
+/// Make `app` the one in use and move the dashboard into its folder, only while no answer runs (and
+/// no map is being made): never under a running answer (Security #183 L2, #217 L4). Call with the
+/// slots locked. Whether the dashboard is in `app` now.
+fn move_to(s: &Slots, app: &str) -> bool {
+    if crate::apps::current().is_some_and(|c| c.id == app) {
+        return true;
+    }
+    if s.running > 0 || crate::map::is_mapping() {
+        return false;
+    }
+    match crate::apps::set_current(app) {
+        Ok(a) => {
+            if std::env::var_os("FASTPILOT_DIR").is_none() {
+                crate::apps::go(&a);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Make sure the dashboard is in chat `key`'s app (moving there when no answer runs), for a card
+/// clicked after its answer.
+fn in_own_app(key: &str) -> Res<()> {
+    let Some(want) = chat_app(key) else { return Ok(()) };
+    let s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+    if s.holders.iter().any(|k| k == key) || (s.running > 0 && s.app.as_deref() == Some(want.as_str())) || move_to(&s, &want) {
+        return Ok(());
+    }
+    Err("Another agent's chat is answering in its own app now. Click again when it is done.".into())
+}
+
 /// FC4: wait for one of the `max_parallel` slots (the limit on tests at once, for all agents
 /// together). A chat over the limit does not fail: it waits its turn ("Waiting for a free slot").
+/// The answer works in its own agent's app: while answers of another app run, it waits for them.
 async fn take_slot(key: &str) -> Slot {
     SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.push(key.to_owned());
     let line = InLine(key.to_owned());
@@ -407,17 +468,30 @@ async fn take_slot(key: &str) -> Slot {
         tokio::pin!(freed);
         freed.as_mut().enable();
         {
+            let want = chat_app(key);
             let mut s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
-            if s.waiting.first().map(String::as_str) == Some(key) && s.running < fastpilot_core::claim::max_parallel() {
+            let first = s.waiting.first().map(String::as_str) == Some(key) && s.running < fastpilot_core::claim::max_parallel();
+            if first
+                && match &want {
+                    Some(app) if s.running > 0 => s.app.as_ref() == Some(app),
+                    Some(app) => move_to(&s, app),
+                    None => true,
+                }
+            {
                 s.waiting.remove(0);
+                if s.running == 0 {
+                    s.app = crate::apps::current().map(|a| a.id);
+                }
                 s.running += 1;
+                s.holders.push(key.to_owned());
                 drop(s);
                 std::mem::forget(line);
                 SLOT_FREE.notify_waiters();
-                return Slot;
+                return Slot(key.to_owned());
             }
         }
-        freed.await;
+        // A map ending frees nothing: look again now and then.
+        let _ = tokio::time::timeout(Duration::from_secs(1), freed).await;
     }
 }
 
@@ -539,7 +613,7 @@ pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
             // FC5: an address or "test my Android app" in the person's own message: fastpilot adds
             // the app itself (or asks which one); some messages need no bot at all. Stop ends it too.
             if crate::chat::first_steps(&agent, &key, &text, bot).await {
-                return (Vec::new(), None);
+                return (Vec::new(), None, None);
             }
             // v0.6: tickets the user's message names are read by fastpilot and given to the bot as data.
             let (reads, tickets) = read_tickets(&text).await;
@@ -554,8 +628,9 @@ pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
                 (false, t) => t.map(str::to_owned),
                 (true, t) => Some([Some(OFFER_TAKEN), t].into_iter().flatten().collect::<Vec<_>>().join("\n\n")),
             };
-            // FC4: answers at once are limited (`max_parallel`); this one waits for a free slot.
-            let _slot = take_slot(&key).await;
+            // FC4: answers at once are limited (`max_parallel`); this one waits for a free slot, in
+            // its agent's app. The slot is kept until what the user asked for is done (`finish`).
+            let slot = take_slot(&key).await;
             // S5: "Can we release?" starts this agent's "before each release" schedules; the bot is told.
             let released = if asks_release(&text) { schedule::start_release(&agent) } else { Vec::new() };
             let before = if released.is_empty() {
@@ -568,12 +643,12 @@ pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
                 Some([Some(note.as_str()), before.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n\n"))
             };
             let error = turn(&key, &text, before.as_deref(), bot, resume).await.err();
-            (reads, error)
+            (reads, error, Some(slot))
         };
         // FC4: Stop drops the answer: its `claude` (kill on drop) and so the tests it started end.
-        let (reads, error, stopped) = tokio::select! {
-            (reads, error) = work => (reads, error, false),
-            () = stop.notified() => (Vec::new(), None, true),
+        let (reads, error, stopped, _slot) = tokio::select! {
+            (reads, error, slot) = work => (reads, error, false, slot),
+            () = stop.notified() => (Vec::new(), None, true, None),
         };
         finish(&key, &text, bot, reads, error, stopped);
     });
@@ -656,6 +731,13 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
                     proposals.push(p);
                 }
                 Err(e) => proposals.push(refused("open", "This password cannot be asked here", e)),
+            }
+        }
+        // FastTest 7013: the bot's own password card after it ran a check: saving it runs the check
+        // again, as the bot says it will ("Save and run").
+        if m.tools.iter().any(|t| ["session", "run_flow", "check_flow", "tests", "ship_check"].contains(&t.split(" · ").next().unwrap_or(""))) {
+            for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
+                p.rerun = true;
             }
         }
         // S8: the release verdict and a bug report as cards, built from their fields.
@@ -806,16 +888,10 @@ fn adopt(agent: &str, app: &crate::apps::App, made: Option<String>, mine: Option
         }
         None => {
             crate::agents::bind_app(&me.id, &app.id)?;
-            // The app in use moves to it, unless another chat is answering in the app in use now
-            // (Security #183 L2: never mix two apps' data under a running answer).
-            let others = CHATS.lock().unwrap_or_else(|p| p.into_inner()).values().filter(|c| c.busy).count();
-            if others <= 1
-                && !crate::map::is_mapping()
-                && let Ok(a) = crate::apps::set_current(&app.id)
-                && std::env::var_os("FASTPILOT_DIR").is_none()
-            {
-                crate::apps::go(&a);
-            }
+            // The app in use moves to it, unless an answer is running in the app in use now
+            // (Security #183 L2, #217 L4: never mix two apps' data under a running answer). This
+            // agent's next answer moves there itself once none runs.
+            move_to(&SLOTS.lock().unwrap_or_else(|p| p.into_inner()), &app.id);
             p.note = Some(format!("Added {what}"));
             p.undo_id = made;
             p.hint = true;
@@ -3359,6 +3435,10 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         set("cancelled", None);
         return Ok("Dismissed.".into());
     }
+    // The card is this chat's agent's: done in its app, never in another agent's app in use now.
+    if !matches!(data["kind"].as_str(), Some("pick_app" | "open")) {
+        in_own_app(&key)?;
+    }
     match data["kind"].as_str() {
         Some("test") => return save_test(&key, &agent, id, &data, mode, edit),
         Some("note") => return save_note(&key, id, &data),
@@ -3410,6 +3490,14 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             return done_line(id, r);
         }
         Some("switch_app") => {
+            // Never under another chat's running answer (#217 L4): the app it works in stays.
+            let slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+            if slots.others(&key) > 0 && data["app"].as_str() != crate::apps::current().map(|a| a.id).as_deref() {
+                drop(slots);
+                set("failed", Some("Chat is answering for this app. Wait for it to finish (or stop it), then switch apps.".into()));
+                return Err("Chat is answering for this app. Wait for it to finish (or stop it), then switch apps.".into());
+            }
+            drop(slots);
             if crate::map::is_mapping() {
                 set("failed", Some("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into()));
                 return Err("A map is being made for this app. Wait for it to finish (or stop it), then switch apps.".into());
@@ -3418,6 +3506,11 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
                 if std::env::var_os("FASTPILOT_DIR").is_none() {
                     crate::apps::go(&app);
                 }
+                let mut slots = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+                if slots.running > 0 {
+                    slots.app = Some(app.id.clone());
+                }
+                drop(slots);
                 crate::control::Done { line: if changed { format!("Switched to {}", app.name) } else { format!("{} is already in use. Nothing changed.", app.name) }, undo: None }
             });
             return done_line(id, r);
