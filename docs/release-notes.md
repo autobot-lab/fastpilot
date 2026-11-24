@@ -1,3 +1,76 @@
+## What's new in 0.7.0
+
+Easy from the first minute: install once, run `fastpilot`, paste your address, and the rest is clicks.
+
+### Easy start
+- **Run `fastpilot` to open the dashboard.** No project folder is needed. The first run shows a
+  short wizard: paste your app's address, click **Check the login**, and your first test runs. An older
+  fastpilot that is still running is restarted only after you say yes.
+- **Your apps live in one workspace.** An App switcher in the dashboard lets you add an app with just its
+  address, switch between apps, and manage them in Settings › Your apps. Each app gets its own tester
+  with no setup, and **New agent** is one click under More. Projects with their own folder still work
+  as "Repo" apps.
+- **A remembered browser.** The dashboard keeps a fixed address and can remember your browser, so the
+  one-time link is no longer needed. Settings › Security lists remembered browsers and lets you forget
+  one or all.
+- **Passwords are asked once, in the dashboard.** Type a password into a masked field, and fastpilot keeps
+  it per app in your computer's key store. **Run, Chat, the Map and the wizard use it**; it is typed
+  only on that app's own site, never sent to the AI, and never written to logs or reports. Environment
+  variables still work for CI.
+- **fastpilot registers itself in Claude Code on first start,** for every folder, so Claude Code can run
+  your tests without `fastpilot init`.
+
+### Jira
+- **Sign in with Atlassian.** One button connects Jira; no API token. Disconnect revokes the sign-in at
+  Atlassian. Creating an issue or comment from Chat or the terminal still waits for your click.
+  "Use an API token instead" stays as a small link.
+- After you sign in, Chat cards ("Create Jira issue") and `fastpilot jira status` recognise the
+  connection. Before this fix they only knew the old API token.
+
+### One click
+- **Map** one app from its own page: **Map [app]**, with limits under More options. If it meets a sign-in
+  page it can sign in with the app's saved test account.
+- **Schedules in one click:** three preset buttons, for example **Every night** and a check before each
+  release, with no path or name to type.
+- **Ship check** uses the app's address, and release watch is one switch.
+- **Run on all platforms:** a saved test runs once on every platform of its app, side by side.
+- **Devices are chosen for you:** one automatic device per kind, with a list under Change.
+- **A default agent per app,** and an **automatic AI model**: one line, "Using Claude Code ✓", with
+  Sonnet as the default.
+- **Limits** show one protection statement, with examples that only tighten and the rest under More
+  options. "Tests at once" moved to Settings › Limits.
+- History deletes itself after 30 days by default.
+
+### Chat controls the pages
+- Chat can do what the pages do: cards name their action ("Create schedule"), and every page has an
+  "or just say it" line.
+- **"Remember this?"**: when you state a fact in your own words ("our staging site is …"), Chat offers
+  to save it as a project note. Text from a page or a ticket never creates a card.
+- When a test needs a password that is missing, Chat shows a password card with **Save and run**.
+
+### One consistent look
+- **Chat first** in the menu, one Chat page, and **Integrations** instead of Apps.
+- Fewer words to type: **Secrets**, one set of button words, in-page confirmations instead of browser
+  pop-ups, and no terminal commands on the main pages.
+
+### Fixes
+- npm download hardening: no login inside a mirror address, one overall deadline, retries only for cut
+  connections, and a Wi-Fi/VPN hint.
+- Side by side: a failed platform says **Failed**, and an infrastructure stop says **Could not run**.
+- Memory no longer shows a test that passed after a retried step as Failing.
+- Chat never claims a Jira card that fastpilot did not make.
+- The test time limit is 30 minutes by default, and Live's "Tests at once" offers every allowed value.
+
+### Known limits
+- **Jira Cloud only** (addresses ending in `.atlassian.net`). A real Atlassian sign-in has not been
+  tested by the maker yet; it was tested with a stand-in Atlassian server.
+- One map per app. The phone map has no network guard.
+- **Windows is not supported.**
+- After a passing check, Chat asks in words before showing the **Save test** card.
+- **Add Android app** needs the app id typed.
+- Homebrew and the schedule **Undo** button come in 0.7.1.
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones.
+
 ## What's new in 0.6.1
 
 - Fixes `npm install` failing with "fetch failed" on some IPv6 networks: the download now retries and
