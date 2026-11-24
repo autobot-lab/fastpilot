@@ -7,8 +7,8 @@ const APP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js");
 
 const HARNESS: &str = r#"
 const src = require("fs").readFileSync(process.argv[1], "utf8");
-const document = { createElement: (t) => ({ tag: t, kids: [], append(...k) { this.kids.push(...k); }, setAttribute() {}, addEventListener() {} }), createTextNode: (t) => ({ text: t }) };
 function Node() {}
+const document = { createElement: (t) => Object.assign(Object.create(Node.prototype), { tag: t, kids: [], append(...k) { this.kids.push(...k); }, setAttribute() {}, addEventListener() {} }), createTextNode: (t) => Object.assign(Object.create(Node.prototype), { text: t }) };
 const pick = (name) => {
   const i = src.indexOf("function " + name + "(");
   if (i < 0) throw new Error("no function " + name);
@@ -35,7 +35,8 @@ fn chat_shows_claudes_markdown_tidily_and_never_as_html() {
     };
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let got: Vec<String> = serde_json::from_slice(&out.stdout).expect("json");
-    assert_eq!(got[0], "<b>Done.</b> 3 checks<pre>Techniques used\nBVA · Age</pre>Next: <code>run</code>", "no ``` or ** left");
-    assert_eq!(got[1], "<b>Result</b>\nOpen block:<pre>line 1</pre>", "an unclosed fence still a block");
-    assert_eq!(got[2], "plain <b>not html</b> <img src=x onerror=alert(1)>", "HTML stays text (one text node)");
+    // v0.7.1 FC4: paragraphs, headings and code blocks as their own elements.
+    assert_eq!(got[0], "<p><b>Done.</b> 3 checks</p><pre><code>Techniques used\nBVA · Age</code></pre><p>Next: <code>run</code></p>", "no ``` or ** left");
+    assert_eq!(got[1], "<h3>Result</h3><p>Open block:</p><pre><code>line 1</code></pre>", "an unclosed fence still a block");
+    assert_eq!(got[2], "<p>plain <b>not html</b> <img src=x onerror=alert(1)></p>", "HTML stays text (one text node)");
 }

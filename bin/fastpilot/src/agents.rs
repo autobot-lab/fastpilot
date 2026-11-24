@@ -459,9 +459,20 @@ pub fn add_conversation(agent: &str, conv: &str) {
     }
 }
 
+/// FC4: a removed chat leaves its agent's list (Undo puts it back with [`add_conversation`]).
+pub fn forget_conversation(agent: &str, conv: &str) {
+    let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut s = read();
+    if let Some(a) = s.agents.iter_mut().find(|x| x.id == agent)
+        && a.conversations.iter().any(|c| c == conv)
+    {
+        a.conversations.retain(|c| c != conv);
+        let _ = write(&s);
+    }
+}
+
 /// The agent a conversation belongs to: the one that lists it, else the default one.
-#[cfg(test)]
-fn of_conversation(conv: &str) -> String {
+pub fn of_conversation(conv: &str) -> String {
     list().into_iter().find(|a| a.conversations.iter().any(|c| c == conv)).map(|a| a.id).unwrap_or_else(|| DEFAULT.into())
 }
 

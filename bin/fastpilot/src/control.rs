@@ -1152,6 +1152,23 @@ fn when(ms: u64) -> String {
     format!("{} {}", fastpilot_core::claim::local_date(ms), fastpilot_core::claim::local_hm(ms))
 }
 
+/// A new agent from one sentence ("only the checkout" → "Checkout QA"): General QA plus the
+/// specialist skills the sentence asks for, on the current app. Terminal Chat's `agents create`
+/// and the dashboard's "+ New agent" (its first message) both make it here.
+pub fn create_agent_from(sentence: &str) -> Result<(crate::agents::Agent, Done), Fail> {
+    let app = apps::current();
+    let devices: Vec<String> = app.as_ref().map(|a| a.kinds().into_iter().map(|k| match k { "android" => "android_emulator", "ios" => "ios_simulator", _ => "web" }.to_owned()).collect()).filter(|d: &Vec<String>| !d.is_empty()).unwrap_or_else(|| vec!["web".into()]);
+    let spec: Vec<String> = crate::skills_catalog::suggest(sentence, app.as_ref().map(address).as_deref().unwrap_or(""), &devices).into_iter().map(|(id, _)| id).filter(|id| specialists().iter().any(|(x, _)| x == id) && (!jira_skill(id) || jira_connected())).collect();
+    let base = agent_name_from(sentence);
+    let taken: Vec<String> = crate::agents::list().into_iter().map(|a| a.name.to_lowercase()).collect();
+    let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|n| !taken.contains(&n.to_lowercase())).unwrap_or(base);
+    let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), ..Default::default() };
+    let made = crate::agents::create(agent)?;
+    let line = if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) };
+    let done = Done::undoable(line, &format!("agent:{}", made.id), crate::undo::Op::RemoveAgent { id: made.id.clone() });
+    Ok((made, done))
+}
+
 /// "Checkout QA" from "only the checkout".
 fn agent_name_from(sentence: &str) -> String {
     const SKIP: &[&str] = &["only", "the", "a", "an", "my", "our", "this", "that", "test", "tests", "testing", "check", "checks", "of", "for", "and", "to", "in", "on", "it", "just", "please", "should", "agent", "app"];
@@ -1396,16 +1413,8 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("agents", "create") => {
                 let sentence = arg(&args, "sentence").ok_or_else(|| refused(fail("usage", "Say what the new agent should test.")))?;
-                let app = apps::current();
-                let devices: Vec<String> = app.as_ref().map(|a| a.kinds().into_iter().map(|k| match k { "android" => "android_emulator", "ios" => "ios_simulator", _ => "web" }.to_owned()).collect()).filter(|d: &Vec<String>| !d.is_empty()).unwrap_or_else(|| vec!["web".into()]);
-                let spec: Vec<String> = crate::skills_catalog::suggest(&sentence, app.as_ref().map(address).as_deref().unwrap_or(""), &devices).into_iter().map(|(id, _)| id).filter(|id| specialists().iter().any(|(x, _)| x == id) && (!jira_skill(id) || jira_connected())).collect();
-                let base = agent_name_from(&sentence);
-                let taken: Vec<String> = crate::agents::list().into_iter().map(|a| a.name.to_lowercase()).collect();
-                let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|n| !taken.contains(&n.to_lowercase())).unwrap_or(base);
-                let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), ..Default::default() };
-                let made = crate::agents::create(agent).map_err(|e| refused(e.into()))?;
-                let line = if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) };
-                said_done(Done::undoable(line, &format!("agent:{}", made.id), crate::undo::Op::RemoveAgent { id: made.id }))
+                let (_, done) = create_agent_from(&sentence).map_err(refused)?;
+                said_done(done)
             }
             ("agents", "skills") => {
                 let agent = arg(&args, "agent").unwrap_or_default();

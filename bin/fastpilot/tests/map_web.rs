@@ -251,7 +251,7 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
         c.arg("mcp").env("HOME", &person).env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").env("FASTPILOT_LIVE_DIR", person.join("live")).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
     });
     let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
-    let (ok, out) = flow(&client, &format!("- session: {{ start: person, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Integrations\", timeout: 10000 }}\n", ui.link)).await;
+    let (ok, out) = flow(&client, &format!("- session: {{ start: person, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"Settings\", timeout: 10000 }}\n", ui.link)).await;
     assert!(ok, "{out}");
     eval(&client, "location.hash = '#/map', 'ok'").await;
     let (ok, out) = flow(&client, "- assertVisible: { text: \"screens have a test\", timeout: 8000 }\n- tapOn: List\n- assertVisible: { text: \"Screens, their test status and where they lead\", timeout: 5000 }\n").await;
@@ -286,7 +286,7 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
             break;
         }
     }
-    let (ok, out) = flow(&client, "- pressKey: Enter\n- assertVisible: { text: \"Ask or tell the fastpilot bot\", timeout: 8000 }\n").await;
+    let (ok, out) = flow(&client, "- pressKey: Enter\n- assertVisible: { text: \"What should I test?\", timeout: 8000 }\n").await;
     assert!(ok, "{out}");
     let typed = eval(&client, "document.querySelector('textarea').value").await;
     assert!(typed.starts_with("Make a test for the") && typed.contains("Demo shop"), "{typed}");

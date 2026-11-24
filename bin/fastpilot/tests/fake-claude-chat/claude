@@ -270,6 +270,12 @@ if "run it again with the new numbers" in user:
     text.append("I ran the login test 5 more times.\n\nI've filed it as described. Here is the bug with the updated numbers. It replaces the earlier version.")
 if "add the result to kan-12" in user:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "jira_comment", "key": "KAN-12", "text": "fastpilot ran \"Checkout with voucher SAVE10\": failed at step 2."}) + "\n```")
+# v0.7.1 FC4: an answer in Markdown, with what must stay text (HTML, a script, a remote image).
+if "show the release table" in user:
+    text.append("### Ship with fixes\n\n2 of 3 tests **passed**. See [the report](https://example.com/report) and <b>this</b>.\n\n"
+                "- The button `Place order` did not respond\n- It passed last time\n\n"
+                "| Test | Result |\n|---|---|\n| Check the login | Passed |\n| Pay with a card | Failed |\n\n"
+                "<script>window.__fpInjected = 1</script>\n\n![tracker](https://evil.example/pixel.png) [bad](javascript:alert(1))")
 if not text and not said:
     text.append("Halo! Mau tes apa?")
 final = "\n\n".join(text)

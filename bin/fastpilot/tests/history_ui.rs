@@ -215,7 +215,7 @@ fn history_lists_opens_and_deletes_runs_and_conversations() {
 
     // The page and its script are served.
     let (st, _, page) = request(&ui, "GET", "/", "");
-    assert!(st == 200 && page.contains("#/history") && page.contains("/assets/history.js"));
+    assert!(st == 200 && page.contains("id=\"side\"") && page.contains("/assets/shell.js") && page.contains("/assets/history.js"));
     let (st, _, js) = request(&ui, "GET", "/assets/history.js", "");
     assert!(st == 200 && js.contains("PAGES.history") && js.contains("This cannot be undone. Your tests and schedules stay."));
     // Its names stay inside one function: a top-level name that app.js also has (PLATFORM did)
