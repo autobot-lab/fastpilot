@@ -208,9 +208,9 @@ function savedNote() {
 // ---- pages ----
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
-  return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"),
-    // FC4: Integrations (Jira, webhook) are global, so they are under Settings.
-    h("a", { href: "#/integrations" }, "Integrations"));
+  // FC4b (g9a): one tab bar for Settings, Integrations (Jira, webhook) included.
+  return h("nav", { class: "snav tabs2", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"),
+    h("a", { href: "#/integrations", class: cur === "integrations" ? "on" : "", "aria-current": cur === "integrations" ? "page" : false }, "Integrations"));
 }
 
 function topSettings() {
@@ -328,14 +328,12 @@ function pageModel() {
   const status = !doctorCache ? h("span", { class: "tag" }, "Checking…")
     : run && run.status === "ok" ? h("span", { class: "tag" }, "✓ Installed")
     : h("span", { class: "tag warn" }, "Not installed");
-  const changed = ["model_replay", "model_explore"].filter((k) => get(k) && get(k).value !== null).length + (provData && provData.provider && provData.provider !== "claude" ? 1 : 0);
   const replay = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_replay)?.[1] || S.defaults.model_replay}`], ...MODELS];
   const explore = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_explore)?.[1] || S.defaults.model_explore}`], ...MODELS];
   return h("section", { class: "panel" },
     h("h2", {}, "AI model", savedNote()),
     modelUsing(run),
-    // Open by itself only when another provider is in use: its key and model are managed there.
-    UI.moreOptions({ label: "More options", changed, open: !!(provData && provData.provider && provData.provider !== "claude") },
+    UI.section("Models and providers",
       h("p", { class: "sub" }, "fastpilot picks the models by itself: a fast one to replay recorded steps, a balanced one to explore. These only apply when fastpilot runs tests itself; from Claude Code, the model is chosen in that app."),
       h("div", { class: "grp" },
         h("div", { class: "gh" }, icon("model"), "ai model · who runs what"),
@@ -403,7 +401,7 @@ function pageLimits() {
   return h("section", { class: "panel" },
     h("h2", {}, "Limits & permissions", savedNote()),
     limitsSummary(),
-    UI.moreOptions({ label: "More options", changed: S.settings.filter((s) => ["allowed_domains", "block_actions", "confirm_actions", "allow_app_install", "allow_app_reset", "allow_physical_devices", "allow_device_settings", "allow_eval_script", "allow_takeover", "upload_dirs", "state_expire_days", "max_steps", "test_timeout"].includes(s.key) && s.source === "file").length },
+    UI.section("Every limit",
     h("p", { class: "s muted" }, "See and change every limit by hand."),
     h("p", { class: "sub" }, "These rules apply to every test: from Chat, Claude Code, Cursor, the terminal and schedules."),
     h("div", { class: "banner" }, icon("info"), h("span", {}, "Changes apply from the next run. A session that is running keeps the rules it started with. Through chat, a looser rule needs your own words and your typed confirmation on its red card. Saved in ", code(S.path), ".")),
@@ -477,10 +475,9 @@ function pageSecret() {
       ? h("div", { class: "tbl-wrap" }, h("table", { class: "tbl" }, h("caption", { class: "sr" }, "Secrets"),
         h("thead", {}, h("tr", {}, ["Name", "Value", ""].map((t) => h("th", { scope: "col" }, t)))), h("tbody", {}, secData2.names.map(row))))
       : UI.empty({ icon: "key", title: "Nothing saved yet", text: "You will be asked when a test needs one." }),
-    UI.moreOptions({ label: "Use a secret from the environment instead" },
+    UI.section("Secrets from the environment",
       opt("Secret name", "For CI and scripts: list the name here, and give the value in the environment fastpilot starts in. Or add a name and press Set value.",
-        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars")),
-      UI.moreOptions({ label: "Show the command" }, h("p", { class: "s" }, code("export FASTPILOT_VARS=DEMO_PASS DEMO_PASS=…"), " before starting fastpilot or Claude Code."))));
+        chips("vars", { placeholder: "for example DEMO_PASS", addLabel: "Add a secret name", empty: "None yet" }), get("vars"))));
 }
 
 // The settings file does not parse: say what and where, and offer nothing to change (the server
@@ -645,7 +642,8 @@ function pageDevice() {
           h("div", {},
             h("div", { class: "t" }, h("span", { class: "dot " + c.status }), c.name),
             h("div", { class: "s" }, c.detail),
-            c.hint ? (COMMAND.test(c.hint) ? UI.moreOptions({ label: "Show the command" }, h("div", { class: "hint" }, c.hint)) : h("div", { class: "hint" }, "→ ", c.hint)) : null,
+            // FC4b: no command on the main view; Fix (below) does it, or `fastpilot doctor` shows it.
+            c.hint && !COMMAND.test(c.hint) ? h("div", { class: "hint" }, "→ ", c.hint) : null,
             null),
           h("span", { class: "tag" + (c.status === "ok" ? "" : " " + c.status) }, c.status === "ok" ? "Ready" : c.status === "warn" ? "Attention" : "Not ready"))),
       a === "android" && physOff ? h("div", { class: "row" }, h("div", { class: "s" }, "Phones plugged in stay off until you allow them in Limits, so only emulators are used. ", h("a", { class: "lk", href: "#/settings/limits" }, "Change it in Limits"))) : null,
@@ -2084,7 +2082,6 @@ function renderChat() {
 // ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }
 let schedMade = null; // S5: the last preset click, for "Created · Undo": { id, new, text }
-let schedMoreOpen = false; // More options stays open after the form closes, with focus on "New schedule"
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const KINDS = [["day", "Fixed time"], ["hours", "Every N hours"], ["weekday", "Weekdays"], ["week", "Weekly"], ["release", "Before each release"], ["minutes", "Release watch"]];
 
@@ -2311,7 +2308,7 @@ function schedPanel() {
     at.input.setAttribute("aria-invalid", "true");
     at.input.focus();
   };
-  const cancel = () => { schedForm = null; schedMoreOpen = true; clearToast(); pageSchedules(); document.querySelector(".more-body .btn")?.focus(); };
+  const cancel = () => { schedForm = null; clearToast(); pageSchedules(); document.querySelector(".more-body .btn")?.focus(); };
   const save = async () => {
     const whenOut = { every: kind };
     if (kind === "minutes") {
@@ -2444,9 +2441,9 @@ function pageSchedules() {
     $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, first, list.length ? table : null));
     return;
   }
-  // A1: the full form (which tests, other times, Slack and GitHub) is under More options.
-  const more = UI.moreOptions({ label: "More options", open: !!schedForm || schedMoreOpen },
-    h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages."),
+  // FC4b: other times, which tests, Slack and GitHub: a visible section (no "More options").
+  const more = UI.section("Other times",
+    h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages. Or say it in Chat."),
     schedForm ? schedPanel() : h("button", { class: "btn sm", onclick: openForm }, icon("plus", "sm"), "New schedule"));
   $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), schedRelease(), more, table,
     sayIt(["Run all tests every 2 hours", "Turn off the nightly run"])));

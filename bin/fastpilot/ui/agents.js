@@ -298,7 +298,7 @@ function pageNew() {
     h("section", { class: "grp ag-sec ag-quick" },
       h("div", { class: "ag-pad" }, h("p", {}, "Most apps need only the tester fastpilot already made. Add another with a focus:"), focuses,
         h("p", { class: "s muted" }, "Where it tests, the app and its skills come from ", nd.app_name ? `${nd.app_name}` : "this app", "; change them later in Agent settings."))),
-    UI.moreOptions({ label: "Describe it yourself", open: opened },
+    UI.section("Describe it yourself",
       h("div", { class: "ag-form" }, errs,
         sec(1, "who", false, h("label", { class: "fld" }, h("span", { class: "l" }, "Name"), name), h("label", { class: "fld" }, h("span", { class: "l" }, "What it does"), job)),
         sec(2, "where", false, devs, app),

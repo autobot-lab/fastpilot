@@ -108,7 +108,7 @@ select.sel{font:500 14px var(--sans);color:var(--ink);background:var(--card);bor
 /* live */
 .lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;margin-bottom:18px}
 .lcard{background:var(--card);border:var(--bw) solid var(--ink);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;cursor:pointer;display:flex;flex-direction:column}
-.lcard.sel{border-color:var(--acc);box-shadow:4px 4px 0 #b9dcc5}
+.lcard.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
 .lcard:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .lh{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font:500 12px var(--mono)}
 .lh .chip{margin-left:auto}
@@ -864,3 +864,26 @@ body.on-chat .main{height:100vh}
 .ab-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px}
 .about .btn{border-width:1px;border-color:var(--ctl);border-radius:10px;box-shadow:none;justify-content:flex-start}
 .about :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* ---- v0.7.1 FC4b: one look for every page (HANDOFF restyle rule): the same tokens, control
+   borders --ctl, cards --line/--line2, no dotted background, no hard shadows, one column ---- */
+:root{--sh:none;--sh-sm:none;--bw:1px}
+.grp{border:1px solid var(--line2);border-radius:14px;box-shadow:none}
+.btn{border:1px solid var(--ctl);border-radius:10px}
+.btn:hover{box-shadow:none;background:var(--soft)}
+.btn.p{border-color:var(--ink)}.btn.p:hover{background:#2a313b}
+.btn.d,.btn.danger{border-color:var(--bad);color:var(--bad)}
+select.sel,.chat .box,input[type=text],input[type=search],input[type=password],input[type=number],textarea{border-color:var(--ctl)}
+body:not(.on-chat) .top{background:transparent;border-bottom:0;position:static;height:auto;min-height:0;padding:24px 28px 8px;max-width:956px;width:100%;margin:0 auto}
+body:not(.on-chat) .top h1{font:700 22px/1.2 var(--display)}
+body:not(.on-chat) .top>.ic:first-child{display:none}
+body:not(.on-chat) .body{max-width:956px;width:100%;margin:0 auto;padding-top:8px}
+.set{flex-direction:column;gap:18px}
+.snav.tabs2{width:auto;position:static;display:flex;gap:4px;border-bottom:1px solid var(--line);overflow-x:auto}
+.snav.tabs2 a{border:0;border-bottom:2px solid transparent;border-radius:0;box-shadow:none;background:none;padding:8px 14px 9px;margin:0;white-space:nowrap}
+.snav.tabs2 a.on{border-bottom-color:var(--ink);background:none;box-shadow:none;color:var(--ink);font-weight:600}
+.panel{max-width:none}
+.more{margin-top:18px}
+.more-h{font:700 16px var(--display);margin-bottom:8px}
+.page-h2{font:700 20px var(--display);margin:18px 0 12px}
+.hist-tab.on,.hist-f.on{box-shadow:none}
+@media (max-width:900px){body:not(.on-chat) .top{padding-left:64px}}

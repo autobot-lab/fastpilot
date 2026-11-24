@@ -293,3 +293,49 @@ async fn the_about_panel_reads_first_and_closes_with_escape() {
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// v0.7.1 FC4b: one look for the whole dashboard. On every page: no "More options" (nothing hidden
+/// behind one), no hard shadow on cards or buttons, control borders in the --ctl grey; Settings has
+/// one tab bar with Integrations in it; Integrations shows the webhook as it is and no "Coming
+/// soon"; History says Runs · Chats · Recently removed.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_page_has_one_look_and_no_more_options() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-one-look-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    let txt = |s: String| s.trim_matches('"').to_owned();
+    let check = "(() => { const shadow = [...document.querySelectorAll('.grp, .btn')].filter((e) => { const s = getComputedStyle(e).boxShadow; return s && s !== 'none' && /\\d+px \\d+px 0px/.test(s) && !/^rgba\\(0, 0, 0, 0\\)/.test(s); }).length; const more = document.querySelectorAll('.more-btn').length + (document.body.innerText.includes('More options') ? 1 : 0); const ctl = [...document.querySelectorAll('#body .btn')].every((b) => b.classList.contains('p') || b.classList.contains('d') || b.classList.contains('danger') || getComputedStyle(b).borderTopColor === 'rgb(115, 124, 138)'); return [more, shadow, ctl].join('|'); })()";
+    for (hash, wait) in [
+        ("#/agents/default/chat", "What should I test?"),
+        ("#/agents/default/skills", "Specialist skills"),
+        ("#/schedules", "Schedules"),
+        ("#/history", "History"),
+        ("#/memory", "Memory"),
+        ("#/map", "Map"),
+        ("#/live", "Live"),
+        ("#/device", "Device"),
+        ("#/settings/model", "AI model"),
+        ("#/settings/limits", "Every limit"),
+        ("#/settings/secrets", "Secrets"),
+        ("#/settings/security", "Security"),
+        ("#/integrations", "Integrations"),
+    ] {
+        eval(&client, &format!("location.hash = '{hash}', 'ok'")).await;
+        see(&client, wait).await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert_eq!(txt(eval(&client, check).await), "0|0|true", "{hash}: More options | hard shadows | control borders");
+    }
+    // Settings: one tab bar, Integrations in it (and marked there).
+    let tabs = txt(eval(&client, "[...document.querySelectorAll('.snav.tabs2 a')].map((a) => a.textContent + (a.getAttribute('aria-current') ? '*' : '')).join('|')").await);
+    assert_eq!(tabs, "AI model|Limits & permissions|Secrets|Security|Integrations*");
+    let integ = txt(eval(&client, "[document.body.innerText.includes('Coming soon'), !!document.querySelector('[data-app=slack]'), document.querySelector('[data-app=webhook]')?.textContent.includes('Not set. Say “send results to https://…” in Chat.')].join('|')").await);
+    assert_eq!(integ, "false|false|true");
+    eval(&client, "location.hash = '#/history', 'ok'").await;
+    see(&client, "Recently removed").await;
+    assert_eq!(txt(eval(&client, "[...document.querySelectorAll('.hist-tab')].map((t) => t.firstChild.textContent).join(' · ')").await), "Runs · Chats · Recently removed");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}

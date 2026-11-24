@@ -12,7 +12,6 @@ let histRemoved = []; // FC6: { kind, id, label, days_left }
 let histFilter = "all"; // all | attention | passed
 let histQuery = "";
 const histSel = { runs: new Set(), chats: new Set() };
-let histOpenChat = null; // { id, title, messages }
 
 async function loadHistory() {
   histBusy = true;
@@ -76,7 +75,6 @@ async function histChange(body, okText) {
     if (d.runs) parts.push(plural(d.runs, "run", "runs"));
     if (d.chats) parts.push(plural(d.chats, "conversation", "conversations"));
     toast(r.note || (parts.length ? `Deleted ${parts.join(" and ")}.` : okText || "Saved."), !r.note);
-    if (histOpenChat && !histData.chats.some((c) => c.id === histOpenChat.id)) histOpenChat = null;
     histSel.runs.clear();
     histSel.chats.clear();
   } catch (e) {
@@ -122,16 +120,6 @@ async function setKeepDays(value) {
   await histChange({ action: "keep_days", days }, days ? `Runs and conversations are deleted after ${days} days.` : "Auto-delete is off: everything is kept.");
 }
 
-async function openChat(id) {
-  try {
-    histOpenChat = await api("/api/history/chat?id=" + encodeURIComponent(id));
-  } catch (e) {
-    toast("Could not open the conversation: " + e.message);
-    histOpenChat = null;
-  }
-  pageHistory();
-  document.querySelector(".hist-chat h2")?.focus();
-}
 
 function selBox(kind, id, label) {
   return h("input", { type: "checkbox", "aria-label": label, checked: histSel[kind].has(id),
@@ -174,22 +162,10 @@ function chatsTable() {
       h("td", { class: "cb" }, selBox("chats", c.id, `Select ${c.title}`)),
       h("td", {}, h("div", { class: "row-name" }, c.title), h("div", { class: "s" }, plural(c.messages, "message", "messages"))),
       h("td", { class: "next" }, when(c.updated_ms)),
-      h("td", { class: "acts" }, h("button", { class: "btn sm", onclick: () => openChat(c.id) }, "Open")))))));
+      // FC4b (g14a): a chat opens in Chat, where it goes on.
+      h("td", { class: "acts" }, h("a", { class: "btn sm", href: `#/agents/${encodeURIComponent(c.agent || "default")}/chat/${encodeURIComponent(c.id)}` }, "Open", icon("chev", "sm"))))))));
 }
 
-function chatPanel() {
-  const c = histOpenChat;
-  const msgs = Array.isArray(c.messages) ? c.messages : [];
-  return h("section", { class: "grp hist-chat", "aria-label": "Saved conversation" },
-    h("div", { class: "gh" }, h("h2", { tabindex: "-1" }, c.title || "Conversation"),
-      h("button", { class: "btn sm right", onclick: () => { histOpenChat = null; pageHistory(); } }, "Close")),
-    h("div", { class: "hist-msgs" }, msgs.map((m) => h("div", { class: "hist-msg " + (m.role === "user" ? "me" : "bot") },
-      h("div", { class: "who" }, m.role === "user" ? "You" : "fastpilot"),
-      h("div", { class: "txt" }, m.text || (m.error ? "" : "…")),
-      m.error ? h("div", { class: "txt bad" }, m.error) : null,
-      (m.tools || []).length ? h("div", { class: "s muted" }, "Used: " + m.tools.join(", ")) : null))),
-    h("div", { class: "s muted hist-ro" }, "Read only. To continue, start a new conversation in Chat."));
-}
 
 function pageHistory() {
   const tab = (key, label, n) => h("button", { class: "hist-tab" + (histTab === key ? " on" : ""), role: "tab", "aria-selected": String(histTab === key),
@@ -202,7 +178,7 @@ function pageHistory() {
     options.map(([v, t]) => h("option", { value: v, selected: String(keep || "") === v }, t)));
   const total = histData ? histData.runs.length + histData.chats.length : 0;
   $top().replaceChildren(icon("history"), h("h1", { tabindex: "-1" }, "History"), h("span", { class: "muted hist-sub" }, "Past runs and conversations"),
-    h("div", { class: "hist-tabs", role: "tablist" }, tab("runs", "Runs", histData ? histData.runs.length : 0), tab("chats", "Conversations", histData ? histData.chats.length : 0), tab("removed", "Recently removed", histRemoved.length)),
+    h("div", { class: "hist-tabs", role: "tablist" }, tab("runs", "Runs", histData ? histData.runs.length : 0), tab("chats", "Chats", histData ? histData.chats.length : 0), tab("removed", "Recently removed", histRemoved.length)),
     h("div", { class: "right hist-top" }, select, h("button", { class: "btn sm danger", disabled: !total, onclick: deleteAll }, "Delete all…")));
   if (!histData) {
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading history…")));
@@ -244,7 +220,6 @@ function pageHistory() {
     n ? h("button", { class: "btn sm danger", onclick: deleteSelected }, `Delete ${kind === "runs" ? plural(n, "run", "runs") : plural(n, "conversation", "conversations")}…`) : null);
   $body().replaceChildren(...(histData.error ? [h("div", { class: "err", role: "alert" }, "Could not read History: " + histData.error)] : []),
     bar, h("div", { class: "grp" }, kind === "runs" ? runsTable() : chatsTable()),
-    ...(kind === "chats" && histOpenChat ? [chatPanel()] : []),
     sayIt(["Why did the last run fail?", "Delete runs older than a month"]));
 }
 

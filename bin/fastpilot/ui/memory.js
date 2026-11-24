@@ -15,7 +15,6 @@ let memTab = "tests"; // tests | notes
 let notesData = null; // { notes, groups, limits, used }
 let noteForm = { group: "addresses", text: "", id: null }; // the add / edit form
 let noteError = null; // { kind, message }
-let noteTyping = false; // UXA8: "Type a note yourself" was opened: it stays open while the page redraws
 
 const STATUS = {
   reliable: ["Reliable", "ok"],
@@ -308,10 +307,8 @@ function pageNotes() {
     : h("div", { class: "grp" }, h("div", { class: "empty" }, h("b", {}, "No notes yet"),
       h("span", {}, "Just say it in Chat, for example \"staging is https://staging.shop.example\". fastpilot asks \"Remember this?\", and one click keeps it."),
       h("a", { class: "btn p", href: "#/agents/default/chat" }, "Open Chat")));
-  // UXA8: notes come from Chat ("Remember this?"); typing one here is under More options, open
-  // while a note is being edited or typed.
-  const more = UI.moreOptions({ label: "Type a note yourself", open: noteTyping || !!(noteForm.id || noteForm.text || noteError) }, notesPanel());
-  more.querySelector(".more-btn").addEventListener("click", (e) => { noteTyping = e.currentTarget.getAttribute("aria-expanded") === "true"; });
+  // UXA8: notes come from Chat ("Remember this?"), or typed here by the person (FC4b: visible).
+  const more = UI.section("Type a note yourself", notesPanel());
   const side = h("div", { class: "mem-side" },
     h("p", { class: "s muted note-how" }, "Tell Chat something worth keeping (an address, which test account, how login works). fastpilot offers ", h("b", {}, "Remember this?"), "; nothing is saved until you click."),
     more);

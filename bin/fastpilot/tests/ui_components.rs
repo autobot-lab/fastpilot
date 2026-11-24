@@ -125,9 +125,9 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
     let top = eval(c, "(() => { UI.pageHeader({ icon: 'map', title: 'T', sub: null, crumb: null, actions: [null, h('button', {}, 'Go')] }); const t = document.getElementById('top'); return [t.textContent, t.querySelectorAll('.right button').length, t.querySelector('h1').textContent].join('|'); })()").await;
     assert_eq!(top, "\"TGo|1|T\"", "no 'null' text, one action");
 
-    // MoreOptions: closed by default, aria-expanded follows, the changed count is said in words.
-    let more = eval(c, "(() => { const m = UI.moreOptions({ changed: 2 }, h('p', {}, 'inside')); document.getElementById('body').replaceChildren(m); const b = m.querySelector('button'); const p = m.querySelector('.more-body'); const a = [b.getAttribute('aria-expanded'), p.hidden, b.textContent, b.getAttribute('aria-controls') === p.id]; b.click(); a.push(b.getAttribute('aria-expanded'), p.hidden); b.click(); a.push(b.getAttribute('aria-expanded'), p.hidden); return a.join('|'); })()").await;
-    assert_eq!(more, "\"false|true|More options · 2 changed|true|true|false|false|true\"");
+    // FC4b: no "More options" any more: a section is visible, with its heading.
+    let more = eval(c, "(() => { const m = UI.section('Every limit', h('p', {}, 'inside')); document.getElementById('body').replaceChildren(m); return [typeof UI.moreOptions, m.querySelector('h3').textContent, m.querySelector('.more-body').hidden, !!m.querySelector('button')].join('|'); })()").await;
+    assert_eq!(more, "\"undefined|Every limit|false|false\"");
 
     // ConfirmDialog: an alertdialog in the page; the safe button first and focused; Esc keeps and
     // gives focus back to the button that opened it.
@@ -481,17 +481,16 @@ async fn the_ai_model_page_says_what_runs_the_tests_in_one_line() {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     assert!(line.starts_with("\"Using Claude Code ✓") || line.contains("Claude Code is not on this computer yet"), "{line}");
-    let shut = eval(c, "(() => { const b = document.querySelector('#body .more-btn'); const sel = document.querySelector('select[aria-label=\"Exploring model\"]'); return [b.textContent, b.getAttribute('aria-expanded'), !!sel.closest('[hidden]')].join('|'); })()").await;
-    assert_eq!(shut, "\"More options|false|true\"", "the models are under More options, closed");
+    let shut = eval(c, "(() => { const sel = document.querySelector('select[aria-label=\"Exploring model\"]'); return [!!document.querySelector('#body .more-btn'), document.querySelector('#body .more-h').textContent, !!sel.closest('[hidden]')].join('|'); })()").await;
+    assert_eq!(shut, "\"false|Models and providers|false\"", "FC4b: the models are a visible section");
     // DC7: the built-in exploring model is Sonnet.
     let built_in = eval(c, "document.querySelector('select[aria-label=\"Exploring model\"]').options[0].textContent").await;
     assert_eq!(built_in, "\"Built in · Claude Code · Sonnet 5.5\"");
     // Another provider: said on the line, and counted under More options.
     eval(c, "(async () => { await api('/api/provider', { action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }); provData = null; await loadProvider(); return 'ok'; })()").await;
     open(c, "#/settings/model", "Using OpenAI").await;
-    let other = eval(c, "document.querySelector('.using').textContent + '|' + document.querySelector('#body .more-btn').textContent").await;
-    assert!(other.contains("Using OpenAI · gpt-4.1-mini") && other.contains("More options · 1 changed"), "{other}");
-    assert_eq!(eval(c, "document.querySelector('#body .more-btn').getAttribute('aria-expanded')").await, "\"true\"", "open while another provider is in use");
+    let other = eval(c, "document.querySelector('.using').textContent").await;
+    assert!(other.contains("Using OpenAI · gpt-4.1-mini"), "{other}");
 }
 
 /// A2 (v0.7): Settings › Limits starts with one protection statement worked out from the settings
@@ -521,8 +520,8 @@ async fn the_limits_page_says_what_protects_you_and_changes_go_through_chat() {
     assert!(!said.contains("only open") && !said.contains("your app's pages"), "no domain claim while every domain is allowed");
     let examples = eval(c, "[...document.querySelectorAll('.say-row')].map((b) => b.textContent).join('|')").await;
     assert_eq!(examples, "\"Also block the word \\\"Refund\\\"→|Never press \\\"Log out\\\"→|Show me what is blocked→\"");
-    let more = eval(c, "(() => { const b = document.querySelector('#body .more-btn'); const chips = document.querySelector('[aria-label=\"Add a blocked word\"]') || document.querySelector('.panel .grp .opt'); return b.getAttribute('aria-expanded') + '|' + !!chips.closest('[hidden]'); })()").await;
-    assert_eq!(more, "\"false|true\"", "every limit is under More options, closed");
+    let more = eval(c, "(() => { const chips = document.querySelector('[aria-label=\"Add a blocked word\"]') || document.querySelector('.panel .grp .opt'); return [!!document.querySelector('#body .more-btn'), document.querySelector('#body .more-h').textContent, !!chips.closest('[hidden]')].join('|'); })()").await;
+    assert_eq!(more, "\"false|Every limit|false\"", "FC4b: every limit is a visible section");
     // A sentence goes to Chat (sending is caught here: no real Claude in this test).
     eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.querySelectorAll('.say-row')[1].click(); return 'ok'; })()").await;
     assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/agents/default/chat/new|Never press \\\"Log out\\\"\"", "a new chat of the open agent (FC4)");

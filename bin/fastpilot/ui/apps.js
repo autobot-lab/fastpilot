@@ -52,13 +52,13 @@ function when(ms) {
   return today ? `today, ${t}` : `${d.toLocaleDateString([], { day: "numeric", month: "short" })}, ${t}`;
 }
 
+// FC4b (g9a): the webhook as it really is: set on schedules (each has its own), or not set.
+// Slack is not listed until it is built (no "Coming soon").
 function slackCard(n) {
-  return h("div", { class: "app-card", "data-app": "slack" },
-    h("div", { class: "app-head" }, badge("S", "slack"), h("div", {}, h("b", {}, "Slack or webhook"),
-      h("p", {}, "Get a message when a scheduled test fails.")), n ? pill("Connected", "ok") : null),
-    n ? h("p", { class: "s" }, `Used by ${n} ${n === 1 ? "schedule" : "schedules"}`) : null,
-    h("div", { class: "app-acts" }, h("a", { class: "btn", href: "#/schedules" }, n ? "Manage" : "Set up"),
-      h("span", { class: "s" }, "Opens the schedules, where each one has its own notification.")));
+  return h("div", { class: "app-card", "data-app": "webhook" },
+    h("div", { class: "app-head" }, badge("W", "slack"), h("div", {}, h("b", {}, "Webhook"),
+      h("p", {}, n ? `Set · used by ${n} ${n === 1 ? "schedule" : "schedules"}` : "Not set. Say “send results to https://…” in Chat.")), n ? pill("Set", "ok") : null),
+    n ? h("div", { class: "app-acts" }, h("a", { class: "btn", href: "#/schedules" }, "Manage")) : null);
 }
 
 function githubCard() {
@@ -120,7 +120,7 @@ function pollApps() {
 
 function pageApps() {
   pollApps();
-  $top().replaceChildren(icon("plug"), h("h1", { tabindex: "-1" }, "Integrations"), h("span", { class: "s muted" }, "Connect fastpilot to the tools your team already uses"));
+  $top().replaceChildren(h("h1", { tabindex: "-1" }, "Settings"));
   if (!appsData) {
     if (!appsBusy) loadApps();
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading apps…")));
@@ -134,18 +134,16 @@ function pageApps() {
   const n = appsData.webhook_schedules || 0;
   const connected = [j ? jiraCard(j) : null, n ? slackCard(n) : null].filter(Boolean);
   const available = [j ? null : jiraCard(null), n ? null : slackCard(0), githubCard()].filter(Boolean);
-  const soon = ["Linear", "Telegram", "Confluence", "Email"].map((name) => h("div", { class: "app-soon" }, badge(name[0], "soon"), h("b", {}, name)));
   const section = (title, kids) => h("section", { class: "app-sec", "aria-label": title }, h("h2", { class: "app-sec-t" }, title), ...kids);
   const kept = appsData.token_kept || "this computer's key store";
   const reqs = appsData.jira_requests || [];
-  $body().replaceChildren(h("div", { class: "apps" },
+  $body().replaceChildren(settingsNav("integrations"), h("h2", { class: "page-h2" }, "Integrations"), h("div", { class: "apps" },
     h("div", { class: "apps-main" },
       reqs.length ? section("Waiting for your OK", [h("div", { class: "app-grid" }, reqs.map(requestCard))]) : null,
       section("Connected", connected.length ? [h("div", { class: "app-grid" }, connected)]
         : [h("div", { class: "app-none" }, h("b", {}, "Nothing is connected yet"),
           h("p", {}, "Connect Jira to send failed tests to your team's board. Slack and webhook notifications you set on a schedule show up here too."))]),
       section("Available", [h("div", { class: "app-grid" }, available)]),
-      section("Coming soon", [h("div", { class: "app-soon-row" }, soon)]),
       sayIt(j ? ["File the last failure in Jira"] : ["Connect Jira"])),
     h("aside", { class: "apps-side", "aria-label": "How Jira works with fastpilot" },
       h("h2", { class: "app-sec-t" }, "How Jira works with fastpilot"),
@@ -339,7 +337,7 @@ function pageSignIn(signedIn) {
         h("button", { class: "btn p", disabled: jBusy, onclick: signIn }, icon("plug", "sm"), jBusy ? "Opening Atlassian…" : "Sign in with Atlassian"),
         h("p", { class: "s muted" }, h("button", { class: "lk", type: "button", onclick: () => { jf.useToken = true; jt = null; PAGES.appsJira(); } }, "Use an API token instead"), " (if your admin blocks Atlassian sign-in for apps)")))];
   }
-  $body().replaceChildren(h("div", { class: "apps" },
+  $body().replaceChildren(settingsNav("integrations"), h("h2", { class: "page-h2" }, "Integrations"), h("div", { class: "apps" },
     h("div", { class: "apps-main" }, ...main),
     h("aside", { class: "apps-side" },
       h("h2", { class: "app-sec-t" }, "What happens"),
@@ -404,7 +402,7 @@ function pageJira() {
     const r = document.getElementById("jira-result");
     if (r) r.replaceChildren(...[testResult()].filter(Boolean));
   }
-  $body().replaceChildren(h("div", { class: "apps" },
+  $body().replaceChildren(settingsNav("integrations"), h("h2", { class: "page-h2" }, "Integrations"), h("div", { class: "apps" },
     h("div", { class: "apps-main" },
       h("section", { class: "grp jira-sec" }, h("h2", { class: "gh" }, connected ? "your jira account" : "1 · your jira account"),
         h("div", { class: "form ag-pad" },
