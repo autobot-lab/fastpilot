@@ -461,7 +461,8 @@ fn the_dashboard_and_readme_words_are_current() {
     // The Skills page counts the skills an agent can switch; the fastpilot skill is always on, so the
     // page and the README's 24 add up.
     let agents = std::fs::read_to_string(format!("{ROOT}/bin/fastpilot/ui/agents.js")).expect("agents.js");
-    assert!(agents.contains("on for ${a.name}, plus the fastpilot skill (always on)"), "Skills page count");
+    // v0.7.1 FC8: General QA's 8 are always on; the specialists are counted as "you added".
+    assert!(agents.contains("8 always on, plus ${n} you added"), "Skills page count");
     let skills = std::fs::read_dir(format!("{ROOT}/skills")).expect("skills").flatten().filter(|e| e.path().join("SKILL.md").is_file()).count();
     let readme = std::fs::read_to_string(format!("{ROOT}/README.md")).expect("README");
     assert!(readme.contains(&format!("its {skills} skills")), "README counts all {skills} skills");

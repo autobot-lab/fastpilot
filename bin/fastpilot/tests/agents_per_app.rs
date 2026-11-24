@@ -102,7 +102,8 @@ fn each_app_has_its_own_tester_and_new_agent_takes_one_click() {
     assert_eq!(strs(&t["devices"]), ["web", "android_emulator"], "{t}");
     assert_eq!(t["app"], "https://shop.example/", "{t}");
     let skills = strs(&t["skills"]);
-    assert!(skills.contains(&"choose-technique".to_owned()) && skills.contains(&"mobile-basics".to_owned()) && skills.contains(&"regression".to_owned()), "auto-picked skills: {skills:?}");
+    // v0.7.1 FC8: every agent starts on General QA (specialists are switched on by the person).
+    assert_eq!(skills, ["choose-technique", "use-case-scenarios", "edge-cases", "exploratory-check", "regression", "bug-report", "test-report", "release-check"], "General QA: {skills:?}");
 
     // The other app's tester is its own.
     ui.post("/api/apps", json!({ "action": "use", "id": "blog" }));
