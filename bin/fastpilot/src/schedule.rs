@@ -1378,7 +1378,7 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID | watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`\n  watch: after a release, run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first run is the\n  \"before\", and you hear only about a problem that is new since then, once (Mac notification or GitHub issue)";
+pub const USAGE: &str = "usage: fastpilot schedule <list | add [--every-2h | --nightly | --before-release] [--tests PATH] | pause ID | resume ID | run ID | remove ID | watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]>\n  add: one of the Schedules page's presets for the current app's tests (default every 2 hours, 8:00-20:00); pause turns a\n  schedule off and resume on again (it stays saved); the system scheduler runs `fastpilot schedule run ID`\n  watch: after a release, run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first run is the\n  \"before\", and you hear only about a problem that is new since then, once (Mac notification or GitHub issue)";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `schedule --help`, `schedule watch --help`, `schedule help`: the usage, not an error.
@@ -1390,7 +1390,7 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
         (Some("list") | None, _) => {
             let store = load();
             if store.schedules.is_empty() {
-                println!("no schedules yet (make one in `fastpilot ui`, on the Schedules page)");
+                println!("no schedules yet: fastpilot schedule add --nightly (or the Schedules page)");
             }
             for s in &store.schedules {
                 let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "not run yet".into());
@@ -1408,7 +1408,29 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             }
             Ok(())
         }
-        (Some("remove"), Some(id)) => Ok(delete(id)?),
+        (Some("remove"), Some(id)) => {
+            let s = crate::control::remove_schedule(id)?;
+            println!("Removed \"{}\".", s.name);
+            Ok(())
+        }
+        // v0.7.1: the Schedules page's presets and its on/off switch, from the terminal.
+        (Some("add"), _) => {
+            let preset = ["--nightly", "--before-release", "--every-2h"].into_iter().find(|p| args.iter().any(|a| a == p)).unwrap_or("--every-2h");
+            let tests = args.iter().position(|a| a == "--tests").and_then(|i| args.get(i + 1)).cloned();
+            let (_, said) = crate::control::add_schedule(preset, tests.as_deref())?;
+            println!("{said}");
+            Ok(())
+        }
+        (Some("pause"), Some(id)) => {
+            let s = crate::control::set_schedule(id, false)?;
+            println!("\"{}\" is off. It stays saved: fastpilot schedule resume {}", s.name, s.id);
+            Ok(())
+        }
+        (Some("resume"), Some(id)) => {
+            let s = crate::control::set_schedule(id, true)?;
+            println!("\"{}\" is on again: {}.", s.name, describe(&s.when));
+            Ok(())
+        }
         (Some("watch"), Some(tests)) => {
             let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
             let num = |k: &str| opt(k).map(|v| v.trim_end_matches(['m', 'h']).parse::<u64>().map_err(|_| format!("{k} needs a number")));
