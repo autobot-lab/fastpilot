@@ -133,7 +133,7 @@ fn run_options_are_checked_and_help_is_help() {
     assert!(out.contains("schedule watch TESTS --every MIN --for HOURS") && out.contains("ship-check [url]..."), "{out}");
     for args in [&["schedule", "watch", "--help"][..], &["schedule", "--help"], &["schedule", "help"]] {
         let (code, out) = run(args);
-        assert!(code == Some(0) && out.starts_with("usage: fastpilot schedule") && out.contains("watch TESTS --every MIN") && !out.contains("not found"), "{args:?}: {code:?} {out}");
+        assert!(code == Some(0) && out.starts_with("fastpilot schedule — run tests on a timer\n\nUsage: fastpilot schedule") && out.contains("watch TESTS --every MIN") && !out.contains("not found"), "{args:?}: {code:?} {out}");
     }
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -261,6 +261,15 @@ pub fn local_date(ms: u64) -> String {
     format!("{} {} {}", tm.tm_mday, MONTHS[(tm.tm_mon.clamp(0, 11)) as usize], tm.tm_year + 1900)
 }
 
+/// This computer's clock for a time in ms since 1970: (hour, minute, weekday 1 = Monday … 7 = Sunday).
+pub fn local_clock(ms: u64) -> (u32, u32, u8) {
+    let t = (ms / 1000) as libc::time_t;
+    // SAFETY: an all-zero `tm` is valid; localtime_r writes only into it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    (tm.tm_hour.max(0) as u32, tm.tm_min.max(0) as u32, if tm.tm_wday == 0 { 7 } else { tm.tm_wday.clamp(1, 6) as u8 })
+}
+
 /// `HH:MM` on this computer's clock for a time in ms since 1970 (R1: "watching until 14:30").
 pub fn local_hm(ms: u64) -> String {
     let secs = (ms / 1000) as i64;

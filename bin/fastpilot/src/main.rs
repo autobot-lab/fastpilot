@@ -7,6 +7,7 @@ mod bench;
 mod browsers;
 mod chat;
 mod cli;
+mod control;
 mod demo;
 mod doctor;
 mod filestore;
@@ -57,7 +58,10 @@ commands:
   demo [folder] [--android]          demo pages, example tests and .mcp.json in a new folder: a first test
                                      without the repository (--android: install the demo app)
   ui [--no-open] [--port N]          local settings and device page in the browser (127.0.0.1, one-time link)
-  schedule [list|run ID|remove ID]   scheduled runs (made in `fastpilot ui` › Schedules; run by launchd/systemd/cron)
+  app        Add, list, switch or remove the apps fastpilot tests
+  schedule   Run tests on a timer: add, pause, resume
+  secret     Save test passwords for an app (values are never shown)
+  agent      Skills and Stop for an agent
   schedule watch TESTS --every MIN --for HOURS [--os] [--github owner/repo]
                                      after a release: run TESTS every MIN minutes for HOURS hours, hear only
                                      about new problems (`fastpilot schedule --help`)
@@ -286,6 +290,27 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("doctor") => doctor::doctor(&args[1..]).await,
         Some("ui") => ui::ui(&args[1..]).await,
         Some("schedule") => schedule::cli(&args[1..]).await,
+        // v0.7.1: the dashboard's apps, passwords and agents from the terminal.
+        Some(cmd @ ("app" | "secret" | "agent")) => {
+            if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") {
+                println!("{}", match cmd {
+                    "app" => control::APP_USAGE,
+                    "secret" => control::SECRET_USAGE,
+                    _ => control::AGENT_USAGE,
+                });
+                return Ok(());
+            }
+            let r = match cmd {
+                "app" => control::app_cli(&args[1..]).await,
+                "secret" => control::secret_cli(&args[1..], |prompt| read_secret(prompt).map_err(|e| e.to_string())),
+                _ => control::agent_cli(&args[1..]),
+            };
+            if let Err(f) = &r {
+                control::print_fail(f);
+                std::process::exit(control::exit_code(&r));
+            }
+            Ok(())
+        }
         Some("demo") => demo::demo(&args[1..]).await,
         Some("init") => init::init(&args[1..]).await,
         Some("setup") => doctor::setup(&args[1..]).await,

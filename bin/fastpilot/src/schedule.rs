@@ -1378,7 +1378,22 @@ pub async fn github_issue(repo: &str, title: &str, body: &str) -> Res<String> {
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-pub const USAGE: &str = "usage: fastpilot schedule <list | run ID | remove ID | watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]>\n  Schedules are made in `fastpilot ui` (the Schedules page); the system scheduler runs `fastpilot schedule run ID`\n  watch: after a release, run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first run is the\n  \"before\", and you hear only about a problem that is new since then, once (Mac notification or GitHub issue)";
+pub const USAGE: &str = "fastpilot schedule — run tests on a timer
+
+Usage: fastpilot schedule <list|add|pause|resume|remove|run|watch> …
+
+  list                       Show schedules and their last result.
+  add [--every-2h | --nightly | --before-release] [--tests <name>,<name>]
+                             Create a schedule. Without options: all tests of the
+                             app in use, every 2 hours from 8 to 20.
+  pause <id>                 Turn a schedule off. Nothing is deleted.
+  resume <id>                Turn it on again.
+  remove <id>                Remove a schedule.
+  run <id>                   Run it now.
+  watch TESTS --every MIN --for HOURS [--name N] [--os] [--github owner/repo]
+                             after a release: run TESTS every 5, 10, 15, 20, 30 or 60 minutes for 1 to 24 hours; the first
+                             run is the \"before\", and you hear only about a problem that is new since then, once (Mac
+                             notification or GitHub issue)";
 
 pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `schedule --help`, `schedule watch --help`, `schedule help`: the usage, not an error.
@@ -1390,7 +1405,7 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
         (Some("list") | None, _) => {
             let store = load();
             if store.schedules.is_empty() {
-                println!("no schedules yet (make one in `fastpilot ui`, on the Schedules page)");
+                println!("no schedules yet: fastpilot schedule add --nightly (or the Schedules page)");
             }
             for s in &store.schedules {
                 let last = store.last.get(&s.id).map(|l| l.summary.clone()).unwrap_or_else(|| "not run yet".into());
@@ -1403,12 +1418,46 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             Ok(())
         }
         (Some("run"), Some(id)) => {
+            // A person runs it from a terminal: say where to watch; the system scheduler runs it quietly.
+            if std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && let Ok(s) = crate::control::find_schedule(id, crate::control::Surface::Cli)
+            {
+                println!("✓ Running {} now · {}", crate::control::q(&crate::control::schedule_title(&s)), crate::control::watch_in_live());
+            }
             if !run(id).await? {
                 std::process::exit(1);
             }
             Ok(())
         }
-        (Some("remove"), Some(id)) => Ok(delete(id)?),
+        // v0.7.1: the Schedules page's presets, its on/off switch and remove, from the terminal.
+        (Some(cmd @ ("add" | "pause" | "resume" | "remove")), _) => {
+            use crate::control::{Surface, fail};
+            let r = match cmd {
+                "add" => {
+                    let presets: Vec<&str> = ["--every-2h", "--nightly", "--before-release"].into_iter().filter(|p| args.iter().any(|a| a == p)).collect();
+                    let tests = args.iter().position(|a| a == "--tests").and_then(|i| args.get(i + 1)).cloned();
+                    if presets.len() > 1 || args.iter().skip(1).any(|a| a.starts_with("--") && !["--every-2h", "--nightly", "--before-release", "--tests"].contains(&a.as_str())) {
+                        Err(fail("bad_preset", "Choose one of --every-2h, --nightly or --before-release."))
+                    } else {
+                        crate::control::add_schedule(presets.first().copied().unwrap_or("--every-2h"), tests.as_deref(), Surface::Cli).map(|(_, line)| line)
+                    }
+                }
+                _ => match args.get(1) {
+                    None => Err(fail("usage", USAGE)),
+                    Some(id) if cmd == "remove" => crate::control::remove_schedule(id, Surface::Cli).map(|(_, line)| line),
+                    Some(id) => crate::control::set_schedule(id, cmd == "resume", Surface::Cli).map(|(_, line)| line),
+                },
+            };
+            match &r {
+                Ok(line) => println!("✓ {line}"),
+                Err(f) => crate::control::print_fail(f),
+            }
+            let code = crate::control::exit_code(&r.map(|_| ()));
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         (Some("watch"), Some(tests)) => {
             let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
             let num = |k: &str| opt(k).map(|v| v.trim_end_matches(['m', 'h']).parse::<u64>().map_err(|_| format!("{k} needs a number")));

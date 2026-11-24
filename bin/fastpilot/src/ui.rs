@@ -944,26 +944,8 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
 /// The secret names (Settings › Secrets) and, for the current app, which have a value: never a
 /// value itself.
 async fn secrets_list() -> Response {
-    use fastpilot_core::secrets;
     let app = crate::apps::current();
-    // As the settings file has them now (this process pinned its settings at start).
-    let listed = match config::current("vars") {
-        Source::File(v) | Source::Env(v) => v,
-        Source::Default => String::new(),
-    };
-    // The environment allow-list, then the names saved for the current app (Security #205 M1: a
-    // saved name is not on the allow-list; an environment value counts only for a listed name).
-    let env_names: Vec<String> = listed.split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
-    let mut names = env_names.clone();
-    for n in app.iter().flat_map(|a| a.secrets.iter()) {
-        if !names.contains(n) {
-            names.push(n.clone());
-        }
-    }
-    let rows: Vec<Value> = names
-        .iter()
-        .map(|n| json!({ "name": n, "set": app.as_ref().is_some_and(|a| secrets::has(&a.id, n)), "env": env_names.contains(n) && std::env::var_os(n).is_some() }))
-        .collect();
+    let rows: Vec<Value> = crate::control::secret_rows(app.as_ref()).into_iter().map(|(name, set, env)| json!({ "name": name, "set": set, "env": env })).collect();
     axum::Json(json!({ "app": app.map(|a| json!({ "id": a.id, "name": a.name })), "names": rows, "kept_in": fastpilot_core::jira::token::kept_in() })).into_response()
 }
 
@@ -980,22 +962,8 @@ async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
         return refuse(StatusCode::BAD_REQUEST, &e);
     }
     let result = match body["action"].as_str().unwrap_or("") {
-        "set" => (|| {
-            let value = body["value"].as_str().unwrap_or("");
-            secrets::check_value(value)?;
-            // Security #205 M1: kept as the app's own name, never added to the environment
-            // allow-list (that would make an environment value of the same name readable).
-            fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), None, Some("set"), "dashboard", "done")?;
-            secrets::set(&app.id, &name, value)?;
-            crate::apps::note_secret(&app.id, &name, true)?;
-            Ok(json!({ "name": name, "set": true }))
-        })(),
-        "remove" => (|| {
-            fastpilot_core::change::audit_or_refuse(&format!("secret {name} of {}", app.id), Some("set"), None, "dashboard", "done")?;
-            secrets::remove(&app.id, &name)?;
-            crate::apps::note_secret(&app.id, &name, false)?;
-            Ok(json!({ "name": name, "set": false }))
-        })(),
+        "set" => crate::control::set_secret(&app, &name, body["value"].as_str().unwrap_or(""), "dashboard").map(|()| json!({ "name": name, "set": true })),
+        "remove" => crate::control::remove_secret(&app, &name, "dashboard").map(|()| json!({ "name": name, "set": false })),
         _ => Err("unknown action".to_owned()),
     };
     match result {

@@ -167,6 +167,21 @@ Want to test a checkout for real? Ask in Chat: *"Allow the Pay button for this p
 These limits protect you from what a tested page tells the AI. They are not a lock against programs
 on your own computer: anything that runs as you can edit `~/.fastpilot/config.toml`.
 
+## Control everything from Chat
+
+What a dashboard page does, you can also ask for in Chat (the dashboard's, or Claude Code's), or
+type in a terminal. All three use the same apps, tests, schedules and passwords.
+
+| What | In a terminal |
+|---|---|
+| Your apps | `fastpilot app list`, `app add https://your-site` (or `app add com.shop.app --android`), `app switch NAME`, `app remove NAME` |
+| One-click schedules | `fastpilot schedule add` (every 2 hours, 8–20), `--nightly` or `--before-release`; `schedule pause ID`, `resume ID`, `remove ID` |
+| Agents | `fastpilot agent skills "My tester" +safe-checkout` (General QA is always on), `agent stop NAME` (stops that agent's running chats) |
+| Test passwords | `fastpilot secret set TEST_PASSWORD` (typed hidden, or piped in; never on the command line), `secret list`, `secret remove NAME` |
+
+Removing an app or a schedule asks first. A password is kept for its app in this Mac's Keychain
+and typed only on that app's own website, wherever you set it from.
+
 ## Prefer the terminal?
 
 Everything also works from Claude Code. Open Claude in any folder (`claude`) and say it in
