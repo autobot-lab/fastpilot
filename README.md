@@ -185,7 +185,9 @@ release?"*, *"make a checkout tester"*. fastpilot's tools `apps`, `tests`, `sche
 `ship_check`, `secrets`, `memory`, `history` and `agents` do it. No tool takes a password's value:
 Claude tells you to set it in the dashboard or with `fastpilot secret set`.
 
-Removing an app or a schedule asks first. A password is kept for its app in this Mac's Keychain
+Every change can be undone: the terminal prints `Undo: fastpilot undo <id>`, and `fastpilot undo --list`
+shows what you can undo. Removing an app or a schedule keeps it 7 days (History › Recently removed,
+with Restore). A password is kept for its app in this Mac's Keychain
 and typed only on that app's own website, wherever you set it from.
 
 ## Prefer the terminal?

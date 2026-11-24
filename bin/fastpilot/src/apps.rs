@@ -183,6 +183,25 @@ pub fn remove(id: &str) -> Result<(), String> {
     save(&s)
 }
 
+/// FC6: bring back a removed app as it was (its id, folder, passwords). A name taken meanwhile
+/// gets " (2)". It becomes the current app when none is.
+pub fn restore(mut app: App) -> Result<App, String> {
+    let _held = hold();
+    let mut s = load();
+    if s.apps.iter().any(|a| a.id == app.id) {
+        return Err(format!("\"{}\" is already there", app.name));
+    }
+    let base = app.name.clone();
+    app.name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} ({n})") }).find(|n| !s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(n))).unwrap_or(base);
+    s.retired.retain(|r| r != &app.id);
+    s.apps.push(app.clone());
+    if s.current.is_none() {
+        s.current = Some(app.id.clone());
+    }
+    save(&s)?;
+    Ok(app)
+}
+
 /// Make `id` the current app.
 pub fn set_current(id: &str) -> Result<App, String> {
     let _held = hold();

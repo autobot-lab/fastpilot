@@ -154,16 +154,45 @@ fn bad_target(what: &str, s: Surface) -> Fail {
 }
 
 /// Add an app (the name is picked for it). `Ok((app, false))`: that app was there already.
-pub fn add_app(what: &str, ios: bool, s: Surface) -> Result<(App, bool), Fail> {
+/// A change done: its line, and the id that undoes it (FC6), when it can be undone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Done {
+    pub line: String,
+    pub undo: Option<String>,
+}
+
+impl Done {
+    fn plain(line: String) -> Self {
+        Done { line, undo: None }
+    }
+
+    fn undoable(line: String, item: &str, op: crate::undo::Op) -> Self {
+        let undo = crate::undo::record(&line, item, op);
+        Done { line, undo }
+    }
+}
+
+/// The terminal's result: the line, then how to undo it.
+pub fn print_done(d: &Done) {
+    println!("✓ {}", d.line);
+    if let Some(id) = &d.undo {
+        println!("  Undo: fastpilot undo {id}");
+    }
+}
+
+pub fn add_app(what: &str, ios: bool, s: Surface) -> Result<(App, bool, Option<String>), Fail> {
     let t = parse_target(what, ios).ok_or_else(|| bad_target(what, s))?;
     let same = |v: &Option<String>, w: &Option<String>| v.is_some() && v == w;
     // The same address as stored: parsed like `apps::add` does, so "shop.example" finds "https://shop.example/".
     let web = t.web.as_deref().map(|w| url::Url::parse(w).map(|u| u.to_string()).unwrap_or_else(|_| w.to_owned()));
     if let Some(a) = apps::list().into_iter().find(|a| (web.is_some() && a.targets.web.as_deref().map(|x| x.trim_end_matches('/')) == web.as_deref().map(|x| x.trim_end_matches('/'))) || same(&a.targets.android, &t.android) || same(&a.targets.ios, &t.ios)) {
-        return Ok((a, false));
+        return Ok((a, false, None));
     }
     match apps::add("", t) {
-        Ok(a) => Ok((a, true)),
+        Ok(a) => {
+            let undo = crate::undo::record(&format!("Added {}", app_what(&a)), &format!("app:{}", a.id), crate::undo::Op::RemoveApp { id: a.id.clone() });
+            Ok((a, true, undo))
+        }
         Err(_) => Err(bad_target(what, s)),
     }
 }
@@ -245,6 +274,15 @@ pub fn switch_app(typed: &str, s: Surface) -> Result<(App, bool), Fail> {
         return Ok((app, false));
     }
     Ok((apps::set_current(&app.id)?, true))
+}
+
+/// Remove an app for 7 days (FC6): "Removed app “X” · 4 tests, … · kept 7 days".
+pub fn remove_app(typed: &str, s: Surface) -> Result<(App, Done), Fail> {
+    let app = resolve_app(typed, s)?;
+    let holds = app_holds(&app);
+    let line = format!("Removed app {}{} · kept 7 days", q(&app.name), if holds.is_empty() { String::new() } else { format!(" · {holds}") });
+    let undo = crate::undo::remove_app(&app, &line, true)?;
+    Ok((app, Done { line, undo }))
 }
 
 /// What an app holds, for the line that removes it: "4 tests, 31 runs, 1 password, 1 schedule".
@@ -364,7 +402,7 @@ pub fn find_test(name: &str, s: Surface) -> Result<PathBuf, Fail> {
 /// A one-click schedule (the Schedules page's presets) of all the app's tests, or of one saved
 /// test. An existing one with the same tests and timing is turned on again. Returns it and its
 /// line ("Created schedule …", "Resumed schedule …", or "… is already on. Nothing changed.").
-pub fn add_schedule(preset: &str, test: Option<&str>, s: Surface) -> Result<(Schedule, String), Fail> {
+pub fn add_schedule(preset: &str, test: Option<&str>, s: Surface) -> Result<(Schedule, Done), Fail> {
     let key = preset_key(preset).map_err(|_| fail("bad_preset", format!("{} is not a preset. Use every_2h_work_hours, nightly or before_release. Custom times are not supported yet.", q(preset.trim()))))?;
     let (_, dir, _) = saved_tests(s)?;
     let path = match test {
@@ -374,12 +412,13 @@ pub fn add_schedule(preset: &str, test: Option<&str>, s: Surface) -> Result<(Sch
     let path = path.to_string_lossy().into_owned();
     let was = schedule::load().schedules.into_iter().find(|x| x.tests == path && schedule::presets().iter().any(|p| p.0 == key && p.3 == x.when) && x.watch.is_none() && x.agent.is_none());
     let (sched, new) = schedule::preset_on(key, &path, &schedule::tests_label(&path), None)?;
-    let line = match (new, was.map(|w| w.enabled)) {
-        (true, _) => format!("Created schedule {} · {} · {}", q(&schedule_title(&sched)), what_runs(&sched), when_next(&sched)),
-        (false, Some(true)) => format!("{} is already on. Nothing changed.", q(&schedule_title(&sched))),
-        (false, _) => format!("Resumed schedule {} · {}", q(&schedule_title(&sched)), when_next(&sched)),
+    let item = format!("schedule:{}", sched.id);
+    let done = match (new, was.map(|w| w.enabled)) {
+        (true, _) => Done::undoable(format!("Created schedule {} · {} · {}", q(&schedule_title(&sched)), what_runs(&sched), when_next(&sched)), &item, crate::undo::Op::RemoveSchedule { id: sched.id.clone() }),
+        (false, Some(true)) => Done::plain(format!("{} is already on. Nothing changed.", q(&schedule_title(&sched)))),
+        (false, _) => Done::undoable(format!("Resumed schedule {} · {}", q(&schedule_title(&sched)), when_next(&sched)), &item, crate::undo::Op::SetSchedule { id: sched.id.clone(), on: false }),
     };
-    Ok((sched, line))
+    Ok((sched, done))
 }
 
 /// A schedule by its id, its name or its title.
@@ -397,11 +436,11 @@ pub fn find_schedule(typed: &str, s: Surface) -> Result<Schedule, Fail> {
 }
 
 /// Pause or resume a schedule (it stays saved). Returns it and its line.
-pub fn set_schedule(typed: &str, on: bool, s: Surface) -> Result<(Schedule, String), Fail> {
+pub fn set_schedule(typed: &str, on: bool, s: Surface) -> Result<(Schedule, Done), Fail> {
     let sched = find_schedule(typed, s)?;
     let title = q(&schedule_title(&sched));
     if sched.enabled == on {
-        return Ok((sched, format!("{title} is already {}. Nothing changed.", if on { "on" } else { "paused" })));
+        return Ok((sched, Done::plain(format!("{title} is already {}. Nothing changed.", if on { "on" } else { "paused" }))));
     }
     schedule::set_enabled(&sched.id, on)?;
     let sched = Schedule { enabled: on, ..sched };
@@ -413,15 +452,28 @@ pub fn set_schedule(typed: &str, on: bool, s: Surface) -> Result<(Schedule, Stri
     } else {
         format!("Paused schedule {title} · its history is kept")
     };
-    Ok((sched, line))
+    let done = Done::undoable(line, &format!("schedule:{}", sched.id), crate::undo::Op::SetSchedule { id: sched.id.clone(), on: !on });
+    Ok((sched, done))
 }
 
-/// Delete a schedule (and its entry in launchd/systemd/cron).
-pub fn remove_schedule(typed: &str, s: Surface) -> Result<(Schedule, String), Fail> {
+/// Remove a schedule for 7 days (FC6): off the system scheduler, back with Undo or Restore.
+pub fn remove_schedule(typed: &str, s: Surface) -> Result<(Schedule, Done), Fail> {
     let sched = find_schedule(typed, s)?;
-    schedule::delete(&sched.id)?;
-    let line = format!("Removed schedule {}", q(&schedule_title(&sched)));
-    Ok((sched, line))
+    let line = format!("Removed schedule {} · kept 7 days", q(&schedule_title(&sched)));
+    let undo = crate::undo::remove_schedule(&sched, &line, true)?;
+    Ok((sched, Done { line, undo }))
+}
+
+/// Release watch on or off for the app in use (FC1, FC3): every 10 minutes for 2 hours.
+pub fn release_watch(on: bool, s: Surface) -> Result<Done, Fail> {
+    let (app, dir, _) = saved_tests(s)?;
+    let tests = dir.to_string_lossy().into_owned();
+    let running = schedule::load().schedules.into_iter().any(|x| x.tests == tests && x.enabled && x.watch.as_ref().is_some_and(|w| !w.ended && w.until_ms > schedule::now_ms()));
+    if running == on {
+        return Ok(Done::plain(format!("Release watch for {} is already {}. Nothing changed.", app.name, if on { "on" } else { "off" })));
+    }
+    schedule::release_watch(&tests, on)?;
+    Ok(Done::undoable(format!("Turned {} release watch for {}", if on { "on" } else { "off" }, app.name), &format!("watch:{tests}"), crate::undo::Op::Watch { tests, on: !on }))
 }
 
 /// "watch it in Live: <the dashboard's Live page>" (the address once the dashboard has run here).
@@ -562,7 +614,7 @@ pub enum SkillChange {
 
 /// Change an agent's specialist skills. Returns the line: what was added and removed, or why
 /// nothing changed.
-pub fn change_skills(agent: &str, changes: &[SkillChange], s: Surface) -> Result<String, Fail> {
+pub fn change_skills(agent: &str, changes: &[SkillChange], s: Surface) -> Result<Done, Fail> {
     let mut a = resolve_agent(agent)?;
     if changes.is_empty() {
         return Err(fail(
@@ -629,13 +681,16 @@ pub fn change_skills(agent: &str, changes: &[SkillChange], s: Surface) -> Result
     let removed: Vec<String> = before.iter().filter(|x| !on.contains(x)).cloned().collect();
     if added.is_empty() && removed.is_empty() {
         let reset = changes.contains(&SkillChange::Reset);
-        return Ok(if reset { format!("{} is already General QA. Nothing changed.", a.name) } else { nothing.unwrap_or_else(|| format!("{} is already General QA. Nothing changed.", a.name)) });
+        return Ok(Done::plain(if reset { format!("{} is already General QA. Nothing changed.", a.name) } else { nothing.unwrap_or_else(|| format!("{} is already General QA. Nothing changed.", a.name)) }));
     }
+    let before_skills = a.skills.clone();
+    let agent_id = a.id.clone();
     a.skills = GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(on).collect();
     let name = a.name.clone();
     crate::agents::update(a)?;
     let parts: Vec<String> = added.iter().map(|x| format!("+ {}", skill_short(x))).chain(removed.iter().map(|x| format!("− {}", skill_short(x)))).collect();
-    Ok(if changes.contains(&SkillChange::Reset) && added.is_empty() { format!("{name}: back to General QA ({})", parts.join(", ")) } else { format!("{name}: {}", parts.join(", ")) })
+    let line = if changes.contains(&SkillChange::Reset) && added.is_empty() { format!("{name}: back to General QA ({})", parts.join(", ")) } else { format!("{name}: {}", parts.join(", ")) };
+    Ok(Done::undoable(line, &format!("skills:{agent_id}"), crate::undo::Op::Skills { agent: agent_id.clone(), skills: before_skills }))
 }
 
 /// The fastpilot processes now working for an agent (its Chat's tools, its scheduled runs), as
@@ -710,7 +765,7 @@ Usage: fastpilot app <list|add|switch|remove> …
   add <address|app-id>     Add a website (https://…) or a phone app (com.shop.app).
                            The name is picked for you.
   switch <name>            Use this app from now on.
-  remove <name>            Remove an app.";
+  remove <name>            Remove an app. It is kept 7 days: fastpilot undo";
 
 pub const SECRET_USAGE: &str = "fastpilot secret — passwords your tests use
 
@@ -778,18 +833,6 @@ fn plain(args: &[String], with_value: &[&str]) -> Vec<String> {
     out
 }
 
-fn ask_yes(question: &str) -> bool {
-    use std::io::{BufRead, IsTerminal, Write};
-    if !std::io::stdin().is_terminal() {
-        return false;
-    }
-    print!("{question} [y/N] ");
-    let _ = std::io::stdout().flush();
-    let mut line = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut line);
-    matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "ya")
-}
-
 fn usage(text: &str) -> Fail {
     fail("usage", text)
 }
@@ -823,13 +866,13 @@ pub async fn app_cli(args: &[String]) -> Result<(), Fail> {
         }
         (Some("add"), None) => Err(fail("bad_target", "No address or app id was given. Run: fastpilot app add https://shop.example")),
         (Some("add"), Some(what)) => {
-            let (app, new) = add_app(what, args.iter().any(|a| a == "--ios"), s)?;
+            let (app, new, undo) = add_app(what, args.iter().any(|a| a == "--ios"), s)?;
             if !new {
                 println!("✓ {} is already added. Nothing changed.", app.name);
                 return Ok(());
             }
             let note = if seen_on_device(&app).await == Some(false) { " · not seen on a running device yet" } else { "" };
-            println!("✓ Added {}{note}", app_what(&app));
+            print_done(&Done { line: format!("Added {}{note}", app_what(&app)), undo });
             Ok(())
         }
         (Some("switch"), Some(which)) => {
@@ -837,17 +880,12 @@ pub async fn app_cli(args: &[String]) -> Result<(), Fail> {
             println!("{}", if changed { format!("✓ Switched to {}", app.name) } else { format!("✓ {} is already in use. Nothing changed.", app.name) });
             Ok(())
         }
+        // FC6: no question (Undo replaces it); `--yes` is accepted and ignored for old scripts.
         (Some("remove"), Some(which)) => {
-            let app = resolve_app(which, s)?;
-            let sure = args.iter().any(|a| a == "--yes" || a == "-y") || ask_yes(&format!("Remove {} from your apps?", q(&app.name)));
-            if !sure {
-                return Err(fail("not_confirmed", "Nothing removed (answer y, or add --yes)."));
-            }
-            let holds = app_holds(&app);
-            let was_current = apps::current().is_some_and(|c| c.id == app.id);
-            apps::remove(&app.id)?;
-            println!("✓ Removed app {}{}", q(&app.name), if holds.is_empty() { String::new() } else { format!(" · {holds}") });
-            if was_current {
+            let was_current = apps::current().map(|c| c.id);
+            let (app, done) = remove_app(which, s)?;
+            print_done(&done);
+            if was_current.as_deref() == Some(app.id.as_str()) {
                 match apps::current() {
                     Some(next) => println!("  Now using {}.", q(&next.name)),
                     None => println!("  No app is in use now. Add one: fastpilot app add <address>"),
@@ -976,8 +1014,8 @@ pub fn agent_cli(args: &[String]) -> Result<(), Fail> {
             if changes.len() != rest.iter().filter(|a| *a != "--all").count() {
                 return Err(fail("usage_skill", "Say which skill: +id to add, -id to remove, or reset. Run fastpilot agent skills <agent> --all to see the ids."));
             }
-            let line = change_skills(name, &changes, Surface::Cli).map_err(|f| if f.code == "usage" { fail("usage_skill", f.msg) } else { f })?;
-            println!("✓ {line}");
+            let done = change_skills(name, &changes, Surface::Cli).map_err(|f| if f.code == "usage" { fail("usage_skill", f.msg) } else { f })?;
+            print_done(&done);
             Ok(())
         }
         (Some("stop"), Some(name)) => {
@@ -1010,6 +1048,14 @@ fn said_with(message: impl Into<String>, extra: serde_json::Value) -> Answer {
         o.extend(e.clone());
     }
     Ok(v)
+}
+
+/// A change's answer, with how Claude undoes it.
+fn said_done(d: Done) -> Answer {
+    match d.undo {
+        Some(id) => said_with(d.line, serde_json::json!({ "undo": { "tool": "history", "action": "undo", "change_id": id } })),
+        None => said(d.line),
+    }
 }
 
 fn refused(f: Fail) -> serde_json::Value {
@@ -1103,12 +1149,12 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("apps", "add") => {
                 let target = arg(&args, "target").unwrap_or_default();
-                let (app, new) = add_app(&target, arg(&args, "platform").as_deref() == Some("ios"), s).map_err(refused)?;
+                let (app, new, undo) = add_app(&target, arg(&args, "platform").as_deref() == Some("ios"), s).map_err(refused)?;
                 if !new {
                     return said(format!("{} is already added. Nothing changed.", app.name));
                 }
                 let note = if rt.block_on(seen_on_device(&app)) == Some(false) { " · not seen on a running device yet" } else { "" };
-                said(format!("Added {}{note}", app_what(&app)))
+                said_done(Done { line: format!("Added {}{note}", app_what(&app)), undo })
             }
             ("apps", "installed") => {
                 let platform = arg(&args, "platform").unwrap_or_else(|| "android".into());
@@ -1123,14 +1169,9 @@ impl fastpilot_mcp::Control for McpControl {
                 said(if changed { format!("Switched to {}", app.name) } else { format!("{} is already in use. Nothing changed.", app.name) })
             }
             ("apps", "remove") => {
-                let app = resolve_app(&arg(&args, "name").unwrap_or_default(), s).map_err(refused)?;
-                // Until removing keeps the app for 7 days with Undo (FC6), it is done after the user's yes.
-                if args["confirm"] != true {
-                    return Err(refused(fail("needs_confirm", format!("Not removed yet. Ask the user whether to remove {}; call again with confirm: true after they say yes.", q(&app.name)))));
-                }
-                let holds = app_holds(&app);
-                apps::remove(&app.id).map_err(|e| refused(e.into()))?;
-                said(format!("Removed app {}{}", q(&app.name), if holds.is_empty() { String::new() } else { format!(" · {holds}") }))
+                // FC6: kept 7 days, with Undo: no question first.
+                let (_, done) = remove_app(&arg(&args, "name").unwrap_or_default(), s).map_err(refused)?;
+                said_done(done)
             }
             ("apps", other) => Err(refused(unknown_action(other, &["list", "add", "installed", "switch", "remove"]))),
             // ---- tests
@@ -1183,16 +1224,10 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("schedules", "add") => {
                 let preset = arg(&args, "preset").unwrap_or_else(|| "every_2h_work_hours".into());
-                add_schedule(&preset, arg(&args, "tests").as_deref(), s).map(|(_, line)| said(line)).map_err(refused)?
+                add_schedule(&preset, arg(&args, "tests").as_deref(), s).map(|(_, d)| said_done(d)).map_err(refused)?
             }
-            ("schedules", a @ ("pause" | "resume")) => set_schedule(&arg(&args, "id").unwrap_or_default(), a == "resume", s).map(|(_, line)| said(line)).map_err(refused)?,
-            ("schedules", "remove") => {
-                let sched = find_schedule(&arg(&args, "id").unwrap_or_default(), s).map_err(refused)?;
-                if args["confirm"] != true {
-                    return Err(refused(fail("needs_confirm", format!("Not removed yet. Ask the user whether to remove the schedule {}; call again with confirm: true after they say yes.", q(&schedule_title(&sched))))));
-                }
-                remove_schedule(&sched.id, s).map(|(_, line)| said(line)).map_err(refused)?
-            }
+            ("schedules", a @ ("pause" | "resume")) => set_schedule(&arg(&args, "id").unwrap_or_default(), a == "resume", s).map(|(_, d)| said_done(d)).map_err(refused)?,
+            ("schedules", "remove") => remove_schedule(&arg(&args, "id").unwrap_or_default(), s).map(|(_, d)| said_done(d)).map_err(refused)?,
             ("schedules", "run_now") => {
                 let sched = find_schedule(&arg(&args, "id").unwrap_or_default(), s).map_err(refused)?;
                 schedule::start_now(&sched.id).map_err(|e| refused(e.into()))?;
@@ -1200,15 +1235,7 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("schedules", "release_watch") => {
                 let on = args["on"].as_bool().ok_or_else(|| refused(fail("usage", "Say on: true or on: false.")))?;
-                let app = current().map_err(refused)?;
-                let (_, dir, _) = saved_tests(s).map_err(refused)?;
-                let tests = dir.to_string_lossy().into_owned();
-                let running = schedule::load().schedules.into_iter().any(|x| x.tests == tests && x.enabled && x.watch.as_ref().is_some_and(|w| !w.ended && w.until_ms > schedule::now_ms()));
-                if running == on {
-                    return said(format!("Release watch for {} is already {}. Nothing changed.", app.name, if on { "on" } else { "off" }));
-                }
-                schedule::release_watch(&tests, on).map_err(|e| refused(e.into()))?;
-                said(format!("Turned {} release watch for {}", if on { "on" } else { "off" }, app.name))
+                release_watch(on, s).map(said_done).map_err(refused)?
             }
             ("schedules", other) => Err(refused(unknown_action(other, &["list", "add", "pause", "resume", "remove", "run_now", "release_watch"]))),
             // ---- map
@@ -1267,8 +1294,8 @@ impl fastpilot_mcp::Control for McpControl {
             ("memory", "add_note") => {
                 let app = current().map_err(refused)?;
                 let text = arg(&args, "text").ok_or_else(|| refused(fail("empty_note", "The note is empty. Give the sentence to remember.")))?;
-                fastpilot_memory::notes::Notes::from_env().add("how", &text).map_err(|r| refused(fail("refused", r.message)))?;
-                said(format!("Remembered for {}: {}", app.name, q(&text)))
+                let note = fastpilot_memory::notes::Notes::from_env().add("how", &text).map_err(|r| refused(fail("refused", r.message)))?;
+                said_done(Done::undoable(format!("Remembered for {}: {}", app.name, q(&text)), &format!("note:{}", note.id), crate::undo::Op::RemoveNote { id: note.id }))
             }
             ("memory", "list") => {
                 let app = current().map_err(refused)?;
@@ -1295,7 +1322,19 @@ impl fastpilot_mcp::Control for McpControl {
                 let r = fastpilot_memory::history::History::from_env().runs().into_iter().find(|r| r.id == id).ok_or_else(|| refused(fail("run_not_found", format!("No run with id {}. Use history runs to see recent runs.", q(&id)))))?;
                 said(format!("{} of {} passed · {} · {}", r.passed, r.tests, r.title, when(r.finished_ms)))
             }
-            ("history", other) => Err(refused(unknown_action(other, &["runs", "show"]))),
+            ("history", "removed") => {
+                let gone = crate::undo::removed();
+                if gone.is_empty() {
+                    return said("Nothing was removed in the last 7 days.");
+                }
+                let parts: Vec<String> = gone.iter().map(|r| format!("{} · {}", crate::undo::removed_label(r), plural(crate::undo::days_left(r) as usize, "day left", "days left"))).collect();
+                said_with(
+                    format!("{} recently removed: {}.", gone.len(), parts.join("; ")),
+                    serde_json::json!({ "items": gone.iter().map(|r| serde_json::json!({ "kind": r.kind, "name": r.name, "days_left": crate::undo::days_left(r) })).collect::<Vec<_>>() }),
+                )
+            }
+            ("history", "undo") => crate::undo::undo(arg(&args, "change_id").as_deref(), s).map(said).map_err(refused)?,
+            ("history", other) => Err(refused(unknown_action(other, &["runs", "show", "removed", "undo"]))),
             // ---- agents
             ("agents", "list") => {
                 let all = crate::agents::list();
@@ -1318,8 +1357,9 @@ impl fastpilot_mcp::Control for McpControl {
                 let taken: Vec<String> = crate::agents::list().into_iter().map(|a| a.name.to_lowercase()).collect();
                 let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|n| !taken.contains(&n.to_lowercase())).unwrap_or(base);
                 let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), ..Default::default() };
-                crate::agents::create(agent).map_err(|e| refused(e.into()))?;
-                said(if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) })
+                let made = crate::agents::create(agent).map_err(|e| refused(e.into()))?;
+                let line = if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) };
+                said_done(Done::undoable(line, &format!("agent:{}", made.id), crate::undo::Op::RemoveAgent { id: made.id }))
             }
             ("agents", "skills") => {
                 let agent = arg(&args, "agent").unwrap_or_default();
@@ -1340,7 +1380,7 @@ impl fastpilot_mcp::Control for McpControl {
                         .collect();
                     return said_with(skills_header(&a), serde_json::json!({ "items": items }));
                 }
-                change_skills(&agent, &changes, s).map(said).map_err(refused)?
+                change_skills(&agent, &changes, s).map(said_done).map_err(refused)?
             }
             ("agents", "stop") => {
                 let line = stop_agent(&arg(&args, "agent").unwrap_or_default(), s).map_err(refused)?;

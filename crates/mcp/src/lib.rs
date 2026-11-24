@@ -272,8 +272,6 @@ pub struct AppsArgs {
     pub platform: Option<String>,
     /// switch, remove: the app's name.
     pub name: Option<String>,
-    /// remove: true after the user said yes to removing it.
-    pub confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
@@ -298,8 +296,6 @@ pub struct SchedulesArgs {
     pub id: Option<String>,
     /// release_watch: true turns it on, false turns it off.
     pub on: Option<bool>,
-    /// remove: true after the user said yes to removing it.
-    pub confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
@@ -340,12 +336,14 @@ pub struct MemoryArgs {
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
 pub struct HistoryArgs {
-    /// runs | show
+    /// runs | show | removed | undo
     pub action: String,
     /// runs: how many (default 10).
     pub limit: Option<u64>,
     /// show: a run's id from runs.
     pub run_id: Option<String>,
+    /// undo: the change's id (default: the newest change).
+    pub change_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
@@ -1209,9 +1207,10 @@ impl FastPilot {
         self.control("memory", &args, changes).await
     }
 
-    #[tool(description = own_words!("List recent runs or show one run."))]
+    #[tool(description = own_words!("List recent runs, show one run, list what was removed in the last 7 days, or undo the newest change. `undo` brings back removed things and reverses the newest change of one kind."))]
     async fn history(&self, Parameters(args): Parameters<HistoryArgs>) -> Result<CallToolResult, ErrorData> {
-        self.control("history", &args, false).await
+        let changes = args.action == "undo";
+        self.control("history", &args, changes).await
     }
 
     #[tool(description = own_words!("List agents, create one from a sentence, change an agent's skills, or stop an agent's running chats. Every agent has General QA, always on. Other skills are specialist skills that can be added to any agent. `stop` stops only the chats of the agent you name."))]

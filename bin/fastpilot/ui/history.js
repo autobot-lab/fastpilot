@@ -7,7 +7,8 @@
 
 let histData = null; // { runs, chats, keep_days }
 let histBusy = false;
-let histTab = "runs"; // runs | chats
+let histTab = "runs"; // runs | chats | removed
+let histRemoved = []; // FC6: { kind, id, label, days_left }
 let histFilter = "all"; // all | attention | passed
 let histQuery = "";
 const histSel = { runs: new Set(), chats: new Set() };
@@ -17,6 +18,7 @@ async function loadHistory() {
   histBusy = true;
   try {
     histData = await api("/api/history");
+    histRemoved = (await api("/api/removed")).items || [];
     // Rows deleted elsewhere (auto-delete) leave the selection.
     const ids = { runs: new Set(histData.runs.map((r) => r.id)), chats: new Set(histData.chats.map((c) => c.id)) };
     for (const k of ["runs", "chats"]) for (const id of [...histSel[k]]) if (!ids[k].has(id)) histSel[k].delete(id);
@@ -200,11 +202,25 @@ function pageHistory() {
     options.map(([v, t]) => h("option", { value: v, selected: String(keep || "") === v }, t)));
   const total = histData ? histData.runs.length + histData.chats.length : 0;
   $top().replaceChildren(icon("history"), h("h1", { tabindex: "-1" }, "History"), h("span", { class: "muted hist-sub" }, "Past runs and conversations"),
-    h("div", { class: "hist-tabs", role: "tablist" }, tab("runs", "Runs", histData ? histData.runs.length : 0), tab("chats", "Conversations", histData ? histData.chats.length : 0)),
+    h("div", { class: "hist-tabs", role: "tablist" }, tab("runs", "Runs", histData ? histData.runs.length : 0), tab("chats", "Conversations", histData ? histData.chats.length : 0), tab("removed", "Recently removed", histRemoved.length)),
     h("div", { class: "right hist-top" }, select, h("button", { class: "btn sm danger", disabled: !total, onclick: deleteAll }, "Delete all…")));
   if (!histData) {
     $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading history…")));
     if (!histBusy) loadHistory();
+    return;
+  }
+  // FC6: what was removed in the last 7 days, each with Restore (everything comes back).
+  if (histTab === "removed") {
+    const restore = async (r) => {
+      try { const res = await api("/api/removed", { action: "restore", kind: r.kind, id: r.id }); toast(res.message, true); } catch (e) { toast(e.message); }
+      histData = null;
+      loadHistory();
+    };
+    $body().replaceChildren(h("div", { class: "grp" }, histRemoved.length
+      ? h("ul", { class: "removed-list" }, histRemoved.map((r) => h("li", { class: "removed-row" },
+        h("span", { class: "removed-name" }, r.label), h("span", { class: "muted" }, r.days_left === 1 ? "1 day left" : `${r.days_left} days left`),
+        h("button", { class: "btn sm", "aria-label": `Restore ${r.label}`, onclick: () => restore(r) }, "Restore"))))
+      : h("div", { class: "empty" }, icon("history", "big"), h("b", {}, "Nothing was removed in the last 7 days."))));
     return;
   }
   if (!total) {

@@ -318,6 +318,10 @@ dialog.loosen-dlg input:focus-visible,dialog.loosen-dlg .btn:focus-visible{outli
 .hist-tab{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:var(--r-sm);border:var(--bw) solid transparent;background:none;font:600 13.5px var(--sans);color:var(--ink);cursor:pointer}
 .hist-tab.on{background:var(--ink);color:#fff}
 .hist-tab .cnt{font:500 11px var(--mono);background:var(--soft);color:var(--muted);border-radius:6px;padding:1px 7px}
+.removed-list{list-style:none;margin:0;padding:0}
+.removed-row{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:var(--bw) solid var(--line)}
+.removed-row:last-child{border-bottom:0}
+.removed-name{flex:1;font-weight:600}
 .hist-tab.on .cnt{background:var(--acc-soft);color:var(--acc-ink)}
 .hist-top{display:flex;gap:8px;align-items:center}
 .hist-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}

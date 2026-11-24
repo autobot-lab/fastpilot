@@ -317,6 +317,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/skills", get(skills_api))
         .route("/api/provider", get(provider_api).post(provider_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
+        .route("/api/removed", get(removed_list).post(removed_restore))
+        .route("/api/undo", post(undo_api))
         .route("/api/history/report", get(crate::history_api::report))
         .route("/api/history/chat", get(crate::history_api::conversation))
         .route("/api/memory", get(crate::memory_api::list).post(crate::memory_api::change))
@@ -905,7 +907,8 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
             let t = if body["targets"].is_null() { None } else { Some(targets()?) };
             apps::update(id, body["name"].as_str(), t).map(|a| json!({ "app": app_json(&a) }))
         })(),
-        "remove" => apps::remove(id).map(|()| json!({ "removed": id })),
+        // FC6: kept 7 days (History › Recently removed), with Undo.
+        "remove" => crate::control::remove_app(id, crate::control::Surface::Cli).map_err(|f| f.msg).map(|(_, d)| json!({ "removed": id, "message": d.line, "undo": d.undo })),
         "use" => apps::set_current(id).map(|a| json!({ "app": app_json(&a) })),
         // Older fastpilot folders: searched only on this click; only what the search found can be
         // added (a page never names a folder itself).
@@ -936,6 +939,42 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
     match result {
         Ok(v) => axum::Json(v).into_response(),
         Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+// ---- FC6: Undo and Recently removed -------------------------------------------------------
+
+/// What was removed in the last 7 days (History › Recently removed).
+async fn removed_list() -> Response {
+    let items: Vec<Value> = crate::undo::removed().iter().map(|r| json!({ "kind": r.kind, "id": r.id, "name": r.name, "label": crate::undo::removed_label(r), "removed_ms": r.removed_ms, "days_left": crate::undo::days_left(r) })).collect();
+    axum::Json(json!({ "items": items })).into_response()
+}
+
+/// `{action: restore, kind: app|schedule, id}`: bring it back, as it was.
+async fn removed_restore(axum::Json(body): axum::Json<Value>) -> Response {
+    let id = body["id"].as_str().unwrap_or("");
+    let r = match (body["action"].as_str(), body["kind"].as_str()) {
+        (Some("restore"), Some("app")) => crate::undo::restore_app(id),
+        (Some("restore"), Some("schedule")) => crate::undo::restore_schedule(id),
+        _ => return refuse(StatusCode::BAD_REQUEST, "unknown action"),
+    };
+    if r.is_ok()
+        && std::env::var_os("FASTPILOT_DIR").is_none()
+        && let Some(app) = crate::apps::current()
+    {
+        crate::apps::go(&app);
+    }
+    match r {
+        Ok(line) => axum::Json(json!({ "message": line })).into_response(),
+        Err(f) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
+    }
+}
+
+/// `{id}`: the Undo on a result line (the newest change of one thing only).
+async fn undo_api(axum::Json(body): axum::Json<Value>) -> Response {
+    match crate::undo::undo(body["id"].as_str(), crate::control::Surface::Cli) {
+        Ok(line) => axum::Json(json!({ "message": line })).into_response(),
+        Err(f) => (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(json!({ "error": f.msg, "code": f.code }))).into_response(),
     }
 }
 
@@ -1139,7 +1178,8 @@ async fn schedules_change(axum::Json(body): axum::Json<Value>) -> Response {
         },
         "enable" => schedule::set_enabled(&id, true).map(|()| json!({})),
         "disable" => schedule::set_enabled(&id, false).map(|()| json!({})),
-        "delete" => schedule::delete(&id).map(|()| json!({})),
+        // FC6: kept 7 days (History › Recently removed), with Undo.
+        "delete" => crate::control::remove_schedule(&id, crate::control::Surface::Cli).map(|(_, d)| json!({ "message": d.line, "undo": d.undo })).map_err(|f| f.msg),
         "run" => schedule::start_now(&id).map(|()| json!({})),
         "test" => match schedule::load().schedules.into_iter().find(|s| s.id == id) {
             Some(s) => {

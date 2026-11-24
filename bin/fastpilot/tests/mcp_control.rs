@@ -102,9 +102,15 @@ async fn claude_code_controls_apps_schedules_passwords_notes_history_and_agents(
     assert_eq!(says(&c, "apps", json!({ "action": "switch", "name": "Orders" })).await, "Orders is already in use. Nothing changed.");
     assert_eq!(says(&c, "apps", json!({ "action": "switch", "name": "shp" })).await, "No app called “shp”. Did you mean “Shop”? Use apps list to see the apps.");
     assert_eq!(says(&c, "apps", json!({ "action": "switch", "name": "Shop" })).await, "Switched to Shop");
+    // FC6: removing acts at once; it is kept 7 days and the answer says how to undo it.
     let v = call(&c, "apps", json!({ "action": "remove", "name": "Orders" })).await;
-    assert_eq!(v["error"], "needs_confirm", "removing waits for the user's yes until it can be undone: {v}");
-    assert_eq!(says(&c, "apps", json!({ "action": "remove", "name": "Orders", "confirm": true })).await, "Removed app “Orders”");
+    assert_eq!((v["message"].as_str(), v["undo"]["tool"].as_str(), v["undo"]["action"].as_str()), (Some("Removed app “Orders” · kept 7 days"), Some("history"), Some("undo")), "{v}");
+    // FC6: Claude brings it back with history undo, and sees what was removed.
+    assert_eq!(says(&c, "history", json!({ "action": "removed" })).await, "1 recently removed: App “Orders” · 7 days left.");
+    assert_eq!(says(&c, "history", json!({ "action": "undo", "change_id": v["undo"]["change_id"] })).await, "Restored app “Orders” · tests, history, passwords and schedules are back");
+    assert_eq!(says(&c, "history", json!({ "action": "undo", "change_id": v["undo"]["change_id"] })).await, "Nothing to undo.");
+    assert_eq!(says(&c, "history", json!({ "action": "removed" })).await, "Nothing was removed in the last 7 days.");
+    assert_eq!(says(&c, "apps", json!({ "action": "remove", "name": "Orders" })).await, "Removed app “Orders” · kept 7 days");
     assert_eq!(says(&c, "apps", json!({ "action": "frob" })).await, "This tool has no action “frob”. Actions: list, add, installed, switch, remove.");
 
     // Passwords: names and how to set one; no tool takes a value.
@@ -137,8 +143,7 @@ async fn claude_code_controls_apps_schedules_passwords_notes_history_and_agents(
     assert_eq!(entries(), 0);
     assert_eq!(says(&c, "schedules", json!({ "action": "pause", "id": "Every night" })).await, "“Every night” is already paused. Nothing changed.");
     assert_eq!(says(&c, "schedules", json!({ "action": "resume", "id": "Every night" })).await, "Resumed schedule “Every night” · next run 02:00");
-    assert_eq!(call(&c, "schedules", json!({ "action": "remove", "id": "Every night" })).await["error"], "needs_confirm");
-    assert_eq!(says(&c, "schedules", json!({ "action": "remove", "id": "Every night", "confirm": true })).await, "Removed schedule “Every night”");
+    assert_eq!(says(&c, "schedules", json!({ "action": "remove", "id": "Every night" })).await, "Removed schedule “Every night” · kept 7 days");
     assert_eq!(entries(), 0);
     assert_eq!(says(&c, "schedules", json!({ "action": "pause", "id": "9" })).await, "No schedule with id “9”. Use schedules list to see them.");
     assert_eq!(says(&c, "schedules", json!({ "action": "release_watch", "on": false })).await, "Release watch for Shop is already off. Nothing changed.");

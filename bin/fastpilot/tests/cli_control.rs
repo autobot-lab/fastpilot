@@ -38,7 +38,10 @@ fn fp(home: &Path, args: &[&str], input: &str) -> (i32, String) {
     let mut c = cmd(home).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("fastpilot");
     c.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("input");
     let o = c.wait_with_output().expect("wait");
-    (o.status.code().unwrap_or(-1), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    // The Undo id is random: shown as <id> here.
+    let text: String = text.lines().map(|l| if l.starts_with("  Undo: fastpilot undo ") { "  Undo: fastpilot undo <id>".to_owned() } else { l.to_owned() }).map(|l| l + "\n").collect();
+    (o.status.code().unwrap_or(-1), text)
 }
 
 fn apps_json(home: &Path) -> serde_json::Value {
@@ -88,10 +91,10 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     let (code, out) = fp(&home, &["app", "add", "shop"], "");
     assert_eq!((code, out.as_str()), (1, "✗ “shop” is not a web address or an app id. Use a full address like https://shop.example, or an app id like com.shop.app.\n"));
     let (code, out) = fp(&home, &["app", "add", "https://shop.example"], "");
-    assert_eq!((code, out.as_str()), (0, "✓ Added Shop https://shop.example/\n"));
+    assert_eq!((code, out.as_str()), (0, "✓ Added Shop https://shop.example/\n  Undo: fastpilot undo <id>\n"));
     assert_eq!(fp(&home, &["app", "add", "shop.example"], "").1, "✓ Shop is already added. Nothing changed.\n");
     let (code, out) = fp(&home, &["app", "add", "com.orders.app"], "");
-    assert_eq!((code, out.as_str()), (0, "✓ Added Orders com.orders.app · Android · not seen on a running device yet\n"));
+    assert_eq!((code, out.as_str()), (0, "✓ Added Orders com.orders.app · Android · not seen on a running device yet\n  Undo: fastpilot undo <id>\n"));
     let (_, list) = fp(&home, &["app", "list"], "");
     assert!(list.starts_with("Apps\n  ● Shop") && list.lines().nth(1).is_some_and(|l| l.ends_with("in use") && l.contains("Website")) && list.contains("Orders") && list.contains("com.orders.app"), "{list}");
     assert_eq!(fp(&home, &["app", "switch", "orders"], "").1, "✓ Switched to Orders\n");
@@ -134,21 +137,21 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     std::fs::write(tests.join("login.md"), "# Check the login\nid: login\nplatform: web\ntarget: https://shop.example\n- Open the page\n").expect("test");
     assert_eq!(fp(&home, &["schedule", "add", "--nightly", "--every-2h"], "").1, "✗ Choose one of --every-2h, --nightly or --before-release.\n");
     let (code, out) = fp(&home, &["schedule", "add", "--nightly"], "");
-    assert_eq!((code, out.as_str()), (0, "✓ Created schedule “Every night” · all tests of Shop · next run 02:00\n"));
+    assert_eq!((code, out.as_str()), (0, "✓ Created schedule “Every night” · all tests of Shop · next run 02:00\n  Undo: fastpilot undo <id>\n"));
     let entries = || std::fs::read_dir(home.join("agents")).map(|d| d.count()).unwrap_or(0);
     assert_eq!(entries(), 1, "installed with the system scheduler");
     assert_eq!(fp(&home, &["schedule", "add", "--nightly"], "").1, "✓ “Every night” is already on. Nothing changed.\n");
-    assert_eq!(fp(&home, &["schedule", "pause", "every night"], "").1, "✓ Paused schedule “Every night” · its history is kept\n");
+    assert_eq!(fp(&home, &["schedule", "pause", "every night"], "").1, "✓ Paused schedule “Every night” · its history is kept\n  Undo: fastpilot undo <id>\n");
     assert_eq!(entries(), 0);
     assert_eq!(fp(&home, &["schedule", "pause", "every night"], "").1, "✓ “Every night” is already paused. Nothing changed.\n");
-    assert_eq!(fp(&home, &["schedule", "resume", "every night"], "").1, "✓ Resumed schedule “Every night” · next run 02:00\n");
+    assert_eq!(fp(&home, &["schedule", "resume", "every night"], "").1, "✓ Resumed schedule “Every night” · next run 02:00\n  Undo: fastpilot undo <id>\n");
     assert_eq!(entries(), 1);
-    assert_eq!(fp(&home, &["schedule", "remove", "Every night"], "").1, "✓ Removed schedule “Every night”\n");
+    assert_eq!(fp(&home, &["schedule", "remove", "Every night"], "").1, "✓ Removed schedule “Every night” · kept 7 days\n  Undo: fastpilot undo <id>\n");
     assert_eq!(entries(), 0);
     let (code, out) = fp(&home, &["schedule", "pause", "9"], "");
     assert_eq!((code, out.as_str()), (1, "✗ No schedule with id “9”. Run fastpilot schedule list to see them.\n"));
     assert_eq!(fp(&home, &["schedule", "add", "--before-release", "--tests", "nope"], "").1, "✗ No test called “nope” in Shop. Saved tests: Check the login.\n");
-    assert_eq!(fp(&home, &["schedule", "add", "--before-release", "--tests", "login"], "").1, "✓ Created schedule “Before each release” · Check the login · runs when you check a release\n");
+    assert_eq!(fp(&home, &["schedule", "add", "--before-release", "--tests", "login"], "").1, "✓ Created schedule “Before each release” · Check the login · runs when you check a release\n  Undo: fastpilot undo <id>\n");
 
     // An agent's skills: General QA always on, specialists by id, in the order given.
     let (code, out) = fp(&home, &["agent", "skills", "andro"], "");
@@ -156,7 +159,7 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "reset"], "").1, "✓ Shop tester is already General QA. Nothing changed.\n");
     let (_, out) = fp(&home, &["agent", "skills", "Shop tester"], "");
     assert!(out.starts_with("Shop tester · General QA\n\nGeneral QA (always on)\n  Let fastpilot choose the technique, Use case scenarios, Try to break it,") && out.ends_with("No specialist skills on.\n"), "{out}");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+safe-checkout", "+decision-table"], "").1, "✓ Shop tester: + Safe checkout, + Decision table\n");
+    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+safe-checkout", "+decision-table"], "").1, "✓ Shop tester: + Safe checkout, + Decision table\n  Undo: fastpilot undo <id>\n");
     assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+safe-checkout"], "").1, "✓ Safe checkout is already on for Shop tester. Nothing changed.\n");
     assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "-pairwise"], "").1, "✓ Pairwise is not on for Shop tester. Nothing changed.\n");
     assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+regression"], "").1, "✓ Regression is part of General QA and always on. Nothing changed.\n");
@@ -168,8 +171,8 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     assert!(out.starts_with("Shop tester · General QA + 2 specialist skills\n") && out.contains("Specialist skills on\n  Checklist · Safe checkout    safe-checkout\n  Decision table               decision-table\n"), "{out}");
     let (_, out) = fp(&home, &["agent", "skills", "Shop tester", "--all"], "");
     assert!(out.contains("Black-box · Design tests from rules\n  off  Equivalence partitions") && out.contains("  on   Decision table") && out.contains("  on   Checklist · Safe checkout") && !out.contains("Jira ·") && out.ends_with("Jira skills appear after you connect Jira.\n"), "{out}");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "-decision-table"], "").1, "✓ Shop tester: − Decision table\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "reset"], "").1, "✓ Shop tester: back to General QA (− Safe checkout)\n");
+    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "-decision-table"], "").1, "✓ Shop tester: − Decision table\n  Undo: fastpilot undo <id>\n");
+    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "reset"], "").1, "✓ Shop tester: back to General QA (− Safe checkout)\n  Undo: fastpilot undo <id>\n");
 
     // Stop: only this agent's running fastpilot processes end; another agent's keeps running.
     assert_eq!(fp(&home, &["agent", "stop", "Shop tester"], "").1, "✓ Nothing to stop. Shop tester has no running chats.\n");
@@ -182,11 +185,9 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     assert_eq!(fp(&home, &["agent", "stop", "Shop tester"], "").1, "✓ Nothing to stop. Shop tester has no running chats.\n");
     drop((mine, other));
 
-    // Removing an app asks first; without a terminal and without --yes nothing changes.
-    let (code, out) = fp(&home, &["app", "remove", "Orders"], "");
-    assert!(code != 0 && out.contains("Nothing removed"), "{out}");
-    assert_eq!(fp(&home, &["app", "remove", "Orders", "--yes"], "").1, "✓ Removed app “Orders”\n");
+    // FC6: removing asks nothing (it is kept 7 days, with Undo); --yes is accepted and ignored.
+    assert_eq!(fp(&home, &["app", "remove", "Orders"], "").1, "✓ Removed app “Orders” · kept 7 days\n  Undo: fastpilot undo <id>\n");
     let (_, out) = fp(&home, &["app", "remove", "Shop", "--yes"], "");
-    assert_eq!(out, "✓ Removed app “Shop” · 1 test, 1 password, 1 schedule\n  No app is in use now. Add one: fastpilot app add <address>\n");
+    assert_eq!(out, "✓ Removed app “Shop” · 1 test, 1 password, 1 schedule · kept 7 days\n  Undo: fastpilot undo <id>\n  No app is in use now. Add one: fastpilot app add <address>\n");
     let _ = std::fs::remove_dir_all(&home);
 }
