@@ -313,6 +313,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/chat/run", post(chat_run))
         .route("/api/chat/undo", post(chat_undo))
+        .route("/api/chats", get(chats_api))
+        .route("/api/claude/signin", post(claude_signin))
         .route("/api/agents", get(agents_api).post(agents_change))
         .route("/api/skills", get(skills_api))
         .route("/api/provider", get(provider_api).post(provider_change))
@@ -677,27 +679,94 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
 
 // ---- Chat (C4) ----------------------------------------------------------------------------
 
-/// `?agent=ID`: that agent's conversation (default: the first agent).
+/// `?agent=ID&chat=ID`: that chat of the agent (no chat: the agent's latest; none: an empty one).
 async fn chat_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
     let agent = q.get("agent").cloned().unwrap_or_else(|| crate::agents::DEFAULT.into());
-    axum::Json(crate::chat::state(&agent)).into_response()
+    axum::Json(crate::chat::state(&agent, q.get("chat").map(String::as_str))).into_response()
+}
+
+/// v0.7.1 FC4: `?agent=ID`: the agent's chats for the sidebar, newest first.
+async fn chats_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let agent = q.get("agent").cloned().unwrap_or_else(|| crate::agents::DEFAULT.into());
+    axum::Json(json!({ "agent": agent, "chats": crate::chat::chats(&agent) })).into_response()
+}
+
+/// FC4 first minutes, "Sign in to Claude": Claude Code's own sign-in. On a Mac a Terminal window
+/// opens running `claude` (it asks to log in on its first start); elsewhere the page shows the
+/// command. A fixed command: nothing from the page or the request goes into it.
+async fn claude_signin() -> Response {
+    let bin = crate::run::claude_bin();
+    let quoted = format!("'{}'", bin.replace('\'', "'\\''"));
+    if cfg!(target_os = "macos") {
+        let script = format!("tell application \"Terminal\" to do script \"{}\"", quoted.replace('\\', "\\\\").replace('"', "\\\""));
+        let opened = std::process::Command::new("osascript").args(["-e", &script, "-e", "tell application \"Terminal\" to activate"]).status().is_ok_and(|s| s.success());
+        if opened {
+            return axum::Json(json!({ "opened": true, "message": "Terminal opened with Claude Code. Sign in there, then come back here." })).into_response();
+        }
+    }
+    axum::Json(json!({ "opened": false, "message": format!("Open Terminal and run {bin}, sign in there, then come back here.") })).into_response()
 }
 
 fn agent_of(body: &Value) -> String {
     body["agent"].as_str().filter(|a| !a.is_empty()).unwrap_or(crate::agents::DEFAULT).to_owned()
 }
 
-/// `{agent?, message}` starts the bot's answer; `{agent?, reset: true}` starts a new conversation.
+/// `{agent?, chat?, message}` starts the bot's answer in that chat (no chat: the agent's latest, or a
+/// new one; `new: true`: a new one); `{agent?, reset: true}`: the next message starts a new chat.
+/// FC4: `{agent?, chat, action: stop}` stops its answer; `{agent?, chat, action: remove}` removes it
+/// (kept 7 days, Undo).
 async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
     let agent = agent_of(&body);
-    let r = if body["reset"] == true { crate::chat::reset(&agent) } else { crate::chat::send(&agent, body["message"].as_str().unwrap_or("")) };
-    match r {
-        Ok(()) => axum::Json(crate::chat::state(&crate::agents::get_or_default(&agent).id)).into_response(),
+    let chat = body["chat"].as_str();
+    match body["action"].as_str() {
+        Some("stop") => {
+            return match crate::chat::stop(&agent, chat.unwrap_or("")) {
+                Ok(m) => axum::Json(json!({ "message": m, "chat": crate::chat::state(&agent, chat) })).into_response(),
+                Err(e) => refuse(StatusCode::CONFLICT, &e),
+            };
+        }
+        Some("remove") => {
+            return match crate::chat::remove(&agent, chat.unwrap_or("")) {
+                Ok((line, undo)) => axum::Json(json!({ "message": line, "undo": undo })).into_response(),
+                Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+            };
+        }
+        Some(_) => return refuse(StatusCode::BAD_REQUEST, "Unknown chat action."),
+        None => {}
+    }
+    if body["reset"] == true || body["new"] == true {
+        let _ = crate::chat::reset(&agent);
+        if body["reset"] == true {
+            return axum::Json(crate::chat::state(&agent, None)).into_response();
+        }
+    }
+    let text = body["message"].as_str().unwrap_or("");
+    // FC4 "+ New agent": its first message says what it tests; the agent is made from it.
+    let (agent, made) = if agent == "new" {
+        if text.trim().is_empty() {
+            return refuse(StatusCode::CONFLICT, "Say what this agent should test.");
+        }
+        match crate::control::create_agent_from(text) {
+            Ok((a, done)) => (a.id, Some(done)),
+            Err(f) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
+        }
+    } else {
+        (agent, None)
+    };
+    let to = if body["new"] == true || made.is_some() { None } else { chat };
+    match crate::chat::send(&agent, to, text) {
+        Ok(key) => {
+            let mut v = crate::chat::chat_state(&key);
+            if let Some(d) = made {
+                v["created"] = json!({ "line": d.line, "undo": d.undo });
+            }
+            axum::Json(v).into_response()
+        }
         Err(e) => refuse(StatusCode::CONFLICT, &e),
     }
 }
 
-/// `{id, apply, mode?, edit?, confirm?, agent?}`: the user's click on a proposal card (`confirm`: the
+/// `{id, apply, mode?, edit?, confirm?}`: the user's click on a proposal card (`confirm`: the
 /// word the user typed on a card that asks for one, D9).
 async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
@@ -708,25 +777,25 @@ async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
         None => crate::chat::decide(id, body["apply"] == true, body["mode"].as_str(), edit, body["confirm"].as_str()),
     };
     match r {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::card_state(id) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
 
-/// `{id, agent?}`: Run now on a saved test's card.
+/// `{id}`: Run now on a saved test's card.
 async fn chat_run(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::run_saved(id) {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::card_state(id) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
 
-/// `{id, agent?}`: Undo / Block again on an applied settings card (D9).
+/// `{id}`: Undo / Block again on an applied settings card (D9), Undo on a result line (FC6).
 async fn chat_undo(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
     match crate::chat::undo(id) {
-        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::state(&agent_of(&body)) })).into_response(),
+        Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::card_state(id) })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
@@ -753,7 +822,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a) })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
@@ -773,8 +842,30 @@ async fn agents_api() -> Response {
     let claude: Vec<Value> = agents::CLAUDE_MODELS.iter().map(|(id, n, d)| json!({ "id": id, "name": n, "about": d })).collect();
     // S4: New agent in one click (a focus), or the form filled in from the current app.
     let focuses: Vec<Value> = agents::FOCUSES.iter().map(|(k, label, ..)| json!({ "id": k, "label": label })).collect();
-    axum::Json(json!({ "agents": list, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
+    // FC4: the tabs under an agent show once a test is saved (before: Chat only).
+    let saved_tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map_or(0, |d| test_files(&d).len());
+    axum::Json(json!({ "agents": list, "saved_tests": saved_tests, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
         "focuses": focuses, "new_defaults": agents::new_defaults() })).into_response()
+}
+
+/// FC4: "Shop staging · Website" under an agent's name: the app it tests (the current app for the
+/// default agent until it has its own), or "No app yet".
+fn app_line(a: &crate::agents::Agent) -> String {
+    let all = crate::apps::list();
+    let mine = all.iter().find(|x| !a.app.is_empty() && (x.id == a.app || x.targets.web.as_deref() == Some(a.app.as_str()) || x.targets.android.as_deref() == Some(a.app.as_str()) || x.targets.ios.as_deref() == Some(a.app.as_str())));
+    let app = mine.cloned().or_else(|| (a.id == crate::agents::DEFAULT && a.app.is_empty()).then(crate::apps::current).flatten());
+    match app {
+        Some(x) => {
+            let kind = match x.kinds().first().copied() {
+                Some("android") => "Android app",
+                Some("ios") => "iPhone app",
+                _ => "Website",
+            };
+            format!("{} · {kind}", x.name)
+        }
+        None if !a.app.is_empty() => a.app.clone(),
+        None => "No app yet".into(),
+    }
 }
 
 /// D10c: the skill library (packs, skills, community); `?id=NAME`: one skill's full text.
@@ -956,6 +1047,7 @@ async fn removed_restore(axum::Json(body): axum::Json<Value>) -> Response {
     let r = match (body["action"].as_str(), body["kind"].as_str()) {
         (Some("restore"), Some("app")) => crate::undo::restore_app(id),
         (Some("restore"), Some("schedule")) => crate::undo::restore_schedule(id),
+        (Some("restore"), Some("chat")) => crate::undo::restore_chat(id),
         _ => return refuse(StatusCode::BAD_REQUEST, "unknown action"),
     };
     if r.is_ok()
@@ -1347,6 +1439,7 @@ async fn control_api(axum::Json(req): axum::Json<Value>) -> Response {
 
 const ICONS: &[(&str, &str)] = &[
     ("alert", include_str!("../ui/icons/alert.svg")),
+    ("check", include_str!("../ui/icons/check.svg")),
     ("chev", include_str!("../ui/icons/chev.svg")),
     ("clock", include_str!("../ui/icons/clock.svg")),
     ("chat", include_str!("../ui/icons/chat.svg")),
@@ -1363,6 +1456,7 @@ const ICONS: &[(&str, &str)] = &[
     ("lock", include_str!("../ui/icons/lock.svg")),
     ("mark", include_str!("../ui/icons/mark.svg")),
     ("memory", include_str!("../ui/icons/memory.svg")),
+    ("menu", include_str!("../ui/icons/menu.svg")),
     ("model", include_str!("../ui/icons/model.svg")),
     ("play", include_str!("../ui/icons/play.svg")),
     ("plug", include_str!("../ui/icons/plug.svg")),
@@ -1375,6 +1469,7 @@ const ICONS: &[(&str, &str)] = &[
     ("shield", include_str!("../ui/icons/shield.svg")),
     ("stop", include_str!("../ui/icons/stop.svg")),
     ("tests", include_str!("../ui/icons/tests.svg")),
+    ("up", include_str!("../ui/icons/up.svg")),
 ];
 
 /// The icons as one inline SVG sprite (`<use href="#i-live"/>`), so they take `currentColor`.
@@ -1406,6 +1501,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "app.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
         "unlock.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/unlock.js")),
         "components.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/components.js")),
+        "shell.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/shell.js")),
         "appswitch.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/appswitch.js")),
         "history.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/history.js")),
         "memory.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/memory.js")),

@@ -1311,3 +1311,104 @@ fn chat_does_schedules_release_checks_apps_and_runs_at_once_with_undo() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// v0.7.1 FC4: an agent has many chats (OpenBot style). Each message starts or continues its own
+/// chat; chats answer side by side up to `max_parallel` and the next one waits for a free slot; Stop
+/// ends one chat's answer and nothing it was about to make is made; an older chat opens again with
+/// its messages and goes on with its own Claude Code session; removing a chat keeps it 7 days with
+/// Undo; "+ New agent" makes the agent from its first message.
+#[test]
+fn chats_answer_side_by_side_wait_for_a_slot_stop_and_come_back() {
+    let home = std::env::temp_dir().join(format!("fp-chat-fc4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    // One answer at a time, and a slow bot, so the second chat waits.
+    std::fs::write(home.join(".fastpilot/config.toml"), "max_parallel = 1\n").expect("config");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "2500"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+    let chat = |id: &str| get(&format!("/api/chat?agent=default&chat={id}"));
+    let idle = |id: &str| -> Value {
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            let v = chat(id);
+            if v["busy"] == false {
+                return v;
+            }
+            assert!(Instant::now() < until, "still busy: {v}");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+
+    // Two new chats: two ids; the first answers, the second waits for a free slot.
+    let (st, a) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "hello from the first chat" }));
+    assert_eq!(st, 200, "{a}");
+    let (_, b) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "hello from the second chat" }));
+    let (a_id, b_id) = (a["chat"].as_str().expect("a").to_owned(), b["chat"].as_str().expect("b").to_owned());
+    assert_ne!(a_id, b_id);
+    std::thread::sleep(Duration::from_millis(600));
+    let waiting = chat(&b_id);
+    assert_eq!((waiting["busy"].as_bool(), waiting["waiting"]["ahead"].as_u64()), (Some(true), Some(0)), "{waiting}");
+    assert!(chat(&a_id)["waiting"].is_null());
+    let list = get("/api/chats?agent=default")["chats"].clone();
+    let titles: Vec<&str> = list.as_array().expect("chats").iter().filter_map(|c| c["title"].as_str()).collect();
+    assert_eq!(titles, ["hello from the second chat", "hello from the first chat"], "newest first: {list}");
+    assert!(list.as_array().expect("chats").iter().all(|c| c["busy"] == true));
+
+    // Stop the waiting one: it never starts, and the first one goes on.
+    let (st, stopped) = post("/api/chat", json!({ "agent": "default", "chat": b_id, "action": "stop" }));
+    assert_eq!(st, 200, "{stopped}");
+    let b_done = idle(&b_id);
+    let bot = b_done["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot");
+    assert_eq!((bot["stopped"].as_bool(), bot["done"].as_bool()), (Some(true), Some(true)), "{bot}");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["text"].as_str().unwrap_or("").is_empty(), "{bot}");
+    let a_done = idle(&a_id);
+    assert_eq!(a_done["messages"][1]["text"], "Halo! Mau tes apa?", "{a_done}");
+    let (st, again) = post("/api/chat", json!({ "agent": "default", "chat": b_id, "action": "stop" }));
+    assert!(st == 409 && again["text"].as_str().is_some_and(|t| t.contains("Nothing is running in this chat.")), "{st} {again}");
+
+    // Stop while answering: the bot's process ends (no answer is written) and nothing is made.
+    let (_, c) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "jadwal tolong" }));
+    let c_id = c["chat"].as_str().expect("c").to_owned();
+    std::thread::sleep(Duration::from_millis(800));
+    post("/api/chat", json!({ "agent": "default", "chat": c_id, "action": "stop" }));
+    let c_done = idle(&c_id);
+    assert_eq!(c_done["messages"][1]["stopped"], true, "{c_done}");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(get("/api/schedules")["schedules"].as_array().is_some_and(Vec::is_empty), "the schedule the bot was about to propose is not made");
+
+    // The first chat goes on with its own session (one Claude Code conversation per chat).
+    let (st, _) = post("/api/chat", json!({ "agent": "default", "chat": a_id, "message": "and again" }));
+    assert_eq!(st, 200);
+    let a_more = idle(&a_id);
+    assert_eq!(a_more["messages"].as_array().map(Vec::len), Some(4), "{a_more}");
+    let calls: Vec<Value> = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect();
+    let resumed: Vec<&Value> = calls.iter().filter(|c| c["prompt"].as_str().is_some_and(|p| p.trim_end().ends_with("and again"))).collect();
+    assert!(resumed.len() == 1 && resumed[0]["argv"].as_array().is_some_and(|a| a.iter().any(|x| x == "--resume")), "the chat's own session goes on: {}", resumed.len());
+
+    // Remove the first chat: gone from the list, kept 7 days, Undo brings it back with its messages.
+    let (st, removed) = post("/api/chat", json!({ "agent": "default", "chat": a_id, "action": "remove" }));
+    assert_eq!((st, removed["message"].as_str()), (200, Some("Chat removed")), "{removed}");
+    let ids = |v: Value| -> Vec<String> { v["chats"].as_array().map(|a| a.iter().filter_map(|c| c["id"].as_str().map(str::to_owned)).collect()).unwrap_or_default() };
+    assert!(!ids(get("/api/chats?agent=default")).contains(&a_id));
+    let kept = get("/api/removed");
+    assert!(kept["items"].as_array().is_some_and(|l| l.iter().any(|r| r["kind"] == "chat" && r["label"] == "Chat “hello from the first chat”" && r["days_left"] == 7)), "{kept}");
+    let (st, undone) = post("/api/undo", json!({ "id": removed["undo"] }));
+    assert_eq!((st, undone["message"].as_str()), (200, Some("Restored chat “hello from the first chat”")), "{undone}");
+    assert!(ids(get("/api/chats?agent=default")).contains(&a_id));
+    assert_eq!(chat(&a_id)["messages"].as_array().map(Vec::len), Some(4), "its messages are back");
+
+    // "+ New agent": its first message says what it tests, and the agent is made from it.
+    let (st, made) = post("/api/chat", json!({ "agent": "new", "message": "only the checkout" }));
+    assert_eq!(st, 200, "{made}");
+    let agent = made["agent"].as_str().expect("agent").to_owned();
+    assert!(agent != "default" && made["created"]["line"].as_str().is_some_and(|l| l.starts_with("Created agent “Checkout QA”")), "{made}");
+    let agents = get("/api/agents");
+    assert!(agents["agents"].as_array().is_some_and(|l| l.iter().any(|x| x["agent"]["id"] == agent.as_str() && x["agent"]["name"] == "Checkout QA")), "{agents}");
+    assert_eq!(get(&format!("/api/chats?agent={agent}"))["chats"].as_array().map(Vec::len), Some(1));
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

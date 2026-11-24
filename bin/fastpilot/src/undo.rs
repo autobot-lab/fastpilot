@@ -42,6 +42,8 @@ pub enum Op {
     Watch { tests: String, on: bool },
     /// "Created agent …": the agent goes.
     RemoveAgent { id: String },
+    /// v0.7.1 FC4: "Chat removed": bring it back.
+    RestoreChat { id: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -77,6 +79,11 @@ pub struct Removed {
     /// The schedule's webhook address (kept like the schedule keeps it: owner-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook: Option<String>,
+    /// FC4: a removed chat as History kept it, and the agent it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -212,6 +219,7 @@ pub fn undo(id: Option<&str>, by: Surface) -> Result<String, Fail> {
             crate::agents::delete(id)?;
             undone
         }
+        Op::RestoreChat { id } => restore_chat(id).map_err(|e| if e.code == "expired" { expired(&c) } else { e })?,
     };
     with_store(|s| {
         if let Some(x) = s.changes.iter_mut().find(|x| x.id == c.id) {
@@ -237,7 +245,7 @@ pub fn remove_app(app: &App, line: &str, journal: bool) -> Result<Option<String>
     }
     with_store(|s| {
         s.removed.retain(|r| !(r.kind == "app" && r.id == app.id));
-        s.removed.push(Removed { kind: "app".into(), id: app.id.clone(), name: app.name.clone(), removed_ms: now(), app: Some(app.clone()), schedules_on: on.clone(), schedule: None, last: None, webhook: None });
+        s.removed.push(Removed { kind: "app".into(), id: app.id.clone(), name: app.name.clone(), removed_ms: now(), app: Some(app.clone()), schedules_on: on.clone(), schedule: None, last: None, webhook: None, chat: None, agent: None });
     })?;
     apps::remove(&app.id)?;
     Ok(if journal { record(line, &format!("app:{}", app.id), Op::RestoreApp { id: app.id.clone() }) } else { None })
@@ -268,7 +276,7 @@ pub fn remove_schedule(sched: &Schedule, line: &str, journal: bool) -> Result<Op
     let webhook = std::fs::read_to_string(schedule::secret_path(&sched.id)).ok().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
     with_store(|s| {
         s.removed.retain(|r| !(r.kind == "schedule" && r.id == sched.id));
-        s.removed.push(Removed { kind: "schedule".into(), id: sched.id.clone(), name: crate::control::schedule_title(sched), removed_ms: now(), app: None, schedules_on: vec![], schedule: Some(sched.clone()), last, webhook });
+        s.removed.push(Removed { kind: "schedule".into(), id: sched.id.clone(), name: crate::control::schedule_title(sched), removed_ms: now(), app: None, schedules_on: vec![], schedule: Some(sched.clone()), last, webhook, chat: None, agent: None });
     })?;
     schedule::delete(&sched.id)?;
     Ok(if journal { record(line, &format!("schedule:{}", sched.id), Op::RestoreSchedule { id: sched.id.clone() }) } else { None })
@@ -289,10 +297,37 @@ pub fn restore_schedule(id: &str) -> Result<String, Fail> {
     Ok(format!("Restored schedule {}{}", q(&title), if paused { " (paused)" } else { "" }))
 }
 
+/// FC4: remove a chat for 7 days: it leaves History and the agent's list, and is kept here as it was.
+pub fn remove_chat(id: &str, agent: &str, doc: serde_json::Value) -> Result<Option<String>, Fail> {
+    let title = doc["title"].as_str().filter(|t| !t.is_empty()).unwrap_or("New chat").to_owned();
+    with_store(|s| {
+        s.removed.retain(|r| !(r.kind == "chat" && r.id == id));
+        s.removed.push(Removed { kind: "chat".into(), id: id.to_owned(), name: title.clone(), removed_ms: now(), app: None, schedules_on: vec![], schedule: None, last: None, webhook: None, chat: Some(doc), agent: Some(agent.to_owned()) });
+    })?;
+    fastpilot_memory::history::History::from_env().delete(&[], &[id.to_owned()]);
+    crate::agents::forget_conversation(agent, id);
+    Ok(record(&format!("Removed chat {}", q(&title)), &format!("chat:{id}"), Op::RestoreChat { id: id.to_owned() }))
+}
+
+/// Bring a removed chat back to its agent, with all its messages.
+pub fn restore_chat(id: &str) -> Result<String, Fail> {
+    let r = with_store(|s| {
+        let i = s.removed.iter().position(|r| r.kind == "chat" && r.id == id)?;
+        Some(s.removed.remove(i))
+    })?
+    .ok_or_else(|| fail("expired", "It is no longer kept."))?;
+    let doc = r.chat.ok_or_else(|| fail("failed", "Nothing to bring back."))?;
+    let agent = r.agent.filter(|a| crate::agents::get(a).is_some()).unwrap_or_else(|| crate::agents::DEFAULT.into());
+    fastpilot_memory::history::History::from_env().restore_chat(id, &doc).map_err(|e| fail("failed", e.to_string()))?;
+    crate::agents::add_conversation(&agent, id);
+    settled(&format!("chat:{id}"))?;
+    Ok(format!("Restored chat {}", q(&r.name)))
+}
+
 /// A restore from Recently removed: the "Removed …" change of that thing is done with.
 fn settled(item: &str) -> Result<(), Fail> {
     with_store(|s| {
-        for c in s.changes.iter_mut().filter(|c| c.item == item && matches!(c.op, Op::RestoreApp { .. } | Op::RestoreSchedule { .. })) {
+        for c in s.changes.iter_mut().filter(|c| c.item == item && matches!(c.op, Op::RestoreApp { .. } | Op::RestoreSchedule { .. } | Op::RestoreChat { .. })) {
             c.undone = true;
         }
     })
@@ -312,7 +347,7 @@ pub fn days_left(r: &Removed) -> u64 {
 
 /// "App “Old demo”", "Schedule “All tests”".
 pub fn removed_label(r: &Removed) -> String {
-    format!("{} {}", if r.kind == "app" { "App" } else { "Schedule" }, q(&r.name))
+    format!("{} {}", match r.kind.as_str() { "app" => "App", "chat" => "Chat", _ => "Schedule" }, q(&r.name))
 }
 
 /// The recent changes that can still be undone or were changed later, newest first: (change,

@@ -125,6 +125,9 @@ pub struct Msg {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jira_reads: Vec<Value>,
     pub done: bool,
+    /// FC4: the person stopped this answer ("Stopped by you").
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
     /// QA #6103: the passwords a fastpilot tool said this run needs (names only, never values).
     #[serde(skip)]
     pub needs: Vec<String>,
@@ -136,13 +139,15 @@ pub struct Msg {
 
 #[derive(Default)]
 struct Chat {
+    /// The agent this chat belongs to (empty: the default agent).
+    agent: String,
+    /// v0.7.1 FC4: what History kept of this chat from before this process (shown first, read-only).
+    past: Vec<Value>,
     msgs: Vec<Msg>,
     busy: bool,
     /// Claude Code's session id, for `--resume`.
     session: Option<String>,
     next: u64,
-    /// D7: this conversation's id in History (set with its first message).
-    conv: Option<String>,
     /// When loosening cards were made, for the hourly cap (M4).
     loosen_times: Vec<u64>,
     /// D10b: the conversation so far for an agent on another provider (chat-completions messages,
@@ -156,46 +161,99 @@ struct Chat {
     /// The issue draft shown in the last answer (the bot's proposal, as shown), which a "yes" in
     /// the next message turns into a card (QA re-test bug 1).
     jira_offered: Option<Value>,
+    /// FC4: Stop for the answer in progress (its `claude` and the tests it started end at once).
+    stop: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// FC4: removed while it was answering: the answer is dropped, not kept in History.
+    removed: bool,
 }
 
-/// D10a: one conversation per agent (agent id -> its Chat).
+impl Chat {
+    fn agent_id(&self) -> String {
+        if self.agent.is_empty() { crate::agents::DEFAULT.into() } else { self.agent.clone() }
+    }
+}
+
+/// v0.7.1 FC4: every chat of every agent, by its id (the conversation's id in History). An agent has
+/// any number of chats; several answer at the same time (up to `max_parallel`, see [`take_slot`]).
 static CHATS: LazyLock<Mutex<std::collections::BTreeMap<String, Chat>>> = LazyLock::new(Default::default);
 
-/// One agent's conversation, locked (all agents' conversations share the lock).
+/// The chat each agent used last: where a message without a chat id goes (the terminal-era API,
+/// and the tests written for it), until "New chat" (`reset`) starts another.
+static LATEST: LazyLock<Mutex<std::collections::HashMap<String, String>>> = LazyLock::new(Default::default);
+
+/// One chat, locked (all chats share the lock).
 struct ChatRef {
     map: std::sync::MutexGuard<'static, std::collections::BTreeMap<String, Chat>>,
-    agent: String,
+    key: String,
 }
 
 impl std::ops::Deref for ChatRef {
     type Target = Chat;
     fn deref(&self) -> &Chat {
-        &self.map[&self.agent]
+        &self.map[&self.key]
     }
 }
 
 impl std::ops::DerefMut for ChatRef {
     fn deref_mut(&mut self) -> &mut Chat {
-        self.map.entry(self.agent.clone()).or_default()
+        self.map.entry(self.key.clone()).or_default()
     }
 }
 
-fn chat_of(agent: &str) -> ChatRef {
+fn chat_of(key: &str) -> ChatRef {
     let mut map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
-    map.entry(agent.to_owned()).or_default();
-    ChatRef { map, agent: agent.to_owned() }
+    map.entry(key.to_owned()).or_default();
+    ChatRef { map, key: key.to_owned() }
 }
 
-/// The agent whose conversation holds card `id`.
-fn card_agent(id: &str) -> Option<String> {
+/// The chat that holds card `id`.
+fn card_chat(id: &str) -> Option<String> {
     let map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
-    map.iter().find(|(_, c)| c.msgs.iter().flat_map(|m| &m.proposals).any(|p| p.id == id)).map(|(a, _)| a.clone())
+    map.iter().find(|(_, c)| c.msgs.iter().flat_map(|m| &m.proposals).any(|p| p.id == id)).map(|(k, _)| k.clone())
 }
 
-/// An agent's conversation as the page shows it.
-pub fn state(agent: &str) -> Value {
-    let c = chat_of(agent);
-    let (mut msgs, busy) = (c.msgs.clone(), c.busy);
+/// The agent of chat `key`.
+fn chat_agent(key: &str) -> String {
+    CHATS.lock().unwrap_or_else(|p| p.into_inner()).get(key).map(Chat::agent_id).unwrap_or_else(|| crate::agents::DEFAULT.into())
+}
+
+/// FC4: chat `id` of `agent`, in memory: a chat of this process, or one History kept (its messages
+/// and its Claude Code session come back). `None` when it is not this agent's or not there.
+fn open(agent: &str, id: &str) -> Option<String> {
+    if let Some(c) = CHATS.lock().unwrap_or_else(|p| p.into_inner()).get(id) {
+        return (c.agent_id() == agent).then(|| id.to_owned());
+    }
+    if crate::agents::of_conversation(id) != agent {
+        return None;
+    }
+    let doc = fastpilot_memory::history::History::from_env().chat(id)?;
+    let past: Vec<Value> = doc["messages"].as_array().cloned().unwrap_or_default();
+    let next = past.iter().filter_map(|m| m["id"].as_u64()).max().unwrap_or(0);
+    let mut map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+    map.entry(id.to_owned()).or_insert_with(|| Chat { agent: agent.to_owned(), past, next, session: doc["session"].as_str().map(str::to_owned), ..Default::default() });
+    Some(id.to_owned())
+}
+
+/// The chat a request means: `chat` when it is this agent's, else the agent's latest chat.
+fn resolve(agent: &str, chat: Option<&str>) -> Option<String> {
+    match chat.filter(|c| !c.is_empty()) {
+        Some(id) => open(agent, id),
+        None => LATEST.lock().unwrap_or_else(|p| p.into_inner()).get(agent).cloned().filter(|k| CHATS.lock().unwrap_or_else(|p| p.into_inner()).contains_key(k)),
+    }
+}
+
+/// A chat as the page shows it (an empty one when `chat` is not there).
+pub fn state(agent: &str, chat: Option<&str>) -> Value {
+    let agent = crate::agents::get_or_default(agent).id;
+    let Some(key) = resolve(&agent, chat) else {
+        return json!({ "agent": agent, "chat": null, "title": "", "messages": [], "busy": false });
+    };
+    state_of(&key)
+}
+
+fn state_of(key: &str) -> Value {
+    let c = chat_of(key);
+    let (past, mut msgs, busy, agent) = (c.past.clone(), c.msgs.clone(), c.busy, c.agent_id());
     drop(c);
     // FC6: an older result line whose thing changed later has no Undo.
     let ids: Vec<String> = msgs.iter().flat_map(|m| &m.proposals).filter_map(|p| p.undo_id.clone()).collect();
@@ -205,26 +263,203 @@ pub fn state(agent: &str) -> Value {
             p.changed_later = p.undo_id.as_ref().is_some_and(|u| later.contains(u));
         }
     }
-    json!({ "agent": agent, "messages": msgs, "busy": busy })
+    let mut all = past;
+    all.extend(msgs.iter().filter_map(|m| serde_json::to_value(m).ok()));
+    let title = title_of(&all);
+    // FC4: a chat over the limit of answers at once waits for a free slot; one whose test needs a
+    // device another chat uses waits for that device.
+    let ahead = if busy { slot_wait(key) } else { None };
+    let device = if busy { fastpilot_core::claim::entries().into_iter().find(|e| e.waiting && e.chat.as_deref() == Some(key)).map(|e| e.reason) } else { None };
+    json!({ "agent": agent, "chat": key, "title": title, "messages": all, "busy": busy, "waiting": ahead.map(|n| json!({ "ahead": n })), "device_wait": device, "signin": busy_signin(&all) })
+}
+
+/// The chat that holds card `id`, as the page shows it (after a click on that card).
+pub fn card_state(id: &str) -> Value {
+    match card_chat(id) {
+        Some(key) => state_of(&key),
+        None => json!({ "chat": null, "messages": [], "busy": false }),
+    }
+}
+
+/// Chat `key` as the page shows it (after a message was sent to it).
+pub fn chat_state(key: &str) -> Value {
+    state_of(key)
+}
+
+/// FC4 first minutes: the last answer said Claude Code is not signed in on this computer.
+fn busy_signin(msgs: &[Value]) -> bool {
+    msgs.iter().rev().find(|m| m["role"] == "bot").and_then(|m| m["error"].as_str()).is_some_and(|e| e.starts_with(NOT_SIGNED_IN))
+}
+
+/// A chat's title: its first message, on one line (as History names it).
+fn title_of(msgs: &[Value]) -> String {
+    let t = msgs.iter().find(|m| m["role"] == "user").and_then(|m| m["text"].as_str()).unwrap_or("");
+    let line = t.lines().next().unwrap_or("").trim();
+    if line.chars().count() > 80 { format!("{}…", line.chars().take(80).collect::<String>()) } else { line.to_owned() }
+}
+
+/// FC4: an agent's chats for the sidebar, newest first: `{id, title, updated_ms, busy, waiting}`.
+pub fn chats(agent: &str) -> Vec<Value> {
+    let agent = crate::agents::get_or_default(agent);
+    let kept = fastpilot_memory::history::History::from_env().chats();
+    let mut out: Vec<Value> = Vec::new();
+    let live: Vec<(String, String, bool, u64)> = {
+        let map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+        map.iter()
+            .filter(|(_, c)| c.agent_id() == agent.id && !c.removed && (!c.msgs.is_empty() || !c.past.is_empty()))
+            .map(|(k, c)| {
+                let mut all = c.past.clone();
+                all.extend(c.msgs.iter().filter_map(|m| serde_json::to_value(m).ok()));
+                (k.clone(), title_of(&all), c.busy, 0)
+            })
+            .collect()
+    };
+    let order = |id: &str| agent.conversations.iter().position(|c| c == id).unwrap_or(usize::MAX);
+    for (id, title, busy, _) in &live {
+        let updated = kept.iter().find(|k| &k.id == id).map_or(u64::MAX, |k| k.updated_ms);
+        out.push(json!({ "id": id, "title": title, "updated_ms": updated, "busy": busy, "waiting": if *busy { slot_wait(id) } else { None }, "order": order(id) }));
+    }
+    for k in kept.iter().filter(|k| agent.conversations.contains(&k.id) && !live.iter().any(|l| l.0 == k.id)) {
+        out.push(json!({ "id": k.id, "title": k.title, "updated_ms": k.updated_ms, "busy": false, "waiting": null, "order": order(&k.id) }));
+    }
+    // Newest first: a chat answering now (no time kept yet) on top, then by the last answer.
+    out.sort_by(|a, b| b["busy"].as_bool().cmp(&a["busy"].as_bool()).then(b["updated_ms"].as_u64().cmp(&a["updated_ms"].as_u64())).then(b["order"].as_u64().cmp(&a["order"].as_u64())));
+    for v in &mut out {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("order");
+            if o["updated_ms"] == u64::MAX {
+                o["updated_ms"] = json!(change::now_ms());
+            }
+        }
+    }
+    out
 }
 
 /// Which agents are answering now (the agent list shows them as running).
 pub fn busy_agents() -> Vec<String> {
-    CHATS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|(_, c)| c.busy).map(|(a, _)| a.clone()).collect()
+    let mut out: Vec<String> = CHATS.lock().unwrap_or_else(|p| p.into_inner()).values().filter(|c| c.busy).map(Chat::agent_id).collect();
+    out.dedup();
+    out
 }
 
-/// Start over (a new Claude Code session) for one agent.
+/// "New chat": the next message without a chat id starts another chat of this agent.
 pub fn reset(agent: &str) -> Res<()> {
-    let mut c = chat_of(agent);
-    if c.busy {
-        return Err("Wait until the bot has finished.".into());
-    }
-    *c = Chat::default();
+    LATEST.lock().unwrap_or_else(|p| p.into_inner()).remove(&crate::agents::get_or_default(agent).id);
     Ok(())
 }
 
-/// The user's message to an agent: answered in the background; the page polls [`state`].
-pub fn send(agent: &str, text: &str) -> Res<()> {
+// ---- FC4: answers at once, Stop ------------------------------------------------------------------
+
+#[derive(Default)]
+struct Slots {
+    running: usize,
+    /// Chats waiting for a free slot, first come first served.
+    waiting: Vec<String>,
+}
+
+static SLOTS: LazyLock<Mutex<Slots>> = LazyLock::new(Default::default);
+static SLOT_FREE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// An answer that holds one of the `max_parallel` slots; dropping it frees the slot.
+struct Slot;
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+        s.running = s.running.saturating_sub(1);
+        drop(s);
+        SLOT_FREE.notify_waiters();
+    }
+}
+
+/// A chat in the waiting line; leaving it (a Stop while waiting) lets the next one move up.
+struct InLine(String);
+
+impl Drop for InLine {
+    fn drop(&mut self) {
+        let mut s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+        s.waiting.retain(|k| k != &self.0);
+        drop(s);
+        SLOT_FREE.notify_waiters();
+    }
+}
+
+/// How many chats wait before chat `key` (`None`: it is not waiting).
+fn slot_wait(key: &str) -> Option<usize> {
+    SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.iter().position(|k| k == key)
+}
+
+/// FC4: wait for one of the `max_parallel` slots (the limit on tests at once, for all agents
+/// together). A chat over the limit does not fail: it waits its turn ("Waiting for a free slot").
+async fn take_slot(key: &str) -> Slot {
+    SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.push(key.to_owned());
+    let line = InLine(key.to_owned());
+    loop {
+        let freed = SLOT_FREE.notified();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+        {
+            let mut s = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
+            if s.waiting.first().map(String::as_str) == Some(key) && s.running < fastpilot_core::claim::max_parallel() {
+                s.waiting.remove(0);
+                s.running += 1;
+                drop(s);
+                std::mem::forget(line);
+                SLOT_FREE.notify_waiters();
+                return Slot;
+            }
+        }
+        freed.await;
+    }
+}
+
+/// FC4: Stop the answer of chat `key`: its Claude Code and the tests it started end, their browsers
+/// close and devices are freed, and nothing it was about to make is made.
+pub fn stop(agent: &str, chat: &str) -> Res<String> {
+    let key = open(&crate::agents::get_or_default(agent).id, chat).ok_or("This chat is not there any more.")?;
+    let c = chat_of(&key);
+    match (&c.stop, c.busy) {
+        (Some(s), true) => {
+            s.notify_one();
+            Ok("Stopped".into())
+        }
+        _ => Err("Nothing is running in this chat.".into()),
+    }
+}
+
+/// FC4: remove chat `chat` of `agent` (kept 7 days, Undo). A chat that is answering is stopped first.
+/// Returns the line and the Undo id.
+pub fn remove(agent: &str, chat: &str) -> Res<(String, Option<String>)> {
+    let agent = crate::agents::get_or_default(agent).id;
+    let key = open(&agent, chat).ok_or("This chat is not there any more.")?;
+    let (doc, was_busy) = {
+        let mut c = chat_of(&key);
+        let was_busy = c.busy;
+        if let Some(s) = c.stop.as_ref().filter(|_| was_busy) {
+            s.notify_one();
+        }
+        c.removed = true;
+        let mut all = c.past.clone();
+        all.extend(c.msgs.iter().filter_map(|m| serde_json::to_value(m).ok()));
+        let title = title_of(&all);
+        (json!({ "id": key, "title": title, "updated_ms": change::now_ms(), "messages": all, "session": c.session }), was_busy)
+    };
+    if !was_busy {
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+    }
+    {
+        let mut latest = LATEST.lock().unwrap_or_else(|p| p.into_inner());
+        if latest.get(&agent) == Some(&key) {
+            latest.remove(&agent);
+        }
+    }
+    let undo = crate::undo::remove_chat(&key, &agent, doc).map_err(|f| f.msg)?;
+    Ok((if was_busy { "Stopped and removed".into() } else { "Chat removed".into() }, undo))
+}
+
+/// The user's message to an agent: answered in the background; the page polls [`state`]. `chat`:
+/// the chat it goes to (`None`: the agent's latest chat, or a new one). Returns the chat's id.
+pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
     let agent = crate::agents::get_or_default(agent).id;
     let text = text.trim();
     if text.is_empty() || text.chars().count() > 4000 {
@@ -234,186 +469,226 @@ pub fn send(agent: &str, text: &str) -> Res<()> {
     if looks_like_a_secret(text) {
         return Err("This looks like a password, key or token, so it was not sent. Keep secrets out of chat: add them in Settings › Secrets, and write ${NAME} in tests.".into());
     }
+    let key = match chat.filter(|c| !c.is_empty()) {
+        Some(id) => open(&agent, id).ok_or("This chat is not there any more.")?,
+        None => match resolve(&agent, None) {
+            Some(k) => k,
+            None => {
+                let id = fastpilot_memory::history::History::from_env().new_chat_id();
+                crate::agents::add_conversation(&agent, &id);
+                CHATS.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), Chat { agent: agent.clone(), ..Default::default() });
+                id
+            }
+        },
+    };
+    LATEST.lock().unwrap_or_else(|p| p.into_inner()).insert(agent.clone(), key.clone());
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
     let (bot, resume) = {
-        let mut c = chat_of(&agent);
+        let mut c = chat_of(&key);
         if c.busy {
             return Err("The bot is still answering the last message.".into());
         }
         c.busy = true;
-        if c.conv.is_none() {
-            let conv = fastpilot_memory::history::History::from_env().new_chat_id();
-            crate::agents::add_conversation(&agent, &conv);
-            c.conv = Some(conv);
-        }
+        c.stop = Some(stop.clone());
         c.next += 2;
         let (u, b) = (c.next - 1, c.next);
-        c.msgs.push(Msg { id: u, role: "user", text: text.to_owned(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, outside: false, needs: vec![] });
-        c.msgs.push(Msg { id: b, role: "bot", text: String::new(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: false, outside: false, needs: vec![] });
+        c.msgs.push(Msg { id: u, role: "user", text: text.to_owned(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, stopped: false, outside: false, needs: vec![] });
+        c.msgs.push(Msg { id: b, role: "bot", text: String::new(), tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: false, stopped: false, outside: false, needs: vec![] });
         (b, c.session.clone())
     };
     let text = text.to_owned();
+    let chat = key.clone();
     tokio::spawn(async move {
-        // v0.6: tickets the user's message names are read by fastpilot and given to the bot as data.
-        let (reads, tickets) = read_tickets(&text).await;
-        if !reads.is_empty() {
-            let r = reads.clone();
-            with_bot(&agent, bot, |m| m.jira_reads = r);
-        }
-        // QA re-test bug 1: a "yes" to the draft shown last time gets its card from fastpilot,
-        // whatever the bot writes; the bot is told so, so it never says otherwise.
-        let accepting = chat_of(&agent).jira_offered.is_some() && takes_offer(&text);
-        let before = match (accepting, tickets.as_deref()) {
-            (false, t) => t.map(str::to_owned),
-            (true, t) => Some(
-                [Some(OFFER_TAKEN), t].into_iter().flatten().collect::<Vec<_>>().join("\n\n"),
-            ),
+        let key = chat;
+        let work = async {
+            // v0.6: tickets the user's message names are read by fastpilot and given to the bot as data.
+            let (reads, tickets) = read_tickets(&text).await;
+            if !reads.is_empty() {
+                let r = reads.clone();
+                with_bot(&key, bot, |m| m.jira_reads = r);
+            }
+            // QA re-test bug 1: a "yes" to the draft shown last time gets its card from fastpilot,
+            // whatever the bot writes; the bot is told so, so it never says otherwise.
+            let accepting = chat_of(&key).jira_offered.is_some() && takes_offer(&text);
+            let before = match (accepting, tickets.as_deref()) {
+                (false, t) => t.map(str::to_owned),
+                (true, t) => Some([Some(OFFER_TAKEN), t].into_iter().flatten().collect::<Vec<_>>().join("\n\n")),
+            };
+            // FC4: answers at once are limited (`max_parallel`); this one waits for a free slot.
+            let _slot = take_slot(&key).await;
+            // S5: "Can we release?" starts this agent's "before each release" schedules; the bot is told.
+            let released = if asks_release(&text) { schedule::start_release(&agent) } else { Vec::new() };
+            let before = if released.is_empty() {
+                before
+            } else {
+                let note = format!(
+                    "[fastpilot started the \"before each release\" schedule {} for the user: it runs these tests in the background, and the result shows on the Schedules page. Say so in one sentence.]",
+                    released.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                );
+                Some([Some(note.as_str()), before.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n\n"))
+            };
+            let error = turn(&key, &text, before.as_deref(), bot, resume).await.err();
+            (reads, error)
         };
-        // S5: "Can we release?" starts this agent's "before each release" schedules; the bot is told.
-        let released = if asks_release(&text) { schedule::start_release(&agent) } else { Vec::new() };
-        let before = if released.is_empty() {
-            before
-        } else {
-            let note = format!(
-                "[fastpilot started the \"before each release\" schedule {} for the user: it runs these tests in the background, and the result shows on the Schedules page. Say so in one sentence.]",
-                released.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
-            );
-            Some([Some(note.as_str()), before.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n\n"))
+        // FC4: Stop drops the answer: its `claude` (kill on drop) and so the tests it started end.
+        let (reads, error, stopped) = tokio::select! {
+            (reads, error) = work => (reads, error, false),
+            () = stop.notified() => (Vec::new(), None, true),
         };
-        let error = turn(&agent, &text, before.as_deref(), bot, resume).await.err();
-        let jira = fastpilot_core::jira::connected_settings();
-        let mut c = chat_of(&agent);
-        let now = change::now_ms();
-        c.loosen_times.retain(|t| now.saturating_sub(*t) < 3_600_000);
-        let open: Vec<(String, Option<String>)> = c
-            .msgs
-            .iter()
-            .flat_map(|m| &m.proposals)
-            .filter(|p| p.status == "pending" && p.loosens())
-            .filter_map(|p| serde_json::from_value::<change::Change>(p.data["change"].clone()).ok().map(|c| (c.key, c.after)))
-            .collect();
-        let open_notes: Vec<String> = c
-            .msgs
-            .iter()
-            .flat_map(|m| &m.proposals)
-            .filter(|p| p.status == "pending" && p.kind == "note")
-            .filter_map(|p| p.data["text"].as_str().map(plain))
-            .collect();
-        let open_jira: Vec<String> = c
-            .msgs
-            .iter()
-            .flat_map(|m| &m.proposals)
-            .filter(|p| p.status == "pending" && p.kind.starts_with("jira_"))
-            .filter_map(|p| p.data["sig"].as_str().map(str::to_owned))
-            .collect();
-        let tickets: Vec<(String, String)> = reads.iter().filter_map(|r| Some((r["key"].as_str()?.to_owned(), r["summary"].as_str()?.to_owned()))).collect();
-        let jira_follow_up = c.jira_asked_ms.is_some_and(|ms| now.saturating_sub(ms) < FOLLOW_UP_MS);
-        if asked_for_issue(&text) {
-            c.jira_asked_ms = Some(now);
-        }
-        // An offer lasts as long as a card does (10 minutes).
-        let offered_draft = c.jira_offered.take().filter(|d| now.saturating_sub(d["offered_ms"].as_u64().unwrap_or(0)) < change::EXPIRY_MS);
-        let jira_offered = offered_draft.as_ref().map(offer_sig);
-        // Issues fastpilot created in this conversation (a click on a card): the bot may name them.
-        let created: Vec<String> = c
-            .msgs
-            .iter()
-            .flat_map(|m| &m.proposals)
-            .filter(|p| p.status == "applied" && p.kind.starts_with("jira_"))
-            .filter_map(|p| p.jira.as_ref().and_then(|j| j["result"]["key"].as_str()).map(str::to_owned))
-            .collect();
-        let mut t = Turn { user: text.clone(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None, taking_offer: false, from_kept: false };
-        let mut auto: Vec<(String, Option<&'static str>)> = Vec::new();
-        if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
-            // A page, app or ticket text came in only through a tool that brings it (QA 6103).
-            t.read_app = m.outside;
-            let (clean, mut proposals, mut attempts) = proposals_in(&m.text, &mut t);
-            m.text = clean.trim().to_owned();
-            // QA #6103: a run that stopped for a password gets fastpilot's own card ("Save and
-            // run"), whatever the bot wrote; a Secrets card of the bot's is merged into it.
-            // Security #208 M1: when outside text was read, only the test account, the app's own saved
-            // names or names in the user's message; anything else keeps the normal, gated card.
-            let saved = crate::apps::current().map(|a| a.secrets).unwrap_or_default();
-            m.needs.retain(|n| !t.read_app || n == "TEST_USER" || n == "TEST_PASSWORD" || saved.contains(n) || t.user.contains(n.as_str()));
-            if !m.needs.is_empty() {
-                proposals.retain(|p| !(p.kind == "open" && p.open.as_deref() == Some("secrets")));
-                attempts.retain(|a| !(a["kind"] == "action" && a["what"] == "open"));
-                match open_card(&json!({ "kind": "open", "page": "secrets", "names": m.needs })) {
-                    Ok(mut p) => {
-                        p.rerun = true;
-                        proposals.push(p);
-                    }
-                    Err(e) => proposals.push(refused("open", "This password cannot be asked here", e)),
-                }
-            }
-            // S8: the release verdict and a bug report as cards, built from their fields.
-            if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
-                m.verdict = Some(card);
-                m.text = rest.trim().to_owned();
-            }
-            if let Some((card, rest)) = crate::report_cards::bug(&m.text) {
-                m.bug = Some(card);
-                m.text = rest.trim().to_owned();
-            }
-            // L061-1/2: the bot's words never claim a Jira card fastpilot did not make.
-            if !proposals.iter().any(|p| p.kind.starts_with("jira_") && p.status == "pending") {
-                let (kept, removed) = drop_card_claims(&m.text, m.bug.is_some(), &created);
-                if !removed.is_empty() {
-                    m.text = kept;
-                    attempts.push(json!({ "kind": "jira", "from": "claim", "what": "A claim that a Jira card was made", "said": clip(&removed.join(" "), 600) }));
-                }
-            }
-            auto = proposals.iter().filter(|p| p.status == "pending").filter_map(|p| acts_at_once(p, &t.user).map(|mode| (p.id.clone(), mode))).collect();
-            m.proposals = proposals;
-            m.page_attempts = attempts;
-            m.error = error.or(m.error.take());
-            m.done = true;
-        }
-        c.jira_offered = t.new_offer.take().map(|mut d| {
-            d["offered_ms"] = json!(now);
-            d
-        });
-        c.loosen_times.extend(std::iter::repeat_n(now, t.made));
-        // FC6: what the user asked for is done now, before the answer counts as finished.
-        drop(c);
-        for (id, mode) in auto {
-            if let Err(e) = decide(&id, true, mode, None, None) {
-                set_card(&id, |p| {
-                    if p.status == "pending" {
-                        p.status = "failed".into();
-                        p.note = Some(e.clone());
-                    }
-                });
-            }
-        }
-        let mut c = chat_of(&agent);
-        c.busy = false;
-        // D7: kept in History after every answer, so it outlives this page and this process.
-        let saved = c.conv.clone().map(|id| (id, serde_json::to_value(&c.msgs).unwrap_or_default()));
-        drop(c);
-        if let Some((id, msgs)) = saved
-            && let Err(e) = fastpilot_memory::history::History::from_env().save_chat(&id, &msgs)
-        {
-            tracing::warn!(error = %e, "the conversation is not saved in History");
-        }
-        fastpilot_core::config::keep_out_of_git();
+        finish(&key, &text, bot, reads, error, stopped);
     });
-    Ok(())
+    Ok(key)
 }
 
-/// D7: History deletes conversation `id`. When it is the one open in Chat, Chat starts over; while
+/// After an answer (or its Stop): the bot's cards are read, what the user asked for is done (never
+/// after a Stop: nothing half-made), and the chat is kept in History.
+fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<String>, stopped: bool) {
+    let jira = fastpilot_core::jira::connected_settings();
+    let mut c = chat_of(key);
+    let now = change::now_ms();
+    c.loosen_times.retain(|t| now.saturating_sub(*t) < 3_600_000);
+    let open: Vec<(String, Option<String>)> = c
+        .msgs
+        .iter()
+        .flat_map(|m| &m.proposals)
+        .filter(|p| p.status == "pending" && p.loosens())
+        .filter_map(|p| serde_json::from_value::<change::Change>(p.data["change"].clone()).ok().map(|c| (c.key, c.after)))
+        .collect();
+    let open_notes: Vec<String> = c
+        .msgs
+        .iter()
+        .flat_map(|m| &m.proposals)
+        .filter(|p| p.status == "pending" && p.kind == "note")
+        .filter_map(|p| p.data["text"].as_str().map(plain))
+        .collect();
+    let open_jira: Vec<String> = c
+        .msgs
+        .iter()
+        .flat_map(|m| &m.proposals)
+        .filter(|p| p.status == "pending" && p.kind.starts_with("jira_"))
+        .filter_map(|p| p.data["sig"].as_str().map(str::to_owned))
+        .collect();
+    let tickets: Vec<(String, String)> = reads.iter().filter_map(|r| Some((r["key"].as_str()?.to_owned(), r["summary"].as_str()?.to_owned()))).collect();
+    let jira_follow_up = c.jira_asked_ms.is_some_and(|ms| now.saturating_sub(ms) < FOLLOW_UP_MS);
+    if asked_for_issue(text) {
+        c.jira_asked_ms = Some(now);
+    }
+    // An offer lasts as long as a card does (10 minutes).
+    let offered_draft = c.jira_offered.take().filter(|d| now.saturating_sub(d["offered_ms"].as_u64().unwrap_or(0)) < change::EXPIRY_MS);
+    let jira_offered = offered_draft.as_ref().map(offer_sig);
+    // Issues fastpilot created in this conversation (a click on a card): the bot may name them.
+    let created: Vec<String> = c
+        .msgs
+        .iter()
+        .flat_map(|m| &m.proposals)
+        .filter(|p| p.status == "applied" && p.kind.starts_with("jira_"))
+        .filter_map(|p| p.jira.as_ref().and_then(|j| j["result"]["key"].as_str()).map(str::to_owned))
+        .collect();
+    let mut t = Turn { user: text.to_owned(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None, taking_offer: false, from_kept: false };
+    let mut auto: Vec<(String, Option<&'static str>)> = Vec::new();
+    if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
+        // A page, app or ticket text came in only through a tool that brings it (QA 6103).
+        t.read_app = m.outside;
+        let (clean, mut proposals, mut attempts) = proposals_in(&m.text, &mut t);
+        m.text = clean.trim().to_owned();
+        if stopped {
+            // FC4 safe stop: what the bot was about to make is not made, and no card is left open.
+            m.stopped = true;
+            m.done = true;
+            m.needs.clear();
+            proposals.clear();
+            attempts.clear();
+        }
+        // QA #6103: a run that stopped for a password gets fastpilot's own card ("Save and
+        // run"), whatever the bot wrote; a Secrets card of the bot's is merged into it.
+        // Security #208 M1: when outside text was read, only the test account, the app's own saved
+        // names or names in the user's message; anything else keeps the normal, gated card.
+        let saved = crate::apps::current().map(|a| a.secrets).unwrap_or_default();
+        m.needs.retain(|n| !t.read_app || n == "TEST_USER" || n == "TEST_PASSWORD" || saved.contains(n) || t.user.contains(n.as_str()));
+        if !m.needs.is_empty() {
+            proposals.retain(|p| !(p.kind == "open" && p.open.as_deref() == Some("secrets")));
+            attempts.retain(|a| !(a["kind"] == "action" && a["what"] == "open"));
+            match open_card(&json!({ "kind": "open", "page": "secrets", "names": m.needs })) {
+                Ok(mut p) => {
+                    p.rerun = true;
+                    proposals.push(p);
+                }
+                Err(e) => proposals.push(refused("open", "This password cannot be asked here", e)),
+            }
+        }
+        // S8: the release verdict and a bug report as cards, built from their fields.
+        if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
+            m.verdict = Some(card);
+            m.text = rest.trim().to_owned();
+        }
+        if let Some((card, rest)) = crate::report_cards::bug(&m.text) {
+            m.bug = Some(card);
+            m.text = rest.trim().to_owned();
+        }
+        // L061-1/2: the bot's words never claim a Jira card fastpilot did not make.
+        if !proposals.iter().any(|p| p.kind.starts_with("jira_") && p.status == "pending") {
+            let (kept, removed) = drop_card_claims(&m.text, m.bug.is_some(), &created);
+            if !removed.is_empty() {
+                m.text = kept;
+                attempts.push(json!({ "kind": "jira", "from": "claim", "what": "A claim that a Jira card was made", "said": clip(&removed.join(" "), 600) }));
+            }
+        }
+        auto = proposals.iter().filter(|p| p.status == "pending").filter_map(|p| acts_at_once(p, &t.user).map(|mode| (p.id.clone(), mode))).collect();
+        m.proposals = proposals;
+        m.page_attempts = attempts;
+        m.error = error.or(m.error.take());
+        m.done = true;
+    }
+    c.jira_offered = t.new_offer.take().map(|mut d| {
+        d["offered_ms"] = json!(now);
+        d
+    });
+    c.loosen_times.extend(std::iter::repeat_n(now, t.made));
+    // FC6: what the user asked for is done now, before the answer counts as finished.
+    drop(c);
+    for (id, mode) in auto {
+        if let Err(e) = decide(&id, true, mode, None, None) {
+            set_card(&id, |p| {
+                if p.status == "pending" {
+                    p.status = "failed".into();
+                    p.note = Some(e.clone());
+                }
+            });
+        }
+    }
+    let mut c = chat_of(key);
+    c.busy = false;
+    c.stop = None;
+    if c.removed {
+        // FC4: removed while answering: kept only in Recently removed (as it was when removed).
+        drop(c);
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
+        return;
+    }
+    // D7: kept in History after every answer, so it outlives this page and this process.
+    let mut all = c.past.clone();
+    all.extend(c.msgs.iter().filter_map(|m| serde_json::to_value(m).ok()));
+    let session = c.session.clone();
+    drop(c);
+    if let Err(e) = fastpilot_memory::history::History::from_env().save_chat_with(key, &Value::Array(all), session.as_deref()) {
+        tracing::warn!(error = %e, "the conversation is not saved in History");
+    }
+    fastpilot_core::config::keep_out_of_git();
+}
+
+/// D7: History deletes conversation `id`. When it is open in Chat it goes from Chat too; while
 /// the bot is still answering it cannot be deleted yet.
 pub fn release(id: &str) -> Res<()> {
     let mut map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(c) = map.values_mut().find(|c| c.conv.as_deref() == Some(id)) else { return Ok(()) };
-    if c.busy {
+    if map.get(id).is_some_and(|c| c.busy) {
         return Err("The conversation open in Chat is still being answered; delete it when the bot is done.".into());
     }
-    *c = Chat::default();
+    map.remove(id);
     Ok(())
 }
 
-fn with_bot(agent: &str, id: u64, f: impl FnOnce(&mut Msg)) {
-    if let Some(m) = chat_of(agent).msgs.iter_mut().find(|m| m.id == id) {
+fn with_bot(key: &str, id: u64, f: impl FnOnce(&mut Msg)) {
+    if let Some(m) = chat_of(key).msgs.iter_mut().find(|m| m.id == id) {
         f(m);
     }
 }
@@ -610,11 +885,12 @@ fn notes_update(agent: &str, resumed: bool, notes: Option<String>, before: Optio
 
 /// One `claude -p` run for the user's message, streamed into the bot message `bot`.
 async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: Option<String>) -> Res<()> {
+    // FC4: `agent` here is the chat (its key); the agent is the chat's.
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
-    let me = crate::agents::get_or_default(agent);
+    let me = crate::agents::get_or_default(&chat_agent(agent));
     // D10a: the agent's sessions are tagged in Live, and its own blocked words add to the global list.
     // v0.6: Chat's Jira writes go through cards the user clicks, never the bot's own tool call.
-    let mut env = json!({ "FASTPILOT_AGENT": me.id, "FASTPILOT_AGENT_NAME": me.name, "FASTPILOT_JIRA_WRITES": "cards" });
+    let mut env = json!({ "FASTPILOT_AGENT": me.id, "FASTPILOT_AGENT_NAME": me.name, "FASTPILOT_JIRA_WRITES": "cards", "FASTPILOT_CHAT": agent });
     // QA #6103: Chat's fastpilot works for the dashboard's current app (its saved passwords, still
     // only on its own site), whatever folder Claude Code starts it in.
     if std::env::var_os("FASTPILOT_DIR").is_none()
@@ -772,7 +1048,7 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
             Err(claude_failure(&raw))
         }
         Some(r) => {
-            crate::agents::record_usage(agent, r["usage"]["input_tokens"].as_u64().unwrap_or(0), r["usage"]["output_tokens"].as_u64().unwrap_or(0));
+            crate::agents::record_usage(&me.id, r["usage"]["input_tokens"].as_u64().unwrap_or(0), r["usage"]["output_tokens"].as_u64().unwrap_or(0));
             // Some versions put the final text only in the result.
             let final_text = fastpilot_core::redact(r["result"].as_str().unwrap_or(""));
             with_bot(agent, bot, |m| {
@@ -881,7 +1157,7 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client:
         keep.drain(..cut);
     }
     chat_of(agent).history = keep;
-    crate::agents::record_usage(agent, input, output);
+    crate::agents::record_usage(&chat_agent(agent), input, output);
     Ok(())
 }
 
@@ -890,10 +1166,12 @@ fn is_login_problem(text: &str) -> bool {
     t.contains("/login") || t.contains("not logged in") || t.contains("invalid api key") || t.contains("please log in")
 }
 
+const NOT_SIGNED_IN: &str = "Claude Code is not logged in on this computer.";
+
 /// What Claude Code's failure means for the user, in plain words.
 fn claude_failure(raw: &str) -> String {
     if is_login_problem(raw) {
-        "Claude Code is not logged in on this computer. Open Terminal, run `claude`, log in once, then send your message again.".into()
+        format!("{NOT_SIGNED_IN} Open Terminal, run `claude`, log in once, then send your message again.")
     } else if raw.contains("or newer is required") || raw.contains("does not support this model") {
         // QA B1: Claude Code's own words for "too old for this model".
         "Your Claude Code is too old for fastpilot. Update it: run `claude update` in Terminal, then send your message again.".into()
@@ -1565,7 +1843,7 @@ fn answer_lost(e: &fastpilot_core::jira::JiraError) -> bool {
 /// creates the issue although an open one looks the same; `comment` comments on that open issue
 /// instead. `edit`: the text the user changed with "Edit first", cleaned like the bot's.
 pub async fn decide_jira(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>) -> Option<Res<String>> {
-    let agent = card_agent(id)?;
+    let agent = card_chat(id)?;
     let mut data = {
         let mut c = chat_of(&agent);
         let p = c.msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id)?;
@@ -2777,9 +3055,10 @@ fn test_card(id: String, v: &Value) -> Res<Proposal> {
 // Each kind ends in its own `return` (they set the card's state first).
 #[allow(clippy::needless_return)]
 pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, confirm: Option<&str>) -> Res<String> {
-    let agent = card_agent(id).ok_or("This card is not in this conversation any more.")?;
+    let key = card_chat(id).ok_or("This card is not in this conversation any more.")?;
+    let agent = chat_agent(&key);
     let data = {
-        let mut c = chat_of(&agent);
+        let mut c = chat_of(&key);
         let p = c.msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id).ok_or("This card is not in this conversation any more.")?;
         if p.status != "pending" {
             return Err("This card has already been decided.".into());
@@ -2794,7 +3073,7 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         return decide_setting(id, &data, apply, confirm);
     }
     let set = |status: &str, note: Option<String>| {
-        if let Some(p) = chat_of(&agent).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
+        if let Some(p) = chat_of(&key).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
             p.status = status.into();
             if note.is_some() {
                 p.note = note;
@@ -2806,8 +3085,8 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         return Ok("Dismissed.".into());
     }
     match data["kind"].as_str() {
-        Some("test") => return save_test(&agent, id, &data, mode, edit),
-        Some("note") => return save_note(&agent, id, &data),
+        Some("test") => return save_test(&key, &agent, id, &data, mode, edit),
+        Some("note") => return save_note(&key, id, &data),
         Some("app") => {
             let targets = crate::apps::Targets { web: data["web"].as_str().map(str::to_owned), android: data["android"].as_str().map(str::to_owned), ios: data["ios"].as_str().map(str::to_owned) };
             let a = crate::apps::add("", targets).inspect_err(|e| set("failed", Some(e.clone())))?;
@@ -2887,7 +3166,7 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
         Some("agent") => {
             let a = crate::agents::create(agent_of_proposal(&data)?)?;
             set("applied", Some(format!("Created \"{}\". Open it in the list of agents.", a.name)));
-            if let Some(p) = chat_of(&agent).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
+            if let Some(p) = chat_of(&key).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
                 p.saved = Some(json!({ "agent": a.id }));
             }
             return Ok(format!("Created \"{}\".", a.name));
@@ -2924,7 +3203,7 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
 
 /// Save the test of card `id` (and its schedule, starting the first run). Nothing is written until
 /// the test is valid; the schedule only once the file is there.
-fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Option<&Value>) -> Res<String> {
+fn save_test(key: &str, agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Option<&Value>) -> Res<String> {
     let mut v = data.clone();
     if let Some(e) = edit {
         for k in ["title", "id", "target", "targets", "steps"] {
@@ -2982,7 +3261,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
         }
         None => "Test saved. Press Run now to run it, or ask me to schedule it.".to_owned(),
     };
-    if let Some(p) = chat_of(agent).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
+    if let Some(p) = chat_of(key).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
         p.status = "applied".into();
         p.note = Some(msg.clone());
         p.title = t.title.clone();
@@ -2994,7 +3273,7 @@ fn save_test(agent: &str, id: &str, data: &Value, mode: Option<&str>, edit: Opti
 }
 
 fn set_card(id: &str, f: impl FnOnce(&mut Proposal)) {
-    let Some(agent) = card_agent(id) else { return };
+    let Some(agent) = card_chat(id) else { return };
     if let Some(p) = chat_of(&agent).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
         f(p);
     }
@@ -3052,8 +3331,8 @@ fn decide_setting(id: &str, data: &Value, apply: bool, confirm: Option<&str>) ->
     }
     let note = if shown.level == change::Level::Loosen {
         // M6: the conversation that may have read a page does not go on with the looser limit.
-        if let Some(agent) = card_agent(id) {
-            let mut c = chat_of(&agent);
+        if let Some(key) = card_chat(id) {
+            let mut c = chat_of(&key);
             c.session = None;
             c.history.clear();
         }
@@ -3072,7 +3351,7 @@ fn decide_setting(id: &str, data: &Value, apply: bool, confirm: Option<&str>) ->
 /// Undo (or Block again) on an applied `setting` card: the exact earlier value, by click only, and
 /// only while the setting is still what the card set.
 pub fn undo(id: &str) -> Res<String> {
-    let agent = card_agent(id).ok_or("This card is not in this conversation any more.")?;
+    let agent = card_chat(id).ok_or("This card is not in this conversation any more.")?;
     let (data, journal) = {
         let c = chat_of(&agent);
         let p = c.msgs.iter().flat_map(|m| &m.proposals).find(|p| p.id == id).ok_or("This card is not in this conversation any more.")?;
@@ -3112,13 +3391,14 @@ pub fn undo(id: &str) -> Res<String> {
 
 /// Run now on a saved test's card: its schedule runs now, or the bot is asked to run it (in Live).
 pub fn run_saved(id: &str) -> Res<String> {
-    let agent = card_agent(id).ok_or("This test is not saved yet")?;
-    let saved = chat_of(&agent).msgs.iter().flat_map(|m| &m.proposals).find(|p| p.id == id).and_then(|p| p.saved.clone()).ok_or("This test is not saved yet")?;
+    let key = card_chat(id).ok_or("This test is not saved yet")?;
+    let agent = chat_agent(&key);
+    let saved = chat_of(&key).msgs.iter().flat_map(|m| &m.proposals).find(|p| p.id == id).and_then(|p| p.saved.clone()).ok_or("This test is not saved yet")?;
     if let Some(sid) = saved["schedule"].as_str() {
         schedule::start_now(sid)?;
         return Ok("Running now: watch it in Live. The result shows on the Schedules page.".into());
     }
-    send(&agent, &format!("Run the saved test \"{}\" and report.", saved["title"].as_str().unwrap_or("")))?;
+    send(&agent, Some(&key), &format!("Run the saved test \"{}\" and report.", saved["title"].as_str().unwrap_or("")))?;
     Ok("Asked the bot to run it: watch it in Live.".into())
 }
 
@@ -3675,7 +3955,7 @@ mod tests {
         let mut c = chat_of("default");
         *c = Chat::default();
         c.session = Some("old-session".into());
-        c.msgs.push(Msg { id: 1, role: "bot", text: String::new(), tools: vec![], proposals: cards, error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, outside: false, needs: vec![] });
+        c.msgs.push(Msg { id: 1, role: "bot", text: String::new(), tools: vec![], proposals: cards, error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, stopped: false, outside: false, needs: vec![] });
     }
 
     /// Security tests 3 and 5: the server checks everything the card showed; allowing starts a new

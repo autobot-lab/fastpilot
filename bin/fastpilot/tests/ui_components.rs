@@ -260,7 +260,7 @@ async fn settings_menu_says_secrets() {
     let c = &d.client;
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
-        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps\"");
+        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps|Integrations>#/integrations\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
         open(c, hash, "Nothing saved yet").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
@@ -317,12 +317,13 @@ async fn one_chat_no_commands_and_no_tabs_for_one_agent() {
     assert_eq!(command(&live), None, "{live}");
     see(c, "Make a test in Chat").await;
     eval(c, "([...document.querySelectorAll('#body button')].find((b) => b.textContent.includes('Make a test in Chat')).click(), 'ok')").await;
-    see(c, "Send").await;
-    assert_eq!(eval(c, "location.hash + '|' + (document.querySelector('.rail a[aria-current=page]')?.textContent || '')").await, "\"#/agents/default/chat|Chat\"");
+    see(c, "What should I test?").await;
+    // FC4: a new chat of the open agent, shown in the agents sidebar.
+    assert_eq!(eval(c, "location.hash + '|' + (document.querySelector('.side .crow[aria-current=page]')?.textContent || '')").await, "\"#/agents/default/chat/new|+ New chat\"");
 
-    // One agent: Chat is just Chat, no agent list, no tabs; the rest under More.
-    let solo = eval(c, "[!!document.querySelector('.ag-tabs'), !!document.querySelector('.ag-col'), document.querySelector('.top h1').textContent, !!document.querySelector('#body .more-btn')].join('|')").await;
-    assert_eq!(solo, "\"false|false|Chat|true\"");
+    // One agent: the sidebar lists it; no "More", no suggestions.
+    let solo = eval(c, "[document.querySelectorAll('.side .agent').length, !!document.querySelector('.side .aghd.on'), !!document.querySelector('#body .more-btn, #body .say-row')].join('|')").await;
+    assert_eq!(solo, "\"1|true|false\"");
 
     // An old #/chat link lands on the same page.
     eval(c, "(location.hash = '#/chat', 'ok')").await;
@@ -420,15 +421,16 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     }
     let d = dashboard("ui-apps", |_| {}).await;
     let c = &d.client;
-    let menu = eval(c, "[...document.querySelectorAll('.rail a small')].map((t) => t.textContent).join('|')").await;
-    assert_eq!(menu, "\"Chat|Live|Schedules|Map|Memory|History|Device|Integrations|Settings\"", "the locked menu (s6a)");
+    // FC4: the agents sidebar; Live, Device and Settings at its foot (Integrations is in Settings).
+    let menu = eval(c, "[...document.querySelectorAll('.side .sidefoot a')].map((t) => t.textContent).join('|')").await;
+    assert_eq!(menu, "\"Live|Device|Settings\"", "the sidebar's foot");
 
-    // The first screen is Chat, the first item of the menu (s6a; design M2).
-    assert_eq!(eval(c, "document.querySelector('.rail a[aria-current=page]')?.textContent || 'none'").await, "\"Chat\"", "opens on Chat");
+    // The first screen is Chat of the open agent.
+    see(c, "What should I test?").await;
+    assert!(eval(c, "location.hash").await.starts_with("\"#/agents/default/chat"), "opens on Chat");
     // Typed right away, the message survives the page being drawn again (apps and settings load).
-    see(c, "Send").await;
-    let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); for (let i = 0; i < 100; i++) { const c = document.getElementById('chat-input'); if (c && c !== t) break; await new Promise((r) => setTimeout(r, 100)); } await new Promise((r) => setTimeout(r, 50)); const n = document.getElementById('chat-input'); return [n !== t, n.value, document.activeElement === n].join('|'); })()").await;
-    assert_eq!(kept, "\"true|check the login|true\"", "a redraw keeps the draft and the cursor");
+    let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); await new Promise((r) => setTimeout(r, 300)); const n = document.getElementById('chat-input'); return [n.value, document.activeElement === n].join('|'); })()").await;
+    assert_eq!(kept, "\"check the login|true\"", "a redraw keeps the draft and the cursor");
 
     // No app yet: one button. The dialog asks for the address only (design M1). Opened from Live,
     // a new app still goes to Chat.
@@ -446,7 +448,7 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     assert_eq!(eval(c, "String(!!document.querySelector('dialog.appdlg'))").await, "\"true\"");
     eval(c, &format!("(({typed})('https://staging.shop.example'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
     see(c, "Shop staging was added").await;
-    assert_eq!(eval(c, "document.querySelector('.rail a[aria-current=page]')?.textContent || 'none'").await, "\"Chat\"", "a new app goes to Chat");
+    assert!(eval(c, "location.hash").await.starts_with("\"#/agents/default/chat"), "a new app goes to Chat");
     let bar = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
     assert!(bar.contains("Shop staging") && bar.contains("Website"), "{bar}");
 
@@ -574,7 +576,7 @@ async fn the_limits_page_says_what_protects_you_and_changes_go_through_chat() {
     assert_eq!(more, "\"false|true\"", "every limit is under More options, closed");
     // A sentence goes to Chat (sending is caught here: no real Claude in this test).
     eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.querySelectorAll('.say-row')[1].click(); return 'ok'; })()").await;
-    assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/agents/default/chat|Never press \\\"Log out\\\"\"", "the one Chat page (U1)");
+    assert_eq!(eval(c, "location.hash + '|' + window.__sent").await, "\"#/agents/default/chat/new|Never press \\\"Log out\\\"\"", "a new chat of the open agent (FC4)");
     // Security #187 L1: page scripts allowed means a script can press any button: not "protected".
     eval(c, "(async () => { await api('/api/settings', { key: 'allow_eval_script', value: true }); await loadSettings(); location.hash = '#/settings/limits'; render(); return 'ok'; })()").await;
     open(c, "#/settings/limits", "Less protected").await;
@@ -617,9 +619,9 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert_eq!(got, "\"#/agents/default/chat|Connect Jira\"");
+    assert_eq!(got, "\"#/agents/default/chat/new|Connect Jira\"");
     // The footer is one line; an "open" card links only to our page, whatever the bot wrote.
-    see(c, "Changes wait for your click on their card.").await;
+    see(c, "Passwords are never typed here.").await;
     let link = eval(c, "(() => { const s = proposalCard({ id: 'x', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], status: 'pending' }); const bad = proposalCard({ id: 'y', kind: 'open', open: 'https://evil.example', title: 'x', rows: [], status: 'pending' }); return s.querySelector('a.btn').getAttribute('href') + '|' + s.querySelector('a.btn').textContent + '|' + !!bad.querySelector('a[href^=\"http\"]'); })()").await;
     assert_eq!(link, "\"#/settings/secrets|Open Secrets|false\"");
     // FC6: what Chat did at once is one result line: its words, Undo while it can be undone,

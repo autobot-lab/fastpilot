@@ -104,17 +104,15 @@ async fn live_page_works_with_the_keyboard() {
 
     // FastTest final report: "click Web, fill in, Create" said "Pick where it tests" (Web was
     // picked already and the click took it off). The last place picked stays on, with a reason.
-    // S4 + U1: with one agent, Chat has no agent list; "New agent" is under More below it.
+    // FC4: "+ New agent" is in the sidebar and opens a new chat that asks what the agent tests.
     eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Send\", timeout: 8000 }\n", "session": "viewer" })).await;
+    eval(&client, "document.querySelector('.side .newagent').click(), 'ok'").await;
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"What should this agent test?\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    let hidden_new = "(() => { const a = [...document.querySelectorAll('#body .more a')].find((x) => x.textContent.includes('New agent')); return a ? String(!!a.closest('[hidden]')) : 'none'; })()";
-    assert_eq!(eval(&client, hidden_new).await, "\"true\"", "New agent waits under More");
-    eval(&client, "[...document.querySelectorAll('#body .more-btn')].find((b) => b.textContent.includes('More')).click(), 'ok'").await;
-    assert_eq!(eval(&client, hidden_new).await, "\"false\"", "More shows it");
+    assert_eq!(eval(&client, "location.hash").await, "\"#/agents/new\"");
 
-    // S4: New agent needs no typing: three focuses, the form under "Describe it yourself".
-    eval(&client, "location.hash = '#/agents/new', 'ok'").await;
+    // S4: the form (Edit on a "New agent" card in Chat): three focuses, the form under "Describe it yourself".
+    eval(&client, "location.hash = '#/agents/create', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Checkout and payments\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let quick = eval(&client, "[[...document.querySelectorAll('.ag-new button[data-focus]')].map((b) => b.textContent.replace('→', '').trim()).join('|'), [...document.querySelectorAll('.ag-new input, .ag-new textarea')].filter((e) => !e.closest('[hidden]')).length, document.activeElement.dataset.focus].join(' / ')").await;
@@ -153,15 +151,14 @@ async fn live_page_works_with_the_keyboard() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     assert!(at.contains("#/agents/device-pick/chat"), "Create opens the new agent: {at}");
-    // v0.4.1 (the user): none of the old suggestion chips ("Test the login page in Chrome", …).
-    // C1 / DC1 (accepted 22 Nov 2026): three one-click suggestions that name what they do.
-    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Ask or tell the fastpilot bot\", timeout: 8000 }\n", "session": "viewer" })).await;
+    // FC4 (the user, 24 Nov): no suggestions at all; a greeting and the box.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"What should I test?\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    let empty = eval(&client, "(() => { const e = document.querySelector('.empty'); return [[...e.querySelectorAll('.say-row')].map((b) => b.firstChild.textContent).join(','), /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|'); })()").await;
-    assert_eq!(empty, "\"Check the login,Map the app,Can we release?|false\"", "three suggestions, none of the old chips");
+    let empty = eval(&client, "[document.querySelectorAll('#body .say-row, #body .chip').length, /Test the login page|every 2 hours|Block the Pay button/.test(document.body.textContent)].join('|')").await;
+    assert_eq!(empty, "\"0|false\"", "no suggestions, none of the old chips");
     // S4: one click on a focus makes the agent and opens its Chat; a second click opens the same one.
     for _ in 0..2 {
-        eval(&client, "location.hash = '#/agents/new', 'ok'").await;
+        eval(&client, "location.hash = '#/agents/create', 'ok'").await;
         // Clicked from the page: the viewer's own limits rightly block a tap on "checkout".
         let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Login and accounts\", timeout: 8000 }\n", "session": "viewer" })).await;
         assert!(ok, "{out}");

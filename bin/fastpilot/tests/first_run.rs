@@ -81,8 +81,9 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     // The first screen: what to test, and the simple menu.
     see(&c, "What do you want to test?").await;
     see(&c, "Welcome to fastpilot").await;
-    let rail = "[...document.querySelectorAll('.rail a, .rail .rail-more')].filter((a) => getComputedStyle(a).display !== 'none').map((a) => a.textContent.trim()).join('|')";
-    assert_eq!(eval(&c, rail).await, "Chat|Live|Device|More|Settings", "the simple menu");
+    // FC4: the agents sidebar, with Live, Device and Settings at its foot (no hidden menu items).
+    let side = "[...document.querySelectorAll('.side .sidefoot a')].map((a) => a.textContent.trim()).join('|')";
+    assert_eq!(eval(&c, side).await, "Live|Device|Settings", "the sidebar");
 
     // Paste the address: the app is added, no Next to click.
     let demo = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
@@ -101,21 +102,15 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     see(&c, "Password of the test account").await;
     assert_eq!(eval(&c, "document.querySelector('dialog.cdlg input').type").await, "password");
     eval(&c, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'fp-first-run-pass'; i.form.requestSubmit(); return 'ok'; })()").await;
-    assert_eq!(until(&c, "location.hash + '|' + window.__sent", "#/agents/default/chat|Check the login").await, "#/agents/default/chat|Check the login");
-    see(&c, "Send").await;
+    assert_eq!(until(&c, "location.hash + '|' + window.__sent", "#/agents/default/chat/new|Check the login").await, "#/agents/default/chat/new|Check the login");
+    see(&c, "What should I test?").await;
     let saved = eval(&c, "(async () => (await api('/api/secrets')).names.filter((n) => n.set).map((n) => n.name).join('|'))()").await;
     assert_eq!(saved, "TEST_USER|TEST_PASSWORD", "both saved for the app");
     // It never comes back.
     eval(&c, "(location.reload(), 'ok')").await;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    see(&c, "Send").await;
+    see(&c, "What should I test?").await;
     assert_eq!(eval(&c, "String(!!document.querySelector('.wz'))").await, "false");
-
-    // Settings › Show all menus: the full menu even before a saved test.
-    eval(&c, "(location.hash = '#/settings/limits', 'ok')").await;
-    see(&c, "Show all menus").await;
-    eval(&c, "(document.querySelector('.wz-full input').click(), 'ok')").await;
-    assert_eq!(until(&c, rail, "Chat|Live|Schedules|Map|Memory|History|Device|Integrations|Settings").await, "Chat|Live|Schedules|Map|Memory|History|Device|Integrations|Settings");
 
     // A new user who knows their way around: skipped for good.
     eval(&c, "(async () => { localStorage.clear(); const a = await api('/api/apps'); for (const x of a.apps) await api('/api/apps', { action: 'remove', id: x.id }); location.hash = '#/agents'; location.reload(); return 'ok'; })()").await;
@@ -123,10 +118,10 @@ async fn a_new_user_pastes_an_address_and_one_click_starts_the_first_test() {
     see(&c, "What do you want to test?").await;
     let (ok, out) = flow(&c, "- tapOn: I know my way around\n").await;
     assert!(ok, "{out}");
-    see(&c, "Send").await;
+    see(&c, "What should I test?").await;
     eval(&c, "(location.reload(), 'ok')").await;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-    see(&c, "Send").await;
+    see(&c, "What should I test?").await;
     assert_eq!(eval(&c, "String(!!document.querySelector('.wz'))").await, "false", "skipped for good");
 
     let _ = c.cancel().await;

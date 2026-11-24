@@ -31,6 +31,10 @@ pub struct Entry {
     /// The agent's name as people know it (`FASTPILOT_AGENT_NAME`), for the queue's reasons.
     #[serde(default)]
     pub agent_name: Option<String>,
+    /// v0.7.1 FC4: the dashboard chat this session works for (`FASTPILOT_CHAT`), so that chat can say
+    /// "Waiting: another chat is using this device".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
     pub platform: String,
     /// The device it needs (`android:emulator-5556`), `None` for web.
     #[serde(default)]
@@ -167,7 +171,8 @@ pub async fn acquire(session: &str, platform: Platform, device: Option<&str>) ->
     let key = device_key(platform, device);
     let agent = std::env::var("FASTPILOT_AGENT").ok().filter(|a| !a.is_empty());
     let agent_name = std::env::var("FASTPILOT_AGENT_NAME").ok().filter(|a| !a.is_empty()).map(|n| n.chars().take(40).collect());
-    let mut e = Entry { pid: me, session: session.to_owned(), agent, agent_name, platform: platform.to_string(), device: key.clone(), since_ms: now_ms(), waiting: true, reason: String::new() };
+    let chat = std::env::var("FASTPILOT_CHAT").ok().filter(|c| !c.is_empty() && c.len() <= 80);
+    let mut e = Entry { pid: me, session: session.to_owned(), agent, agent_name, chat, platform: platform.to_string(), device: key.clone(), since_ms: now_ms(), waiting: true, reason: String::new() };
     let limit = Duration::from_secs(crate::config::var("FASTPILOT_QUEUE_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(1800));
     let started = std::time::Instant::now();
     loop {

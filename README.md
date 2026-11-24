@@ -189,6 +189,11 @@ In the dashboard Chat, what you ask for is done at once and shows as one line, s
 *Paused schedule “Every night” · its history is kept*, with **Undo** on it. Loosening a safety limit
 still needs your click on its red card, and a password is still typed only in its masked field.
 
+The dashboard works like a chat app: the agents are on the left, each with its chats (**+ New chat**
+starts another; several can work at once, up to your "tests at once" limit, and the next one waits
+for a free slot). **Stop** ends an answer and makes nothing it was about to make. Removing a chat
+keeps it 7 days, with Undo.
+
 Every change can be undone: the terminal prints `Undo: fastpilot undo <id>`, and `fastpilot undo --list`
 shows what you can undo. Removing an app or a schedule keeps it 7 days (History › Recently removed,
 with Restore). A password is kept for its app in this Mac's Keychain

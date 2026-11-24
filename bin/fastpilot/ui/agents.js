@@ -10,8 +10,6 @@ let agData = null; // { agents: [{ agent, initials, busy, schedules }], devices,
 let agBusy = false;
 let agDraft = null; // the Create agent form while it is open
 
-const TABS = [["chat", "Chat"], ["live", "Live"], ["schedules", "Schedules"], ["instructions", "Instructions"], ["skills", "Skills"], ["history", "History"], ["settings", "Agent settings"]];
-const COLORS = 7; // .ag-c0 … .ag-c6 in app.css (the page's policy allows no inline styles)
 
 async function loadAgents() {
   agBusy = true;
@@ -20,12 +18,6 @@ async function loadAgents() {
 }
 
 const byId = (id) => (agData.agents || []).find((x) => x.agent.id === id);
-function color(id) {
-  let n = 0;
-  for (const c of id) n = (n * 31 + c.charCodeAt(0)) >>> 0;
-  return n % COLORS;
-}
-const avatar = (x, cls) => h("span", { class: `ag-av ag-c${color(x.agent.id)} ${cls || ""}`, "aria-hidden": "true" }, x.initials);
 // Where an agent tests: chips that toggle, but the last one picked stays on. Web is picked from the
 // start, and "click Web" used to switch it off, so Create then said "Pick where it tests"
 // (FastTest, final report). `picked` is a Set that the caller reads on save.
@@ -48,10 +40,7 @@ const deviceChips = (picked, onChange) => {
   });
   return h("div", { class: "dev-pick" }, h("div", { class: "chips" }, chips), hint);
 };
-const deviceName = (d) => ((agData.devices || []).find((x) => x.id === d) || { name: d }).name;
 // D10b: "Provider · Model", from the server; models other than Claude are not tried with fastpilot.
-const modelLabel = (x) => x.model_label || "Claude Code";
-const untested = (x) => (x.tested === false ? h("span", { class: "ag-untested" }, "not tested yet") : null);
 
 // v7 #s4 step 6: the provider first, then its model. `st` is { provider, model } and is changed in place.
 function modelPicker(st) {
@@ -85,25 +74,6 @@ function modelPicker(st) {
   return box;
 }
 
-function summary(x) {
-  const a = x.agent;
-  const where = a.devices.map(deviceName).join(" + ");
-  return x.schedules.length ? `${x.schedules[0]} · ${where}` : where;
-}
-
-function list(current) {
-  const items = (agData.agents || []).map((x) => h("li", {},
-    h("a", { class: "ag-item" + (x.agent.id === current ? " on" : ""), href: `#/agents/${x.agent.id}/chat`, "aria-current": x.agent.id === current ? "page" : null },
-      avatar(x),
-      h("span", { class: "ag-txt" }, h("b", {}, x.agent.name), h("span", { class: "s" }, summary(x)), h("span", { class: "s" }, modelLabel(x), " ", untested(x))),
-      h("span", { class: "ag-st " + (x.queued ? "queued" : x.busy ? "run" : "ready") }, x.queued ? "queued" : x.busy ? "running" : "ready"))));
-  // S4: each app already has its tester, so another agent is under More.
-  return h("nav", { class: "ag-col", "aria-label": "Agents" },
-    h("div", { class: "ag-col-head" }, h("h2", {}, "Agents")),
-    h("ul", { class: "ag-list" }, items),
-    UI.moreOptions({ label: "More" }, h("a", { class: "btn sm", href: "#/agents/new" }, icon("plus", "sm"), "New agent")));
-}
-
 // ---- one agent ----
 
 async function save(a, done) {
@@ -121,7 +91,7 @@ function tabInstructions(x) {
   const add = async (text) => {
     const t = (text || "").trim();
     if (!t) return;
-    if (await save({ ...a, instructions: [...a.instructions, t] }, "Instruction added.")) page(a.id, "instructions");
+    if (await save({ ...a, instructions: [...a.instructions, t] }, "Instruction added.")) page(a.id, "about");
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(input.value); } });
   const unused = (agData.suggestions || []).filter((t) => !a.instructions.includes(t));
@@ -131,7 +101,7 @@ function tabInstructions(x) {
       a.instructions.length
         ? h("ul", { class: "ag-rules" }, a.instructions.map((t, i) => h("li", {}, h("span", {}, t),
           h("button", { class: "rm", "aria-label": `Remove "${t}"`, onclick: async () => {
-            if (await save({ ...a, instructions: a.instructions.filter((_, j) => j !== i) }, "Instruction removed.")) page(a.id, "instructions");
+            if (await save({ ...a, instructions: a.instructions.filter((_, j) => j !== i) }, "Instruction removed.")) page(a.id, "about");
           } }, icon("close", "sm")))))
         : h("p", { class: "muted" }, "No instructions yet. The agent follows fastpilot's own rules and your limits."),
       h("div", { class: "add-row" }, input, h("button", { class: "btn", onclick: () => add(input.value) }, icon("plus", "sm"), "Add")),
@@ -161,7 +131,7 @@ function tabSettings(x) {
         h("button", { class: "btn p", onclick: async () => {
           const out = await save({ ...a, name: name.value, job: job.value, app: app.value, devices: [...picked], blocked: blocked.value.split(",").map((w) => w.trim()).filter(Boolean),
             provider: ai.provider === "claude" ? null : ai.provider, model: ai.model || null });
-          if (out) page(out.id, "settings");
+          if (out) page(out.id, "about");
         } }, "Save changes"),
         a.id === "default" ? null : h("button", { class: "btn danger", onclick: async () => {
           const heir = (byId("default") || { agent: { name: "My agent" } }).agent.name;
@@ -239,79 +209,20 @@ async function tabSkills(x, box) {
   box.replaceChildren(h("div", { class: "sk-head" }, tabsRow, h("span", { class: "s" }, `${on.size} on for ${a.name}, plus the fastpilot skill (always on)`)), h("div", { class: "sk-wrap" }, main, skillsView === "library" ? side : null));
 }
 
-async function tabSchedules(x, box) {
-  box.replaceChildren(h("div", { class: "empty small" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" })));
-  let d;
-  try { d = await api("/api/schedules"); } catch (e) { box.replaceChildren(h("div", { class: "err", role: "alert" }, e.message)); return; }
-  const mine = (d.schedules || []).filter((s) => (s.schedule.agent || "default") === x.agent.id);
-  const add = h("button", { class: "btn sm p", onclick: () => { schedForm = { agent: x.agent.id }; location.hash = "#/schedules"; } }, icon("plus", "sm"), "New schedule");
-  box.replaceChildren(h("section", { class: "grp ag-sec" }, h("div", { class: "gh" }, `schedules · ${mine.length}`, h("span", { class: "right" }, add)),
-    mine.length
-      ? h("ul", { class: "ag-rows" }, mine.map((s) => h("li", {}, h("b", {}, s.schedule.name), h("span", {}, s.when_text),
-        h("span", { class: "s" }, s.last && s.last.total !== undefined && s.last.total !== null ? `last: ${s.last.ok}/${s.last.total}` : "not run yet"))))
-      : h("div", { class: "empty small" }, h("b", {}, "Nothing is scheduled"), h("span", {}, "Ask in Chat, e.g. \"run the checkout tests every 2 hours\", or add one here."))));
-}
-
-async function tabLive(x, box) {
-  let d;
-  try { d = await api("/api/live"); } catch (e) { box.replaceChildren(h("div", { class: "err", role: "alert" }, e.message)); return; }
-  const mine = (d.sessions || []).filter((s) => (s.agent || "default") === x.agent.id && s.kind === "mcp");
-  box.replaceChildren(h("section", { class: "grp ag-sec" }, h("div", { class: "gh" }, `live · ${mine.length} running`, h("a", { class: "right lk", href: "#/live" }, "Open Live")),
-    mine.length
-      ? h("ul", { class: "ag-rows" }, mine.map((s) => h("li", {}, h("b", {}, s.id), h("span", {}, s.platform), h("span", { class: "s" }, s.flow ? `${(s.flow.steps || []).length} steps` : ""))))
-      : h("div", { class: "empty small" }, h("b", {}, "No tests are running"), h("span", {}, "When this agent runs a test you can watch it here, and take over in Live."))));
-}
-
-async function tabHistory(x, box) {
-  let d;
-  try { d = await api("/api/history"); } catch (e) { box.replaceChildren(h("div", { class: "err", role: "alert" }, e.message)); return; }
-  const others = new Set((agData.agents || []).filter((y) => y.agent.id !== x.agent.id).flatMap((y) => y.agent.conversations));
-  const mine = x.agent.id === "default"
-    ? (d.chats || []).filter((c) => !others.has(c.id))
-    : (d.chats || []).filter((c) => x.agent.conversations.includes(c.id));
-  box.replaceChildren(h("section", { class: "grp ag-sec" }, h("div", { class: "gh" }, `conversations · ${mine.length}`, h("a", { class: "right lk", href: "#/history" }, "Open History")),
-    mine.length
-      ? h("ul", { class: "ag-rows" }, mine.map((c) => h("li", {}, h("b", {}, c.title), h("span", { class: "s" }, `${c.messages} messages · ${new Date(c.updated_ms).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`))))
-      : h("div", { class: "empty small" }, h("b", {}, "No conversations yet"), h("span", {}, "What you say to this agent in Chat is kept here."))));
-}
-
+// FC4: an agent's own pages inside the frame (shell.js draws its name and tabs): Skills, and About
+// this agent (its instructions and settings). Chat is app.js's; the other tabs are their pages.
 function page(id, tab) {
   const x = byId(id);
-  if (!x) { location.hash = "#/agents/default/chat"; return; }
+  if (!x) { location.replace("#/agents/default/chat"); return; }
   const a = x.agent;
-  tab = TABS.some(([k]) => k === tab) ? tab : "chat";
-  const box = h("div", { class: "ag-main" });
-  // U1 (DC5): with one agent, Chat is just Chat: no agent list, no tabs. Its other sections and
-  // New agent are under More.
-  if ((agData.agents || []).length < 2) {
-    const title = TABS.find(([k]) => k === tab)[1];
-    $top().replaceChildren(...[icon("chat"), h("h1", { tabindex: "-1" }, tab === "chat" ? "Chat" : title),
-      tab === "chat" ? null : h("a", { class: "btn sm right", href: `#/agents/${a.id}/chat` }, "Back to Chat")].filter(Boolean));
-    const more = UI.moreOptions({ label: "More" }, h("div", { class: "btns tight" },
-      TABS.filter(([k]) => ["instructions", "skills", "settings"].includes(k)).map(([k, t]) => h("a", { class: "btn sm", href: `#/agents/${a.id}/${k}` }, t)),
-      h("a", { class: "btn sm", href: "#/agents/new" }, icon("plus", "sm"), "New agent")));
-    $body().replaceChildren(h("div", { class: "ag-solo" }, box, tab === "chat" ? more : null));
-  } else {
-    $top().replaceChildren(avatar(x, "lg"), h("div", { class: "ag-head" }, h("h1", { tabindex: "-1" }, a.name),
-      h("span", { class: "s" }, `${a.devices.map(deviceName).join(" + ")} · ${modelLabel(x)}`, " ", untested(x))),
-    h("nav", { class: "ag-tabs right", "aria-label": `${a.name}: sections` }, TABS.map(([k, t]) => h("a", { href: `#/agents/${a.id}/${k}`, class: k === tab ? "on" : "", "aria-current": k === tab ? "page" : null }, t))));
-    $body().replaceChildren(h("div", { class: "ag-wrap" }, list(a.id), box));
-  }
-  if (tab === "chat") {
-    if (chatAgent !== a.id || chatHost !== box) { chatData = null; chatSig = ""; }
-    chatAgent = a.id;
-    chatHost = box;
-    if (chatData) renderChat();
-    loadChat();
-    return;
-  }
-  chatHost = null;
-  if (tab === "instructions") box.replaceChildren(tabInstructions(x));
-  else if (tab === "settings") box.replaceChildren(tabSettings(x));
-  else if (tab === "skills") tabSkills(x, box);
-  else if (tab === "schedules") tabSchedules(x, box);
-  else if (tab === "live") tabLive(x, box);
-  else if (tab === "history") tabHistory(x, box);
+  const elsewhere = { live: "#/live", schedules: "#/schedules", history: "#/history", memory: "#/memory", map: "#/map" };
+  if (elsewhere[tab]) { location.replace(elsewhere[tab]); return; }
+  const box = h("div", { class: "ag-main col2" });
+  const title = tab === "skills" ? "Skills" : "About this agent";
+  $top().replaceChildren(h("h1", { tabindex: "-1" }, title));
+  $body().replaceChildren(box);
+  if (tab === "skills") tabSkills(x, box);
+  else box.replaceChildren(tabInstructions(x), tabSettings(x));
 }
 
 // ---- Create agent (v7 #s4) ----
@@ -430,13 +341,13 @@ async function route() {
   if (!agData) return;
   const [, , id, tab] = (location.hash || "").split("/");
   if (!id) { location.hash = "#/agents/default/chat"; return; }
-  if (id === "new") pageNew(); else page(id, tab);
+  if (id === "create") pageNew(); else page(id, tab);
 }
 
 PAGES.agents = () => { route(); };
 // Edit on a "New agent" card in Chat: the form, filled in with what the bot proposed.
 window.editAgentDraft = (d) => {
   agDraft = { name: d.name || "", job: d.job || "", devices: d.devices || ["web"], app: d.app || "", instructions: d.instructions || [], blocked: (d.blocked || []).join(", ") };
-  location.hash = "#/agents/new";
+  location.hash = "#/agents/create";
 };
 })();

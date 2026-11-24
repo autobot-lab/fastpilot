@@ -209,7 +209,8 @@ function savedNote() {
 function settingsNav(cur) {
   const item = (id, label) => h("a", { href: `#/settings/${id}`, class: cur === id ? "on" : "", "aria-current": cur === id ? "page" : false }, label);
   return h("nav", { class: "snav", "aria-label": "Settings" }, item("model", "AI model"), item("limits", "Limits & permissions"), item("secrets", "Secrets"), item("security", "Security"), item("apps", "Your apps"),
-    window.Welcome ? Welcome.fullMenuToggle() : null);
+    // FC4: Integrations (Jira, webhook) are global, so they are under Settings.
+    h("a", { href: "#/integrations" }, "Integrations"));
 }
 
 function topSettings() {
@@ -1194,30 +1195,51 @@ async function pollLive() {
 let chatData = null, chatTimer = null, chatSig = "";
 const chatEdits = {}; // proposal id -> what the user is changing with Edit
 
-// D10a: whose conversation Chat shows, and where it draws (agents.js puts it in an agent's Chat tab;
-// null = the Chat page itself).
-let chatAgent = "default", chatHost = null;
-const chatQ = () => `?agent=${encodeURIComponent(chatAgent)}`;
+// FC4: which chat Chat shows: an agent (or "new" for "+ New agent") and one of its chats (null:
+// a new, empty chat). Chat draws into the page body.
+let chatAgent = "default", chatId = null, chatHost = null;
+const chatQ = () => `?agent=${encodeURIComponent(chatAgent)}${chatId ? "&chat=" + encodeURIComponent(chatId) : ""}`;
 const chatShown = () => chatHost !== null && document.body.contains(chatHost);
 
 async function loadChat() {
-  const agent = chatAgent;
+  const agent = chatAgent, id = chatId;
   let data;
-  try { data = await api("/api/chat" + chatQ()); } catch (e) { data = { error: e.message, messages: [], busy: false }; }
-  if (agent !== chatAgent) return; // another agent was opened meanwhile
+  if (agent === "new" || (!id && chatFresh)) {
+    data = { messages: [], busy: false, chat: null };
+  } else {
+    try { data = await api("/api/chat" + chatQ()); } catch (e) { data = { error: e.message, messages: [], busy: false }; }
+  }
+  if (agent !== chatAgent || id !== chatId) return; // another chat was opened meanwhile
+  // `#/agents/<agent>/chat`: the agent's newest chat, with its own address.
+  if (!id && !chatFresh && agent !== "new" && !data.error) {
+    let open = data.chat;
+    if (!open) {
+      try { open = ((await api("/api/chats?agent=" + encodeURIComponent(agent))).chats || [])[0]?.id || null; } catch (_) { open = null; }
+      if (agent !== chatAgent || chatId !== id) return;
+    }
+    if (open) {
+      chatId = open;
+      history.replaceState(null, "", `#/agents/${agent}/chat/${open}`);
+      if (window.Shell) Shell.frame();
+      if (!data.chat) return loadChat();
+    }
+  }
+  const was = chatData && chatData.busy;
   chatData = data;
   if (chatShown()) renderChat();
   clearTimeout(chatTimer);
   if (chatData.busy && chatShown()) chatTimer = setTimeout(loadChat, 800);
+  // The sidebar's spinner and title follow the chat.
+  if (window.Shell && (was !== !!chatData.busy)) Shell.refresh();
 }
 
 // PF6: text to put in the Chat box (not sent) when Chat opens next.
 let chatPrefill = null;
-
-const CHAT_SUGGESTIONS = ["Check the login", "Map the app", "Can we release?"];
+// FC4: "+ New chat" is open (nothing sent yet): the next message starts a new chat.
+let chatFresh = false;
 
 // C1: "or just say it" under a page: up to three fixed sentences, written by fastpilot (never taken
-// from a page), each sent to Chat with one click; Chat answers with a card that names its action.
+// from a page), each sent to Chat with one click.
 function sayIt(sentences) {
   return h("section", { class: "grp limit-say", "aria-label": "Or just say it in Chat" },
     h("div", { class: "gh" }, "or just say it in chat"),
@@ -1225,12 +1247,11 @@ function sayIt(sentences) {
       sentences.slice(0, 3).map((t) => h("button", { type: "button", class: "say-row", onclick: () => openChat(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→")))));
 }
 
-// U1: one Chat page, the menu's (the default agent's conversation). Buttons elsewhere open it, and
-// may send a sentence there.
+// Buttons elsewhere open a new chat of the open agent, and may send a sentence there.
 async function openChat(send) {
-  chatAgent = "default";
-  // Already there (the first-run wizard covers it): no hash change, so draw it now.
-  if (location.hash === "#/agents/default/chat") render(); else location.hash = "#/agents/default/chat";
+  const agent = window.Shell ? Shell.agent() : "default";
+  const target = `#/agents/${agent}/chat/new`;
+  if (location.hash === target) render(); else location.hash = target;
   if (send) await chatSend(send);
 }
 
@@ -1238,11 +1259,35 @@ async function chatSend(text) {
   const t = (text || "").trim();
   if (!t) return;
   try {
-    chatData = await api("/api/chat", { agent: chatAgent, message: t });
+    const body = { agent: chatAgent, message: t };
+    if (chatId) body.chat = chatId; else body.new = true;
+    const r = await api("/api/chat", body);
     const box = document.getElementById("chat-input");
-    if (box) box.value = "";
+    if (box) { box.value = ""; growBox(box); }
     chatDraft.text = "";
     clearToast();
+    chatFresh = false;
+    chatData = r;
+    // The new chat (or the new agent) has its own address now; no new page is drawn for it.
+    if (r.chat && (r.chat !== chatId || r.agent !== chatAgent)) {
+      chatAgent = r.agent;
+      chatId = r.chat;
+      if (window.Shell) Shell.setAgent(r.agent);
+      history.replaceState(null, "", `#/agents/${r.agent}/chat/${r.chat}`);
+    }
+    if (r.created) toast(r.created.line, true);
+    chatSig = "";
+    renderChat();
+  } catch (e) { toast(e.message); }
+  if (window.Shell) Shell.refresh();
+  loadChat();
+}
+
+// FC4: Stop the answer of this chat (the composer's Stop).
+async function chatStop() {
+  try {
+    const r = await api("/api/chat", { agent: chatAgent, chat: chatId, action: "stop" });
+    chatData = r.chat;
   } catch (e) { toast(e.message); }
   loadChat();
 }
@@ -1274,34 +1319,78 @@ function rich(text) {
   return String(text || "").split(/`([^`\n]+)`/).map((part, i) => (i % 2 ? code(part) : part));
 }
 
-// `**bold**` inside one line of the bot's text, around `code`.
+// FC4 safe Markdown: the bot's answer as DOM, never as HTML. Every piece of text is a text node;
+// links only to http(s) and mailto, opened in a new tab with rel=noopener; images are not loaded
+// (their words show as text); raw HTML such as <script> stays visible text.
+const SAFE_LINK = /^(https?:\/\/|mailto:)[^\s<>"']+$/i;
 function inline(text) {
-  return String(text || "").split(/`([^`\n]+)`/).flatMap((part, i) =>
-    i % 2 ? [code(part)] : part.split(/\*\*([^*\n]+)\*\*/).map((x, j) => (j % 2 ? h("b", {}, x) : x)));
+  const out = [];
+  // `code`, **bold**, *italic* / _italic_, [words](https://…), bare https://… addresses.
+  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w_])_([^_\n]+)_(?![\w_])|!?\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?])/g;
+  let at = 0, m;
+  const s = String(text || "");
+  while ((m = re.exec(s))) {
+    if (m.index > at) out.push(s.slice(at, m.index));
+    if (m[1] !== undefined) out.push(code(m[1]));
+    else if (m[2] !== undefined) out.push(h("b", {}, inline(m[2])));
+    else if (m[3] !== undefined) out.push(h("em", {}, m[3]));
+    else if (m[4] !== undefined) out.push(h("em", {}, m[4]));
+    else if (m[5] !== undefined) {
+      // An image is never fetched: its words stay, as text.
+      if (m[0].startsWith("!")) out.push(m[0]);
+      else if (SAFE_LINK.test(m[6])) out.push(h("a", { href: m[6], target: "_blank", rel: "noopener noreferrer" }, m[5]));
+      else out.push(m[0]);
+    } else if (m[7] !== undefined) out.push(h("a", { href: m[7], target: "_blank", rel: "noopener noreferrer" }, m[7]));
+    at = m.index + m[0].length;
+  }
+  if (at < s.length) out.push(s.slice(at));
+  return out;
 }
 
-// The bot's answer (QA B6): fenced blocks as monospace blocks (also one Claude did not close),
-// "# headings" as bold lines, **bold**, `code`; everything else as plain text. Built as DOM text
-// nodes, never as HTML.
+const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 function markdown(text) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
   const out = [];
-  const parts = String(text || "").split(/^```[^\n]*$/m);
-  parts.forEach((part, i) => {
-    // The line break right after a fence and right before the next one belong to the fence.
-    let body = part;
-    if (i > 0 && body.startsWith("\n")) body = body.slice(1);
-    if (i < parts.length - 1 && body.endsWith("\n")) body = body.slice(0, -1);
-    if (i % 2) {
-      out.push(h("pre", { class: "md-pre" }, body));
-      return;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // A fenced block (also one Claude did not close).
+    if (/^\s*```/.test(line)) {
+      const body = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
+      i += 1;
+      out.push(h("pre", {}, h("code", {}, body.join("\n"))));
+      continue;
     }
-    if (!body) return;
-    body.split("\n").forEach((line, k) => {
-      if (k) out.push("\n");
-      const head = line.match(/^#{1,6}\s+(.*)$/);
-      out.push(...(head ? [h("b", { class: "md-h" }, inline(head[1]))] : inline(line)));
-    });
-  });
+    const head = line.match(/^(#{1,6})\s+(.*)$/);
+    if (head) { out.push(h(head[1].length <= 3 ? "h3" : "h4", {}, inline(head[2]))); i += 1; continue; }
+    // A table: a header row, a |---| row, then rows.
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
+      const headCells = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+      out.push(h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, headCells.map((c) => h("th", {}, inline(c))))),
+        h("tbody", {}, rows.map((r) => h("tr", {}, r.map((c) => h("td", {}, inline(c)))))))));
+      continue;
+    }
+    const bullet = /^\s*[-*•]\s+(.*)$/, num = /^\s*\d+[.)]\s+(.*)$/;
+    if (bullet.test(line) || num.test(line)) {
+      const ordered = num.test(line) && !bullet.test(line);
+      const re = ordered ? num : bullet;
+      const items = [];
+      while (i < lines.length && re.test(lines[i])) items.push(h("li", {}, inline(lines[i++].match(re)[1])));
+      out.push(h(ordered ? "ol" : "ul", {}, items));
+      continue;
+    }
+    if (!line.trim()) { i += 1; continue; }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !bullet.test(lines[i]) && !num.test(lines[i]) && !/^\s*\|.*\|\s*$/.test(lines[i])) para.push(lines[i++]);
+    const kids = [];
+    para.forEach((p, k) => { if (k) kids.push(h("br")); kids.push(...inline(p)); });
+    out.push(h("p", {}, kids));
+  }
   return out;
 }
 
@@ -1721,9 +1810,9 @@ function botText(text) {
   const parts = String(text || "").split(/```[a-z]*\n?/);
   return parts.map((part, i) => {
     // QA B6: headings, **bold** and `code` of Claude's text, as DOM text.
-    if (i % 2 === 0) return part.trim() ? h("div", { class: "bubble" }, markdown(part.trim())) : null;
+    if (i % 2 === 0) return part.trim() ? h("div", { class: "md" }, markdown(part.trim())) : null;
     const lines = part.replace(/\s+$/, "").split("\n");
-    if ((lines[0] || "").trim() !== "Techniques used") return h("pre", { class: "bubble code-block" }, part.trim());
+    if ((lines[0] || "").trim() !== "Techniques used") return h("div", { class: "md" }, h("pre", {}, h("code", {}, part.trim())));
     const blocks = [];
     for (const l of lines.slice(1)) {
       if (!l.trim()) continue;
@@ -1812,83 +1901,133 @@ function bugCard(b) {
       h("span", { class: "s jira-hint" }, "Ask the bot or Claude Code to file it in Jira"))));
 }
 
-function chatMsg(m) {
-  if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "bubble" }, m.text));
+// FC4: one status line for the bot's steps: "Working · 4 steps ›" while it works, "Ran 4 steps ›"
+// when done; a click shows the steps (the current one with a spinner).
+const stepsOpen = new Set();
+function stepsLine(m, working, waiting) {
+  const n = (m.tools || []).length;
+  if (!n && !working) return null;
+  const open = stepsOpen.has(m.id);
+  let label;
+  if (waiting) label = waiting;
+  else if (working) label = n ? `Working · ${n} ${n === 1 ? "step" : "steps"}` : "Working";
+  else label = `Ran ${n} ${n === 1 ? "step" : "steps"}`;
+  const dots = working ? h("span", { class: "dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null;
+  if (!n) return h("div", { class: "tsteps" }, h("span", { class: "working", role: "status" }, dots, label));
+  return h("div", { class: "tsteps" },
+    h("button", { type: "button", class: "tog", "aria-expanded": String(open), onclick: () => { if (open) stepsOpen.delete(m.id); else stepsOpen.add(m.id); chatSig = ""; renderChat(); } },
+      icon("chev", "sm" + (open ? " down" : "")), dots, label),
+    open ? h("ul", { "aria-label": "What the bot did" }, m.tools.map((t, i) => h("li", {}, working && i === n - 1 ? h("span", { class: "spin", "aria-hidden": "true" }) : icon("check", "sm"), t))) : null);
+}
+
+// FC4 first minutes (g11a): Claude Code is not signed in. The button opens its sign-in (Terminal
+// with `claude` on a Mac); "Try again" sends the message that waited.
+function signInCard(again) {
+  let note = null;
+  const card = h("section", { class: "signin", "aria-label": "Sign in to Claude" },
+    h("span", { class: "sico", "aria-hidden": "true" }, icon("key")),
+    h("h2", {}, "Sign in to Claude"),
+    h("p", { class: "sub" }, "fastpilot uses your Claude account to understand what you say. Sign in once."),
+    h("div", { class: "btns" },
+      h("button", { type: "button", class: "btn p", onclick: async () => {
+        try { const r = await api("/api/claude/signin", {}); note.textContent = r.message; } catch (e) { toast(e.message); }
+      } }, "Sign in to Claude"),
+      again ? h("button", { type: "button", class: "btn", onclick: () => chatSend(again) }, "Try again") : null),
+    note = h("p", { class: "s muted", role: "status" }));
+  return card;
+}
+
+function chatMsg(m, last) {
+  if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "me-b" }, m.text));
   const working = !m.done;
+  const waiting = working && last && chatData && chatData.waiting ? `Waiting for a free slot${chatData.waiting.ahead ? ` · ${chatData.waiting.ahead} ahead` : ""}`
+    : working && last && chatData && chatData.device_wait ? "Waiting: another chat is using this device" : null;
+  const signin = last && chatData && chatData.signin && m.error;
   return h("li", { class: "msg bot" },
-    h("div", { class: "who" }, icon("mark", "sm"), "fastpilot bot"),
-    m.tools && m.tools.length ? h("ul", { class: "tools", "aria-label": "What the bot did" }, m.tools.map((t) => h("li", {}, icon("play", "sm"), t))) : null,
+    h("div", { class: "who" }, h("span", { class: "fmark", "aria-hidden": "true" }, "f"), "fastpilot"),
+    stepsLine(m, working, waiting),
+    working && last && chatData && chatData.device_wait ? h("p", { class: "md" }, `${chatData.device_wait}. Yours starts when it ends.`) : null,
     m.jira_reads && m.jira_reads.length ? jiraReads(m.jira_reads) : null,
     // M3: next to a card that loosens a limit, the bot's own words are folded away.
     m.text && (m.proposals || []).some((p) => p.setting && p.setting.level === "loosen")
-      ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "bubble" }, markdown(m.text)))
+      ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "md" }, markdown(m.text)))
       : m.text ? botText(m.text) : null,
-    working ? h("div", { class: "typing" }, h("div", { class: "spin sm", "aria-hidden": "true" }), m.tools && m.tools.length ? " Working…" : " Thinking…") : null,
-    m.error ? h("div", { class: "err", role: "alert" }, rich(m.error)) : null,
+    m.stopped ? h("div", { class: "res mu", role: "status" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("stop", "sm")), h("span", { class: "rt" }, "Stopped by you")) : null,
+    signin ? signInCard(lastUserText()) : m.error ? h("div", { class: "res bd", role: "alert" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("close", "sm")), h("span", { class: "rt" }, rich(m.error))) : null,
     m.verdict ? verdictCard(m.verdict) : null,
     m.bug ? bugCard(m.bug) : null,
     (m.proposals || []).map(proposalCard),
     m.page_attempts && m.page_attempts.length ? pageAttempts(m.page_attempts) : null);
 }
 
-let chatDraft = { agent: null, text: "", focused: false };
+const lastUserText = () => (((chatData && chatData.messages) || []).filter((m) => m.role === "user").pop() || {}).text || null;
+
+// The composer box grows with what is typed, up to 200 px.
+function growBox(box) {
+  box.style.height = "auto";
+  box.style.height = Math.min(box.scrollHeight, 200) + "px";
+}
+
+// While it works, Send is Stop; with nothing typed, Send is grey.
+function sendState() {
+  const send = document.getElementById("chat-send"), box = document.getElementById("chat-input");
+  if (!send) return;
+  const busy = !!(chatData && chatData.busy);
+  if (send.classList.contains("stop") !== busy || !send.firstChild) {
+    send.classList.toggle("stop", busy);
+    send.setAttribute("aria-label", busy ? "Stop" : "Send");
+    send.title = busy ? "Stop" : "Send";
+    send.replaceChildren(busy ? h("span", { class: "sq", "aria-hidden": "true" }) : icon("up", "sm"));
+  }
+  send.disabled = !busy && !(box && box.value.trim());
+}
+
+let chatDraft = { key: null, text: "", focused: false };
+const draftKey = () => `${chatAgent}/${chatId || "new"}`;
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
-  const head = [h("span", { class: "pill" + (busy ? "" : " grey") }, busy ? "● the bot is working" : "● ready"),
-    h("button", { class: "btn sm right", disabled: busy || !(chatData && chatData.messages.length), onclick: async () => {
-      try { chatData = await api("/api/chat", { agent: chatAgent, reset: true }); } catch (e) { toast(e.message); }
-      chatSig = "";
-      renderChat();
-    } }, icon("refresh", "sm"), "New conversation")];
-  if (chatHost) {
-    // Inside an agent's page: its own small bar instead of the page title.
-    let bar = chatHost.querySelector(".chat-bar");
-    if (!bar) { bar = h("div", { class: "chat-bar" }); chatHost.prepend(bar); }
-    bar.replaceChildren(...head);
-  } else {
-    $top().replaceChildren(icon("chat"), h("h1", { tabindex: "-1" }, "Chat"), ...head);
-  }
   let root = document.getElementById("chat-root");
+  if (root && root.dataset.key !== draftKey()) { root.remove(); root = null; }
   if (!root) {
-    const input = h("textarea", { id: "chat-input", rows: "2", maxlength: "4000", placeholder: "Write to the fastpilot bot… for example: \"test the login in Chrome\"", "aria-label": "Message to the fastpilot bot" });
-    // The page is drawn again when apps or settings load (Chat is the first screen): what is
-    // being typed, and the cursor, stay.
-    const kept = chatDraft.agent === chatAgent;
+    const input = h("textarea", { id: "chat-input", rows: "1", maxlength: "4000", placeholder: "Ask fastpilot…", "aria-label": "Message to fastpilot" });
+    // The page is drawn again when apps or settings load: what is being typed, and the cursor, stay.
+    const kept = chatDraft.key === draftKey();
     if (kept) input.value = chatDraft.text;
-    input.addEventListener("input", () => { chatDraft = { agent: chatAgent, text: input.value, focused: true }; });
-    input.addEventListener("focus", () => { chatDraft = { agent: chatAgent, text: input.value, focused: true }; });
+    input.addEventListener("input", () => { chatDraft = { key: draftKey(), text: input.value, focused: true }; growBox(input); sendState(); });
+    input.addEventListener("focus", () => { chatDraft = { key: draftKey(), text: input.value, focused: true }; });
     // A box taken away by a redraw also blurs: only a box still on the page was left on purpose.
-    input.addEventListener("blur", () => { setTimeout(() => { if (input.isConnected && chatDraft.agent === chatAgent) chatDraft.focused = false; }); });
+    input.addEventListener("blur", () => { setTimeout(() => { if (input.isConnected && chatDraft.key === draftKey()) chatDraft.focused = false; }); });
     if (kept && chatDraft.focused) queueMicrotask(() => { if (input.isConnected) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } });
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); chatSend(input.value); } });
-    root = h("div", { id: "chat-root", class: "chat" },
-      h("ul", { id: "chat-log", class: "log", role: "log", "aria-live": "polite", "aria-label": "Conversation" }),
-      h("div", { class: "composer" }, input, h("button", { id: "chat-send", class: "btn p", onclick: () => chatSend(input.value) }, icon("send", "sm"), "Send")),
-      // DC6: one line.
-      h("p", { class: "s muted chat-foot" }, "Changes wait for your click on their card. Passwords are never typed here."));
-    if (chatHost) chatHost.append(root); else $body().replaceChildren(root);
+    // Enter sends, Shift+Enter is a new line.
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!(chatData && chatData.busy)) chatSend(input.value); } });
+    const send = h("button", { id: "chat-send", type: "button", class: "send", "aria-label": "Send", title: "Send", onclick: () => { if (chatData && chatData.busy) chatStop(); else chatSend(input.value); } }, icon("up", "sm"));
+    root = h("div", { id: "chat-root", class: "chat", "data-key": draftKey() },
+      h("div", { class: "chat-scroll", id: "chat-scroll" }, h("ul", { id: "chat-log", class: "log col", role: "log", "aria-live": "polite", "aria-label": "Conversation" })),
+      h("div", { class: "dock col" }, h("div", { class: "box" }, input, send),
+        h("p", { class: "rule" }, "Passwords are never typed here.")));
+    if (chatHost) chatHost.replaceChildren(root); else $body().replaceChildren(root);
+    queueMicrotask(() => growBox(input));
   }
   const box = document.getElementById("chat-input");
-  if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); }
-  const send = document.getElementById("chat-send");
-  if (send) send.disabled = busy;
+  if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); growBox(box); }
+  sendState();
   const log = document.getElementById("chat-log");
+  const scroll = document.getElementById("chat-scroll");
   const msgs = (chatData && chatData.messages) || [];
-  const sig = JSON.stringify(msgs) + (chatData && chatData.error);
+  const sig = JSON.stringify(msgs) + (chatData && chatData.error) + JSON.stringify([chatData && chatData.waiting, chatData && chatData.device_wait, chatData && chatData.signin]);
   if (sig === chatSig) return;
   chatSig = sig;
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+  root.classList.toggle("empty-chat", !msgs.length && !(chatData && chatData.error));
   if (chatData && chatData.error) {
-    log.replaceChildren(h("li", { class: "err", role: "alert" }, "Cannot read the chat: " + chatData.error));
+    log.replaceChildren(h("li", { class: "res bd", role: "alert" }, "Cannot read the chat: " + chatData.error));
   } else if (!msgs.length) {
-    // DC1: three one-click suggestions; fixed sentences written by fastpilot, sent at once.
-    log.replaceChildren(h("li", { class: "empty" }, icon("chat", "big"), h("b", {}, "Ask or tell the fastpilot bot"),
-      h("span", {}, "Run tests, ask why one failed, make a schedule, or make limits stricter."),
-      h("div", { class: "chat-suggest" }, CHAT_SUGGESTIONS.map((t) => h("button", { type: "button", class: "say-row", onclick: () => chatSend(t) }, h("span", {}, t), h("span", { class: "arrow", "aria-hidden": "true" }, "→"))))));
+    // FC4 empty state: a greeting and the box. No suggestions.
+    log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?")));
   } else {
-    log.replaceChildren(...msgs.map(chatMsg));
+    log.replaceChildren(...msgs.map((m, i) => chatMsg(m, i === msgs.length - 1)));
   }
-  if (atBottom || msgs.length) log.scrollTop = log.scrollHeight;
+  if (atBottom || msgs.length) scroll.scrollTop = scroll.scrollHeight;
 }
 
 
@@ -2263,12 +2402,31 @@ function pageSchedules() {
     sayIt(["Run all tests every 2 hours", "Turn off the nightly run"])));
 }
 
+// FC4: Chat as the page: an agent's chat (`#/agents/<agent>/chat/<id>`), its newest chat
+// (`…/chat`), a new one (`…/chat/new`), or "+ New agent" (`#/agents/new`).
+function chatPage(agent, id) {
+  const fresh = agent === "new" || id === "new";
+  const chat = fresh ? null : id;
+  if (chatAgent !== agent || chatId !== chat || !chatShown() || chatFresh !== fresh) { chatData = null; chatSig = ""; }
+  chatAgent = agent;
+  chatId = chat;
+  chatFresh = fresh;
+  $top().replaceChildren();
+  $top().hidden = true;
+  chatHost = $body();
+  document.body.classList.add("on-chat");
+  renderChat();
+  loadChat();
+}
+
 // ---- router ----
 // Pages in their own files (history.js, …) register here: PAGES[name] = (sub) => …
 const PAGES = {};
 function render() {
   if (!S) return;
   const hash = location.hash || HOME;
+  $top().hidden = false;
+  document.body.classList.remove("on-chat");
   // E6: "Apps" (Jira and the rest) is now Integrations; old links still land there.
   if (hash === "#/apps" || hash.startsWith("#/apps/jira")) { location.replace(hash.replace("#/apps", "#/integrations")); return; }
   const [, page, sub] = hash.split("/");
@@ -2279,18 +2437,19 @@ function render() {
     return;
   }
   if (page !== "live") stopLive();
-  // E4: the simple menu until the first saved test.
-  if (window.Welcome) Welcome.menu();
-  document.querySelectorAll(".rail a").forEach((a) => {
-    const on = a.dataset.nav === page;
-    a.classList.toggle("on", on);
-    if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
-  });
+  // FC4: the sidebar and the title row (agent and tabs, or the page's name).
+  if (window.Shell) Shell.frame();
   // E4: the first screen is the first-run wizard until a test is saved (or it is skipped).
   if (window.Welcome && Welcome.wants(page)) {
     Welcome.page();
     return;
   }
+  if (page === "agents") {
+    const [, , id, tab, extra] = hash.split("/");
+    if (!id) { location.replace(`#/agents/${window.Shell ? Shell.agent() : "default"}/chat`); return; }
+    if (id === "new" || (id !== "create" && (!tab || tab === "chat"))) { chatPage(id, id === "new" ? null : extra || null); return; }
+  }
+  if (chatHost) { chatHost = null; clearTimeout(chatTimer); }
   if (page === "live") {
     if (!liveTimer) {
       $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"));

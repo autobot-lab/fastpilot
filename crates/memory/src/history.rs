@@ -305,6 +305,12 @@ impl History {
 
     /// Keep a Chat conversation (after each answer). `messages` is what the Chat page shows.
     pub fn save_chat(&self, id: &str, messages: &Value) -> std::io::Result<()> {
+        self.save_chat_with(id, messages, None)
+    }
+
+    /// v0.7.1 FC4: [`Self::save_chat`] plus the Claude Code session it continues, so an older chat
+    /// opened again from the sidebar goes on where it stopped.
+    pub fn save_chat_with(&self, id: &str, messages: &Value, session: Option<&str>) -> std::io::Result<()> {
         if !safe_id(id) {
             return Err(std::io::Error::other(format!("bad history id {id}")));
         }
@@ -317,10 +323,21 @@ impl History {
                 if line.chars().count() > 80 { format!("{}…", line.chars().take(80).collect::<String>()) } else { line.to_owned() }
             })
             .unwrap_or_default();
-        let doc = serde_json::json!({ "id": id, "title": title, "updated_ms": now_ms(), "messages": messages });
+        let mut doc = serde_json::json!({ "id": id, "title": title, "updated_ms": now_ms(), "messages": messages });
+        if let Some(s) = session {
+            doc["session"] = serde_json::json!(s);
+        }
         write_private(&self.chat_path(id), &doc.to_string())?;
         self.prune(now_ms());
         Ok(())
+    }
+
+    /// FC4: put back a conversation removed from Chat (Undo, Recently removed), as it was kept.
+    pub fn restore_chat(&self, id: &str, doc: &Value) -> std::io::Result<()> {
+        if !safe_id(id) || doc["id"].as_str() != Some(id) {
+            return Err(std::io::Error::other(format!("bad history id {id}")));
+        }
+        write_private(&self.chat_path(id), &doc.to_string())
     }
 
     /// A new conversation id.

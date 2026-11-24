@@ -91,7 +91,7 @@ async fn a_refused_save_says_why_in_the_card() {
     eval(&client, "location.hash = '#/agents', 'ok'").await;
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- inputText: { into: { role: textfield }, text: \"write a test for the demo login and save it\" }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
-    eval(&client, "[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send').click(), 'ok'").await;
+    eval(&client, "document.getElementById('chat-send').click(), 'ok'").await;
     see(&client, "Save test only").await;
     eval(&client, "[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save test only').click(), 'ok'").await;
     see(&client, "Not saved:").await;
@@ -121,6 +121,97 @@ async fn a_refused_save_says_why_in_the_card() {
     assert_eq!(std::fs::read_to_string(project.join("tests/login-demo.md")).expect("kept"), "# Login\n", "the other test is still untouched");
     let card = eval(&client, "(() => { const c = document.querySelector('.prop.test'); return c.className + '|' + c.textContent; })()").await;
     assert!(card.contains("applied") && card.contains("Login with the second account") && card.contains("Saved as tests/login-second.md") && !card.contains("Cancel edit"), "the card shows what was saved: {card}");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// `fastpilot ui` in `project` with the stand-in Claude, and a fastpilot Chrome session on it.
+async fn open_ui(home: &Path, project: &Path, env: &[(&str, &str)]) -> (Ui, Client) {
+    std::fs::create_dir_all(project.join("tests")).expect("project");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["ui", "--no-open"])
+        .current_dir(project)
+        .env("HOME", home)
+        .env("FASTPILOT_DIR", project.join(".fastpilot"))
+        .env_remove("FASTPILOT_CONFIG")
+        .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .env("FASTPILOT_CLAUDE", FAKE)
+        .env("FAKE_CHAT_DELAY_MS", "0")
+        .env("FAKE_CHAT_NO_RUN", "1")
+        .envs(env.iter().copied())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("ui");
+    let mut link = String::new();
+    BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
+    let ui = Ui(child);
+    let viewer_home = home.join("viewer");
+    std::fs::create_dir_all(&viewer_home).expect("viewer");
+    let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+        c.arg("mcp").env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").current_dir(ROOT).env("HOME", &viewer_home).env("FASTPILOT_LIVE_DIR", viewer_home.join("live")).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
+    });
+    let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+    let flow = format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n", link.trim());
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": flow })).await;
+    assert!(ok, "{out}");
+    (ui, client)
+}
+
+async fn say(client: &Client, text: &str) {
+    let flow = format!("- inputText: {{ into: {{ role: textfield }}, text: {} }}\n", serde_json::to_string(text).expect("text"));
+    let (ok, out) = call(client, "run_flow", json!({ "flow": flow, "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    eval(client, "document.getElementById('chat-send').click(), 'ok'").await;
+}
+
+/// v0.7.1 FC4: Chat in the OpenBot style. The agents sidebar lists the agent's chats (each titled
+/// from its first message, the open one marked), "+ New chat" starts another, the bot's Markdown
+/// is drawn as headings, lists, tables, code and links, and everything that is not Markdown stays
+/// text: a `<script>` in a reply is shown, never run; no remote image is loaded; a `javascript:` link
+/// is not a link. Under 900 px the sidebar is a drawer behind Menu.
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_has_chats_in_the_sidebar_and_draws_markdown_safely() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-fc4-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    let txt = |s: String| s.trim_matches('"').to_owned();
+    eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
+    see(&client, "What should I test?").await;
+    assert_eq!(txt(eval(&client, "String(!!document.querySelector('.rail, .chat-suggest, .say-row'))").await), "false", "no rail, no suggestions");
+
+    say(&client, "show the release table").await;
+    see(&client, "Ship with fixes").await;
+    let md = txt(eval(&client, "(() => { const m = [...document.querySelectorAll('.msg.bot .md')].pop(); return [m.querySelector('h3')?.textContent, m.querySelector('b')?.textContent, m.querySelectorAll('li').length, m.querySelectorAll('.tablewrap table tr').length, m.querySelector('code')?.textContent, m.querySelectorAll('script, img, iframe').length, String(window.__fpInjected), [...m.querySelectorAll('a')].map((a) => a.getAttribute('href') + ' ' + a.target + ' ' + a.rel).join(';'), m.textContent.includes('<script>window.__fpInjected = 1</script>'), m.textContent.includes('<b>this</b>'), m.textContent.includes('javascript:alert(1)')].join('|'); })()").await);
+    assert_eq!(md, "Ship with fixes|passed|2|3|Place order|0|undefined|https://example.com/report _blank noopener noreferrer|true|true|true", "Markdown drawn, HTML and script shown as text, no image, only the https link");
+
+    // The chat is in the sidebar, titled from its first message, and marked as the open one.
+    let side = txt(eval(&client, "(() => { const a = document.querySelector('.side .crow[aria-current=\"page\"]'); return a ? a.textContent + '|' + /#\\/agents\\/default\\/chat\\/\\d/.test(location.hash) : 'none'; })()").await);
+    assert_eq!(side, "show the release table|true");
+    // "+ New chat": the empty chat; its first message makes a second chat, listed first.
+    eval(&client, "document.querySelector('.side .crow.newc').click(), 'ok'").await;
+    see(&client, "What should I test?").await;
+    say(&client, "hello there").await;
+    see(&client, "Halo! Mau tes apa?").await;
+    let rows = txt(eval(&client, "[...document.querySelectorAll('.side .crow-li .crow')].map((a) => a.textContent + (a.getAttribute('aria-current') ? '*' : '')).join(';')").await);
+    assert_eq!(rows, "hello there*;show the release table");
+    // Each chat has a labelled remove button.
+    assert_eq!(txt(eval(&client, "[...document.querySelectorAll('.side .crow-li .del')].map((b) => b.getAttribute('aria-label')).join(';')").await), "Remove chat “hello there”;Remove chat “show the release table”");
+
+    // Narrow window: the sidebar is a drawer behind Menu; Esc closes it and focus goes back.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- setViewport: { width: 820, height: 900 }\n", "session": "viewer" })).await;
+    assert!(ok, "{out}");
+    let closed = txt(eval(&client, "getComputedStyle(document.getElementById('side')).visibility + '|' + getComputedStyle(document.getElementById('menubtn')).display").await);
+    assert_eq!(closed, "hidden|grid");
+    eval(&client, "document.getElementById('menubtn').click(), 'ok'").await;
+    let open = txt(eval(&client, "(() => { const s = document.getElementById('side'); return [getComputedStyle(s).visibility, s.getAttribute('role'), s.contains(document.activeElement), document.getElementById('menubtn').getAttribute('aria-expanded')].join('|'); })()").await);
+    assert_eq!(open, "visible|dialog|true|true");
+    eval(&client, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), 'ok'").await;
+    let back = txt(eval(&client, "[document.body.classList.contains('drawer'), document.activeElement && document.activeElement.id].join('|')").await);
+    assert_eq!(back, "false|menubtn");
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }

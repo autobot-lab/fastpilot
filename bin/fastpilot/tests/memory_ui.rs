@@ -148,7 +148,7 @@ fn memory_page_lists_tests_in_words_and_changes_only_on_the_users_click() {
 
     // The page and its script.
     let (st, page) = request(&ui, "GET", "/", "", &own);
-    assert!(st == 200 && page.contains("#/memory") && page.contains("/assets/memory.js"));
+    assert!(st == 200 && page.contains("/assets/shell.js") && page.contains("/assets/memory.js"));
     let (st, js) = request(&ui, "GET", "/assets/memory.js", "", &own);
     assert!(st == 200 && js.contains("PAGES.memory") && js.contains("Set aside") && js.contains("Forget this"));
     let code: Vec<&str> = js.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("//")).collect();
@@ -247,7 +247,7 @@ fn why_unstable_explains_with_evidence_and_never_invents() {
         assert!(js.contains(w), "memory.js: {w}");
     }
     let (_, app) = request(&ui, "GET", "/assets/app.js", "", &own);
-    assert!(app.contains("if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); }"), "Chat fills the box and waits for Send");
+    assert!(app.contains("if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); growBox(box); }"), "Chat fills the box and waits for Send");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

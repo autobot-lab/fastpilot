@@ -487,9 +487,12 @@ fn the_apps_page_shows_what_is_connected() {
     let get = |path: &str| http(p, "GET", path, &[("Cookie", session.clone())], "");
 
     let page = get("/").text();
-    let (device, apps, settings) = (page.find("data-nav=\"device\"").expect("device"), page.find("data-nav=\"integrations\"").expect("integrations"), page.find("data-nav=\"settings\"").expect("settings"));
-    assert!(device < apps && apps < settings, "Integrations sits between Device and Settings");
-    assert!(page.contains("/assets/apps.js"));
+    assert!(page.contains("/assets/apps.js") && page.contains("/assets/shell.js"));
+    // FC4: Live, Device and Settings at the foot of the sidebar; Integrations is in Settings.
+    let shell = get("/assets/shell.js").text();
+    let (device, settings) = (shell.find("\"#/device\"").expect("device"), shell.find("\"#/settings/limits\"").expect("settings"));
+    assert!(shell.find("\"#/live\"").expect("live") < device && device < settings, "Live, Device, Settings");
+    assert!(get("/assets/app.js").text().contains("h(\"a\", { href: \"#/integrations\" }, \"Integrations\")"), "Integrations in the Settings menu");
     let js = get("/assets/apps.js");
     assert!(js.status == 200 && js.text().contains("PAGES.integrations") && js.text().contains("Connect Jira"));
     let app = get("/assets/app.js").text();
