@@ -176,6 +176,7 @@ type in a terminal. All three use the same apps, tests, schedules and passwords.
 |---|---|
 | Your apps | `fastpilot app list`, `app add https://your-site` (or `app add com.shop.app --android`), `app switch NAME`, `app remove NAME` |
 | One-click schedules | `fastpilot schedule add` (every 2 hours, 8–20), `--nightly` or `--before-release`; `schedule pause ID`, `resume ID`, `remove ID` |
+| Agents | `fastpilot agent skills "My tester" +safe-checkout` (General QA is always on), `agent stop NAME` (stops that agent's running chats) |
 | Test passwords | `fastpilot secret set TEST_PASSWORD` (typed hidden, or piped in; never on the command line), `secret list`, `secret remove NAME` |
 
 Removing an app or a schedule asks first. A password is kept for its app in this Mac's Keychain

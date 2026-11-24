@@ -385,6 +385,11 @@ fn name_from(t: &Targets) -> String {
     cap(last)
 }
 
+/// The name picked for a phone app id (`com.shop.app` → "Shop").
+pub fn name_from_id(id: &str) -> String {
+    name_from(&Targets { android: Some(id.to_owned()), ..Default::default() })
+}
+
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
