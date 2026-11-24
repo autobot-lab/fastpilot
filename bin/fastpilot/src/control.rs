@@ -739,6 +739,52 @@ pub fn change_skills(agent: &str, changes: &[SkillChange], s: Surface) -> Result
     Ok(Done::undoable(line, &format!("skills:{agent_id}"), crate::undo::Op::Skills { agent: agent_id.clone(), skills: before_skills }))
 }
 
+/// v0.7.1 FC8 migration: an agent saved before v0.7.1 with no skill list (it meant "every skill")
+/// becomes General QA (SPEC FC8; fastpilot kept no record of which skills a run used, so none is
+/// kept on by guess). Nothing is lost silently: each change is in the Undo list ("fastpilot undo
+/// --list"), and its Undo puts the old list back. Run once when the dashboard starts.
+pub fn migrate_skills() -> Vec<String> {
+    crate::agents::list()
+        .into_iter()
+        .filter_map(|a| {
+            let gqa: Vec<String> = GENERAL_QA.iter().map(|x| (*x).to_owned()).collect();
+            if !crate::agents::set_skills_if_empty(&a.id, gqa).ok()? {
+                return None;
+            }
+            crate::undo::record(&format!("{} · General QA", a.name), &format!("skills:{}", a.id), crate::undo::Op::Skills { agent: a.id.clone(), skills: vec![] });
+            Some(a.name)
+        })
+        .collect()
+}
+
+/// v0.7.1 FC8: the Skills tab of one agent: General QA (locked) and the specialist skills by group,
+/// each with its catalog name and line and whether it is on; Jira skills only when Jira is connected.
+pub fn skills_page(a: &crate::agents::Agent) -> serde_json::Value {
+    let on = specialists_on(a);
+    let jira = jira_connected();
+    let line = |id: &str| -> String {
+        if id == crate::skills_catalog::CHOOSER {
+            return "Picks the test technique that fits each job.".into();
+        }
+        crate::skills_catalog::CATALOG.iter().find(|s| s.0 == id).map(|s| s.3.to_owned()).unwrap_or_default()
+    };
+    let general: Vec<serde_json::Value> = GENERAL_QA.iter().map(|id| serde_json::json!({ "id": id, "name": skill_name(id), "line": line(id) })).collect();
+    let groups: Vec<serde_json::Value> = GROUPS
+        .iter()
+        .filter_map(|(g, title)| {
+            let skills: Vec<serde_json::Value> = specialists()
+                .into_iter()
+                .filter(|(id, gr)| gr == g && (!jira_skill(id) || jira))
+                .map(|(id, _)| serde_json::json!({ "id": id, "name": skill_name(id), "line": line(id), "on": on.iter().any(|x| x == id) }))
+                .collect();
+            let (name, about) = title.split_once(" · ").unwrap_or((title, ""));
+            (!skills.is_empty()).then(|| serde_json::json!({ "id": g, "name": name, "about": about, "skills": skills }))
+        })
+        .collect();
+    let n = on.iter().filter(|id| !jira_skill(id) || jira).count();
+    serde_json::json!({ "agent": a.id, "name": a.name, "specialists_on": n, "general": general, "groups": groups, "jira": jira })
+}
+
 /// The fastpilot processes now working for an agent (its Chat's tools, its scheduled runs), as
 /// Live lists them: pids of this user's own `fastpilot` programs only.
 fn agent_pids(agent: &str) -> Vec<u32> {

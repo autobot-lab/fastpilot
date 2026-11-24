@@ -115,6 +115,8 @@ fn default_agent() -> Agent {
         name: "My tester".into(),
         job: "Tests this project.".into(),
         devices: vec!["web".into()],
+        // v0.7.1 FC8: every agent starts on General QA.
+        skills: crate::control::GENERAL_QA.iter().map(|x| (*x).to_owned()).collect(),
         created_ms: fastpilot_core::change::now_ms(),
         ..Default::default()
     }
@@ -186,6 +188,19 @@ pub fn app_of(a: &Agent) -> Option<crate::apps::App> {
         return None;
     }
     crate::apps::list().into_iter().find(|x| x.id == a.app || [&x.targets.web, &x.targets.android, &x.targets.ios].iter().any(|t| t.as_deref() == Some(a.app.as_str())))
+}
+
+/// v0.7.1 FC8 migration: an agent saved with no skill list ("every skill") gets this explicit list;
+/// an agent that has a list keeps it. Returns whether it changed.
+pub fn set_skills_if_empty(agent: &str, skills: Vec<String>) -> Res<bool> {
+    let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut s = read();
+    let Some(a) = s.agents.iter_mut().find(|x| x.id == agent) else { return Ok(false) };
+    if !a.skills.is_empty() {
+        return Ok(false);
+    }
+    a.skills = skills;
+    write(&s).map(|()| true)
 }
 
 /// v0.7.1 FC5: agent `agent` tests app `app` (an app id) from now on: an app added from its Chat.

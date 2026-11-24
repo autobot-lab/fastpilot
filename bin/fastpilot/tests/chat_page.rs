@@ -215,3 +215,57 @@ async fn chat_has_chats_in_the_sidebar_and_draws_markdown_safely() {
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// v0.7.1 FC8: the Skills tab. General QA is locked: its 8 skills are plain text marked "Always
+/// on", with no switch. The 15 specialist skills are real switches (`role=switch`, `aria-checked`,
+/// the skill's name as their name) that act at once with Undo; "Back to General QA" turns them all
+/// off and is greyed when none is on; Jira skills are not listed until Jira is connected. An agent
+/// saved before v0.7.1 with no skill list becomes General QA when the dashboard starts, with an Undo
+/// that brings the old list back; a list that was chosen is kept as it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_skills_tab_has_general_qa_locked_and_specialist_switches() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-skills-tab-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let agents = json!({ "agents": [
+        { "id": "default", "name": "My tester", "job": "Tests this project.", "devices": ["web"], "skills": [] },
+        { "id": "checkout-qa", "name": "Checkout QA", "job": "Only the checkout", "devices": ["web"], "skills": ["choose-technique", "safe-checkout"] },
+    ] });
+    std::fs::write(home.join(".fastpilot/agents.json"), agents.to_string()).expect("agents");
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    let txt = |s: String| s.trim_matches('"').to_owned();
+    let saved = || -> Value { serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/agents.json")).expect("agents")).expect("json") };
+    let skills_of = |id: &str| -> Vec<String> { saved()["agents"].as_array().and_then(|a| a.iter().find(|x| x["id"] == id)).map(|x| x["skills"].as_array().cloned().unwrap_or_default().iter().filter_map(|s| s.as_str().map(str::to_owned)).collect()).unwrap_or_default() };
+    // The migration: no list → General QA (8); a chosen list stays.
+    assert_eq!(skills_of("default"), ["choose-technique", "use-case-scenarios", "edge-cases", "exploratory-check", "regression", "bug-report", "test-report", "release-check"]);
+    assert_eq!(skills_of("checkout-qa"), ["choose-technique", "safe-checkout"]);
+
+    eval(&client, "location.hash = '#/agents/default/skills', 'ok'").await;
+    see(&client, "General QA · Default · Always on").await;
+    let page = txt(eval(&client, "(() => { const locked = [...document.querySelectorAll('.sk-card.locked')]; const sw = [...document.querySelectorAll('.skills [role=switch]')]; const back = [...document.querySelectorAll('.skills button')].find((b) => b.textContent === 'Back to General QA'); return [locked.length, locked.every((c) => c.textContent.includes('Always on') && !c.querySelector('button, [role=switch]')), sw.length, sw.every((b) => b.tagName === 'BUTTON' && b.getAttribute('aria-checked') === 'false' && b.getAttribute('aria-label')), sw.some((b) => b.getAttribute('aria-label').startsWith('Jira')), back.disabled, document.body.textContent.includes('Jira skills appear after you connect Jira.'), [...document.querySelectorAll('.sk-group h3')].map((h) => h.textContent).join(',')].join('|'); })()").await);
+    assert_eq!(page, "8|true|12|true|false|true|true|Black-box,Experience-based,Collaboration", "locked General QA, 12 switches without Jira, Back greyed");
+
+    // A switch acts at once: the line says what changed, with Undo; the header counts it.
+    eval(&client, "document.querySelector('[role=switch][aria-label=\"Checklist · Safe checkout\"]').click(), 'ok'").await;
+    see(&client, "General QA + 1 specialist skill").await;
+    let after = txt(eval(&client, "[document.querySelector('[role=switch][aria-label=\"Checklist · Safe checkout\"]').getAttribute('aria-checked'), document.querySelector('.sk-done .rt').textContent, !!document.querySelector('.sk-done .rl-undo'), document.querySelector('.sk-done').getAttribute('role')].join('|')").await);
+    assert_eq!(after, "true|My tester: + Safe checkout|true|status");
+    assert!(skills_of("default").contains(&"safe-checkout".to_owned()));
+    eval(&client, "document.querySelector('[role=switch][aria-label=\"Decision table\"]').click(), 'ok'").await;
+    see(&client, "General QA + 2 specialist skills").await;
+    // Back to General QA: every specialist off, with Undo; then greyed again.
+    eval(&client, "[...document.querySelectorAll('.skills button')].find((b) => b.textContent === 'Back to General QA').click(), 'ok'").await;
+    see(&client, "General QA · Default · Always on").await;
+    assert_eq!(txt(eval(&client, "document.querySelector('.sk-done .rt').textContent").await), "My tester: back to General QA (− Safe checkout, − Decision table)");
+    assert_eq!(skills_of("default").len(), 8, "General QA only");
+    eval(&client, "document.querySelector('.sk-done .rl-undo').click(), 'ok'").await;
+    see(&client, "General QA + 2 specialist skills").await;
+    assert!(skills_of("default").contains(&"decision-table".to_owned()), "Undo puts them back");
+    // Skills never touch the limits.
+    assert!(!std::fs::read_to_string(home.join(".fastpilot/config.toml")).unwrap_or_default().contains("block_actions"));
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}

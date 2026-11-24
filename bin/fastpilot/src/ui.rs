@@ -189,6 +189,10 @@ pub async fn ui(args: &[String]) -> Res<()> {
     }
     // E6: work in the current app's folder (or this project folder, listed as a Repo app).
     crate::apps::enter(true);
+    // v0.7.1 FC8: agents from before get their explicit skill list (General QA + what they had).
+    for name in crate::control::migrate_skills() {
+        tracing::info!(agent = %name, "skills: General QA plus the specialist skills it had");
+    }
     // Security #208 L1: a key only this dashboard knows (owner-only file, new each start), so only
     // its own Chat can name the app whose passwords Chat's fastpilot uses.
     if let Ok(k) = random_hex(16)
@@ -317,6 +321,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/claude/signin", post(claude_signin))
         .route("/api/agents", get(agents_api).post(agents_change))
         .route("/api/skills", get(skills_api))
+        .route("/api/agent-skills", get(agent_skills_api).post(agent_skills_change))
         .route("/api/provider", get(provider_api).post(provider_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/removed", get(removed_list).post(removed_restore))
@@ -861,6 +866,37 @@ fn app_line(a: &crate::agents::Agent) -> String {
             format!("{} · {kind}", x.name)
         }
         None => "No app yet".into(),
+    }
+}
+
+/// v0.7.1 FC8: `?agent=ID`: that agent's Skills tab.
+async fn agent_skills_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    match crate::control::resolve_agent(q.get("agent").map(String::as_str).unwrap_or(crate::agents::DEFAULT)) {
+        Ok(a) => axum::Json(crate::control::skills_page(&a)).into_response(),
+        Err(f) => refuse(StatusCode::NOT_FOUND, &f.msg),
+    }
+}
+
+/// v0.7.1 FC8: `{agent, add: id}`, `{agent, remove: id}` or `{agent, reset: true}` ("Back to General
+/// QA"): done at once, with Undo. Only skills change; limits, words and secrets are untouched.
+async fn agent_skills_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use crate::control::SkillChange;
+    let agent = body["agent"].as_str().unwrap_or(crate::agents::DEFAULT);
+    let change = if body["reset"] == true {
+        SkillChange::Reset
+    } else if let Some(id) = body["add"].as_str() {
+        SkillChange::Add(id.to_owned())
+    } else if let Some(id) = body["remove"].as_str() {
+        SkillChange::Remove(id.to_owned())
+    } else {
+        return refuse(StatusCode::BAD_REQUEST, "Say add, remove or reset.");
+    };
+    match crate::control::change_skills(agent, &[change], crate::control::Surface::Cli) {
+        Ok(d) => {
+            let page = crate::control::resolve_agent(agent).map(|a| crate::control::skills_page(&a)).unwrap_or_default();
+            axum::Json(json!({ "message": d.line, "undo": d.undo, "page": page })).into_response()
+        }
+        Err(f) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
     }
 }
 
