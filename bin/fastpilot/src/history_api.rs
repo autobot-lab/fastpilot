@@ -23,7 +23,9 @@ fn refuse(status: StatusCode, why: &str) -> Response {
 pub async fn list() -> Response {
     let h = History::from_env();
     h.prune(now_ms());
-    Json(json!({ "runs": h.runs(), "chats": h.chats(), "keep_days": h.keep_days(), "keep_default": h.keep_days_is_default() })).into_response()
+    // FC4b: each chat with its agent, so History opens it in that agent's Chat.
+    let chats: Vec<Value> = h.chats().into_iter().map(|c| { let agent = crate::agents::of_conversation(&c.id); let mut v = json!(c); v["agent"] = json!(agent); v }).collect();
+    Json(json!({ "runs": h.runs(), "chats": chats, "keep_days": h.keep_days(), "keep_default": h.keep_days_is_default() })).into_response()
 }
 
 /// Conversations to delete, minus the one Chat is still answering (with why).

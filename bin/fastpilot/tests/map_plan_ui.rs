@@ -91,7 +91,7 @@ fn the_map_plan_follows_the_current_app() {
     assert!(st == 422 && body.contains("There is no map yet"), "{st} {body}");
     // The Map page asks no question up front: no text field outside More options, one button.
     let (_, js) = request(&ui, "GET", "/assets/map.js", "", &own);
-    assert!(js.contains("\"Map \" + p.app.name") && js.contains("UI.moreOptions(") && js.contains("Skip this page") && !js.contains("Project notes\")"), "map.js");
+    assert!(js.contains("\"Map \" + p.app.name") && js.contains("UI.section(\"Start and limits\"") && js.contains("Skip this page") && !js.contains("Project notes\")"), "map.js");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

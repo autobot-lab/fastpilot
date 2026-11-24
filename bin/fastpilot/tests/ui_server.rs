@@ -493,7 +493,7 @@ fn the_apps_page_shows_what_is_connected() {
     let shell = get("/assets/shell.js").text();
     let (device, settings) = (shell.find("\"#/device\"").expect("device"), shell.find("\"#/settings/limits\"").expect("settings"));
     assert!(shell.find("\"#/live\"").expect("live") < device && device < settings, "Live, Device, Settings");
-    assert!(get("/assets/app.js").text().contains("h(\"a\", { href: \"#/integrations\" }, \"Integrations\")"), "Integrations in the Settings menu");
+    assert!(get("/assets/app.js").text().contains("h(\"a\", { href: \"#/integrations\", class: cur === \"integrations\""), "Integrations in the Settings menu");
     let js = get("/assets/apps.js");
     assert!(js.status == 200 && js.text().contains("PAGES.integrations") && js.text().contains("Connect Jira"));
     let app = get("/assets/app.js").text();

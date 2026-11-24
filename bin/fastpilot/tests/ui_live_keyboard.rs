@@ -116,8 +116,8 @@ async fn live_page_works_with_the_keyboard() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Checkout and payments\", timeout: 8000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let quick = eval(&client, "[[...document.querySelectorAll('.ag-new button[data-focus]')].map((b) => b.textContent.replace('→', '').trim()).join('|'), [...document.querySelectorAll('.ag-new input, .ag-new textarea')].filter((e) => !e.closest('[hidden]')).length, document.activeElement.dataset.focus].join(' / ')").await;
-    assert_eq!(quick, "\"Regression of everything|Checkout and payments|Login and accounts / 0 / regression\"", "no field to type in on the main path, the first focus has the keyboard");
-    eval(&client, "document.querySelector('.ag-new .more-btn').click(), 'ok'").await;
+    // FC4b: no "More options": the form (reached only from Edit on a "New agent" card) is visible.
+    assert_eq!(quick, "\"Regression of everything|Checkout and payments|Login and accounts / 5 / regression\"", "the focuses first, the first focus has the keyboard");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Create agent\", timeout: 15000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let chip = |id: &str| format!("document.querySelector('.ag-new button[data-device=\"{id}\"]')");
@@ -212,8 +212,7 @@ async fn live_page_works_with_the_keyboard() {
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Limits & permissions\", timeout: 15000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     // UXA5: "Tests at once" is in Settings › Limits, with its default marked. A2: every limit
-    // is under More options, below the one-line summary.
-    eval(&client, "document.querySelector('#body .more-btn').click(), 'ok'").await;
+    // is in the "Every limit" section, below the one-line summary (FC4b: no More options).
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: { text: \"Tests at once\", timeout: 15000 }\n", "session": "viewer" })).await;
     assert!(ok, "{out}");
     let mut picked = String::new();

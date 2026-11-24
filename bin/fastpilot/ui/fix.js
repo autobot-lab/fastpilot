@@ -163,7 +163,7 @@ function lineRows(l, busy) {
   const add = l.kind === "android" ? (fixData.offers || []).find((o) => o.area === "android" && o.button && o.secondary) : null;
   if (!items.length && !add) return [row];
   const label = l.kind === "ios" ? "iPhone simulators on this computer" : "Android devices on this computer";
-  return [row, UI.moreOptions({ label: "Change" },
+  return [row, UI.section("Other devices",
     items.length ? h("ul", { class: "fix-choices", "aria-label": label }, items) : null,
     add ? h("div", { class: "fix-more" }, h("button", { class: "btn sm", disabled: busy, onclick: () => startFix(add) }, add.button), h("span", { class: "s" }, " (downloads about 1.5 GB)")) : null)];
 }

@@ -77,7 +77,6 @@ function makeTest(s) {
 // and sit under More options. A phone app with no phone running gets a Start button (state 2); no
 // app yet is "Add your app first" (state 4).
 let devices = null; // the Device page's lines (/api/fix), to see if the phone is ready
-let moreOpen = false;
 
 function choose(label, options, key) {
   // A segmented choice: a radiogroup of buttons (s1b, accessibility note).
@@ -123,13 +122,11 @@ function startForm(note) {
   target.addEventListener("input", () => { form.target = target.value; });
   const kinds = p.kinds || [];
   const KIND = { web: "Website", android: "Android emulator", ios: "iPhone simulator" };
-  const more = UI.moreOptions({ open: moreOpen, changed: [form.target !== p.target, form.platform !== p.platform, form.screens !== p.screens, form.minutes !== p.minutes].filter(Boolean).length },
+  const more = UI.section("Start and limits",
     h("label", { class: "fld" }, h("span", { class: "l" }, "Start from"), target),
     kinds.length > 1 ? choose("Where it runs", kinds.map((k) => [k.platform, KIND[k.platform]]), "platform") : null,
     choose("Stop after", [[15, "15 screens"], [30, "30 screens"], [60, "60 screens"]], "screens"),
     choose("Or after", [[5, "5 min"], [10, "10 min"], [20, "20 min"]], "minutes"));
-  // Stays open across redraws once the person opened it.
-  more.querySelector(".more-btn").addEventListener("click", (e) => { moreOpen = e.currentTarget.getAttribute("aria-expanded") === "true"; });
   const notReady = line && !line.ready;
   const go = notReady && line.button
     ? h("button", { class: "btn p", onclick: () => startDeviceThenMap(line) }, line.button + " and map")

@@ -107,7 +107,6 @@ async fn schedules_page_creates_every_n_hours_and_points_at_fields() {
     // L07-1: one way in: the empty list has no "New schedule" button of its own.
     assert_eq!(eval(&client, "document.querySelectorAll('.grp .empty button').length").await, "0", "no second entry point");
     // Escape closes the panel and gives focus back to "New schedule" (under More options).
-    eval(&client, "document.querySelector('#body .more-btn').click(), 'ok'").await;
     eval(&client, &format!("{}.click(), 'ok'", btn("New schedule"))).await;
     see(&client, "Create schedule").await;
     assert_eq!(eval(&client, "document.activeElement.closest('.sched-form') ? 'in' : 'out'").await, "\"in\"");

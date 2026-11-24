@@ -23,21 +23,13 @@ function pageHeader({ icon: ic, title, sub, crumb, actions } = {}) {
   return top;
 }
 
+// Ids for the dialogs' labels.
 let moreSeq = 0;
-/// "More options": a button with aria-expanded, closed unless `open`. `changed` (a number) says
-/// how many options differ from the default, so a closed section still shows that something is set.
-function moreOptions({ label = "More options", changed = 0, open = false } = {}, ...content) {
-  const id = `more-${++moreSeq}`;
-  const panel = h("div", { class: "more-body", id }, kids(content));
-  panel.hidden = !open;
-  const btn = h("button", { type: "button", class: "more-btn", "aria-expanded": String(!!open), "aria-controls": id },
-    icon("chev", "sm"), label, changed ? h("span", { class: "s muted" }, ` · ${changed} changed`) : null);
-  btn.addEventListener("click", () => {
-    const now = btn.getAttribute("aria-expanded") !== "true";
-    btn.setAttribute("aria-expanded", String(now));
-    panel.hidden = !now;
-  });
-  return h("section", { class: "more" }, btn, panel);
+
+/// v0.7.1 FC4b: no hidden "More options" anywhere (the user, 24 Nov): what was behind one is a
+/// visible section with its own heading.
+function section(label, ...content) {
+  return h("section", { class: "more" }, h("h3", { class: "more-h" }, label), h("div", { class: "more-body" }, kids(content)));
 }
 
 /// An in-page confirm instead of the browser's confirm(): says what is lost and what stays; the
@@ -128,5 +120,5 @@ function passwordAsk({ name, label, onSaved, plain = false } = {}) {
   });
 }
 
-window.UI = { kids, pageHeader, moreOptions, confirmDialog, empty, notice, passwordAsk };
+window.UI = { kids, pageHeader, section, confirmDialog, empty, notice, passwordAsk };
 })();
