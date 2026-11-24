@@ -269,3 +269,27 @@ async fn the_skills_tab_has_general_qa_locked_and_specialist_switches() {
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// v0.7.1 FC-STOP: "About this agent" opens from the agent's name as a dialog that reads first:
+/// focus on Close, its rows as text (nothing drawn as "[object …]"), Skills as one line to the
+/// Skills tab, no Stop row while nothing runs, Esc closes it and focus goes back to the name.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_about_panel_reads_first_and_closes_with_escape() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-about-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    let txt = |s: String| s.trim_matches('"').to_owned();
+    eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
+    see(&client, "What should I test?").await;
+    eval(&client, "document.querySelector('.hdr2 .agname').click(), 'ok'").await;
+    see(&client, "About My tester").await;
+    let p = txt(eval(&client, "(() => { const d = document.getElementById('about-panel'); return [d.getAttribute('role'), d.getAttribute('aria-modal'), document.activeElement.getAttribute('aria-label'), d.textContent.includes('[object'), d.querySelector('.ab-link').getAttribute('href'), d.querySelector('.ab-link').textContent, !!d.querySelector('.ab-run'), !!d.querySelector('[data-fk=remove]'), d.textContent.includes('Tests this project.')].join('|'); })()").await);
+    assert_eq!(p, "dialog|true|Close|false|#/agents/default/skills|General QA|false|false|true");
+    eval(&client, "document.getElementById('about-panel').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), 'ok'").await;
+    assert_eq!(txt(eval(&client, "[!!document.getElementById('about-panel'), document.activeElement.classList.contains('agname')].join('|')").await), "false|true");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}

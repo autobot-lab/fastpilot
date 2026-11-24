@@ -157,7 +157,7 @@ function drawAbout() {
   const n = x.running || 0;
   const model = a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
   const told = [a.job, ...(a.instructions || [])].filter(Boolean).join(" ");
-  panel.replaceChildren(
+  panel.replaceChildren(...[
     h("div", { class: "ab-head" }, h("h2", { id: "about-title" }, `About ${a.name}`),
       h("button", { type: "button", class: "iconbtn", "aria-label": "Close", "data-fk": "close", onclick: closeAbout }, icon("close", "sm"))),
     h("dl", { class: "ab-rows" }, row("Name", a.name), row("Tests", x.app_line || "No app yet"), row("Model", model[0], model[1])),
@@ -166,7 +166,7 @@ function drawAbout() {
     told ? [h("h3", {}, "What it is told"), h("div", { class: "ab-box" }, told)] : null,
     h("h3", {}, "Skills"), h("a", { class: "ab-box ab-link", href: `#/agents/${a.id}/skills`, onclick: closeAbout }, x.skills_line || "General QA", icon("chev", "sm")),
     h("div", { class: "ab-foot" }, h("p", { class: "sub" }, "To change anything here, say it in Chat, for example “rename this agent to Checkout QA”."),
-      a.id === "default" ? null : h("button", { type: "button", class: "btn", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent")));
+      a.id === "default" ? null : h("button", { type: "button", class: "btn", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent"))].flat().filter(Boolean));
   if (keep) panel.querySelector(`[data-fk="${keep}"]`)?.focus();
   else if (keep === null && !panel.contains(document.activeElement)) panel.querySelector('[data-fk="close"]').focus();
   // Live while it is open: the count, and the row goes when nothing runs.
