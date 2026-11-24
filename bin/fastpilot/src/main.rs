@@ -271,6 +271,8 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             // E6: Claude Code in any folder: a project folder is its own (Repo) app; elsewhere the
             // current app's folder.
             apps::enter(false);
+            // QA #6103: started by the dashboard's Chat: the app the dashboard works on.
+            apps::scope_named();
             live(|| fastpilot_mcp::serve_stdio(web, flag("--reset")), "mcp").await
         }
         Some("config") if args.get(1).is_some_and(|a| a == "test-provider") => match provider::test_provider().await {

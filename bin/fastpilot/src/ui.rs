@@ -189,6 +189,13 @@ pub async fn ui(args: &[String]) -> Res<()> {
     }
     // E6: work in the current app's folder (or this project folder, listed as a Repo app).
     crate::apps::enter(true);
+    // Security #208 L1: a key only this dashboard knows (owner-only file, new each start), so only
+    // its own Chat can name the app whose passwords Chat's fastpilot uses.
+    if let Ok(k) = random_hex(16)
+        && crate::filestore::write_atomic(&crate::browsers::dir(), "app-key", k.as_bytes(), true).is_ok()
+    {
+        let _ = APP_KEY.set(k);
+    }
     // E3: the port of the last start, so a bookmark keeps working; a free one if it is taken now.
     let saved = std::fs::read_to_string(crate::browsers::dir().join("port")).ok().and_then(|p| p.trim().parse::<u16>().ok()).filter(|p| *p >= 1024);
     let mut moved = None;
@@ -317,6 +324,9 @@ pub fn router(state: Arc<Ui>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
+
+/// Security #208 L1: this dashboard's app key (see `apps::scope_named`).
+pub static APP_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn random_hex(bytes: usize) -> Res<String> {
     use std::io::Read;

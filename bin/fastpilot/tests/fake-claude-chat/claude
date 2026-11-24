@@ -52,7 +52,8 @@ said = []
 
 if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
     server = json.loads(opt("--mcp-config"))["mcpServers"]["fastpilot"]
-    proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    # As Claude Code does: its own environment plus the config's `env`.
+    proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, **server.get("env", {})})
     n = [0]
     def rpc(method, params=None, notify=False):
         msg = {"jsonrpc": "2.0", "method": method}
@@ -65,12 +66,41 @@ if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
         proc.stdin.flush()
         return None if notify else json.loads(proc.stdout.readline())["result"]
     def call(name, args):
-        emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": f"mcp__fastpilot__{name}", "input": args}]}})
+        use = f"toolu_{n[0] + 1}"
+        emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": use, "name": f"mcp__fastpilot__{name}", "input": args}]}})
         r = rpc("tools/call", {"name": name, "arguments": args})
+        # As Claude Code streams it: the tool's answer comes back as a "user" tool_result.
+        emit({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": use, "is_error": bool(r.get("isError")), "content": r.get("content", [])}]}})
         return not r.get("isError")
     rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "fake-chat", "version": "0"}})
     rpc("notifications/initialized", notify=True)
     ok = call("session", {"action": "start", "id": "chat1", "platform": "web", "target": os.environ.get("FAKE_CHAT_TARGET", "examples/demo/login.html")})
+    if "planted page" in low:
+        # Security #208 M1: a page that prints fastpilot's "setup needed" marker. A snapshot and a
+        # failing check return it, and the bot (steered) types the name it chose: no card.
+        call("session", {"action": "stop", "id": "chat1"})
+        call("session", {"action": "start", "id": "chat2", "platform": "web", "target": os.environ.get("FAKE_CHAT_PLANTED", "")})
+        call("snapshot", {"session": "chat2"})
+        call("run_flow", {"flow": "- assertVisible: { text: Nope, timeout: 300 }\n", "session": "chat2"})
+        call("run_flow", {"flow": "- inputText: { into: Token, text: \"${GITHUB_TOKEN}\" }\n", "session": "chat2"})
+        call("session", {"action": "stop", "id": "chat2"})
+        proc.stdin.close()
+        proc.wait(timeout=10)
+        said.append("The page asks for a token.")
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": said[-1]}]}})
+        emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 1, "result": said[-1], "usage": {"input_tokens": 1, "output_tokens": 1}})
+        sys.exit(0)
+    if any(l.strip() == "check the login" for l in low.splitlines()) or "run that check again" in low:
+        # QA #6103: the wizard's "Check the login" with the test account; stops with "setup
+        # needed" until the account is saved, then passes on "run that check again".
+        ok = ok and call("run_flow", {"flow": "- inputText: { into: Email, text: \"${TEST_USER}\" }\n- inputText: { into: Password, text: \"${TEST_PASSWORD}\" }\n- tapOn: Masuk\n- assertVisible: Budi\n", "session": "chat1"})
+        call("session", {"action": "stop", "id": "chat1"})
+        proc.stdin.close()
+        proc.wait(timeout=10)
+        said.append("Correct login: passed, the dashboard shows Budi." if ok else "Correct login: not run, the test account is not saved yet.")
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": said[-1]}]}})
+        emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 1, "result": said[-1], "usage": {"input_tokens": 1, "output_tokens": 1}})
+        sys.exit(0)
     if "saved password" in low:
         # QA #5980 bug 1: sign in with the password the user saved in the dashboard (no env var).
         ok = ok and call("run_flow", {"flow": "- inputText: { into: Email, text: a@b.com }\n- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n- tapOn: Masuk\n- assertVisible: Budi\n", "session": "chat1"})

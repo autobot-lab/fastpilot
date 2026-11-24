@@ -110,7 +110,6 @@ pub fn current() -> Option<App> {
 }
 
 /// One app by id. Used by S1 (Map) and S8 (Run on all platforms), built on this contract.
-#[allow(dead_code)]
 pub fn get(id: &str) -> Option<App> {
     let _held = hold();
     load().apps.into_iter().find(|a| a.id == id)
@@ -268,6 +267,21 @@ pub fn scope_here() {
     let here = std::env::current_dir().ok();
     let app = here.as_deref().and_then(app_at).or_else(|| if here.as_deref().is_some_and(is_project) { None } else { current() });
     set_scope(app.as_ref());
+}
+
+/// QA #6103: `FASTPILOT_APP` (set by the dashboard's Chat for its own fastpilot) names the app
+/// whose passwords this process may use. Only a listed app; nothing moves; S-1 still applies.
+/// Security #208 L1: only with `FASTPILOT_APP_KEY` equal to the running dashboard's key file, which
+/// a repo's `.mcp.json` cannot know.
+pub fn scope_named() {
+    let (Ok(id), Ok(key)) = (std::env::var("FASTPILOT_APP"), std::env::var("FASTPILOT_APP_KEY")) else { return };
+    let kept = std::fs::read_to_string(crate::browsers::dir().join("app-key")).unwrap_or_default();
+    if key.len() < 32 || kept.trim() != key {
+        return;
+    }
+    if let Some(app) = get(&id) {
+        set_scope(Some(&app));
+    }
 }
 
 /// The listed app whose folder `dir` is.
