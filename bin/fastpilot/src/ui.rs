@@ -1071,7 +1071,16 @@ async fn apps_change(axum::Json(body): axum::Json<Value>) -> Response {
         })(),
         // FC6: kept 7 days (History › Recently removed), with Undo.
         "remove" => crate::control::remove_app(id, crate::control::Surface::Cli).map_err(|f| f.msg).map(|(_, d)| json!({ "removed": id, "message": d.line, "undo": d.undo })),
-        "use" => apps::set_current(id).map(|a| json!({ "app": app_json(&a) })),
+        // Checked and switched with no answer running (#221 L6).
+        "use" => crate::chat::while_idle(|| {
+            apps::set_current(id).inspect(|a| {
+                if std::env::var_os("FASTPILOT_DIR").is_none() {
+                    apps::go(a);
+                }
+            })
+        })
+        .unwrap_or_else(|| Err("Chat is answering for this app. Wait for it to finish (or stop it), then switch apps.".into()))
+        .map(|a| json!({ "app": app_json(&a) })),
         // Older fastpilot folders: searched only on this click; only what the search found can be
         // added (a page never names a folder itself).
         "find_older" => {
@@ -1152,12 +1161,14 @@ async fn secrets_list() -> Response {
     axum::Json(json!({ "app": app.map(|a| json!({ "id": a.id, "name": a.name })), "names": rows, "kept_in": fastpilot_core::jira::token::kept_in() })).into_response()
 }
 
-/// `{action: set, name, value}` (only from this page: the person types it; the name is kept with
-/// the app, never on the environment list) and `{action: remove, name}`, for the current app. The activity log says only "set" or
-/// "removed", never the value.
+/// `{action: set, app, name, value}` (only from this page: the person types it; the name is kept
+/// with the app, never on the environment list) and `{action: remove, app, name}`, for app `app`:
+/// the one the page shows or the chat's own (Security #221 M1: never just the app in use, which can
+/// be another agent's while its chat answers). The activity log says only "set" or "removed", never
+/// the value.
 async fn secrets_change(axum::Json(body): axum::Json<Value>) -> Response {
     use fastpilot_core::secrets;
-    let Some(app) = crate::apps::current() else {
+    let Some(app) = body["app"].as_str().and_then(crate::apps::get) else {
         return refuse(StatusCode::CONFLICT, "Add or choose an app first: a password belongs to an app.");
     };
     let name = body["name"].as_str().unwrap_or("").trim().to_owned();

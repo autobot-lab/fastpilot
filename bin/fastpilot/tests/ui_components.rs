@@ -577,10 +577,12 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
     let lines = eval(c, "(() => { const a = proposalCard({ id: 'r1', kind: 'schedule_change', title: 'x', rows: [], status: 'applied', note: 'Paused schedule “Every night” · its history is kept', undo_id: 'ab12' }); const b = proposalCard({ id: 'r2', kind: 'schedule_change', title: 'x', rows: [], status: 'applied', note: 'Resumed schedule “Every night”', undo_id: 'cd34', changed_later: true }); return [a.className, a.getAttribute('role'), a.textContent, b.textContent, a.querySelectorAll('button').length, !!a.querySelector('[class*=prop-state]')].join('|'); })()").await;
     assert_eq!(lines, "\"result-line|status|Paused schedule “Every night” · its history is keptUndo|Resumed schedule “Every night”Changed later|1|false\"");
     // QA #5980 bug 4: a card that names the passwords asks each one here, in the masked dialog.
-    eval(c, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); window.__decided = null; window.chatDecide = async (id) => { window.__decided = id; }; document.body.append(proposalCard({ id: 'pw', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_USER', 'TEST_PASSWORD'], status: 'pending' })); return 'ok'; })()").await;
+    // Security #221 M1: the card carries its chat's app; the dialog names it and saves there.
+    eval(c, "(async () => { const r = await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); window.__app = { id: r.app.id, name: r.app.name }; window.__decided = null; window.chatDecide = async (id) => { window.__decided = id; }; document.body.append(proposalCard({ id: 'pw', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_USER', 'TEST_PASSWORD'], app: window.__app, status: 'pending' })); return 'ok'; })()").await;
     let button = eval(c, "(() => { const b = document.querySelector('[data-pid=\"pw\"] .btn.p'); b.click(); return b.tagName + '|' + b.textContent; })()").await;
     assert_eq!(button, "\"BUTTON|Set the password\"");
     see(c, "Set TEST_USER (a user name)").await;
+    see(c, "It is saved in this Mac's Keychain for Shop").await;
     assert_eq!(eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); const t = i.type; i.value = 'a@b.com'; i.form.requestSubmit(); return t; })()").await, "\"text\"");
     see(c, "Set TEST_PASSWORD").await;
     assert_eq!(eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); const t = i.type; i.value = 'fp-card-pass-1'; i.form.requestSubmit(); return t; })()").await, "\"password\"");
@@ -595,7 +597,7 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
     assert_eq!(got, "\"pw|TEST_USER,TEST_PASSWORD\"");
     // QA #6103: fastpilot's own card for a run that stopped for them: "Save and run" sends the
     // same check again, in fastpilot's fixed sentence.
-    eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.body.append(proposalCard({ id: 'rr', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_PASSWORD'], rerun: true, status: 'pending' })); return 'ok'; })()").await;
+    eval(c, "(() => { window.__sent = null; window.chatSend = async (t) => { window.__sent = t; }; document.body.append(proposalCard({ id: 'rr', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_PASSWORD'], rerun: true, app: window.__app, status: 'pending' })); return 'ok'; })()").await;
     let button = eval(c, "(() => { const b = document.querySelector('[data-pid=\"rr\"] .btn.p'); b.click(); return b.textContent; })()").await;
     assert_eq!(button, "\"Save and run\"");
     see(c, "Set TEST_PASSWORD").await;

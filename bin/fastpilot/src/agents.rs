@@ -155,10 +155,18 @@ pub fn list() -> Vec<Agent> {
     let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut agents = read().agents;
     drop(_l);
-    if let (Some(app), Some(d)) = (worked_on(), agents.iter_mut().find(|a| a.id == DEFAULT)) {
+    if let Some(d) = agents.iter_mut().find(|a| a.id == DEFAULT)
+        && let Some(app) = shown_app(d)
+    {
         *d = for_app(d.clone(), &app);
     }
     agents
+}
+
+/// The app the default agent shows: its own once it has one (an app added from its Chat), else the
+/// app being worked on. Never another agent's app that became the one in use.
+fn shown_app(d: &Agent) -> Option<crate::apps::App> {
+    app_of(d).or_else(worked_on)
 }
 
 /// S4 (v0.7): the app being worked on, which the default agent tests (none while `FASTPILOT_DIR`
@@ -445,7 +453,7 @@ pub fn create(a: Agent) -> Res<Agent> {
 pub fn update(a: Agent) -> Res<Agent> {
     let mut a = check(a)?;
     if a.id == DEFAULT
-        && let Some(app) = worked_on()
+        && let Some(app) = shown_app(&a)
     {
         a = without_app(a, &app);
     }

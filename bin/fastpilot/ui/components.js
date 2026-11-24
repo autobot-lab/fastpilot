@@ -86,9 +86,10 @@ function notice(kind, ...text) {
   return h("div", { class: `notice ${NOTICE[kind] ? kind : "info"}`, role }, h("b", {}, `${word}: `), ...kids(text));
 }
 
-/// E2: ask for one password, once, in a masked field. It goes to this Mac's key store for the
-/// current app and is never shown or sent back to the page. `onSaved()` runs after it is kept.
-function passwordAsk({ name, label, onSaved, plain = false } = {}) {
+/// E2: ask for one password, once, in a masked field. It goes to this Mac's key store for `app`
+/// (`{id, name}`: the app the page shows, or the chat's own) and is never shown or sent back to the
+/// page. `onSaved()` runs after it is kept.
+function passwordAsk({ name, label, onSaved, plain = false, app = null } = {}) {
   return new Promise((resolve) => {
     const back = document.activeElement;
     const tid = `pw-t-${++moreSeq}`;
@@ -99,7 +100,7 @@ function passwordAsk({ name, label, onSaved, plain = false } = {}) {
     const save = h("button", { type: "submit", class: "btn p" }, plain ? "Save user name" : "Save password");
     const form = h("form", { class: "form" },
       h("h2", { id: tid }, label || `Set ${name}`),
-      h("p", { id: `${tid}-d`, class: "s muted" }, "It is saved in this Mac's Keychain for the current app and never shown again. fastpilot types it only on this app's own website."),
+      h("p", { id: `${tid}-d`, class: "s muted" }, `It is saved in this Mac's Keychain for ${app ? app.name : "this app"} and never shown again. fastpilot types it only on this app's own website.`),
       input, msg,
       h("div", { class: "btns tight" }, h("button", { type: "button", class: "btn", onclick: () => done(false) }, "Cancel"), save));
     const dlg = h("dialog", { class: "cdlg", "aria-labelledby": tid }, form);
@@ -107,7 +108,7 @@ function passwordAsk({ name, label, onSaved, plain = false } = {}) {
       e.preventDefault();
       save.disabled = true;
       try {
-        await api("/api/secrets", { action: "set", name, value: input.value });
+        await api("/api/secrets", { action: "set", app: app && app.id, name, value: input.value });
         input.value = "";
         done(true);
         if (onSaved) onSaved();
