@@ -129,6 +129,8 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     assert!(log.contains("secret TEST_PASSWORD of") && log.contains("terminal") && !log.contains("fp-cli-pass-7"), "{log}");
     assert_eq!(fp(&home, &["secret", "remove", "NOPE"], "").1, "✗ No password called “NOPE” for Shop. Saved: TEST_PASSWORD.\n");
 
+    // FastTest (v0.7.1, Low): an unknown schedule id in TEXT 2.2's words.
+    assert_eq!(fp(&home, &["schedule", "run", "nope"], ""), (1, "✗ No schedule with id “nope”. Run fastpilot schedule list to see them.\n".into()));
     // Schedules: no saved tests yet, then the presets, pause, resume, remove.
     let (code, out) = fp(&home, &["schedule", "add", "--nightly"], "");
     assert_eq!((code, out.as_str()), (1, "✗ Shop has no saved tests yet. Run something first, then save it as a test.\n"));
@@ -155,34 +157,34 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
 
     // An agent's skills: General QA always on, specialists by id, in the order given.
     let (code, out) = fp(&home, &["agent", "skills", "andro"], "");
-    assert_eq!((code, out.as_str()), (1, "✗ No agent called “andro”. Agents: Shop tester.\n"));
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "reset"], "").1, "✓ Shop tester is already General QA. Nothing changed.\n");
-    let (_, out) = fp(&home, &["agent", "skills", "Shop tester"], "");
-    assert!(out.starts_with("Shop tester · General QA\n\nGeneral QA (always on)\n  Let fastpilot choose the technique, Use case scenarios, Try to break it,") && out.ends_with("No specialist skills on.\n"), "{out}");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+safe-checkout", "+decision-table"], "").1, "✓ Shop tester: + Safe checkout, + Decision table\n  Undo: fastpilot undo <id>\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+safe-checkout"], "").1, "✓ Safe checkout is already on for Shop tester. Nothing changed.\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "-pairwise"], "").1, "✓ Pairwise is not on for Shop tester. Nothing changed.\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+regression"], "").1, "✓ Regression is part of General QA and always on. Nothing changed.\n");
-    let (code, out) = fp(&home, &["agent", "skills", "Shop tester", "-regression"], "");
+    assert_eq!((code, out.as_str()), (1, "✗ No agent called “andro”. Agents: My tester.\n"));
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "reset"], "").1, "✓ My tester is already General QA. Nothing changed.\n");
+    let (_, out) = fp(&home, &["agent", "skills", "My tester"], "");
+    assert!(out.starts_with("My tester · General QA\n\nGeneral QA (always on)\n  Let fastpilot choose the technique, Use case scenarios, Try to break it,") && out.ends_with("No specialist skills on.\n"), "{out}");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "+safe-checkout", "+decision-table"], "").1, "✓ My tester: + Safe checkout, + Decision table\n  Undo: fastpilot undo <id>\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "+safe-checkout"], "").1, "✓ Safe checkout is already on for My tester. Nothing changed.\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "-pairwise"], "").1, "✓ Pairwise is not on for My tester. Nothing changed.\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "+regression"], "").1, "✓ Regression is part of General QA and always on. Nothing changed.\n");
+    let (code, out) = fp(&home, &["agent", "skills", "My tester", "-regression"], "");
     assert_eq!((code, out.as_str()), (1, "✗ Regression is part of General QA, which is always on. It cannot be removed. Nothing changed.\n"));
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+pairwize"], "").1, "✗ No skill called “pairwize”. Did you mean pairwise? Run fastpilot agent skills <agent> --all to see every skill.\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "+jira-bug-report"], "").1, "✗ “Jira · Bug report” appears after you connect Jira. Connect it in the dashboard: Settings › Integrations › Jira. You can check with fastpilot jira status. Nothing changed.\n");
-    let (_, out) = fp(&home, &["agent", "skills", "Shop tester"], "");
-    assert!(out.starts_with("Shop tester · General QA + 2 specialist skills\n") && out.contains("Specialist skills on\n  Checklist · Safe checkout    safe-checkout\n  Decision table               decision-table\n"), "{out}");
-    let (_, out) = fp(&home, &["agent", "skills", "Shop tester", "--all"], "");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "+pairwize"], "").1, "✗ No skill called “pairwize”. Did you mean pairwise? Run fastpilot agent skills <agent> --all to see every skill.\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "+jira-bug-report"], "").1, "✗ “Jira · Bug report” appears after you connect Jira. Connect it in the dashboard: Settings › Integrations › Jira. You can check with fastpilot jira status. Nothing changed.\n");
+    let (_, out) = fp(&home, &["agent", "skills", "My tester"], "");
+    assert!(out.starts_with("My tester · General QA + 2 specialist skills\n") && out.contains("Specialist skills on\n  Checklist · Safe checkout    safe-checkout\n  Decision table               decision-table\n"), "{out}");
+    let (_, out) = fp(&home, &["agent", "skills", "My tester", "--all"], "");
     assert!(out.contains("Black-box · Design tests from rules\n  off  Equivalence partitions") && out.contains("  on   Decision table") && out.contains("  on   Checklist · Safe checkout") && !out.contains("Jira ·") && out.ends_with("Jira skills appear after you connect Jira.\n"), "{out}");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "-decision-table"], "").1, "✓ Shop tester: − Decision table\n  Undo: fastpilot undo <id>\n");
-    assert_eq!(fp(&home, &["agent", "skills", "Shop tester", "reset"], "").1, "✓ Shop tester: back to General QA (− Safe checkout)\n  Undo: fastpilot undo <id>\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "-decision-table"], "").1, "✓ My tester: − Decision table\n  Undo: fastpilot undo <id>\n");
+    assert_eq!(fp(&home, &["agent", "skills", "My tester", "reset"], "").1, "✓ My tester: back to General QA (− Safe checkout)\n  Undo: fastpilot undo <id>\n");
 
     // Stop: only this agent's running fastpilot processes end; another agent's keeps running.
-    assert_eq!(fp(&home, &["agent", "stop", "Shop tester"], "").1, "✓ Nothing to stop. Shop tester has no running chats.\n");
+    assert_eq!(fp(&home, &["agent", "stop", "My tester"], "").1, "✓ Nothing to stop. My tester has no running chats.\n");
     let mut mine = mcp_for(&home, "default");
     let mut other = mcp_for(&home, "android-regression");
-    let (code, out) = fp(&home, &["agent", "stop", "Shop tester"], "");
-    assert_eq!((code, out.as_str()), (0, "✓ Stopped 1 chat in Shop tester\n  To start them again, say “run it again” in Chat.\n"));
+    let (code, out) = fp(&home, &["agent", "stop", "My tester"], "");
+    assert_eq!((code, out.as_str()), (0, "✓ Stopped 1 chat in My tester\n  To start them again, say “run it again” in Chat.\n"));
     assert!(!running(&mut mine), "this agent's process ended");
     assert!(running(&mut other), "another agent's keeps running");
-    assert_eq!(fp(&home, &["agent", "stop", "Shop tester"], "").1, "✓ Nothing to stop. Shop tester has no running chats.\n");
+    assert_eq!(fp(&home, &["agent", "stop", "My tester"], "").1, "✓ Nothing to stop. My tester has no running chats.\n");
     drop((mine, other));
 
     // FC6: removing asks nothing (it is kept 7 days, with Undo); --yes is accepted and ignored.

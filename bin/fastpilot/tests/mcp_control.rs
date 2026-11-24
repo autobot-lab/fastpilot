@@ -157,7 +157,7 @@ async fn claude_code_controls_apps_schedules_passwords_notes_history_and_agents(
     assert_eq!(says(&c, "map", json!({ "action": "status" })).await, "No map yet.");
 
     // Agents: create from a sentence, skills (General QA always on), stop.
-    assert_eq!(says(&c, "agents", json!({ "action": "list" })).await, "1 agent: Shop tester (Website).");
+    assert_eq!(says(&c, "agents", json!({ "action": "list" })).await, "1 agent: My tester (Website).");
     let made = says(&c, "agents", json!({ "action": "create", "sentence": "only the checkout" })).await;
     assert!(made.starts_with("Created agent “Checkout QA” · General QA"), "{made}");
     assert_eq!(says(&c, "agents", json!({ "action": "skills", "agent": "Checkout QA", "reset": true })).await.split(" (").next(), Some(if made.contains('+') { "Checkout QA: back to General QA" } else { "Checkout QA is already General QA. Nothing changed." }));
@@ -167,7 +167,7 @@ async fn claude_code_controls_apps_schedules_passwords_notes_history_and_agents(
     assert!(v["items"].as_array().is_some_and(|i| i.iter().any(|x| x["id"] == "safe-checkout" && x["on"] == true) && i.iter().any(|x| x["id"] == "regression" && x["group"] == "General QA")), "{v}");
     let v = call(&c, "agents", json!({ "action": "skills", "agent": "Checkout QA", "remove": ["regression"] })).await;
     assert_eq!((v["error"].as_str(), v["message"].as_str()), (Some("general_qa_locked"), Some("Regression is part of General QA, which is always on. It cannot be removed. Nothing changed.")));
-    assert_eq!(says(&c, "agents", json!({ "action": "skills", "agent": "andro" })).await, "No agent called “andro”. Agents: Shop tester, Checkout QA.");
+    assert_eq!(says(&c, "agents", json!({ "action": "skills", "agent": "andro" })).await, "No agent called “andro”. Agents: My tester, Checkout QA.");
     assert_eq!(says(&c, "agents", json!({ "action": "stop", "agent": "Checkout QA" })).await, "Nothing to stop. Checkout QA has no running chats.");
 
     // A saved test runs in the background and its result lands in history; a ship check answers

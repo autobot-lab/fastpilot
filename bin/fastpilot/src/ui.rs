@@ -746,7 +746,7 @@ async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
         if text.trim().is_empty() {
             return refuse(StatusCode::CONFLICT, "Say what this agent should test.");
         }
-        match crate::control::create_agent_from(text) {
+        match crate::control::create_agent_from(text, None) {
             Ok((a, done)) => (a.id, Some(done)),
             Err(f) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
         }
@@ -822,7 +822,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a) })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id) })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
@@ -844,17 +844,14 @@ async fn agents_api() -> Response {
     let focuses: Vec<Value> = agents::FOCUSES.iter().map(|(k, label, ..)| json!({ "id": k, "label": label })).collect();
     // FC4: the tabs under an agent show once a test is saved (before: Chat only).
     let saved_tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map_or(0, |d| test_files(&d).len());
-    axum::Json(json!({ "agents": list, "saved_tests": saved_tests, "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
+    axum::Json(json!({ "agents": list, "saved_tests": saved_tests, "current_app": crate::apps::current().map(|a| a.id), "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
         "focuses": focuses, "new_defaults": agents::new_defaults() })).into_response()
 }
 
 /// FC4: "Shop staging · Website" under an agent's name: the app it tests (the current app for the
 /// default agent until it has its own), or "No app yet".
 fn app_line(a: &crate::agents::Agent) -> String {
-    let all = crate::apps::list();
-    let mine = all.iter().find(|x| !a.app.is_empty() && (x.id == a.app || x.targets.web.as_deref() == Some(a.app.as_str()) || x.targets.android.as_deref() == Some(a.app.as_str()) || x.targets.ios.as_deref() == Some(a.app.as_str())));
-    let app = mine.cloned().or_else(|| (a.id == crate::agents::DEFAULT && a.app.is_empty()).then(crate::apps::current).flatten());
-    match app {
+    match crate::agents::app_of(a) {
         Some(x) => {
             let kind = match x.kinds().first().copied() {
                 Some("android") => "Android app",
@@ -863,7 +860,6 @@ fn app_line(a: &crate::agents::Agent) -> String {
             };
             format!("{} · {kind}", x.name)
         }
-        None if !a.app.is_empty() => a.app.clone(),
         None => "No app yet".into(),
     }
 }
@@ -1509,7 +1505,6 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "apps.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/apps.js")),
         "map.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/map.js")),
         "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
-        "welcome.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/welcome.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
         "fonts/bricolage-grotesque-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-700.woff2")),

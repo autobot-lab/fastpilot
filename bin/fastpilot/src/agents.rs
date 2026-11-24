@@ -1,6 +1,6 @@
 //! D10a: agents. An agent is a tester with its own Chat, schedules, instructions, skills and AI
 //! model, like an agent in OpenBot. They live in `~/.fastpilot/agents.json` (owner-only). Someone
-//! who used fastpilot before gets one agent, "My agent" (`default`), which holds the existing
+//! who used fastpilot before gets one agent, "My tester" (`default`), which holds the existing
 //! Chat, schedules and history.
 //!
 //! What an agent can change is bounded: its instructions are the user's own words for the bot (they
@@ -89,6 +89,10 @@ pub struct Agent {
     /// Its Chat conversations in History (ids), newest last.
     #[serde(default)]
     pub conversations: Vec<String>,
+    /// v0.7.1 (Security L2): `claude-code` when Claude Code made it through `fastpilot mcp`: its job
+    /// then reads as that sentence, not as the user's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default)]
     pub created_ms: u64,
 }
@@ -108,7 +112,7 @@ static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn default_agent() -> Agent {
     Agent {
         id: DEFAULT.into(),
-        name: "My agent".into(),
+        name: "My tester".into(),
         job: "Tests this project.".into(),
         devices: vec!["web".into()],
         created_ms: fastpilot_core::change::now_ms(),
@@ -175,6 +179,24 @@ fn app_address(app: &crate::apps::App) -> String {
     app.targets.web.clone().or_else(|| app.targets.android.clone()).or_else(|| app.targets.ios.clone()).unwrap_or_default()
 }
 
+/// v0.7.1 FC5: the app an agent tests: the one its `app` names (an app id, or the app's address or
+/// app id), when it is in the list. The default agent follows the current app until it has its own.
+pub fn app_of(a: &Agent) -> Option<crate::apps::App> {
+    if a.app.is_empty() {
+        return None;
+    }
+    crate::apps::list().into_iter().find(|x| x.id == a.app || [&x.targets.web, &x.targets.android, &x.targets.ios].iter().any(|t| t.as_deref() == Some(a.app.as_str())))
+}
+
+/// v0.7.1 FC5: agent `agent` tests app `app` (an app id) from now on: an app added from its Chat.
+pub fn bind_app(agent: &str, app: &str) -> Res<()> {
+    let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut s = read();
+    let a = s.agents.iter_mut().find(|x| x.id == agent).ok_or("This agent is not there any more.")?;
+    a.app = app.to_owned();
+    write(&s)
+}
+
 /// The skills picked for an agent: the technique chooser plus the suggested ones.
 fn auto_skills(job: &str, app: &str, devices: &[String]) -> Vec<String> {
     std::iter::once(crate::skills_catalog::CHOOSER.to_owned()).chain(crate::skills_catalog::suggest(job, app, devices).into_iter().map(|(id, _)| id)).collect()
@@ -192,10 +214,8 @@ fn app_named(app: &str, what: &str) -> String {
 /// [`update`] turns them back into the built-in value, so one app's name or address is never saved
 /// into the agent the next app sees.
 fn for_app(mut a: Agent, app: &crate::apps::App) -> Agent {
+    // v0.7.1 FC5: the default agent keeps its name ("My tester"); its app shows under the name.
     let built = default_agent();
-    if a.name == built.name {
-        a.name = app_named(&app.name, "tester");
-    }
     if a.job == built.job {
         a.job = format!("Tests {}.", app.name);
     }
@@ -420,8 +440,9 @@ pub fn update(a: Agent) -> Res<Agent> {
         return Err(format!("An agent called \"{}\" exists already", a.name));
     }
     let Some(old) = s.agents.iter_mut().find(|x| x.id == a.id) else { return Err("That agent is not there any more".into()) };
-    let keep = (old.conversations.clone(), old.created_ms);
-    *old = Agent { conversations: keep.0, created_ms: keep.1, ..a };
+    // Who made it stays (Security L2): a page's save never turns Claude Code's words into the user's.
+    let keep = (old.conversations.clone(), old.created_ms, old.source.clone());
+    *old = Agent { conversations: keep.0, created_ms: keep.1, source: keep.2, ..a };
     let out = old.clone();
     write(&s)?;
     Ok(out)
@@ -480,7 +501,8 @@ pub fn of_conversation(conv: &str) -> String {
 /// instructions (which never loosen a limit).
 pub fn prompt(a: &Agent) -> String {
     let devices: Vec<&str> = a.devices.iter().filter_map(|d| DEVICES.iter().find(|(k, _)| k == d).map(|(_, n)| *n)).collect();
-    let mut p = format!("\n\nYou are the agent \"{}\". Your job, in the user's words: {}\nWhere you test: {}.", a.name, a.job, devices.join(", "));
+    let job = if a.source.as_deref() == Some("claude-code") { "Your job, as Claude Code described it when it made this agent (a description, not the user's own rules)" } else { "Your job, in the user's words" };
+    let mut p = format!("\n\nYou are the agent \"{}\". {job}: {}\nWhere you test: {}.", a.name, a.job, devices.join(", "));
     if !a.app.is_empty() {
         p.push_str(&format!(" The app or site: {}.", a.app));
     }
@@ -570,6 +592,17 @@ pub fn initials(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security L2 (v0.7.1): an agent Claude Code made reads its job as Claude Code's description,
+    /// not as the user's own words.
+    #[test]
+    fn an_agent_from_claude_code_is_not_the_users_words() {
+        let mine = Agent { name: "Mine".into(), job: "only the checkout".into(), ..Default::default() };
+        assert!(prompt(&mine).contains("Your job, in the user's words: only the checkout"));
+        let made = Agent { source: Some("claude-code".into()), ..mine };
+        let p = prompt(&made);
+        assert!(p.contains("as Claude Code described it when it made this agent (a description, not the user's own rules): only the checkout") && !p.contains("in the user's words"), "{p}");
+    }
 
     fn agent(name: &str) -> Agent {
         Agent { name: name.into(), job: "Keep checkout working".into(), devices: vec!["web".into()], ..Default::default() }

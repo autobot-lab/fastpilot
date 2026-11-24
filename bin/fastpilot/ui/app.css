@@ -821,3 +821,10 @@ body.on-chat .main{height:100vh}
 .chat .grp{border:1px solid var(--line2);box-shadow:none;border-radius:14px;max-width:640px;margin-bottom:0}
 .chat .grp .gh{border-bottom-color:var(--line)}
 .aghd>.ic{transform:rotate(-90deg)}
+.pick{list-style:none;border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:6px}
+.pick li+li{border-top:1px solid var(--line)}
+.pick .row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;padding:8px 14px;background:#fff;width:100%;text-align:left}
+.pick .row:hover{background:var(--soft)}.pick .row b{display:block;font-weight:600;font-size:14.5px}.pick .row small{display:block;font:400 12px var(--mono);color:var(--muted)}
+.pick .row .ic{transform:rotate(-90deg);color:var(--muted)}
+.pick .row:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+.hint-after{color:var(--muted)}

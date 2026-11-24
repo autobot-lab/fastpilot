@@ -260,7 +260,7 @@ async fn settings_menu_says_secrets() {
     let c = &d.client;
     open(c, "#/settings/limits", "Limits & permissions").await;
     assert_eq!(eval(c, "[...document.querySelectorAll('nav.snav a')].map((a) => a.textContent + '>' + a.getAttribute('href')).join('|')").await,
-        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Your apps>#/settings/apps|Integrations>#/integrations\"");
+        "\"AI model>#/settings/model|Limits & permissions>#/settings/limits|Secrets>#/settings/secrets|Security>#/settings/security|Integrations>#/integrations\"");
     for hash in ["#/settings/secrets", "#/settings/secret"] {
         open(c, hash, "Nothing saved yet").await;
         let page = eval(c, "[document.querySelector('#body h2').firstChild.textContent, document.querySelector('nav.snav a[aria-current=page]').textContent].join('|')").await;
@@ -355,18 +355,7 @@ async fn one_chat_no_commands_and_no_tabs_for_one_agent() {
     // A local website gets a readable name, its address under it.
     let added = eval(c, "(async () => { const r = await api('/api/apps', { action: 'add', targets: { web: 'http://127.0.0.1:3000/' } }); return r.app.name; })()").await;
     assert_eq!(added, "\"Your website\"");
-    // The app bar reads the list when the page loads.
-    eval(c, "(location.hash = '#/live', location.reload(), 'ok')").await;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let mut bar = String::new();
-    for _ in 0..40 {
-        bar = eval(c, "document.querySelector('#appbar .appbtn')?.textContent || ''").await;
-        if bar.contains("Your website") {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    }
-    assert!(bar.contains("Your website") && bar.contains("127.0.0.1:3000"), "{bar}");
+    // (FC5: there is no app bar; the app shows under its agent's name once an agent tests it.)
 }
 
 /// UXA3 (v0.7): one set of button words. New thing: Create + the thing; an edit: Save changes; into a
@@ -432,50 +421,16 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     let kept = eval(c, "(async () => { const t = document.getElementById('chat-input'); t.focus(); t.value = 'check the login'; t.dispatchEvent(new Event('input')); render(); await new Promise((r) => setTimeout(r, 300)); const n = document.getElementById('chat-input'); return [n.value, document.activeElement === n].join('|'); })()").await;
     assert_eq!(kept, "\"check the login|true\"", "a redraw keeps the draft and the cursor");
 
-    // No app yet: one button. The dialog asks for the address only (design M1). Opened from Live,
-    // a new app still goes to Chat.
+    // FC5: no app bar and no "Add your app" anywhere; apps come from Chat.
     eval(c, "(location.hash = '#/live', 'ok')").await;
-    see(c, "Add your app").await;
-    eval(c, "(document.querySelector('#appbar button').click(), 'ok')").await;
-    see(c, "What do you want to test?").await;
-    let kinds = eval(c, "[...document.querySelectorAll('dialog.appdlg [role=radio]')].map((b) => b.dataset.v + ':' + b.getAttribute('aria-checked')).join('|')").await;
-    assert_eq!(kinds, "\"web:true|android:false|ios:false\"");
-    let typed = "(v) => { const w = document.getElementById('app-where'); w.value = v; w.dispatchEvent(new Event('input')); const n = document.getElementById('app-name'); return n ? n.value : ''; }";
-    assert_eq!(eval(c, "String(document.querySelectorAll('dialog.appdlg input').length)").await, "\"1\"", "one field: the address, no Name");
-    // A wrong address is said under the field, and the dialog stays.
-    eval(c, &format!("(({typed})('staging shop'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
-    see(c, "is not a website address").await;
-    assert_eq!(eval(c, "String(!!document.querySelector('dialog.appdlg'))").await, "\"true\"");
-    eval(c, &format!("(({typed})('https://staging.shop.example'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
-    see(c, "Shop staging was added").await;
-    assert!(eval(c, "location.hash").await.starts_with("\"#/agents/default/chat"), "a new app goes to Chat");
-    let bar = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
-    assert!(bar.contains("Shop staging") && bar.contains("Website"), "{bar}");
-
-    // Add an Android app from the switcher; the first app stays current.
-    eval(c, "(document.querySelector('#appbar .appbtn').click(), [...document.querySelectorAll('.appmenu button')].find((b) => b.textContent.includes('Add app')).click(), 'ok')").await;
-    see(c, "What do you want to test?").await;
-    eval(c, "(document.querySelector('dialog.appdlg [data-v=android]').click(), 'ok')").await;
-    eval(c, &format!("({typed})('com.fastpilot.demo')")).await;
-    eval(c, "(document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')").await;
-    see(c, "Demo was added").await;
-    let cur = eval(c, "(async () => (await api('/api/apps')).current)()").await;
-    assert_eq!(cur, "\"shop-staging\"");
-
-    // Switch.
-    eval(c, "(document.querySelector('#appbar .appbtn').click(), [...document.querySelectorAll('.appmenu [role=menuitemradio]')].find((b) => b.textContent.includes('Demo')).click(), 'ok')").await;
-    let mut now = String::new();
-    for _ in 0..40 {
-        now = eval(c, "document.querySelector('#appbar .appbtn').textContent").await;
-        if now.contains("Demo") {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    }
-    assert!(now.contains("Demo") && now.contains("Android app"), "{now}");
+    see(c, "Live").await;
+    assert_eq!(eval(c, "String(!!document.getElementById('appbar') || document.body.textContent.includes('Add your app'))").await, "\"false\"");
+    let made = eval(c, "(async () => (await api('/api/apps', { action: 'add', targets: { web: 'https://staging.shop.example' } })).app.id)()").await;
+    assert_eq!(made, "\"shop-staging\"");
 
     // From a "Add iPhone app" button (S1, S8): a platform for an existing app.
     open(c, "#/apps/add?app=shop-staging&kind=ios", "Add to Shop staging").await;
+    let typed = "(v) => { const w = document.getElementById('app-where'); w.value = v; w.dispatchEvent(new Event('input')); return ''; }";
     let offered = eval(c, "[...document.querySelectorAll('dialog.appdlg [role=radio]')].map((b) => b.dataset.v).join('|')").await;
     assert_eq!(offered, "\"android|ios\"", "the website it has is not offered again");
     eval(c, &format!("(({typed})('com.shop.app'), document.querySelector('dialog.appdlg button[type=submit]').click(), 'ok')")).await;
@@ -483,15 +438,9 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     let shop = eval(c, "(async () => JSON.stringify((await api('/api/apps')).apps.find((a) => a.id === 'shop-staging').kinds))()").await;
     assert_eq!(shop, r#""[\"web\",\"ios\"]""#);
 
-    // Settings › Your apps: Remove keeps the folder.
-    open(c, "#/settings/apps", "Where its tests are saved").await;
-    assert_eq!(eval(c, "document.querySelectorAll('tbody tr').length").await, "2");
-    eval(c, "([...document.querySelectorAll('tr[data-id=demo] button')].find((b) => b.textContent.startsWith('Remove')).click(), 'ok')").await;
-    see(c, "Remove Demo?").await;
-    eval(c, "([...document.querySelectorAll('dialog.cdlg button')].find((b) => b.textContent === 'Remove from list').click(), 'ok')").await;
-    see(c, "Demo was removed from the list").await;
-    assert_eq!(eval(c, "(async () => String((await api('/api/apps')).apps.length))()").await, "\"1\"");
-    assert!(d.home.join("fastpilot/apps/demo").is_dir(), "its folder stays");
+    // FC5: no "Your apps" in Settings (the way back is History › Recently removed).
+    open(c, "#/settings/apps", "Limits & permissions").await;
+    assert_eq!(eval(c, "String(!!document.querySelector('.snav a[href=\"#/settings/apps\"]'))").await, "\"false\"");
 
     // Old links to the integrations page.
     for (old, new) in [("#/apps", "#/integrations"), ("#/apps/jira", "#/integrations/jira")] {
