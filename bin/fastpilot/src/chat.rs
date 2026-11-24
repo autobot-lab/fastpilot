@@ -1075,7 +1075,8 @@ To change a setting, propose it; fastpilot words the card itself and the user de
 allows only that button. allowed_domains and upload_dirs: add or remove items, unset for any. Secret names are not \
 settings: a password the user needs is the Secrets card below. allow_app_install, allow_app_reset, allow_physical_devices, allow_device_settings, \
 allow_eval_script: set true or false; allow_takeover: only false. max_steps, test_timeout, state_expire_days: set a \
-number. model, model_replay, model_explore: set a Claude model id; provider_model at another provider. Programs, \
+number; test_timeout is in minutes (\"stop tests after 5 minutes\" is 5, never seconds), a shorter time applies at \
+once and a longer one is a looser limit. model, model_replay, model_explore: set a Claude model id; provider_model at another provider. Programs, \
 providers and endpoints are changed by the user in Settings.) A stricter word block applies at once and can be undone; \
 anything that loosens a limit becomes a card only when the user asked for exactly that in their own message.
 To save a new test case, propose it as structured data; the user saves it with one click (you cannot write files):
@@ -2900,6 +2901,11 @@ fn setting_card(op: Result<(String, change::Op), String>, t: &mut Turn, attempts
         Ok(x) => x,
         Err(e) => return refuse(e),
     };
+    // v0.7.1 M5: the time per test is in minutes; seconds for the user's own "N minutes" mean N.
+    let op = match op {
+        change::Op::Set(v) if key == "test_timeout" => change::Op::Set(minutes_meant(&v, &t.user)),
+        o => o,
+    };
     let before = match change::raw(&key) {
         Ok(b) => b,
         Err(e) => return refuse(e),
@@ -2975,6 +2981,15 @@ fn setting_card(op: Result<(String, change::Op), String>, t: &mut Turn, attempts
     }
     p.setting = Some(card);
     Some(p)
+}
+
+/// v0.7.1 M5: `value` for the time per test, in minutes. A bot that wrote seconds (300) for the
+/// user's own "5 minutes" gets 5; any other value stays as it is.
+fn minutes_meant(value: &str, user: &str) -> String {
+    let Ok(n) = value.trim().parse::<u64>() else { return value.to_owned() };
+    let words: Vec<String> = user.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_owned).collect();
+    let said = |x: u64| words.windows(2).any(|w| w[0] == x.to_string() && matches!(w[1].as_str(), "minute" | "minutes" | "min" | "mins" | "menit"));
+    if n >= 60 && n % 60 == 0 && !words.contains(&n.to_string()) && said(n / 60) { (n / 60).to_string() } else { value.to_owned() }
 }
 
 /// D10a: the agent a `kind: agent` proposal describes, checked like the Create agent form.

@@ -322,7 +322,9 @@ pub fn level(c: &Change) -> Level {
     let switched_off = c.key.starts_with("allow_") && off(c.after.as_deref());
     // A built-in word allowed earlier, blocked again (`!pay` dropped).
     let reblock = c.key == "block_actions" && before.len() == after.len() + 1 && after.iter().all(|a| before.contains(a)) && before.iter().any(|b| b.starts_with('!') && !after.contains(b));
-    if one_more_word || switched_off || reblock { Level::Applied } else { Level::Ok }
+    // v0.7.1 M5: a shorter time per test applies at once (Undo on its line).
+    let shorter_time = c.key == "test_timeout";
+    if one_more_word || switched_off || reblock || shorter_time { Level::Applied } else { Level::Ok }
 }
 
 /// Probe texts for the built-in rules: each word alone, followed by "now", and the phrases with a
