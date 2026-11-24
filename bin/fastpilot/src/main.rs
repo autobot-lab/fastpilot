@@ -34,6 +34,7 @@ mod schedule;
 mod skills_catalog;
 mod stability;
 mod ui;
+mod undo;
 
 /// Tests that change the process environment hold this.
 #[cfg(test)]
@@ -62,6 +63,7 @@ commands:
   schedule   Run tests on a timer: add, pause, resume
   secret     Save test passwords for an app (values are never shown)
   agent      Skills and Stop for an agent
+  undo       Undo the newest change, or see what you can bring back
   schedule watch TESTS --every MIN --for HOURS [--os] [--github owner/repo]
                                      after a release: run TESTS every MIN minutes for HOURS hours, hear only
                                      about new problems (`fastpilot schedule --help`)
@@ -293,6 +295,18 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("ui") => ui::ui(&args[1..]).await,
         Some("schedule") => schedule::cli(&args[1..]).await,
         // v0.7.1: the dashboard's apps, passwords and agents from the terminal.
+        Some("undo") if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") => {
+            println!("{}", undo::UNDO_USAGE);
+            Ok(())
+        }
+        Some("undo") => {
+            let r = undo::cli(&args[1..]);
+            if let Err(f) = &r {
+                control::print_fail(f);
+                std::process::exit(control::exit_code(&r));
+            }
+            Ok(())
+        }
         Some(cmd @ ("app" | "secret" | "agent")) => {
             if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") {
                 println!("{}", match cmd {

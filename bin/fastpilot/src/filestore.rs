@@ -60,7 +60,7 @@ pub fn write_atomic(dir: &Path, file: &str, bytes: &[u8], private: bool) -> Resu
     })
 }
 
-fn random_u64() -> u64 {
+pub fn random_u64() -> u64 {
     use std::io::Read;
     let mut b = [0u8; 8];
     let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
