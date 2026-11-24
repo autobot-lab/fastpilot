@@ -11,9 +11,10 @@ blocked from the start.
 
 <img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard: an agent called QA Checkout gets one sentence in Chat and answers with a Save test and schedule card that lists the test steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only and Edit.">
 
-## Start in 3 steps
+## Start in 2 steps
 
 You need a Mac (or Linux), Google Chrome, and [Claude Code](https://claude.com/claude-code) signed in.
+No project folder is needed: run it from anywhere.
 
 **1. Install** (once)
 
@@ -21,28 +22,7 @@ You need a Mac (or Linux), Google Chrome, and [Claude Code](https://claude.com/c
 npm install -g fastpilot
 ```
 
-**2. Set up your project** (once per project)
-
-```bash
-cd ~/your-project
-fastpilot init
-```
-
-`init` asks before each change; answer `y`. At the end it asks **"Open the dashboard now?"**:
-press Enter.
-
-> Using Claude Code? You can also install fastpilot as a plugin (the MCP server and its 24 skills in
-> one step): `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`.
-> Use **either** the plugin **or** `fastpilot init` in a project, not both: both together start two
-> fastpilot servers. A password such as `DEMO_PASS` is set once in the dashboard: Settings › Secrets ›
-> Set value. It is kept in this Mac's Keychain for the current app, typed only on that app's own
-> website, and never typed into the chat. (An `export DEMO_PASS=…` in the environment still works,
-> for CI.)
-
-> Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
-> pages and example tests, and opens the dashboard on it.
-
-**3. Open the dashboard** (every time)
+**2. Open the dashboard** (every time)
 
 ```bash
 fastpilot
@@ -50,6 +30,13 @@ fastpilot
 
 Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl-C` closes it.
 
+- The first time, paste your app's address and click **Check the login**. fastpilot asks for the
+  test account right there, once, in a masked field. It is kept in this Mac's Keychain for that app
+  and typed only on that app's own website, never into the chat.
+- Your tests, schedules and notes live in `~/fastpilot`, one workspace for all your apps. Switch apps
+  at the top left.
+- The first `fastpilot` also adds fastpilot to Claude Code for every folder, so Claude Code can run
+  your tests too.
 - Typed again while the dashboard runs, `fastpilot` opens the same dashboard with a fresh link.
   After an update it offers to restart an older dashboard (it asks first, and only stops its own).
 - The link works **once**, for **10 minutes**. If it expired, type `fastpilot` again.
@@ -61,6 +48,27 @@ Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl
 - Open it yourself; do not ask the AI to open it for you.
 
 Everything else happens in the dashboard.
+
+> Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
+> pages and example tests, and opens the dashboard on it.
+
+### Developer mode: tests next to your code (optional)
+
+If you want the tests in your code repository (reviewed in pull requests, run by the GitHub Action),
+set fastpilot up inside that repository:
+
+```bash
+cd ~/your-project
+fastpilot init
+```
+
+`init` asks before each change; answer `y`. The dashboard then shows the repository as one more app.
+For CI, a password can also come from the environment (`export DEMO_PASS=...`).
+
+> Using the Claude Code plugin (the MCP server and its 24 skills in one step:
+> `/plugin marketplace add autobot-lab/fastpilot`, then `/plugin install fastpilot@fastpilot`)? Use **either** the plugin **or** the registration fastpilot
+> adds itself, not both: both together start two fastpilot servers. `fastpilot doctor` shows where
+> it is registered.
 
 ## Guide: your first test in the dashboard
 
@@ -161,7 +169,7 @@ on your own computer: anything that runs as you can edit `~/.fastpilot/config.to
 
 ## Prefer the terminal?
 
-Everything also works from Claude Code. Open Claude in your project folder (`claude`) and say it in
+Everything also works from Claude Code. Open Claude in any folder (`claude`) and say it in
 plain words, for example *"fastpilot, run a regression"* or *"fastpilot, test the login page"*.
 Results, schedules, and history show up in the dashboard too.
 
@@ -181,9 +189,9 @@ fastpilot doctor
 | The dashboard link doesn't work | It works once, for 10 minutes. Type `fastpilot` again for a fresh one. Choose "Remember this browser" so a bookmark works next time |
 | Chrome or Android isn't ready | **Device** › Fix buttons, or `fastpilot setup web` / `fastpilot setup android` |
 | iPhone isn't ready | `fastpilot setup ios` (once, with Xcode) |
-| fastpilot doesn't show up in Claude | Run `fastpilot init` again |
+| fastpilot doesn't show up in Claude | Run `fastpilot doctor`, then `fastpilot init --global` |
 | A test stops with "Blocked by limits" | That's on purpose. See **Settings › Limits & permissions** |
-| A test stops with "setup needed: the test needs the password …" | Set it once: dashboard › Settings › Secrets › Set value (in CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...`) |
+| A test stops with "setup needed: the test needs the password …" | In Chat, click **Save and run** on the card and type it once (or Settings › Secrets). In CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
 | A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's website in Settings › Your apps |
 
 ## Learn more
