@@ -157,8 +157,11 @@ if "here is the password" in low:
     text.append("I cannot take a password here.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets"}) + "\n```")
 # QA #5980 bug 4: what real Claude proposed for "I need a password ... set that up": the secret
 # names as a settings change. In a turn that read the app, the same from a page.
-if "set that up" in low or "allow tests to use the secret names" in low or "what it needs" in low:
+if "set that up" in low or "allow tests to use the secret names" in low:
     text.append("Here is the setup:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "vars", "add": ["TEST_USER", "TEST_PASSWORD"]}]}) + "\n```")
+# v0.7.1 M2: the test account is asked for whatever words; a page's other name is still gated.
+if "what it needs" in low:
+    text.append("Here is the setup:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "vars", "add": ["GITHUB_TOKEN"]}]}) + "\n```")
 if "connect jira" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "jira"}) + "\n```")
 if "what it asks for" in low:
@@ -247,6 +250,12 @@ if "blokir" in low:
     text.append("Dan batasannya:\n```fastpilot-proposal\n" + json.dumps({"kind": "limits", "add": {"block_actions": ["Bayar"]}, "set": {"max_steps": 20}}) + "\n```")
 if "javascript" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"allow_eval_script": False}}) + "\n```")
+if "check the login with a@b.com" in low:
+    # FastTest 7044 M1 (D3): real Claude's answer that needs the test account, with its card.
+    text.append("To sign in I need the test account. fastpilot will ask you for it in a masked field.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets", "names": ["TEST_USER", "TEST_PASSWORD"]}) + "\n```")
+if "check the login with b@c.com" in low:
+    # The same promise without a card.
+    text.append("To sign in I need the password. fastpilot will ask you for it in a masked field.")
 if "longgar" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"max_steps": 500}}) + "\n```")
 # v0.6 Jira: the user's own words come after fastpilot's marker when fastpilot read a ticket.
