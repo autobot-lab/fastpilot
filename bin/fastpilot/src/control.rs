@@ -743,7 +743,7 @@ pub fn change_skills(agent: &str, changes: &[SkillChange], s: Surface) -> Result
 /// Live lists them: pids of this user's own `fastpilot` programs only.
 fn agent_pids(agent: &str) -> Vec<u32> {
     let me = std::process::id();
-    let mut pids: Vec<u32> = fastpilot_core::live::read_all().into_iter().filter(|p| p.agent.as_deref() == Some(agent) && p.kind != "ui" && p.pid != me && own_fastpilot(p.pid)).map(|p| p.pid).collect();
+    let mut pids: Vec<u32> = fastpilot_core::live::read_all().into_iter().filter(|p| p.agent.as_deref() == Some(agent) && p.kind != "ui" && p.pid != me && own_fastpilot(p.pid) && same_process(p.pid, p.started_ms)).map(|p| p.pid).collect();
     pids.dedup();
     pids
 }
@@ -754,6 +754,30 @@ fn own_fastpilot(pid: u32) -> bool {
     let uid = ps("uid");
     let me = std::process::Command::new("id").arg("-u").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
     !uid.is_empty() && uid == me && ps("comm").rsplit('/').next() == Some("fastpilot")
+}
+
+/// Security L1: the live record is this process's, not a reused pid's: the process started before
+/// the record was made (`ps -o etime=`, a few seconds of slack). A record without a time is skipped.
+fn same_process(pid: u32, record_ms: u64) -> bool {
+    let etime = std::process::Command::new("ps").args(["-o", "etime=", "-p", &pid.to_string()]).stderr(std::process::Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+    let Some(secs) = etime_secs(&etime) else { return false };
+    let now = fastpilot_core::change::now_ms();
+    record_ms != 0 && now.saturating_sub(secs * 1000) <= record_ms + 5000
+}
+
+/// `ps` elapsed time (`[[dd-]hh:]mm:ss`) in seconds.
+fn etime_secs(t: &str) -> Option<u64> {
+    let (days, rest) = match t.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0, t),
+    };
+    let parts: Vec<u64> = rest.split(':').map(|p| p.parse::<u64>().ok()).collect::<Option<_>>()?;
+    let (h, m, s) = match parts.as_slice() {
+        [m, s] => (0, *m, *s),
+        [h, m, s] => (*h, *m, *s),
+        _ => return None,
+    };
+    Some(((days * 24 + h) * 60 + m) * 60 + s)
 }
 
 fn alive(pid: u32) -> bool {
@@ -1004,8 +1028,12 @@ fn skills_listing(a: &crate::agents::Agent, all: bool) -> String {
     let mut out = vec![skills_header(a), String::new()];
     if all {
         for (group, title) in GROUPS {
-            out.push((*title).to_owned());
             let rows: Vec<(&str, String)> = specialists().into_iter().filter(|(id, g)| g == group && (!jira_skill(id) || jira)).map(|(id, _)| (id, skill_name(id))).collect();
+            // FastTest (Low): no empty heading (Management has only Jira skills).
+            if rows.is_empty() {
+                continue;
+            }
+            out.push((*title).to_owned());
             let w = rows.iter().map(|(_, n)| n.chars().count()).max().unwrap_or(0) + 2;
             for (id, name) in rows {
                 let needs = if jira_skill(id) { "      (needs Jira)" } else { "" };
@@ -1142,7 +1170,11 @@ fn verdict_line(report: &str) -> String {
     let problems: Vec<String> = report.lines().filter_map(|l| l.strip_prefix("✗ ")).map(|p| p.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
     match (verdict.as_str(), problems.len()) {
         ("SHIP", _) => "Verdict: SHIP · nothing blocking".into(),
-        (_, 0) => format!("Verdict: {verdict} · {}", report.lines().find_map(|l| l.strip_prefix("Why: ")).unwrap_or("").trim()),
+        // FastTest (v0.7.1 dry run, Low): never an empty reason: the report's own last line says why.
+        (_, 0) => {
+            let why = report.lines().find_map(|l| l.strip_prefix("Why: ")).map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned).or_else(|| report.lines().rev().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("Verdict")).map(|l| l.chars().take(200).collect()));
+            format!("Verdict: {verdict} · {}", why.unwrap_or_else(|| "the pages could not be checked".into()))
+        }
         (_, n) => format!("Verdict: {verdict} · {}: {}", plural(n, "problem", "problems"), problems.join("; ")),
     }
 }
@@ -1155,14 +1187,14 @@ fn when(ms: u64) -> String {
 /// A new agent from one sentence ("only the checkout" → "Checkout QA"): General QA plus the
 /// specialist skills the sentence asks for, on the current app. Terminal Chat's `agents create`
 /// and the dashboard's "+ New agent" (its first message) both make it here.
-pub fn create_agent_from(sentence: &str) -> Result<(crate::agents::Agent, Done), Fail> {
+pub fn create_agent_from(sentence: &str, source: Option<&str>) -> Result<(crate::agents::Agent, Done), Fail> {
     let app = apps::current();
     let devices: Vec<String> = app.as_ref().map(|a| a.kinds().into_iter().map(|k| match k { "android" => "android_emulator", "ios" => "ios_simulator", _ => "web" }.to_owned()).collect()).filter(|d: &Vec<String>| !d.is_empty()).unwrap_or_else(|| vec!["web".into()]);
     let spec: Vec<String> = crate::skills_catalog::suggest(sentence, app.as_ref().map(address).as_deref().unwrap_or(""), &devices).into_iter().map(|(id, _)| id).filter(|id| specialists().iter().any(|(x, _)| x == id) && (!jira_skill(id) || jira_connected())).collect();
     let base = agent_name_from(sentence);
     let taken: Vec<String> = crate::agents::list().into_iter().map(|a| a.name.to_lowercase()).collect();
     let name = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|n| !taken.contains(&n.to_lowercase())).unwrap_or(base);
-    let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), ..Default::default() };
+    let agent = crate::agents::Agent { name: name.clone(), job: sentence.chars().take(300).collect(), app: app.as_ref().map(address).unwrap_or_default(), devices, skills: GENERAL_QA.iter().map(|x| (*x).to_owned()).chain(spec.iter().cloned()).collect(), source: source.map(str::to_owned), ..Default::default() };
     let made = crate::agents::create(agent)?;
     let line = if spec.is_empty() { format!("Created agent {} · General QA", q(&name)) } else { format!("Created agent {} · General QA + {}", q(&name), spec.iter().map(|id| skill_name(id)).collect::<Vec<_>>().join(", ")) };
     let done = Done::undoable(line, &format!("agent:{}", made.id), crate::undo::Op::RemoveAgent { id: made.id.clone() });
@@ -1315,7 +1347,7 @@ impl fastpilot_mcp::Control for McpControl {
                 let mut a = vec!["map", target.as_str(), "--screens", screens.as_str(), "--minutes", minutes.as_str()];
                 a.extend(flag);
                 start_background(&a, &format!("map-{}", app.id)).map_err(refused)?;
-                said(format!("Mapping {} · up to {screens} screens or {minutes} minutes · {}", app.name, watch_in_live()))
+                said(format!("Mapping {} · up to {} or {} · {}", app.name, plural(screens.parse().unwrap_or(30), "screen", "screens"), plural(minutes.parse().unwrap_or(10), "minute", "minutes"), watch_in_live()))
             }
             ("map", "status") => {
                 let Some(m) = crate::map::latest() else { return said("No map yet.") };
@@ -1357,7 +1389,8 @@ impl fastpilot_mcp::Control for McpControl {
             ("memory", "add_note") => {
                 let app = current().map_err(refused)?;
                 let text = arg(&args, "text").ok_or_else(|| refused(fail("empty_note", "The note is empty. Give the sentence to remember.")))?;
-                let note = fastpilot_memory::notes::Notes::from_env().add("how", &text).map_err(|r| refused(fail("refused", r.message)))?;
+                // Security L2: marked as Claude Code's, so agents never read it as the user's own words.
+                let note = fastpilot_memory::notes::Notes::from_env().add_from("how", &text, Some("claude-code")).map_err(|r| refused(fail("refused", r.message)))?;
                 said_done(Done::undoable(format!("Remembered for {}: {}", app.name, q(&text)), &format!("note:{}", note.id), crate::undo::Op::RemoveNote { id: note.id }))
             }
             ("memory", "list") => {
@@ -1413,7 +1446,8 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("agents", "create") => {
                 let sentence = arg(&args, "sentence").ok_or_else(|| refused(fail("usage", "Say what the new agent should test.")))?;
-                let (_, done) = create_agent_from(&sentence).map_err(refused)?;
+                // Security L2: made by Claude Code, so its job is never read as the user's own words.
+                let (_, done) = create_agent_from(&sentence, Some("claude-code")).map_err(refused)?;
                 said_done(done)
             }
             ("agents", "skills") => {
@@ -1451,6 +1485,26 @@ impl fastpilot_mcp::Control for McpControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FastTest (v0.7.1 dry run, Low): an INCONCLUSIVE ship check always says why.
+    #[test]
+    fn a_verdict_always_has_its_reason() {
+        assert_eq!(verdict_line("Verdict: INCONCLUSIVE\nhttps://shop.invalid: could not open the page (connection refused)\n"), "Verdict: INCONCLUSIVE · https://shop.invalid: could not open the page (connection refused)");
+        assert_eq!(verdict_line("Verdict: INCONCLUSIVE\nWhy: nothing loaded\n"), "Verdict: INCONCLUSIVE · nothing loaded");
+        assert_eq!(verdict_line("Verdict: INCONCLUSIVE\n"), "Verdict: INCONCLUSIVE · the pages could not be checked");
+    }
+
+    /// Security L1: `agent stop` signals only the process its live record was made by: a pid that
+    /// was reused later (started after the record) is skipped.
+    #[test]
+    fn a_reused_pid_is_not_the_agents_process() {
+        assert_eq!((etime_secs("05:07"), etime_secs("1:02:03"), etime_secs("2-01:00:00"), etime_secs("x")), (Some(307), Some(3723), Some(176400), None));
+        let me = std::process::id();
+        let now = fastpilot_core::change::now_ms();
+        assert!(same_process(me, now), "this process started before a record made now");
+        assert!(!same_process(me, now - 24 * 3600 * 1000), "a record from yesterday is not this process's");
+        assert!(!same_process(me, 0), "a record without a time is skipped");
+    }
 
     #[test]
     fn targets_and_close_names() {

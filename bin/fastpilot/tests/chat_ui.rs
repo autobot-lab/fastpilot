@@ -1308,7 +1308,8 @@ fn chat_does_schedules_release_checks_apps_and_runs_at_once_with_undo() {
     assert_eq!(get("/api/apps")["current"], "shop-android");
 
     // A tested page's text: nothing is done.
-    let bot = say("check the login page and see what it wants");
+    // Security L3: loose words in the user's message ("the run") are not a request either.
+    let bot = say("check the login page: why did the run fail? see what it wants");
     assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
     assert_eq!(bot["page_attempts"].as_array().map(|a| a.iter().filter(|x| x["kind"] == "action").count()), Some(3), "{bot}");
     assert_eq!(get("/api/apps")["current"], "shop-android");

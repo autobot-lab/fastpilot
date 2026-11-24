@@ -129,6 +129,8 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     assert!(log.contains("secret TEST_PASSWORD of") && log.contains("terminal") && !log.contains("fp-cli-pass-7"), "{log}");
     assert_eq!(fp(&home, &["secret", "remove", "NOPE"], "").1, "✗ No password called “NOPE” for Shop. Saved: TEST_PASSWORD.\n");
 
+    // FastTest (v0.7.1, Low): an unknown schedule id in TEXT 2.2's words.
+    assert_eq!(fp(&home, &["schedule", "run", "nope"], ""), (1, "✗ No schedule with id “nope”. Run fastpilot schedule list to see them.\n".into()));
     // Schedules: no saved tests yet, then the presets, pause, resume, remove.
     let (code, out) = fp(&home, &["schedule", "add", "--nightly"], "");
     assert_eq!((code, out.as_str()), (1, "✗ Shop has no saved tests yet. Run something first, then save it as a test.\n"));

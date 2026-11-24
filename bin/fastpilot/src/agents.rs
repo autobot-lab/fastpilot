@@ -89,6 +89,10 @@ pub struct Agent {
     /// Its Chat conversations in History (ids), newest last.
     #[serde(default)]
     pub conversations: Vec<String>,
+    /// v0.7.1 (Security L2): `claude-code` when Claude Code made it through `fastpilot mcp`: its job
+    /// then reads as that sentence, not as the user's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default)]
     pub created_ms: u64,
 }
@@ -436,8 +440,9 @@ pub fn update(a: Agent) -> Res<Agent> {
         return Err(format!("An agent called \"{}\" exists already", a.name));
     }
     let Some(old) = s.agents.iter_mut().find(|x| x.id == a.id) else { return Err("That agent is not there any more".into()) };
-    let keep = (old.conversations.clone(), old.created_ms);
-    *old = Agent { conversations: keep.0, created_ms: keep.1, ..a };
+    // Who made it stays (Security L2): a page's save never turns Claude Code's words into the user's.
+    let keep = (old.conversations.clone(), old.created_ms, old.source.clone());
+    *old = Agent { conversations: keep.0, created_ms: keep.1, source: keep.2, ..a };
     let out = old.clone();
     write(&s)?;
     Ok(out)
@@ -496,7 +501,8 @@ pub fn of_conversation(conv: &str) -> String {
 /// instructions (which never loosen a limit).
 pub fn prompt(a: &Agent) -> String {
     let devices: Vec<&str> = a.devices.iter().filter_map(|d| DEVICES.iter().find(|(k, _)| k == d).map(|(_, n)| *n)).collect();
-    let mut p = format!("\n\nYou are the agent \"{}\". Your job, in the user's words: {}\nWhere you test: {}.", a.name, a.job, devices.join(", "));
+    let job = if a.source.as_deref() == Some("claude-code") { "Your job, as Claude Code described it when it made this agent (a description, not the user's own rules)" } else { "Your job, in the user's words" };
+    let mut p = format!("\n\nYou are the agent \"{}\". {job}: {}\nWhere you test: {}.", a.name, a.job, devices.join(", "));
     if !a.app.is_empty() {
         p.push_str(&format!(" The app or site: {}.", a.app));
     }
@@ -586,6 +592,17 @@ pub fn initials(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security L2 (v0.7.1): an agent Claude Code made reads its job as Claude Code's description,
+    /// not as the user's own words.
+    #[test]
+    fn an_agent_from_claude_code_is_not_the_users_words() {
+        let mine = Agent { name: "Mine".into(), job: "only the checkout".into(), ..Default::default() };
+        assert!(prompt(&mine).contains("Your job, in the user's words: only the checkout"));
+        let made = Agent { source: Some("claude-code".into()), ..mine };
+        let p = prompt(&made);
+        assert!(p.contains("as Claude Code described it when it made this agent (a description, not the user's own rules): only the checkout") && !p.contains("in the user's words"), "{p}");
+    }
 
     fn agent(name: &str) -> Agent {
         Agent { name: name.into(), job: "Keep checkout working".into(), devices: vec!["web".into()], ..Default::default() }

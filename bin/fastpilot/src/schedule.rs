@@ -1435,6 +1435,11 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
             Ok(())
         }
         (Some("run"), Some(id)) => {
+            // FastTest (Low): an unknown id says it in TEXT 2.2's words.
+            if let Err(f) = crate::control::find_schedule(id, crate::control::Surface::Cli) {
+                crate::control::print_fail(&f);
+                std::process::exit(1);
+            }
             // A person runs it from a terminal: say where to watch; the system scheduler runs it quietly.
             if std::io::IsTerminal::is_terminal(&std::io::stdout())
                 && let Ok(s) = crate::control::find_schedule(id, crate::control::Surface::Cli)

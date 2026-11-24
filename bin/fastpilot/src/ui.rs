@@ -746,7 +746,7 @@ async fn chat_send(axum::Json(body): axum::Json<Value>) -> Response {
         if text.trim().is_empty() {
             return refuse(StatusCode::CONFLICT, "Say what this agent should test.");
         }
-        match crate::control::create_agent_from(text) {
+        match crate::control::create_agent_from(text, None) {
             Ok((a, done)) => (a.id, Some(done)),
             Err(f) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
         }
