@@ -131,7 +131,81 @@ function header() {
       return h("a", { href, class: on ? "on" : "", "aria-current": on ? "page" : null }, t);
     }))
     : null;
-  hdr.replaceChildren(h("div", { class: "nm" }, h("a", { class: "agname", href: `#/agents/${x.agent.id}/about`, title: "About this agent" }, h("h1", {}, x.agent.name)), h("span", { class: "sub" }, x.app_line || "No app yet")), ...(tabs ? [tabs] : []));
+  hdr.replaceChildren(h("div", { class: "nm" }, h("h1", {}, h("button", { type: "button", class: "agname", "aria-haspopup": "dialog", title: "About this agent", onclick: (e) => openAbout(x.agent.id, e.currentTarget) }, x.agent.name, icon("chev", "sm"))), h("span", { class: "sub" }, x.app_line || "No app yet")), ...(tabs ? [tabs] : []));
+}
+
+// ---- FC-STOP: About this agent (g12a, g18a): read first; changes are said in Chat. "Running now ·
+// Stop all (N)" shows only while chats of this agent are running, and updates live. ----
+let about = null; // { id, opener, timer }
+function closeAbout() {
+  if (!about) return;
+  clearTimeout(about.timer);
+  document.getElementById("about-panel")?.remove();
+  document.getElementById("about-scrim")?.remove();
+  const back = about.opener;
+  about = null;
+  if (back && back.isConnected) back.focus();
+}
+function drawAbout() {
+  if (!about) return;
+  const x = byId(about.id);
+  if (!x) { closeAbout(); return; }
+  const a = x.agent;
+  const panel = document.getElementById("about-panel");
+  const keep = panel.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+  const row = (k, v, extra) => [h("dt", {}, k), h("dd", {}, v, extra ? h("small", {}, extra) : null)];
+  const n = x.running || 0;
+  const model = a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
+  const told = [a.job, ...(a.instructions || [])].filter(Boolean).join(" ");
+  panel.replaceChildren(...[
+    h("div", { class: "ab-head" }, h("h2", { id: "about-title" }, `About ${a.name}`),
+      h("button", { type: "button", class: "iconbtn", "aria-label": "Close", "data-fk": "close", onclick: closeAbout }, icon("close", "sm"))),
+    h("dl", { class: "ab-rows" }, row("Name", a.name), row("Tests", x.app_line || "No app yet"), row("Model", model[0], model[1])),
+    n ? [h("h3", {}, "Running now"), h("div", { class: "ab-box ab-run", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, n === 1 ? "1 chat is running" : `${n} chats are running`),
+      h("button", { type: "button", class: "btn", "data-fk": "stop", "aria-label": `Stop all ${n} running ${n === 1 ? "chat" : "chats"} in ${a.name}`, onclick: () => stopAll(a) }, `Stop all (${n})`))] : null,
+    told ? [h("h3", {}, "What it is told"), h("div", { class: "ab-box" }, told)] : null,
+    h("h3", {}, "Skills"), h("a", { class: "ab-box ab-link", href: `#/agents/${a.id}/skills`, onclick: closeAbout }, x.skills_line || "General QA", icon("chev", "sm")),
+    h("div", { class: "ab-foot" }, h("p", { class: "sub" }, "To change anything here, say it in Chat, for example “rename this agent to Checkout QA”."),
+      a.id === "default" ? null : h("button", { type: "button", class: "btn", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent"))].flat().filter(Boolean));
+  if (keep) panel.querySelector(`[data-fk="${keep}"]`)?.focus();
+  else if (keep === null && !panel.contains(document.activeElement)) panel.querySelector('[data-fk="close"]').focus();
+  // Live while it is open: the count, and the row goes when nothing runs.
+  clearTimeout(about.timer);
+  about.timer = setTimeout(async () => { await load(); drawAbout(); }, 1500);
+}
+function openAbout(id, opener) {
+  closeAbout();
+  about = { id, opener, timer: null };
+  const scrim = h("div", { class: "scrim", id: "about-scrim", onclick: closeAbout });
+  const panel = h("aside", { class: "about", id: "about-panel", role: "dialog", "aria-modal": "true", "aria-labelledby": "about-title" });
+  panel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeAbout(); return; }
+    if (e.key !== "Tab") return;
+    const items = [...panel.querySelectorAll("a[href], button:not([disabled])")];
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  document.body.append(scrim, panel);
+  drawAbout();
+}
+// Stop all: the panel closes; the open chat says what happened (no Undo: a stopped test is run again).
+async function stopAll(a) {
+  let r;
+  try { r = await api("/api/agents", { action: "stop_all", id: a.id }); } catch (e) { toast(e.message); return; }
+  closeAbout();
+  await load();
+  if (document.getElementById("chat-log") && window.setChatNotice) window.setChatNotice(r); else toast(r.message, true);
+}
+// Remove agent: at once, kept 7 days, Undo in the sidebar toast.
+async function removeAgent(a) {
+  let r;
+  try { r = await api("/api/agents", { action: "remove", id: a.id }); } catch (e) { toast(e.message); return; }
+  closeAbout();
+  localStorage.removeItem(KEY);
+  location.hash = "#/agents/default/chat";
+  await load();
+  sideToast("Agent removed", r.undo, a.name);
 }
 
 // ---- chats: remove with Undo (FC6), from the trash button ----
@@ -214,6 +288,7 @@ window.Shell = {
   agent: agentId,
   setAgent,
   agentData: (id) => byId(id || agentId()),
+  openAbout,
   data: () => data,
   // A chat's own list entry (newest first): the chat to open for `#/agents/<id>/chat`.
   newestChat: () => (chats.agent === agentId() && chats.list.length ? chats.list[0].id : null),

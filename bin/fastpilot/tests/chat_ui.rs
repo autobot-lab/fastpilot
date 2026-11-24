@@ -1580,3 +1580,83 @@ fn the_app_comes_from_chat_and_a_new_address_makes_a_new_agent() {
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// v0.7.1 FC-STOP: Stop all in "About this agent". Two chats of one agent are running tests (their
+/// browser sessions open) and a chat of another agent too. Stop all for the first agent ends both
+/// of its chats: no session of it is left in Live, nothing holds a slot or a device, and what the
+/// bot was about to make (a schedule) is not made; the other agent keeps running. Remove agent keeps
+/// it 7 days with Undo.
+#[test]
+fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-stopall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+    let sessions = |agent: &str| -> usize { get("/api/live")["sessions"].as_array().map(|s| s.iter().filter(|x| x["agent"].as_str().unwrap_or("default") == agent).count()).unwrap_or(0) };
+    let wait = |what: &str, f: &dyn Fn() -> bool| {
+        let until = Instant::now() + Duration::from_secs(90);
+        while !f() {
+            assert!(Instant::now() < until, "{what}");
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+
+    // Another agent, with a running test of its own.
+    let (_, made) = post("/api/chat", json!({ "agent": "new", "message": "only the checkout" }));
+    let other = made["agent"].as_str().expect("agent").to_owned();
+    wait("the first answer of the new agent", &|| get(&format!("/api/chat?agent={other}&chat={}", made["chat"].as_str().unwrap_or("")))["busy"] == false);
+    post("/api/chat", json!({ "agent": other, "chat": made["chat"], "message": "check the login and hold the session" }));
+    // Two running tests of My tester, each about to propose a schedule when it ends.
+    let mut chats = Vec::new();
+    for _ in 0..2 {
+        let (st, v) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "check the login and hold the session, then jadwal" }));
+        assert_eq!(st, 200, "{v}");
+        chats.push(v["chat"].as_str().expect("chat").to_owned());
+    }
+    wait("two sessions of My tester and one of the other agent in Live", &|| sessions("default") == 2 && sessions(&other) == 1);
+    let me = get("/api/agents")["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "default").cloned()).expect("me");
+    assert_eq!(me["running"], 2, "the About panel's count: {me}");
+
+    let (st, r) = post("/api/agents", json!({ "action": "stop_all", "id": "default" }));
+    assert_eq!((st, r["message"].as_str(), r["next"].as_str()), (200, Some("Stopped 2 chats in My tester"), Some("Say “run it again” to start them again.")), "{r}");
+    // Its sessions end (browsers closed), nothing holds a slot or a device, the chats say so.
+    wait("My tester's sessions are gone", &|| sessions("default") == 0);
+    let claims: Vec<Value> = std::fs::read_dir(home.join("claims")).map(|d| d.flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect()).unwrap_or_default();
+    let mine: Vec<&Value> = claims.iter().filter(|c| c["agent"].as_str().unwrap_or("default") == "default").filter(|c| { let pid = c["pid"].as_i64().unwrap_or(0); std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success()) }).collect();
+    assert!(mine.is_empty(), "no slot or device is held for My tester: {mine:?}");
+    for c in &chats {
+        let v = get(&format!("/api/chat?agent=default&chat={c}"));
+        let bot = v["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot");
+        assert!(v["busy"] == false && bot["stopped"] == true && bot["proposals"].as_array().is_none_or(Vec::is_empty), "{v}");
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(get("/api/schedules")["schedules"].as_array().is_some_and(Vec::is_empty), "nothing half-made: no schedule");
+    // The other agent is still running; then Stop all for it too.
+    assert_eq!(sessions(&other), 1, "only My tester's chats stopped");
+    let (_, again) = post("/api/agents", json!({ "action": "stop_all", "id": "default" }));
+    assert_eq!(again["message"], "Nothing to stop. My tester has no running chats.");
+    let (_, r) = post("/api/agents", json!({ "action": "stop_all", "id": other }));
+    assert_eq!(r["message"], "Stopped 1 chat in Checkout QA");
+    wait("the other agent's session is gone", &|| sessions(&other) == 0);
+
+    // Remove agent: at once, kept 7 days, Undo brings it back with its chat.
+    let (st, r) = post("/api/agents", json!({ "action": "remove", "id": other }));
+    assert_eq!((st, r["message"].as_str()), (200, Some("Removed agent “Checkout QA” · kept 7 days")), "{r}");
+    assert!(!get("/api/agents")["agents"].as_array().is_some_and(|a| a.iter().any(|x| x["agent"]["id"] == other.as_str())));
+    assert!(get("/api/removed")["items"].as_array().is_some_and(|l| l.iter().any(|x| x["label"] == "Agent “Checkout QA”")));
+    let (st, u) = post("/api/undo", json!({ "id": r["undo"] }));
+    assert_eq!((st, u["message"].as_str()), (200, Some("Restored agent “Checkout QA”")), "{u}");
+    assert_eq!(get(&format!("/api/chats?agent={other}"))["chats"].as_array().map(Vec::len), Some(1), "its chat is back with it");
+    let (st, _) = post("/api/agents", json!({ "action": "remove", "id": "default" }));
+    assert_eq!(st, 422, "the first agent stays");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}

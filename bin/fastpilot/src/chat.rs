@@ -435,6 +435,33 @@ pub fn stop(agent: &str, chat: &str) -> Res<String> {
     }
 }
 
+/// FC-STOP: stop every answering chat of `agent`; how many were stopped.
+pub fn stop_agent(agent: &str) -> usize {
+    let map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut n = 0;
+    for c in map.values().filter(|c| c.busy && c.agent_id() == agent) {
+        if let Some(s) = &c.stop {
+            s.notify_one();
+            n += 1;
+        }
+    }
+    n
+}
+
+/// FC-STOP: how many chats of `agent` are answering now (the About panel's "Running now").
+pub fn running(agent: &str) -> usize {
+    CHATS.lock().unwrap_or_else(|p| p.into_inner()).values().filter(|c| c.busy && c.agent_id() == agent).count()
+}
+
+/// FC-STOP: wait until no chat of `agent` is answering (a stopped answer still finishes its
+/// clean-up), at most `secs` seconds.
+pub async fn settled(agent: &str, secs: u64) {
+    let until = std::time::Instant::now() + Duration::from_secs(secs);
+    while running(agent) > 0 && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// FC4: remove chat `chat` of `agent` (kept 7 days, Undo). A chat that is answering is stopped first.
 /// Returns the line and the Undo id.
 pub fn remove(agent: &str, chat: &str) -> Res<(String, Option<String>)> {
