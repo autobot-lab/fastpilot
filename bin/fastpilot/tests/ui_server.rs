@@ -465,10 +465,14 @@ fn the_dashboard_and_readme_words_are_current() {
     let skills = std::fs::read_dir(format!("{ROOT}/skills")).expect("skills").flatten().filter(|e| e.path().join("SKILL.md").is_file()).count();
     let readme = std::fs::read_to_string(format!("{ROOT}/README.md")).expect("README");
     assert!(readme.contains(&format!("its {skills} skills")), "README counts all {skills} skills");
-    // The plugin or `init`, not both; where a plugin user's secret goes.
-    assert!(readme.contains("Use **either** the plugin **or** `fastpilot init`") && readme.contains("two\n> fastpilot servers"), "plugin or init");
-    // E2: a password is set once in the dashboard, kept for the app; the environment is for CI.
-    assert!(readme.contains("set once in the dashboard: Settings › Secrets ›\n> Set value") && readme.contains("`export DEMO_PASS=…`"), "plugin secrets");
+    // The README's words, whatever the line breaks.
+    let flat = readme.split_whitespace().filter(|w| *w != ">").collect::<Vec<_>>().join(" ");
+    // v0.7: no project folder; `init` is the optional developer mode.
+    assert!(flat.contains("No project folder is needed") && flat.contains("Developer mode: tests next to your code (optional)"), "no project folder");
+    // The plugin or fastpilot's own registration, not both.
+    assert!(flat.contains("Use **either** the plugin **or** the registration fastpilot adds itself, not both: both together start two fastpilot servers"), "plugin or registration");
+    // E2: a password is asked once in the dashboard, kept for the app; the environment is for CI.
+    assert!(flat.contains("asks for the test account right there, once, in a masked field") && flat.contains("`export DEMO_PASS=...`"), "password once, environment for CI");
 }
 
 /// v0.6 1.1: the Integrations page. A new menu item between Device and Settings; `/api/integrations` says what is
