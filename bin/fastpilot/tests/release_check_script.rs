@@ -69,41 +69,54 @@ fn only_the_android_check_reaches_an_android_device() {
 /// v0.6.0 gate (FastRelease, message 4455): the web check ran every suite with `--release`, where
 /// the fake-Jira test address is off on purpose (crates/core/src/jira.rs, Security Low 8), so the
 /// five fake-Jira tests could only fail; and the Android app map (map_android) ran in the web check,
-/// where adb is out of reach. The suites the script picks: fake-Jira suites in their own debug run,
+/// where adb is out of reach. v0.7.0 gate (5003b32): `jira_signin` (the fake Atlassian sign-in) and
+/// `one_command` (a pretend terminal) failed the same way, because their hooks are debug-only too.
+/// The suites the script picks: every suite with a debug-only hook in its own debug run,
 /// map_android only in the Android check.
 #[test]
-fn fake_jira_suites_run_in_debug_and_the_android_map_runs_with_android() {
+fn debug_only_suites_run_in_debug_and_the_android_map_runs_with_android() {
     let script = std::fs::read_to_string(SCRIPT).expect("script");
     let pick: String = script.lines().skip_while(|l| !l.starts_with("ANDROID_DEMO=")).take_while(|l| !l.starts_with("check_web() {")).collect::<Vec<_>>().join("\n");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     let out = std::process::Command::new("bash")
         .arg("-c")
-        .arg(format!("{pick}\necho \"web:$WEB_SUITES\"\necho \"jira:${{JIRA_SUITES:-}}\""))
+        .arg(format!("{pick}\necho \"web:$WEB_SUITES\"\necho \"debug:${{DEBUG_SUITES:-}}\""))
         .current_dir(root)
         .output()
         .expect("bash");
     let text = String::from_utf8_lossy(&out.stdout);
     let suites = |k: &str| -> Vec<String> { text.lines().find_map(|l| l.strip_prefix(k)).unwrap_or("").split_whitespace().map(str::to_owned).collect() };
-    let (web, jira) = (suites("web:"), suites("jira:"));
+    let (web, debug) = (suites("web:"), suites("debug:"));
     assert!(web.len() > 20, "the web suites are picked: {text}");
 
+    // The debug-only hooks, written in pieces so that this file does not name them itself (the script
+    // looks for the names in the suites' text).
+    let hooks = [
+        concat!("FASTPILOT_JIRA", "_TEST_BASE"),
+        concat!("FASTPILOT_ATLASSIAN", "_TEST_BASE"),
+        concat!("FASTPILOT_ASSUME", "_TTY"),
+    ];
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let mut fake_jira = Vec::new();
+    let mut with_hook = Vec::new();
     for e in std::fs::read_dir(&tests).expect("tests") {
         let p = e.expect("entry").path();
-        if p.extension().is_some_and(|x| x == "rs") && std::fs::read_to_string(&p).expect("suite").lines().any(|l| l.starts_with("#[path = \"support/fake_jira.rs\"]")) {
-            fake_jira.push(p.file_stem().expect("name").to_string_lossy().into_owned());
+        if p.extension().is_some_and(|x| x == "rs") {
+            let text = std::fs::read_to_string(&p).expect("suite");
+            let fake_jira = text.lines().any(|l| l.starts_with("#[path = \"support/fake_jira.rs\"]"));
+            if fake_jira || hooks.iter().any(|h| text.contains(h)) {
+                with_hook.push(p.file_stem().expect("name").to_string_lossy().into_owned());
+            }
         }
     }
-    fake_jira.sort();
-    for s in ["jira_chat", "jira_connect", "jira_connect_live", "jira_tools"] {
-        assert!(fake_jira.iter().any(|f| f == s), "{s} uses the fake Jira: {fake_jira:?}");
+    with_hook.sort();
+    for s in ["jira_chat", "jira_connect", "jira_connect_live", "jira_tools", "jira_signin", "one_command"] {
+        assert!(with_hook.iter().any(|f| f == s), "{s} needs a debug-only hook: {with_hook:?}");
     }
-    for s in &fake_jira {
-        assert!(jira.contains(s), "{s} talks to the fake Jira, so it runs in the debug build: jira={jira:?}");
-        assert!(!web.contains(s), "{s} is not in the release-build web run, where the fake Jira is unreachable: {web:?}");
+    for s in &with_hook {
+        assert!(debug.contains(s), "{s} needs a debug-only hook, so it runs in the debug build: debug={debug:?}");
+        assert!(!web.contains(s), "{s} is not in the release-build web run, where its hook is off: {web:?}");
     }
-    assert_eq!(jira, fake_jira, "only the fake-Jira suites leave the release-build run");
+    assert_eq!(debug, with_hook, "only the suites with a debug-only hook leave the release-build run");
     assert!(!web.iter().any(|s| s == "map_android"), "the Android app map needs an emulator, not the web check: {web:?}");
 
     let body = |name: &str| -> String { script.lines().skip_while(|l| *l != format!("check_{name}() {{")).take_while(|l| *l != "}").collect::<Vec<_>>().join("\n") };
