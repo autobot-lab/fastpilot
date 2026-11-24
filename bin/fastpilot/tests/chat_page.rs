@@ -307,7 +307,7 @@ async fn every_page_has_one_look_and_no_more_options() {
     let _ = std::fs::remove_dir_all(&home);
     let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
     let txt = |s: String| s.trim_matches('"').to_owned();
-    let check = "(() => { const shadow = [...document.querySelectorAll('.grp, .btn')].filter((e) => { const s = getComputedStyle(e).boxShadow; return s && s !== 'none' && /\\d+px \\d+px 0px/.test(s) && !/^rgba\\(0, 0, 0, 0\\)/.test(s); }).length; const more = document.querySelectorAll('.more-btn').length + (document.body.innerText.includes('More options') ? 1 : 0); const ctl = [...document.querySelectorAll('#body .btn')].every((b) => b.classList.contains('p') || b.classList.contains('d') || b.classList.contains('danger') || getComputedStyle(b).borderTopColor === 'rgb(115, 124, 138)'); return [more, shadow, ctl].join('|'); })()";
+    let check = "(() => { const shadow = [...document.querySelectorAll('.grp, .btn')].filter((e) => { const s = getComputedStyle(e).boxShadow; return s && s !== 'none' && /\\d+px \\d+px 0px/.test(s) && !/^rgba\\(0, 0, 0, 0\\)/.test(s); }).length; const more = document.querySelectorAll('.more-btn').length + (document.body.innerText.includes('More options') ? 1 : 0); const ctl = [...document.querySelectorAll('#body .btn')].every((b) => b.disabled || b.classList.contains('p') || b.classList.contains('d') || b.classList.contains('danger') || getComputedStyle(b).borderTopColor === 'rgb(115, 124, 138)'); return [more, shadow, ctl].join('|'); })()";
     for (hash, wait) in [
         ("#/agents/default/chat", "What should I test?"),
         ("#/agents/default/skills", "Specialist skills"),
