@@ -1411,7 +1411,7 @@ async function chatUndo(id) {
   } catch (e) { toast(e.message); }
   chatSig = "";
   renderChat();
-  document.querySelector(`.prop[data-pid="${id}"] .prop-state`)?.focus();
+  (document.querySelector(`.prop[data-pid="${id}"] .prop-state`) || document.querySelector(`.result-line[data-pid="${id}"] .rl-text`))?.focus();
 }
 
 // D9 step 2 (v9 G2): allowing a looser limit that needs a typed word. Focus starts on Cancel (the
@@ -1666,7 +1666,20 @@ async function askSecrets(p) {
 }
 const RERUN = "The test account is saved now. Run that check again with it.";
 
+// FC6: what Chat did at once shows as one result line: verb first, the exact change, and Undo while
+// it can be undone ("Changed later" once a newer change of the same thing came). No Apply step.
+const RESULT_KINDS = new Set(["app", "map", "run_all", "schedule", "schedule_change", "ship_check", "release_watch", "switch_app", "run_tests"]);
+
+function resultLine(p) {
+  const ok = p.status === "applied";
+  const cls = "result-line" + (p.status === "undone" ? " undone" : "") + (ok || p.status === "undone" ? "" : " bad");
+  return h("div", { class: cls, role: "status", "data-pid": String(p.id) },
+    h("span", { class: "rl-text", tabindex: "-1" }, p.note || p.title),
+    ok && p.undo_id ? (p.changed_later ? h("span", { class: "muted rl-later" }, "Changed later") : h("button", { class: "btn sm rl-undo", onclick: () => chatUndo(p.id) }, "Undo")) : null);
+}
+
 function proposalCard(p) {
+  if (RESULT_KINDS.has(p.kind) && p.status !== "pending") return resultLine(p);
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);

@@ -131,7 +131,9 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     let cards = bot["proposals"].as_array().expect("proposals");
     assert_eq!(cards.len(), 3, "{bot}");
     let (sched, word, steps) = (&cards[0], &cards[1], &cards[2]);
-    assert_eq!((sched["kind"].as_str(), sched["status"].as_str()), (Some("schedule"), Some("pending")), "{sched}");
+    // FC6: the schedule the user asked for is made at once (a result line with Undo).
+    assert_eq!((sched["kind"].as_str(), sched["status"].as_str()), (Some("schedule"), Some("applied")), "{sched}");
+    assert!(sched["undo_id"].is_string() && sched["note"].as_str().is_some_and(|n| n.starts_with("Created schedule “Login harian”") && n.contains("enter the webhook URL")), "{sched}");
     assert!(sched["rows"].to_string().contains("daily 09:00"), "{sched}");
     // D9 (M7): one more blocked word applies at once, with Undo; fewer steps waits for a click.
     assert_eq!((word["kind"].as_str(), word["status"].as_str(), word["undo"].as_bool()), (Some("setting"), Some("applied"), Some(true)), "{word}");
@@ -139,16 +141,13 @@ fn chat_runs_checks_and_changes_only_what_the_user_clicks() {
     assert_eq!((steps["setting"]["now"].as_str(), steps["setting"]["after"].as_str()), (Some("30 steps (default)"), Some("20 steps")), "plain words, real values: {steps}");
     assert!(!steps.to_string().contains("\"max_steps\"") || steps["setting"].to_string().find("max_steps").is_none(), "no raw keys on the card: {steps}");
 
-    // Only the word, at once; the schedule and the steps wait for a click.
-    assert!(!home.join(".fastpilot/schedules.json").exists());
+    // The word and the schedule at once; the steps wait for a click.
     let cfg = config(&home);
     // Added to the built-in list (v0.3.2), not in place of it.
     assert!(cfg.contains("block_actions = [\"default\", \"Bayar\"]") && !cfg.contains("max_steps"), "{cfg}");
     let (st, body) = post("/api/chat/decide", json!({ "id": steps["id"], "apply": true }));
     assert_eq!(st, 200, "{body}");
     assert!(config(&home).contains("max_steps = 20"));
-    let (st, body) = post("/api/chat/decide", json!({ "id": sched["id"], "apply": true }));
-    assert!(st == 200 && body.contains("Enter the webhook URL"), "{st} {body}");
     let stored = std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("saved");
     assert!(stored.contains("\"login-harian\"") && stored.contains("\"webhook\": false"), "{stored}");
     assert!(home.join("LaunchAgents/dev.fastpilot.schedule.login-harian.plist").exists());
@@ -580,13 +579,11 @@ fn chat_schedules_every_n_hours_after_a_click() {
     let v = wait_idle(&ui);
     let cards = v["messages"][1]["proposals"].as_array().cloned().expect("cards");
     assert_eq!(cards.len(), 2, "{v}");
-    assert_eq!((cards[0]["kind"].as_str(), cards[0]["status"].as_str()), (Some("schedule"), Some("pending")), "{}", cards[0]);
+    assert_eq!((cards[0]["kind"].as_str(), cards[0]["status"].as_str()), (Some("schedule"), Some("applied")), "{}", cards[0]);
     assert!(cards[0]["rows"].to_string().contains("every 2 hours, 08:00–20:00"), "{}", cards[0]);
     assert!(cards[1]["status"] == "refused" && cards[1]["note"].as_str().is_some_and(|n| n.contains("1 to 24")), "{}", cards[1]);
+    // FC6: made at once, with its system scheduler entry.
     let plist = home.join("LaunchAgents/dev.fastpilot.schedule.checkout-every-2-hours.plist");
-    assert!(!plist.exists(), "nothing before the click");
-    let (st, body) = post("/api/chat/decide", json!({ "id": cards[0]["id"], "apply": true }));
-    assert_eq!(st, 200, "{body}");
     let text = std::fs::read_to_string(&plist).expect("OS entry");
     assert_eq!(text.matches("<key>Hour</key>").count(), 7, "{text}");
     assert!(text.contains("<key>Hour</key><integer>8</integer>") && text.contains("<key>Hour</key><integer>20</integer>"), "{text}");
@@ -988,11 +985,11 @@ fn chat_and_the_page_start_a_release_watch() {
     assert_eq!(st, 200);
     let v = wait_idle(&ui);
     let card = v["messages"][1]["proposals"][0].clone();
-    assert_eq!(card["status"], "pending", "{card}");
+    // FC6: started at once.
+    assert_eq!(card["status"], "applied", "{card}");
     let when = card["rows"].as_array().expect("rows").iter().find(|r| r[0] == "When").expect("when")[1].as_str().unwrap_or("").to_owned();
     assert!(when.starts_with("every 10 minutes, until ") && when.contains("release watch") && when.contains("only about a new problem"), "{when}");
-    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
-    assert!(st == 200 && body.contains("Release watch") && body.contains("before"), "{st} {body}");
+    assert!(card["note"].as_str().is_some_and(|n| n.contains("Release watch") && n.contains("before")), "{card}");
     let store: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/schedules.json")).expect("store")).expect("json");
     let w = &store["schedules"][0]["watch"];
     let left = w["until_ms"].as_u64().unwrap_or(0).saturating_sub(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as u64);
@@ -1144,14 +1141,11 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
     };
     let apps = || -> Value { serde_json::from_str(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("apps") };
 
-    // The user's own address: a card, then the app on the click.
+    // The user's own address: added at once (FC6), a result line with Undo.
     let bot = say("add the app https://staging.shop.example please");
     let card = bot["proposals"][0].clone();
-    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["title"].as_str()), (Some("app"), Some("pending"), Some("Add the app")), "{bot}");
-    assert_eq!(card["rows"][0], json!(["Website", "https://staging.shop.example"]));
-    assert_eq!(apps()["apps"].as_array().map(Vec::len), Some(0), "nothing before the click");
-    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true }));
-    assert!(st == 200 && body.contains("Added Shop staging"), "{st} {body}");
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["note"].as_str()), (Some("app"), Some("applied"), Some("Added Shop staging https://staging.shop.example/")), "{bot}");
+    assert!(card["undo_id"].is_string(), "{card}");
     assert_eq!(apps()["apps"][0]["name"], "Shop staging");
 
     // An address a page asked for is not the user's: refused, nothing added.
@@ -1162,7 +1156,7 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
 
     // Map: the card names the app; nothing starts before the click.
     let bot = say("map the app");
-    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["title"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("map"), Some("Map Shop staging"), Some("pending")), "{bot}");
+    assert!(bot["proposals"][0]["kind"] == "map" && bot["proposals"][0]["status"] != "pending", "done at once: {bot}");
 
     // A password is never taken in Chat; Jira is signed in on its page: cards that open the page.
     let bot = say("here is the password for the test account");
@@ -1175,7 +1169,7 @@ fn chat_controls_the_pages_with_cards_that_name_their_action() {
     assert_eq!(bot["page_attempts"].as_array().map(|a| a.iter().filter(|x| x["kind"] == "action").count()), Some(3), "{bot}");
     // The user's own words in such a turn still get the card.
     let bot = say("check the login page and map the app");
-    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("map"), Some("pending")), "{bot}");
+    assert!(bot["proposals"][0]["kind"] == "map" && bot["proposals"][0]["status"] != "pending", "{bot}");
     // Only fastpilot's own pages.
     let bot = say("open the outside page");
     assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("open"), Some("refused")), "{bot}");
@@ -1225,6 +1219,95 @@ fn chat_gives_the_password_card_the_user_asked_for() {
     let tries = bot["page_attempts"].as_array().cloned().unwrap_or_default();
     assert!(!tries.is_empty() && tries.iter().all(|a| a["kind"] == "action" && a.get("said").is_none()), "{bot}");
     assert!(!bot.to_string().contains("\\\"kind\\\""), "{bot}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// v0.7.1 FC3 + FC6: what the Schedules page, Ship check, the release watch, the app switcher and
+/// Run now do, from one Chat sentence, done at once with a result line (no Apply step), Undo on the
+/// line while it is the newest change of that thing, "Changed later" after. Removing a schedule needs
+/// the user's own words even when no page was read; an app is switched only when the message names
+/// it; what a tested page asks for does nothing.
+#[test]
+fn chat_does_schedules_release_checks_apps_and_runs_at_once_with_undo() {
+    let home = std::env::temp_dir().join(format!("fp-chat-fc3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let get = |path: &str| -> Value { serde_json::from_str(&request(ui.port, "GET", path, &ui.cookie, "", false).1).expect("json") };
+    let say = |text: &str| -> Value {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        let v = wait_idle(&ui);
+        v["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default()
+    };
+    // The one result line of an answer: done, its words, and whether it has an Undo.
+    let line = |bot: &Value, kind: &str| -> Value {
+        let cards: Vec<Value> = bot["proposals"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["kind"] == kind).collect();
+        assert!(cards.len() == 1 && cards[0]["status"] == "applied", "{kind} done at once: {bot}");
+        cards[0].clone()
+    };
+    let schedule = || get("/api/schedules")["schedules"][0]["schedule"].clone();
+
+    // An app (the demo page is its website) with a nightly schedule of its tests.
+    let login = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
+    assert_eq!(post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": login } })).0, 200);
+    assert_eq!(post("/api/apps", json!({ "action": "add", "name": "Shop Android", "targets": { "android": "com.shop.app" } })).0, 200);
+    let (st, body) = post("/api/schedules", json!({ "action": "preset", "preset": "night" }));
+    assert_eq!(st, 200, "{body}");
+    let night = "Every night";
+
+    // Turn off: done at once, with Undo; Undo turns it on again and the line says so.
+    let off = line(&say(&format!("turn off the schedule \"{night}\"")), "schedule_change");
+    assert_eq!((off["note"].as_str(), off["undo_id"].as_str().map(str::len)), (Some("Paused schedule “Every night” · its history is kept"), Some(4)), "{off}");
+    assert_eq!(schedule()["enabled"], false);
+    let (st, body) = post("/api/chat/undo", json!({ "id": off["id"] }));
+    assert!(st == 200 && body.contains("Undone · Paused schedule “Every night”"), "{st} {body}");
+    assert_eq!(schedule()["enabled"], true);
+    // Two changes of the same schedule: the older line says "Changed later" and has no Undo.
+    let first = line(&say(&format!("turn off the schedule \"{night}\"")), "schedule_change");
+    line(&say(&format!("turn on the schedule \"{night}\" again")), "schedule_change");
+    let msgs = get("/api/chat")["messages"].clone();
+    let older = msgs.as_array().expect("msgs").iter().flat_map(|m| m["proposals"].as_array().cloned().unwrap_or_default()).find(|p| p["id"] == first["id"]).expect("older line");
+    assert_eq!(older["changed_later"], true, "{older}");
+    let (st, _) = post("/api/chat/undo", json!({ "id": first["id"] }));
+    assert_eq!(st, 422, "an older change is not undone from Chat");
+
+    // Change the timing: done, and its name follows.
+    let changed = line(&say(&format!("make the schedule two-hourly: \"{night}\"")), "schedule_change");
+    assert!(changed["note"].as_str().is_some_and(|n| n.starts_with("Changed schedule “Every 2 hours (8–20)” · next run")), "{changed}");
+    let id = schedule()["id"].as_str().expect("id").to_owned();
+    let run = line(&say(&format!("run the schedule now: \"{id}\"")), "schedule_change");
+    assert!(run["note"].as_str().is_some_and(|n| n.starts_with("Running “Every 2 hours (8–20)” now · watch it in Live")) && run.get("undo_id").is_none(), "{run}");
+
+    // Removing: only from the user's own words, even with no page read; then kept 7 days, with Undo.
+    let bot = say(&format!("clean up the schedule \"{id}\""));
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    let removed = line(&say(&format!("remove the schedule \"{id}\"")), "schedule_change");
+    assert_eq!(removed["note"], "Removed schedule “Every 2 hours (8–20)” · kept 7 days");
+    assert!(get("/api/schedules")["schedules"].as_array().is_some_and(Vec::is_empty));
+    let (st, body) = post("/api/chat/undo", json!({ "id": removed["id"] }));
+    assert!(st == 200 && body.contains("Restored schedule “Every 2 hours (8–20)”"), "{st} {body}");
+    assert_eq!(schedule()["id"], id.as_str());
+
+    // Can we release, the release watch, Run now: done at once, each saying what it does.
+    assert!(line(&say("can we release?"), "ship_check")["note"].as_str().is_some_and(|n| n.starts_with("Checking file://") || n.starts_with("Verdict: ")));
+    let watch = line(&say("turn on the release watch"), "release_watch");
+    assert!(watch["note"] == "Turned on release watch for Shop" && watch["undo_id"].is_string(), "{watch}");
+    assert!(line(&say("run the login test"), "run_tests")["note"].as_str().is_some_and(|n| n.starts_with("Running “")), "Run now");
+
+    // Switching apps: only an app the message names.
+    let bot = say("switch apps please");
+    assert!(bot["proposals"][0]["status"] == "refused" && bot["proposals"][0]["note"].as_str().is_some_and(|n| n.contains("names it")), "{bot}");
+    assert_eq!(line(&say("switch to Shop Android"), "switch_app")["note"], "Switched to Shop Android");
+    assert_eq!(get("/api/apps")["current"], "shop-android");
+
+    // A tested page's text: nothing is done.
+    let bot = say("check the login page and see what it wants");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert_eq!(bot["page_attempts"].as_array().map(|a| a.iter().filter(|x| x["kind"] == "action").count()), Some(3), "{bot}");
+    assert_eq!(get("/api/apps")["current"], "shop-android");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

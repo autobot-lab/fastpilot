@@ -130,6 +130,11 @@ fn changed_later(s: &Store, c: &Change) -> bool {
     s.changes.iter().skip(at.saturating_add(1)).any(|x| !x.undone && x.item == c.item)
 }
 
+/// Of these change ids, the ones whose thing changed later (no Undo on their line).
+pub fn later(ids: &[String]) -> Vec<String> {
+    with_store(|s| ids.iter().filter(|id| s.changes.iter().find(|c| &c.id == *id).is_some_and(|c| !c.undone && changed_later(s, c))).cloned().collect()).unwrap_or_default()
+}
+
 /// Undo change `id` (the newest change when `None`). Returns the line for the person.
 pub fn undo(id: Option<&str>, by: Surface) -> Result<String, Fail> {
     let found = with_store(|s| {
