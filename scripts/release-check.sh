@@ -174,28 +174,33 @@ check_unit() {
 
 # Every suite in bin/fastpilot/tests except the device ones. The Android demo test in demo_cli and
 # the Android app map (map_android) need an emulator, so they run with the Android check instead.
-# Suites that talk to the fake Jira (support/fake_jira.rs) run in a debug build: a release build
-# never sends a token to a local port (crates/core/src/jira.rs, Security Low 8), so there they
-# could only fail. The rest of the web suites still test the release build.
+# Suites that need a debug-only test hook run in a debug build, because a release build has none
+# of them and the suite could only fail there:
+#   - the fake Jira (support/fake_jira.rs, FASTPILOT_JIRA_TEST_BASE): a release build never sends a
+#     token to a local port (crates/core/src/jira.rs, Security Low 8);
+#   - the fake Atlassian sign-in (FASTPILOT_ATLASSIAN_TEST_BASE, crates/core/src/jira/oauth.rs);
+#   - a terminal that is not one (FASTPILOT_ASSUME_TTY, bin/fastpilot/src/one.rs).
+# The rest of the web suites still test the release build. A new debug-only hook goes in DEBUG_ONLY.
 ANDROID_DEMO=demo_android_installs_the_app_and_its_login_runs
 WEB_SUITES=""
-JIRA_SUITES=""
+DEBUG_SUITES=""
+DEBUG_ONLY='^#\[path = "support/fake_jira.rs"\]|FASTPILOT_(JIRA_TEST_BASE|ATLASSIAN_TEST_BASE|ASSUME_TTY)'
 for f in bin/fastpilot/tests/*.rs; do
   s="$(basename "$f" .rs)"
   case "$s" in
     android|ios|real_android|real_ios|ui_takeover_device|map_android) ;;
-    *) if grep -q '^#\[path = "support/fake_jira.rs"\]' "$f"; then JIRA_SUITES="$JIRA_SUITES $s"; else WEB_SUITES="$WEB_SUITES $s"; fi ;;
+    *) if grep -Eq "$DEBUG_ONLY" "$f"; then DEBUG_SUITES="$DEBUG_SUITES $s"; else WEB_SUITES="$WEB_SUITES $s"; fi ;;
   esac
 done
 
 check_web() {
   local args=() jira=() s rc
   for s in $WEB_SUITES; do args+=(--test "$s"); done
-  for s in $JIRA_SUITES; do jira+=(--test "$s"); done
+  for s in $DEBUG_SUITES; do jira+=(--test "$s"); done
   noandroid cargo test --release --locked -p fastpilot --no-fail-fast "${args[@]}" -- --nocapture --skip "$ANDROID_DEMO"
   rc=$?
   if [ ${#jira[@]} -gt 0 ]; then
-    echo "== fake-Jira suites (debug build):$JIRA_SUITES" >>"$LOG"
+    echo "== debug-only suites (debug build):$DEBUG_SUITES" >>"$LOG"
     noandroid cargo test --locked -p fastpilot --no-fail-fast "${jira[@]}" -- --nocapture
     [ $? -ne 0 ] && rc=1
   fi
