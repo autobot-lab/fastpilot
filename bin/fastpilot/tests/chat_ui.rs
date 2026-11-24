@@ -595,6 +595,33 @@ fn chat_schedules_every_n_hours_after_a_click() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// v0.7.1 M2 (FastTest 7044 M1, D3): "check the login with a@b.com" (no word "password"), after the
+/// bot ran a check: the hidden password card for the test account is in that same answer, with
+/// "Save and run"; when the bot only promises the field, fastpilot shows the card itself. Another
+/// name from a turn that read the app still needs the user's own words (Security #208 M1).
+#[test]
+fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
+    let home = std::env::temp_dir().join(format!("fp-chat-d3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let say = |text: &str| -> Value {
+        let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": text }).to_string(), true);
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot")
+    };
+    for (said, names) in [("check the login with a@b.com", json!(["TEST_USER", "TEST_PASSWORD"])), ("check the login with b@c.com", json!(["TEST_USER", "TEST_PASSWORD"]))] {
+        let bot = say(said);
+        assert!(bot["tools"].as_array().is_some_and(|t| !t.is_empty()), "the stand-in ran a check: {bot}");
+        let cards: Vec<Value> = bot["proposals"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["open"] == "secrets").collect();
+        assert_eq!(cards.len(), 1, "{said}: {bot}");
+        assert_eq!((cards[0]["status"].as_str(), &cards[0]["names"], cards[0]["rerun"].as_bool()), (Some("pending"), &names, Some(true)), "{said}: {bot}");
+        assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "{said}: not a page's attempt: {bot}");
+    }
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D1: one sentence in Chat -> a "Save test & schedule" card -> nothing written until Save &
 /// schedule -> the file (in the project's tests folder, written by the server from the card's data),
 /// the schedule and its OS entry, and a first run that passes and shows in Live. The same name is not
@@ -1223,7 +1250,8 @@ fn chat_gives_the_password_card_the_user_asked_for() {
     let bot = say("I need a password for the test account, set that up");
     let (st, body) = post("/api/chat/decide", json!({ "id": bot["proposals"][0]["id"], "apply": true }));
     assert_eq!(st, 200, "{body}");
-    // A page in a turn that read the app: no card, and the attempt carries no raw proposal.
+    // A page in a turn that read the app: no card for a name that is not the test account's, and
+    // the attempt carries no raw proposal.
     let bot = say("check the login page and tell me what it needs");
     assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
     let tries = bot["page_attempts"].as_array().cloned().unwrap_or_default();

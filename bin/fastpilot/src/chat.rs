@@ -752,6 +752,18 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
             p.rerun |= ran;
             p.app.clone_from(&own);
         }
+        // v0.7.1 M2: the bot said a hidden field would ask for the password, but made no card:
+        // fastpilot shows the test account's card itself, in this answer (never a promise alone).
+        if !stopped && promises_password_field(&m.text) && !proposals.iter().any(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
+            let app = own.as_ref().and_then(|a| a["id"].as_str()).map(str::to_owned);
+            let missing: Vec<&str> = ["TEST_USER", "TEST_PASSWORD"].into_iter().filter(|n| !app.as_deref().is_some_and(|a| fastpilot_core::secrets::has(a, n))).collect();
+            let names = if missing.is_empty() { vec!["TEST_USER", "TEST_PASSWORD"] } else { missing };
+            if let Ok(mut p) = open_card(&json!({ "kind": "open", "page": "secrets", "names": names })) {
+                p.rerun = ran;
+                p.app.clone_from(&own);
+                proposals.push(p);
+            }
+        }
         // S8: the release verdict and a bug report as cards, built from their fields.
         if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
             m.verdict = Some(card);
@@ -2556,12 +2568,28 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
         "run_tests" => any(RUN_WORDS),
         _ => match v["page"].as_str().unwrap_or("") {
             "jira" => any(&["jira"]),
-            "secrets" => any(&["password", "secret", "sandi"]),
+            // v0.7.1 M2 (FastTest D3): the test account is asked for whatever words were used ("check
+            // the login with a@b.com"); other names only when the user's words ask for a password.
+            "secrets" => any(&["password", "secret", "sandi"]) || test_account_only(v),
             "device" => any(&["device", "emulator", "simulator", "phone", "iphone", "android", "perangkat"]),
             "history" => any(&["history", "riwayat", "delete", "hapus"]),
             _ => false,
         },
     }
+}
+
+/// The names a Secrets card asks for are the test account's only (`TEST_USER`, `TEST_PASSWORD`):
+/// saved for this app and typed only on its own site (S-1), the same names Security #208 M1 allows.
+fn test_account_only(v: &Value) -> bool {
+    let names: Vec<&str> = v["names"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    !names.is_empty() && names.iter().all(|n| matches!(*n, "TEST_USER" | "TEST_PASSWORD"))
+}
+
+/// v0.7.1 M2: the bot's words promise a hidden field for a password ("fastpilot will ask you for it
+/// in a masked field").
+fn promises_password_field(text: &str) -> bool {
+    let low = text.to_lowercase();
+    ["masked field", "hidden field", "masked dialog", "secure field", "password card", "ask you for it", "ask you for the password", "ask you for your password"].iter().any(|p| low.contains(p))
 }
 
 /// "Run …" as a request, not "the run" or "why did it run": the verb with what it runs.
