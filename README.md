@@ -9,7 +9,11 @@ New in 0.7.2: each agent can use its **own AI model**, **reports** of a run you 
 codes asked once while the test waits, and a **Live** and **About** tab on every agent. fastpilot is
 now **MIT**-licensed. See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2).
 
-<img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard. On the left, the agent My tester with its chat. In the chat, one sentence became a test card: the steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only, Edit and Dismiss, with one-click schedules below them: Every 2 hours, Every night and Before each release.">
+<img src="docs/images/11-chat-demo-result.png" width="860" alt="The fastpilot dashboard. On the left, the agent Demo shop. In the chat, the answer to 'run the demo tests': All 3 demo tests passed, with one row per test: Fill in the card form (stops before Pay), Add a product to the cart and Check the login, each Passed.">
+
+<img src="docs/images/demo.gif" width="860" alt="A 50-second tour of fastpilot: run the demo tests from Chat, watch the steps on Live, see the answer, pick the AI on the Model tab, make a report, turn on a one-click schedule, and rename an app with Undo.">
+
+*A 50-second tour, sped up where the AI is working. It was recorded from the code of 0.7.2, with fastpilot's own demo and Claude as the AI.*
 
 ## Start in 2 steps
 
@@ -121,6 +125,8 @@ show after your first saved test.
 - The **Live** tab shows only this agent's running tests. The **About** tab has its name, model,
   skills, **Stop all** and **Remove agent** (with Undo).
 
+<img src="docs/images/13-model-tab.png" width="860" alt="The Model tab of the agent Demo shop: Replay uses Haiku 5.5 and Explore and repair uses Sonnet 5.5, both marked Default, Claude Code, and each with a drop-down list.">
+
 You can have several agents, for example "Checkout" on web and "Login" on Android. Each has its own
 chats, schedules, history, memory and map.
 
@@ -144,15 +150,14 @@ A test that needs a one-time code cannot run by itself on a schedule, because no
 it: it says *Could not run* (never a pass). Start it from the dashboard.
 
 When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**, or one of the
-one-click schedules under them. A test is saved only when you click. The picture at the top of this
-page shows such a card.
+one-click schedules under them. A test is saved only when you click.
 
 ### 5. Watch it run: **Live**
 Watch every test step by step, on web, Android, and iOS. **Take over** if you need to tap something
 yourself, then hand it back to the AI. Several agents can run at the same time; a phone runs one
 test at a time and the others wait their turn. Tests started by hand or by a schedule show up here too.
 
-<img src="docs/images/08-live.png" width="860" alt="The Live page: a scheduled test, Free shipping for members, is running in Chrome. Step 2 of 4 is running, step 1 is done, and the card has Enlarge and Take over buttons. The step history is listed below it.">
+<img src="docs/images/12-live.png" width="860" alt="The Live page: a demo test is open in Chrome on the Checkout page, with Enlarge and Take over buttons. All 5 steps are ticked and the card says Done, 5/5 passed.">
 
 ### 6. Run it automatically: **Schedules**
 - **One click:** three buttons run all of the app's tests by themselves: **Every 2 hours (8–20)**,
@@ -168,7 +173,7 @@ test at a time and the others wait their turn. Tests started by hand or by a sch
   add a webhook (a Slack-compatible URL) or a GitHub issue.
 - Or just ask in Chat: *"run the checkout tests every 2 hours"*.
 
-<img src="docs/images/09-schedules.png" width="860" alt="The Schedules page: three one-click cards (Every 2 hours, Every night, Before each release), a switch for the release watch, and a list with one schedule that runs every 2 hours from 08:00 to 20:00, with its next run, a passed last run and a notification on failure.">
+<img src="docs/images/16-schedules.png" width="860" alt="The Schedules page: three one-click cards (Every 2 hours, Every night, Before each release). Every night is on, with a message that it was created and an Undo. Below are the ship check and the switch for the release watch.">
 
 ### 7. See results: **History** and **Memory**
 - **History:** every run and every Chat conversation, with report, screenshots, and video. **Make a
@@ -176,7 +181,11 @@ test at a time and the others wait their turn. Tests started by hand or by a sch
   web page that opens offline and a Markdown file, with every screenshot of a failed test and the last
   one of each passing test. fastpilot writes them itself, on this Mac, and nothing is uploaded. Passwords
   and card numbers in the text show as `***`, but the screenshots show the page as it was: look at
-  them before you share. Open, Download and Copy Markdown are on the card. Delete
+  them before you share. Open, Download and Copy Markdown are on the card.
+
+  <img src="docs/images/14-report-card.png" width="640" alt="A report card in Chat: Made report for 3 tests in tests, passed, 3 screenshots, made on this Mac and nothing uploaded, with the buttons Open, Download and Copy Markdown.">
+
+  <img src="docs/images/15-report-page.png" width="640" alt="The report web page: the title, 3 of 3 tests passed, a table with each test Passed, and the last screen of each passing test."> Delete
   one, several, or all, or let them be deleted after 7, 30 (the default), or 90 days. Removed apps,
   schedules, chats and agents are kept for 7 days under **Recently removed**, with **Restore**.
 - **Memory:** how each test is doing (Reliable, Unstable, Failing, Set aside), plus **project notes**
@@ -242,7 +251,7 @@ changing an agent's model have **Undo** too, and typing *"undo"* undoes the newe
 Undo button in that chat. Loosening a safety limit
 still needs your click on its red card, and a password is still typed only in its masked field.
 
-<img src="docs/images/10-chat-result-undo.png" width="860" alt="The fastpilot Chat: a pasted website address was added as the app of My tester, and the answer is one line, Added Your website, with an Undo button.">
+<img src="docs/images/17-chat-undo.png" width="860" alt="The fastpilot Chat: after rename this app to Shop (test), the answer is one line, Renamed the app to Shop (test), with an Undo button. Above it is a report card with Open, Download and Copy Markdown.">
 
 There is no setup form: paste your website's address in the dashboard Chat and it is added (an
 address that does not load is not added), or say *"test my Android app"* and pick it from the apps
