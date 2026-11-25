@@ -16,6 +16,10 @@ pub const ENV: &str = "FASTPILOT_CODE_DIR";
 /// How long a run waits for the person to type the code.
 pub const WAIT: Duration = Duration::from_secs(180);
 
+/// F4: what a step's error says (before the code's name) when nobody typed the code in time: the
+/// run ends the test there, without another attempt.
+pub const NOT_TYPED: &str = "nobody typed the one-time code ";
+
 /// The test the asking run belongs to, shown next to the field.
 static TEST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// Names the run's test text marks as codes by their step ("Isi kode OTP ${SMS}").
@@ -93,7 +97,7 @@ fn ask_in(dir: &Path, name: &str, test: &str, site: &str, wait: Duration) -> Res
         None => {
             let m = wait.as_secs().div_ceil(60).max(1);
             Err(failed(format!(
-                "nobody typed the one-time code {name} within {m} minute{}, so this step failed. Run the test again and type the code when the dashboard asks",
+                "{NOT_TYPED}{name} within {m} minute{}, so this step failed. Run the test again and type the code when the dashboard asks",
                 if m == 1 { "" } else { "s" }
             )))
         }

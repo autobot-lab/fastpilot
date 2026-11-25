@@ -396,6 +396,17 @@ pub fn missing_codes(case: &Case) -> Vec<String> {
 }
 
 /// The `${NAME}`s of `text` that are one-time codes, by their name or by the line they are in.
+/// F4 (design e1c): the line for a test whose one-time code `code` nobody typed. The step is the
+/// test's step (`- ` or `1. ` line) that uses the code; the code's name is never shown.
+fn code_not_typed(text: &str, code: &str) -> String {
+    let is_step = |l: &str| l.starts_with("- ") || l.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    let mut steps = text.lines().map(str::trim_start).filter(|l| is_step(l));
+    let at = steps.position(|l| l.contains(&format!("${{{code}}}")));
+    let minutes = fastpilot_core::codes::WAIT.as_secs() / 60;
+    let stopped = at.map_or("Stopped".to_owned(), |i| format!("Stopped at step {}", i + 1));
+    format!("{stopped}: no code was typed in {minutes} minutes. Say “run it again” when you have the code.")
+}
+
 fn code_names(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -690,6 +701,8 @@ struct Agent {
     /// A session could not start because the device's runner did not come up (an infrastructure
     /// problem): what it said. The test never ran; nothing starts that session again.
     infra: Mutex<Option<String>>,
+    /// F4: the one-time code nobody typed in time (its name): the test ended there.
+    no_code: Mutex<Option<String>>,
 }
 
 impl Agent {
@@ -814,6 +827,14 @@ impl Agent {
         lock(&self.transcript).push(format!("{} {} {}\n{}", if ok { "✓" } else { "✗" }, name, clip(&input.to_string(), 300), clip(&joined, 1500)));
         if !ok && name == "run_flow" {
             self.replay_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        // F4: nobody typed the one-time code in time: the test ends here, with no other step and
+        // no other attempt (asking again would only wait for the same person).
+        if !ok && let Some(at) = joined.find(fastpilot_core::codes::NOT_TYPED) {
+            let code: String = joined[at + fastpilot_core::codes::NOT_TYPED.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            *lock(&self.no_code) = Some(code);
+            *lock(&self.verdict) = Some((false, "no code was typed".into()));
+            return text("Nobody typed the one-time code in time, so the test stops here. Call no other tool.".into(), true);
         }
         if start {
             if ok {
@@ -1035,6 +1056,7 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         start_error: Mutex::new(None),
         started: std::sync::atomic::AtomicBool::new(false),
         infra: Mutex::new(None),
+        no_code: Mutex::new(None),
     });
     // Only this test's Claude Code may connect: a random token it passes to the bridge.
     let token: String = (0..2)
@@ -1171,8 +1193,15 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
         forced_class = Some(Class::Infra);
         notes = format!("Could not run: the {platform} session did not start ({}). Check the device and its helper, then run again.", why.trim_end_matches('.'));
     }
+    // F4 (design e1c): nobody typed the one-time code: one line for the person, a setup problem
+    // (never the agent's, never retried), and the test did not get to its end.
+    let no_code = lock(&agent.no_code).clone();
+    if let Some(code) = &no_code {
+        forced_class = Some(Class::Setup);
+        notes = code_not_typed(&case.text, code);
+    }
     // It never ran (no browser, the agent could not start): not a failure of the test (FastTest M3).
-    let could_not_run = forced_class == Some(Class::Infra) && (turns == 0 || start_failed);
+    let could_not_run = forced_class == Some(Class::Infra) && (turns == 0 || start_failed) || no_code.is_some();
     let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry, could_not_run).await {
         Ok(f) => {
             // E8: the run's report says which model really ran (one line).
@@ -1286,7 +1315,7 @@ pub async fn run_with_retries(
     let mut attempts = 1;
     // A device that did not come up is not retried: the wait for it was already long, the test
     // never ran, and a retry would only wait again (and look hung).
-    while !result.passed && result.attempts > 0 && !result.start_failed && result.class != Some(Class::Agent) && budget.take() {
+    while !result.passed && result.attempts > 0 && !result.start_failed && !matches!(result.class, Some(Class::Agent | Class::Setup)) && budget.take() {
         attempts += 1;
         let mut again = attempt(case, opts, pool, true, &result.devices).await;
         let earlier = std::mem::take(&mut result.transcript);
@@ -1683,6 +1712,16 @@ fn record_history(results: &[CaseResult], elapsed: Duration, opts: &Options) -> 
 mod tests {
     use super::*;
 
+    /// F4 (design e1c): the stop line names the test's step that uses the code, never the code.
+    #[test]
+    fn a_code_nobody_typed_names_its_step_not_the_code() {
+        let line = |s: &str| format!("{s}: no code was typed in 3 minutes. Say “run it again” when you have the code.");
+        assert_eq!(code_not_typed("# Login\ntarget: x\n- Open\n- Type ${OTP} into Code\n", "OTP"), line("Stopped at step 2"));
+        assert_eq!(code_not_typed("# Login\n1. Open\n2. Sign in\n3. Isi kode OTP ${MOTMAINA_OTP}\n", "MOTMAINA_OTP"), line("Stopped at step 3"));
+        assert_eq!(code_not_typed("# Login\n- Open\n", "OTP"), line("Stopped"));
+        assert!(!code_not_typed("- ${MOTMAINA_OTP}", "MOTMAINA_OTP").contains("MOTMAINA"));
+    }
+
     /// QA B1: Claude Code older than 2.1.280 cannot run fastpilot's default models.
     #[test]
     fn claude_code_versions() {
@@ -1776,6 +1815,7 @@ mod tests {
             start_error: Mutex::new(None),
             started: std::sync::atomic::AtomicBool::new(false),
             infra: Mutex::new(None),
+            no_code: Mutex::new(None),
         };
         let names = |tools: Vec<Value>| tools.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect::<Vec<_>>();
         assert!(names(Agent::tools(Some(&side))).contains(&"step".to_owned()) && !names(Agent::tools(None)).contains(&"step".to_owned()));

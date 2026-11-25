@@ -633,3 +633,59 @@ fn a_run_leaves_its_outcome_for_the_doctor() {
     assert!(!o.to_string().contains("rahasia123"), "no secret values");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// F4 (FastTest, v0.7.2; design e1c): a run started from the dashboard asks for a one-time code and
+/// nobody types it. The test stops at once with one line, "Stopped at step N: no code was typed in 3
+/// minutes. Say “run it again” when you have the code." (no variable name), as a setup problem:
+/// not the agent's fault, not retried with another model, and nothing asks for the code again.
+#[test]
+fn a_code_nobody_types_stops_the_test_at_once_with_one_line_and_no_retry() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-code-wait-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (home, here, codes, log) = (dir.join("home"), dir.join("work"), dir.join("codes"), dir.join("claude"));
+    for d in [&home, &here.join("tests"), &log] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let page = dir.join("code.html");
+    std::fs::write(&page, "<!doctype html><title>Shop</title><label>Code <input id=c aria-label=Code></label><p id=o>waiting</p><script>c.addEventListener('input', () => { o.textContent = c.value === '48213' ? 'code accepted' : 'wrong code'; });</script>").expect("page");
+    let target = format!("file://{}", std::fs::canonicalize(&page).expect("page").display());
+    std::fs::write(here.join("tests/code.md"), format!("# Login with SMS code\nid: sms-login\nplatform: web\ntarget: {target}\n- Open the login page\n- Type the code sent to the phone, ${{MOTMAINA_OTP}}, into Code\n- Check that \"code accepted\" is visible\n")).expect("test");
+    let fp = |args: &[&str]| -> (bool, String) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(args)
+            .current_dir(&here)
+            .env("HOME", &home)
+            .env("FASTPILOT_KEYSTORE", "file")
+            .env("FASTPILOT_CLAUDE", FAKE)
+            .env("FAKE_CLAUDE_LOG", &log)
+            // The dashboard's code folder (as `fastpilot ui` sets it), and a short wait.
+            .env("FASTPILOT_CODE_DIR", &codes)
+            .env("FASTPILOT_CODE_WAIT_MS", "600")
+            // Room for retries: none may be used.
+            .env("FASTPILOT_RETRY_BUDGET", "3")
+            .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+            .env_remove("FASTPILOT_DIR")
+            .env_remove("FASTPILOT_CONFIG")
+            .env_remove("FASTPILOT_VARS")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("ANTHROPIC_AUTH_TOKEN")
+            .output()
+            .expect("fastpilot");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = fp(&["app", "add", &target]);
+    assert!(ok, "{out}");
+    let (ok, out) = fp(&["run", "tests/code.md"]);
+    assert!(!ok, "{out}");
+    let line = "Stopped at step 2: no code was typed in 3 minutes. Say “run it again” when you have the code.";
+    assert!(out.contains(&format!("✗ sms-login could not run [setup]: {line}")), "{out}");
+    assert!(out.contains("1 tests: 0 passed, 0 failed, 1 could not run"), "{out}");
+    assert!(!out.contains("[agent]") && !out.contains("attempts"), "{out}");
+    // One Claude Code start: no second attempt, so the code was asked once.
+    assert_eq!(calls(&log).len(), 1, "{out}");
+    assert_eq!(std::fs::read_dir(&codes).map(|d| d.count()).unwrap_or(0), 0, "nothing left to answer");
+    let _ = std::fs::remove_dir_all(dir);
+}
