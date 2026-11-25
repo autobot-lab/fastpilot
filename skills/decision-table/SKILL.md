@@ -1,7 +1,7 @@
 ---
 name: decision-table
 description: Test a business rule with several conditions by listing every combination and the expected outcome. Use for discounts, vouchers, shipping fees, eligibility, permissions ("who may do what"), or when the user asks for a "decision table" or "all combinations of the rules".
-license: Apache-2.0
+license: MIT
 ---
 
 # Decision table

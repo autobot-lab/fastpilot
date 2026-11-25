@@ -1,7 +1,7 @@
 ---
 name: boundary-value-analysis
 description: Test the values at and next to every limit of an input, where apps break most often. Use for fields with a minimum or maximum - age, quantity, length, amount, dates, file size - or when the user asks for "boundary values", "BVA", "limits", "min and max". Supports 2-value (default) and 3-value analysis.
-license: Apache-2.0
+license: MIT
 ---
 
 # Boundary value analysis

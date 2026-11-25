@@ -266,4 +266,4 @@ fastpilot doctor
 - [Release notes](https://github.com/autobot-lab/fastpilot/releases) (the latest is
   [0.7.1](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.1))
 
-License: [Apache-2.0](LICENSE)
+License: [MIT](LICENSE). Versions up to 0.7.1 were released under Apache-2.0.

@@ -5,7 +5,7 @@
   "author": { "name": "autobot-lab", "url": "https://github.com/autobot-lab" },
   "homepage": "https://github.com/autobot-lab/fastpilot",
   "repository": "https://github.com/autobot-lab/fastpilot",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "keywords": ["testing", "qa", "e2e", "android", "ios", "web", "mcp"],
   "mcpServers": {
     "fastpilot": { "command": "npx", "args": ["-y", "fastpilot", "mcp"] }

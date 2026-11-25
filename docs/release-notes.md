@@ -1,3 +1,8 @@
+## What's new in 0.7.2
+
+### License
+- fastpilot is now MIT-licensed. Versions up to 0.7.1 were released under Apache-2.0.
+
 ## What's new in 0.7.1
 
 Full control from Chat: say what you want in the dashboard Chat, the terminal or Claude Code, and fastpilot does it at once and shows one result line with **Undo**.
