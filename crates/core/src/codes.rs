@@ -46,10 +46,16 @@ pub fn dir() -> Option<PathBuf> {
 /// Wait for the person to type the code `name` in the dashboard (at most [`WAIT`]).
 pub fn ask(name: &str) -> Result<String, String> {
     let Some(dir) = dir() else { return Err(crate::dsl::code_needed(name)) };
+    // Security #233 M1: a code is only asked for the app in use, and only typed on its own site
+    // (the S-1 check runs before this; the field says whose site it is).
+    let Some(scope) = crate::secrets::scope() else {
+        return Err(format!("one-time code needed: no app is in use, so fastpilot does not know whose code {name} is and does not ask for it; nothing was typed"));
+    };
+    let site = [scope.web.as_deref().and_then(|w| url::Url::parse(w).ok()).and_then(|u| u.host_str().map(str::to_owned)), scope.android.clone(), scope.ios.clone()].into_iter().flatten().next().unwrap_or_default();
     // Tests shorten the wait; nothing lengthens it.
     let wait = std::env::var("FASTPILOT_CODE_WAIT_MS").ok().and_then(|v| v.parse().ok()).map(Duration::from_millis).map_or(WAIT, |w| w.min(WAIT));
     let test = TEST.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    let run = || ask_in(&dir, name, &test, wait);
+    let run = || ask_in(&dir, name, &test, &site, wait);
     // Waiting blocks this thread: tell a multi-threaded runtime, so its other work goes on.
     match tokio::runtime::Handle::try_current() {
         Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(run),
@@ -57,13 +63,13 @@ pub fn ask(name: &str) -> Result<String, String> {
     }
 }
 
-fn ask_in(dir: &Path, name: &str, test: &str, wait: Duration) -> Result<String, String> {
+fn ask_in(dir: &Path, name: &str, test: &str, site: &str, wait: Duration) -> Result<String, String> {
     let failed = |why: String| format!("one-time code needed: {why}; nothing was typed");
     ensure_dir(dir).map_err(|e| failed(format!("the dashboard cannot ask for the code {name} ({e})")))?;
     let id = crate::change::random_id(16);
     let (ask, code) = (dir.join(format!("{id}.ask")), dir.join(format!("{id}.code")));
     let until = crate::change::now_ms() + wait.as_millis() as u64;
-    let what = serde_json::json!({ "name": name, "test": test, "until_ms": until });
+    let what = serde_json::json!({ "name": name, "test": test, "site": site, "until_ms": until });
     create_private(&ask, &what.to_string()).map_err(|e| failed(format!("the dashboard cannot ask for the code {name} ({e})")))?;
     let deadline = Instant::now() + wait;
     let got = loop {
@@ -79,7 +85,9 @@ fn ask_in(dir: &Path, name: &str, test: &str, wait: Duration) -> Result<String, 
     let _ = std::fs::remove_file(&code);
     match got {
         Some(v) => {
-            crate::dsl::add_secret(&v);
+            // Masked everywhere, and kept to the app's own site like its passwords (S-1), also
+            // when a step copies it (Security #233 M1).
+            crate::dsl::keep_on_site(&v);
             Ok(v)
         }
         None => {
@@ -114,7 +122,11 @@ fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     b.recursive(true);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(dir)
+    b.create(dir)?;
+    // A folder that was already there is made owner-only too (it fails when it is not ours).
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
 }
 
 /// A new owner-only file (never over an existing one or through a link).
@@ -133,6 +145,8 @@ pub struct Asked {
     pub id: String,
     pub name: String,
     pub test: String,
+    /// The app's website host (or Android / iPhone app id) the code is typed on.
+    pub site: String,
     pub until_ms: u64,
 }
 
@@ -140,28 +154,39 @@ fn valid_id(id: &str) -> bool {
     id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// The codes runs wait for now in `dir`, oldest first (an ask whose wait ended is removed).
+/// The codes runs wait for now in `dir`, oldest first. An ask whose wait ended is removed with
+/// its code, and so is a code whose run is gone (Security #233 L1: a run stopped while waiting).
 pub fn pending(dir: &Path) -> Vec<Asked> {
     let now = crate::change::now_ms();
     let mut out: Vec<Asked> = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = e.path();
-        let Some(id) = path.file_name().and_then(|f| f.to_str()).and_then(|f| f.strip_suffix(".ask")).filter(|id| valid_id(id)) else { continue };
-        if !e.file_type().is_ok_and(|t| t.is_file()) || dir.join(format!("{id}.code")).exists() {
+        let file = path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_owned();
+        if let Some(id) = file.strip_suffix(".code") {
+            if !dir.join(format!("{id}.ask")).exists() {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
-        let Some(v) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
-        let until = v["until_ms"].as_u64().unwrap_or(0);
-        if until <= now {
+        let Some(id) = file.strip_suffix(".ask").filter(|id| valid_id(id)) else { continue };
+        if !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let until = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|v| (v["until_ms"].as_u64().unwrap_or(0), v));
+        let Some((until, v)) = until.filter(|(u, _)| *u > now) else {
             let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(dir.join(format!("{id}.code")));
+            continue;
+        };
+        if dir.join(format!("{id}.code")).exists() {
             continue;
         }
         let name = v["name"].as_str().unwrap_or("").to_owned();
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') || name.len() > 64 {
             continue;
         }
-        let test: String = v["test"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).take(120).collect();
-        out.push(Asked { id: id.to_owned(), name, test, until_ms: until });
+        let clean = |k: &str| v[k].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).take(120).collect::<String>();
+        out.push(Asked { id: id.to_owned(), name, test: clean("test"), site: clean("site"), until_ms: until });
     }
     out.sort_by_key(|a| a.until_ms);
     out
@@ -195,7 +220,7 @@ mod tests {
         let person = std::thread::spawn(move || {
             for _ in 0..100 {
                 if let Some(a) = pending(&d).first() {
-                    assert_eq!((a.name.as_str(), a.test.as_str()), ("MOTMAINA_OTP", "Login OTP"));
+                    assert_eq!((a.name.as_str(), a.test.as_str(), a.site.as_str()), ("MOTMAINA_OTP", "Login OTP", "shop.example"));
                     assert!(answer(&d, &a.id, "12ab").is_ok());
                     assert!(answer(&d, &a.id, "99999").is_err(), "once");
                     return;
@@ -204,16 +229,23 @@ mod tests {
             }
             panic!("never asked");
         });
-        assert_eq!(ask_in(&dir, "MOTMAINA_OTP", "Login OTP", Duration::from_secs(10)), Ok("12ab".into()));
+        assert_eq!(ask_in(&dir, "MOTMAINA_OTP", "Login OTP", "shop.example", Duration::from_secs(10)), Ok("12ab".into()));
         person.join().expect("person");
         assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 0, "nothing left on disk");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&dir).expect("dir").permissions()) & 0o777, 0o700);
 
-        let e = ask_in(&dir, "MOTMAINA_OTP", "Login OTP", Duration::from_millis(300)).expect_err("nobody typed it");
+        let e = ask_in(&dir, "MOTMAINA_OTP", "Login OTP", "shop.example", Duration::from_millis(300)).expect_err("nobody typed it");
         assert!(e.starts_with("one-time code needed: nobody typed the one-time code MOTMAINA_OTP within 1 minute,") && e.ends_with("nothing was typed"), "{e}");
         assert!(pending(&dir).is_empty() && std::fs::read_dir(&dir).expect("dir").count() == 0);
         assert!(answer(&dir, "00000000000000000000000000000000", "1234").is_err(), "no such ask");
+        // Security #233 L1: a run stopped while waiting leaves its ask and the code typed late;
+        // both go (the ask once its wait ended), and so does a code with no ask.
+        let id = "0123456789abcdef0123456789abcdef";
+        std::fs::write(dir.join(format!("{id}.ask")), serde_json::json!({ "name": "X_OTP", "until_ms": 1 }).to_string()).expect("ask");
+        std::fs::write(dir.join(format!("{id}.code")), "4821").expect("code");
+        std::fs::write(dir.join("fedcba9876543210fedcba9876543210.code"), "4821").expect("orphan");
+        assert!(pending(&dir).is_empty() && std::fs::read_dir(&dir).expect("dir").count() == 0, "nothing left on disk");
         assert!(!valid("12") && !valid("12 34") && !valid("1234567890123") && valid("483921"));
         let _ = std::fs::remove_dir_all(&dir);
     }

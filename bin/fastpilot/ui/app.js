@@ -2124,7 +2124,7 @@ function showCode(a) {
   el = h("section", { id: "code-ask", class: "grp prop code-ask", role: "group", "aria-label": "Type the code sent to your phone" },
     h("h3", { class: "gh" }, icon("lock"), h("b", {}, "Type the code sent to your phone")),
     h("div", { class: "prop-body" },
-      h("p", { class: "s" }, (a.test ? a.test + " is waiting for " : "A test is waiting for ") + a.name + ". It is used once and never saved."),
+      h("p", { class: "s" }, (a.test ? a.test + " is waiting for " : "A test is waiting for ") + a.name + (a.site ? " on " + a.site : "") + ". It is used once and never saved."),
       h("div", { class: "btns" }, input, send, h("span", { class: "s code-left" }, time))));
   dock.prepend(el);
   input.focus();

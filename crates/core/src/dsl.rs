@@ -1519,9 +1519,30 @@ pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Resul
 pub(crate) fn substitute_for_check(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
     expand(s, |n| match local.get(n) {
         Some(v) => Ok(v.clone()),
-        None if crate::codes::is_run_code(n) && crate::secrets::lookup(n).is_none() && std::env::var(n).is_err() => Ok(String::new()),
+        None if unsaved_code(n) => Ok(String::new()),
         None => lookup(n),
     })
+}
+
+/// E1: a one-time code with no fixed value here: the person is asked for it when its step runs.
+fn unsaved_code(name: &str) -> bool {
+    crate::codes::is_run_code(name) && crate::secrets::lookup(name).is_none() && std::env::var(name).is_err()
+}
+
+/// Security #233 M1: does `text` type a one-time code the person will be asked for? Such a step
+/// is held to the app's own site (S-1) before anyone is asked, like one with a saved password.
+pub(crate) fn asks_code(text: &str, local: &HashMap<String, String>) -> bool {
+    var_names(text).iter().any(|n| !local.contains_key(n) && unsaved_code(n))
+}
+
+/// Security #233 M1: a code the person typed is masked and kept to the app's own site (S-1), as
+/// a saved password is, whatever local name a step copies it to.
+pub(crate) fn keep_on_site(value: &str) {
+    add_secret(value);
+    let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+    if !kept.iter().any(|v| v == value) {
+        kept.push(value.to_owned());
+    }
 }
 
 /// Replace allowed variables' values with their `${NAME}` (prompts written by people, e.g. a
@@ -1729,7 +1750,7 @@ fn check_step(step: &Step, defined: &mut HashSet<String>, out: &mut dyn FnMut(St
             Some(_) => Ok(String::new()),
             None => Err(code_needed(&v)),
         };
-        let usable = if crate::codes::is_run_code(&v) && crate::secrets::lookup(&v).is_none() && std::env::var(&v).is_err() { unasked() } else { lookup(&v) };
+        let usable = if unsaved_code(&v) { unasked() } else { lookup(&v) };
         if !defined.contains(&v)
             && let Err(e) = usable
         {

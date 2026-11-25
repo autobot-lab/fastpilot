@@ -132,8 +132,8 @@ async fn a_refused_save_says_why_in_the_card() {
 async fn open_ui(home: &Path, project: &Path, env: &[(&str, &str)]) -> (Ui, Client) {
     std::fs::create_dir_all(project.join("tests")).expect("project");
     std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
-        .args(["ui", "--no-open"])
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["ui", "--no-open"])
         .current_dir(project)
         .env("HOME", home)
         .env("FASTPILOT_DIR", project.join(".fastpilot"))
@@ -143,9 +143,12 @@ async fn open_ui(home: &Path, project: &Path, env: &[(&str, &str)]) -> (Ui, Clie
         .env("FAKE_CHAT_DELAY_MS", "0")
         .env("FAKE_CHAT_NO_RUN", "1")
         .envs(env.iter().copied())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("ui");
+        .stdout(std::process::Stdio::piped());
+    // `("FASTPILOT_DIR", "")`: as installed, with apps (Chat's fastpilot works for the app in use).
+    if env.contains(&("FASTPILOT_DIR", "")) {
+        cmd.env_remove("FASTPILOT_DIR");
+    }
+    let mut child = cmd.spawn().expect("ui");
     let mut link = String::new();
     BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
     let ui = Ui(child);
@@ -336,9 +339,11 @@ async fn the_dashboard_asks_for_a_one_time_code_while_the_step_waits() {
     std::fs::create_dir_all(home.join("site")).expect("site");
     let page = home.join("site/code.html");
     std::fs::write(&page, "<!doctype html><label>Code <input id=c aria-label=Code></label><p id=o>waiting</p><script>c.addEventListener('input', () => { o.textContent = c.value === '48213' ? 'code accepted' : 'wrong code'; });</script>").expect("page");
-    let target = page.to_string_lossy().into_owned();
-    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FAKE_CHAT_NO_RUN", ""), ("FAKE_CHAT_TARGET", &target)]).await;
-    eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
+    let target = std::fs::canonicalize(&page).expect("page").to_string_lossy().into_owned();
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FAKE_CHAT_NO_RUN", ""), ("FAKE_CHAT_TARGET", &target), ("FASTPILOT_DIR", ""), ("FASTPILOT_KEYSTORE", "file")]).await;
+    // The code is typed only on the app's own site (Security #233 M1): the app is this page.
+    let add = format!("(async () => {{ await api('/api/apps', {{ action: 'add', name: 'Shop', targets: {{ web: {} }} }}); location.hash = '#/agents/default/chat'; return 'ok'; }})()", serde_json::to_string(&format!("file://{target}")).expect("url"));
+    eval(&client, &add).await;
     see(&client, "What should I test?").await;
     say(&client, "tes kode dari HP saya").await;
     see(&client, "Type the code sent to your phone").await;
