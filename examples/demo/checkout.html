@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout · fastpilot demo shop</title>
+  <style>body{font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px}label{display:block;margin:10px 0}input{display:block;margin-top:4px}</style>
+</head>
+<body>
+  <h1>Checkout</h1>
+  <p>A practice card form. Use the test card 4242 4242 4242 4242; nothing is charged.</p>
+  <form onsubmit="event.preventDefault(); document.getElementById('done').hidden = false">
+    <label>Name on card <input name="name" autocomplete="off"></label>
+    <label>Card number <input name="number" inputmode="numeric" autocomplete="off"></label>
+    <label>Expiry (MM/YY) <input name="expiry" autocomplete="off"></label>
+    <label>CVC <input name="cvc" inputmode="numeric" autocomplete="off"></label>
+    <!-- fastpilot's built-in limits never press Pay; the demo test stops before it. -->
+    <button type="submit">Pay</button>
+  </form>
+  <p id="done" hidden>Payment done</p>
+  <p><a href="products.html">Back to the products</a></p>
+</body>
+</html>

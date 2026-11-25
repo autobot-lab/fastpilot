@@ -82,6 +82,152 @@ fn demo_in_terminal(cwd: &Path, answer: &str, until: &str) -> String {
     out
 }
 
+/// The dashboard (`fastpilot ui --no-open`) in `folder` with HOME `home`: its port and session
+/// cookie, after trading the link's code, and where that first open lands.
+struct Dash {
+    child: std::process::Child,
+    port: u16,
+    cookie: String,
+    link: String,
+    landing: String,
+}
+impl Drop for Dash {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+fn http(port: u16, path: &str, cookie: &str) -> String {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\n\r\n").expect("write");
+    let mut out = String::new();
+    s.read_to_string(&mut out).expect("read");
+    out
+}
+/// `redeem`: trade the link's code here (for the API); else the code is left for a browser.
+fn dashboard(folder: &Path, home: &Path, redeem: bool) -> Dash {
+    use std::io::BufRead;
+    // Its own port, before `--no-open`: `demo_offers_the_dashboard` stops every "ui --no-open" of
+    // this binary when it ends, and may run at the same time.
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()).expect("free port").to_string();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .args(["ui", "--port", &port, "--no-open"])
+        .current_dir(folder)
+        .env("HOME", home)
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("FASTPILOT_DIR")
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("ui");
+    let mut link = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
+    let link = link.trim().to_owned();
+    let rest = link.strip_prefix("http://127.0.0.1:").expect("link");
+    let port: u16 = rest.split('/').next().and_then(|p| p.parse().ok()).expect("port");
+    if !redeem {
+        return Dash { child, port, cookie: String::new(), link, landing: String::new() };
+    }
+    let head = http(port, &format!("/{}", rest.split_once('/').map(|(_, r)| r).unwrap_or("")), "");
+    let header = |name: &str| head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned())).unwrap_or_default();
+    let cookie = header("set-cookie").split(';').next().unwrap_or("").to_owned();
+    Dash { child, port, cookie, link, landing: header("location") }
+}
+fn api(d: &Dash, path: &str) -> Value {
+    let out = http(d.port, path, &d.cookie);
+    serde_json::from_str(out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")).unwrap_or_else(|e| panic!("{path}: {e}\n{out}"))
+}
+
+/// E2 (v0.7.2, found by FastGrowth on 0.7.1): `fastpilot demo` opened a dashboard that said "No app
+/// yet", with the demo's tests nowhere in sight. Now the demo folder is the app "fastpilot demo"
+/// (a website) with its agent "Demo shop"; the dashboard opens on that agent's Chat, which lists the
+/// three website tests of the folder's `tests/`. No form, no question; `--force` again adds nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn demo_opens_the_dashboard_on_the_demo_agent_with_its_tests() {
+    let tmp = std::env::temp_dir().join(format!("fp-demo-e2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("tmp");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .arg("demo")
+            .args(args)
+            .current_dir(&tmp)
+            .env("HOME", &tmp)
+            .env_remove("FASTPILOT_CONFIG")
+            .env_remove("FASTPILOT_DIR")
+            .env("FASTPILOT_KEYSTORE", "file")
+            .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+            .env_remove("FASTPILOT_ANDROID_SERIAL")
+            .output()
+            .expect("demo");
+        (out.status.code(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (code, out) = run(&[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("app “fastpilot demo”") && out.contains("agent “Demo shop” in the dashboard"), "{out}");
+    let folder = tmp.join("fastpilot-demo");
+    let title = |rel: &str| std::fs::read_to_string(folder.join(rel)).unwrap_or_default().lines().next().unwrap_or("").to_owned();
+    assert_eq!((title("tests/login.md"), title("tests/cart.md"), title("tests/card-form.md")), ("# Check the login".into(), "# Add a product to the cart".into(), "# Fill in the card form (stops before Pay)".into()));
+    assert!(folder.join("tests/android/login-android.md").is_file() && !folder.join("tests/login-android.md").exists(), "the Android tests are kept apart");
+
+    let check = |d: &Dash| {
+        let agents = api(d, "/api/agents");
+        let list = agents["agents"].as_array().cloned().unwrap_or_default();
+        let demo: Vec<&Value> = list.iter().filter(|x| x["agent"]["name"] == "Demo shop").collect();
+        assert_eq!(demo.len(), 1, "one demo agent: {agents}");
+        let x = demo[0];
+        assert_eq!(x["app_line"], "fastpilot demo · Website", "{x}");
+        assert_eq!(x["demo"]["tests"], json!(["Add a product to the cart", "Check the login", "Fill in the card form (stops before Pay)"]), "{x}");
+        assert!(!list.iter().any(|y| y["app_line"] == "No app yet"), "nothing says No app yet: {agents}");
+        assert_eq!((agents["saved_tests"].as_u64(), agents["current_app"].clone()), (Some(3), x["app_id"].clone()), "{agents}");
+        let apps = api(d, "/api/apps");
+        assert_eq!(apps["apps"].as_array().map(Vec::len), Some(1), "one app: {apps}");
+        assert_eq!(apps["apps"][0]["name"], "fastpilot demo", "{apps}");
+        assert_eq!(d.landing, format!("/#/agents/{}/chat", x["agent"]["id"].as_str().unwrap_or("")), "the first open lands in its Chat");
+    };
+    let d = dashboard(&folder, &tmp, true);
+    check(&d);
+    drop(d);
+
+    // The page itself, opened from a new link: the welcome of e2a, with the three tests by name, in
+    // the demo agent's Chat, and no "No app yet".
+    if chrome_available() {
+        let d = dashboard(&folder, &tmp, false);
+        let viewer = tmp.join("viewer");
+        std::fs::create_dir_all(&viewer).expect("viewer");
+        let v2 = viewer.clone();
+        let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+            c.arg("mcp").current_dir(ROOT).env("HOME", &v2).env("FASTPILOT_LIVE_DIR", v2.join("live")).env("FASTPILOT_ALLOW_EVAL_SCRIPT", "true").env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_BLOCK_ACTIONS");
+        });
+        let client: Client = ().serve(TokioChildProcess::new(cmd).expect("spawn")).await.expect("initialize");
+        let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- session: {{ start: viewer, platform: web, target: \"{}\" }}\n- assertVisible: {{ text: \"This is the demo.\", timeout: 15000 }}\n- assertVisible: \"Fill in the card form (stops before Pay)\"\n- assertVisible: \"Add a product to the cart\"\n- assertVisible: \"Check the login\"\n- assertVisible: \"run the demo tests\"\n- assertNotVisible: \"No app yet\"\n- assertNotVisible: \"What should I test?\"\n", d.link) })).await;
+        assert!(ok, "{out}");
+        let (ok, out) = call(&client, "run_flow", json!({ "flow": "- evalScript: \"location.hash\"\n", "session": "viewer" })).await;
+        assert!(ok && out.contains("#/agents/default/chat"), "the demo agent's Chat: {out}");
+        // The practice shop works for the tests: add to the cart; the card form, with Pay never pressed.
+        let products = url::Url::from_file_path(folder.join("demo/products.html")).expect("url");
+        let checkout = url::Url::from_file_path(folder.join("demo/checkout.html")).expect("url");
+        let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- session: {{ start: shop, platform: web, target: \"{products}\" }}\n- tapOn: \"Add Blue mug to cart\"\n- assertVisible: \"Cart: 1 item (Blue mug)\"\n- openUrl: \"{checkout}\"\n- inputText: {{ into: \"Card number\", text: \"4242 4242 4242 4242\" }}\n- assertVisible: \"Pay\"\n") })).await;
+        assert!(ok, "{out}");
+        let (ok, out) = call(&client, "run_flow", json!({ "flow": "- tapOn: \"Pay\"\n", "session": "shop" })).await;
+        assert!(!ok && out.contains("blocked"), "the built-in limit never presses Pay: {out}");
+        let _ = call(&client, "session", json!({ "action": "stop", "id": "shop" })).await;
+        let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+        drop(d);
+    }
+
+    // `fastpilot demo` again (`--force`, same folder): still one app and one demo agent.
+    let (code, out) = run(&["--force"]);
+    assert_eq!(code, Some(0), "{out}");
+    let d = dashboard(&folder, &tmp, true);
+    check(&d);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// D3 (v9 G7): the demo ends by offering the dashboard for the demo folder. Outside a terminal, a
 /// line says how; in a terminal, "n" leaves it for later and Enter starts it there.
 #[test]
@@ -147,8 +293,10 @@ async fn demo_folder_runs_a_first_web_test_and_is_never_overwritten() {
     for line in [
         "Creating the demo folder: ./fastpilot-demo",
         "tests/login.md",
-        "tests/login-android.md",
-        "tests/login-cross-platform.md",
+        "tests/cart.md",
+        "tests/card-form.md",
+        "tests/android/login-android.md",
+        "tests/android/login-cross-platform.md",
         "fastpilot + DEMO_PASS",
         "Android (skipped: no device)",
         "fastpilot demo --android",
@@ -308,7 +456,7 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     }
     let (code, out) = demo(&tmp, &["--android", "--device", &serial], true);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains(&format!("✓ {serial} · com.fastpilot.demo installed")) && out.contains("tests/login-android.md"), "{out}");
+    assert!(out.contains(&format!("✓ {serial} · com.fastpilot.demo installed")) && out.contains("tests/android/login-android.md"), "{out}");
     let listed = std::process::Command::new(&adb).args(["-s", &serial, "shell", "pm", "list", "packages", "com.fastpilot.demo"]).output().expect("adb");
     assert!(String::from_utf8_lossy(&listed.stdout).contains("com.fastpilot.demo"), "installed");
 
@@ -323,7 +471,7 @@ async fn demo_android_installs_the_app_and_its_login_runs() {
     assert!(!ok && out.contains("contains \"bayar\" (the built-in blocked list)") && !out.contains("block_actions"), "{out}");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": "- assertVisible: \"Selamat datang, Budi\"\n- assertNotVisible: \"Total Rp 150.000\"\n", "session": "and1" })).await;
     assert!(ok, "still on the dashboard: {out}");
-    let md = std::fs::read_to_string(folder.join("tests/login-android.md")).expect("login-android.md");
+    let md = std::fs::read_to_string(folder.join("tests/android/login-android.md")).expect("login-android.md");
     assert!(md.contains("must block that step") && !md.contains("Bayar sekarang"), "{md}");
     client.cancel().await.expect("shutdown");
     let _ = std::fs::remove_dir_all(&tmp);

@@ -198,7 +198,9 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
     std::fs::write(project.join(".fastpilot/memory/login-ok.json"), memory.to_string()).expect("memory");
     let (_, v2) = json_of(ui.port, "GET", "/api/map", &ui.cookie, Value::Null);
     assert_eq!(status(&v2, &sign_in["id"])["status"], "failing");
-    assert!(v2["coverage"]["tested"] == 1 && v2["coverage"]["failing"] == 1, "{}", v2["coverage"]);
+    // E2 (v0.7.2): the demo's cart test covers the Products screen too.
+    assert!(v2["coverage"]["tested"] == 2 && v2["coverage"]["failing"] == 1, "{}", v2["coverage"]);
+    assert_eq!(status(&v2, &screen(&v, "Products")["id"])["tests"][0]["title"], "Add a product to the cart");
 
     // Thumbnails: one per screen; nothing outside the map folder.
     let target = m["target"].as_str().expect("target");
@@ -286,7 +288,8 @@ async fn the_demo_shop_is_mapped_read_only_with_its_tests() {
             break;
         }
     }
-    let (ok, out) = flow(&client, "- pressKey: Enter\n- assertVisible: { text: \"What should I test?\", timeout: 8000 }\n").await;
+    // E2 (v0.7.2): the demo's own agent; its empty Chat is the demo welcome.
+    let (ok, out) = flow(&client, "- pressKey: Enter\n- assertVisible: { text: \"This is the demo.\", timeout: 8000 }\n").await;
     assert!(ok, "{out}");
     let typed = eval(&client, "document.querySelector('textarea').value").await;
     assert!(typed.starts_with("Make a test for the") && typed.contains("Demo shop"), "{typed}");
