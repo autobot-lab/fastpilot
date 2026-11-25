@@ -74,14 +74,15 @@ pub fn check_name(name: &str) -> Result<(), String> {
     if ok { Ok(()) } else { Err("a secret's name is like DEMO_PASS: capital letters, digits and _".into()) }
 }
 
-/// One line, 4 to 4096 characters (a pasted line break is not part of a password; a shorter
-/// value could not be told apart from ordinary text, so it could not be masked or kept on its site).
+/// One line, 1 to 4096 characters (a pasted line break is not part of a password). E5 (#231): a
+/// short value (1 to 3 characters) is allowed; it is masked and kept on its site where it stands
+/// alone (a whole word or field value), never inside other words (see `dsl::redact_with`).
 pub fn check_value(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("Type the value first.".into());
+    }
     if value.len() > 4096 || value.chars().any(char::is_control) {
         return Err("The value must be one line, without line breaks.".into());
-    }
-    if value.chars().count() < 4 {
-        return Err("The value must be at least 4 characters.".into());
     }
     Ok(())
 }
@@ -241,7 +242,7 @@ mod tests {
         for v in ["rahasia123", "pa ss\"w'o\\rd", "pässwörd 🔑", "-w \"x\"\nadd"] {
             assert_eq!(unhex(&hex(v)).as_deref(), Some(v));
         }
-        assert!(check_value("a\nb").is_err() && check_value("").is_err() && check_value("abc").is_err() && check_value("ok pass").is_ok());
+        assert!(check_value("a\nb").is_err() && check_value("").is_err() && check_value("abc").is_ok() && check_value("a").is_ok() && check_value("ok pass").is_ok());
         assert!(check_name("DEMO_PASS").is_ok() && check_name("demo").is_err() && check_name("A;B").is_err());
     }
 
