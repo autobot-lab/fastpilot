@@ -1222,14 +1222,21 @@ function rich(text) {
   return String(text || "").split(/`([^`\n]+)`/).map((part, i) => (i % 2 ? code(part) : part));
 }
 
+// A red line may start with its head in bold (design e1c: "**Stopped at step 4:** no code …").
+function errLine(text) {
+  const m = String(text || "").match(/^\*\*([^*\n]+)\*\* ([^]*)$/);
+  return m ? [h("b", {}, m[1]), " ", ...rich(m[2])] : rich(text);
+}
+
 // FC4 safe Markdown: the bot's answer as DOM, never as HTML. Every piece of text is a text node;
 // links only to http(s) and mailto, opened in a new tab with rel=noopener; images are not loaded
 // (their words show as text); raw HTML such as <script> stays visible text.
 const SAFE_LINK = /^(https?:\/\/|mailto:)[^\s<>"']+$/i;
 function inline(text) {
   const out = [];
-  // `code`, **bold**, *italic* / _italic_, [words](https://…), bare https://… addresses.
-  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w_])_([^_\n]+)_(?![\w_])|!?\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?])/g;
+  // `code`, **bold**, *italic* / _italic_, [words](https://…), bare https://… addresses, and \X: the
+  // character X itself, as in Markdown (a run result escapes page text: FastTest 8155).
+  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w_])_([^_\n]+)_(?![\w_])|!?\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()"'\\]+[^\s<>()"'\\.,;:!?])|\\([!-\/:-@[-`\x7b-~])/g;
   let at = 0, m;
   const s = String(text || "");
   while ((m = re.exec(s))) {
@@ -1244,13 +1251,25 @@ function inline(text) {
       else if (SAFE_LINK.test(m[6])) out.push(h("a", { href: m[6], target: "_blank", rel: "noopener noreferrer" }, m[5]));
       else out.push(m[0]);
     } else if (m[7] !== undefined) out.push(h("a", { href: m[7], target: "_blank", rel: "noopener noreferrer" }, m[7]));
+    else out.push(m[8]);
     at = m.index + m[0].length;
   }
   if (at < s.length) out.push(s.slice(at));
   return out;
 }
 
-const cells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+// A table row's cells: split at each | that is not escaped (\| stays in its cell).
+function cells(line) {
+  const s = line.trim().replace(/^\|/, "");
+  const out = [""];
+  for (let k = 0; k < s.length; k++) {
+    if (s[k] === "\\" && k + 1 < s.length) out[out.length - 1] += s[k] + s[++k];
+    else if (s[k] === "|") out.push("");
+    else out[out.length - 1] += s[k];
+  }
+  if (out.length > 1 && !out[out.length - 1].trim()) out.pop();
+  return out.map((c) => c.trim());
+}
 function markdown(text) {
   const lines = String(text || "").replace(/\r/g, "").split("\n");
   const out = [];
@@ -1920,7 +1939,7 @@ function chatMsg(m, last) {
       ? h("details", { class: "bot-said" }, h("summary", {}, "What the bot said"), h("div", { class: "md" }, markdown(m.text)))
       : m.text ? botText(m.text) : null,
     m.stopped ? h("div", { class: "res mu", role: "status" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("stop", "sm")), h("span", { class: "rt" }, "Stopped by you")) : null,
-    signin ? signInCard(lastUserText()) : m.error ? h("div", { class: "res bd", role: "alert" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("close", "sm")), h("span", { class: "rt" }, rich(m.error))) : null,
+    signin ? signInCard(lastUserText()) : m.error ? h("div", { class: "res bd", role: "alert" }, h("span", { class: "rk", "aria-hidden": "true" }, icon("close", "sm")), h("span", { class: "rt" }, errLine(m.error))) : null,
     m.verdict ? verdictCard(m.verdict) : null,
     m.bug ? bugCard(m.bug) : null,
     (m.proposals || []).map(proposalCard),
