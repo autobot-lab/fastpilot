@@ -7,7 +7,7 @@
 
 const ROLES = [
   ["replay", "Replay", "Repeats steps that are already recorded. Fast and cheap."],
-  ["explore", "Explore and repair", "Used for a new test, or when a replay fails."],
+  ["explore", "Explore and repair", "Talks with you in Chat, makes new tests, and fixes a replay that fails."],
 ];
 const PILL = { connected: ["Connected", "ok"], not_running: ["Not running", "bad"], key_not_accepted: ["Key not accepted", "bad"], not_answering: ["Not answering", "bad"] };
 
@@ -120,7 +120,7 @@ function roleRow(role, title, about, x, onPick, useDefault, recheck) {
       x.fallback ? h("p", { class: "s muted" }, x.fallback) : null,
       bad ? h("div", { class: "mnote bad", role: "alert" },
         h("p", {}, x.state === "not_running" ? "Not running. Start Ollama on this Mac, then check again."
-          : `${who} did not answer. Tests that need ${title} will stop with this message until it does. Nothing was switched for you.`),
+          : `${who} did not answer. ${role === "explore" ? "Chat and tests" : "Tests"} that need ${title} will stop with this message until it does. Nothing was switched for you.`),
         h("div", { class: "btns tight" }, h("button", { type: "button", class: "btn sm", onclick: recheck }, "Check again"),
           useDefault && x.choice ? h("button", { type: "button", class: "btn sm", onclick: () => onPick(role, "default") }, "Use default") : null)) : null,
       x.warn ? h("div", { class: "mnote warn" }, h("b", {}, "Not tried with fastpilot yet. "), x.warn, x.note ? " " + x.note : "")
@@ -144,7 +144,7 @@ async function agentTab(id, box) {
   };
   box.replaceChildren(h("div", { class: "model-tab" },
     h("h2", {}, "Model"),
-    h("p", { class: "sub" }, "Which AI runs this agent’s tests. Each agent can use its own."),
+    h("p", { class: "sub" }, "Which AI this agent uses. Each agent can use its own."),
     ROLES.map(([role, title, about]) => roleRow(role, title, about, d[role], onPick, true, recheck(d[role]))),
     h("p", { class: "s muted" }, "New agents start with the defaults in ", h("a", { class: "lk", href: "#/settings/model" }, "Settings › AI model"), ".")));
 }

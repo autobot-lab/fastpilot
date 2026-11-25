@@ -506,7 +506,7 @@ async fn a_new_agent_shows_all_nine_tabs_and_sets_its_model_before_any_test() {
 
     // Model works before any test: pick a Replay model; it is saved for this agent.
     open_tab(&client, "Model").await;
-    see(&client, "Which AI runs this agent’s tests. Each agent can use its own.").await;
+    see(&client, "Which AI this agent uses. Each agent can use its own.").await;
     let picked = eval(&client, "(() => { document.querySelector('.mpick').click(); const o = [...document.querySelectorAll('#mlist [role=option]')].find((o) => o.dataset.v.startsWith('claude:') && o.getAttribute('aria-selected') !== 'true'); o.click(); return o.dataset.v.slice('claude:'.length); })()").await;
     see(&client, "Changed Replay model").await;
     let saved = eval(&client, &format!("(async () => {{ const d = await (await fetch('/api/agent-model?agent={id}')).json(); return d.replay.choice ? d.replay.choice.model : 'default'; }})()")).await;

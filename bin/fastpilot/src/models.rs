@@ -512,15 +512,18 @@ pub fn parse(input: &str, s: Surface) -> Result<Parsed, Fail> {
 
 // ---- where the data goes (T8.0 rule 5) -------------------------------------------------------
 
-/// The data line and the "not tried" line for a choice (none for Claude Code).
-pub fn data_lines(c: &Choice) -> Vec<String> {
+/// The data line and the "not tried" line for a choice (none for Claude Code). Explore and repair
+/// is also the model Chat answers with, so what the person types goes there too.
+pub fn data_lines(c: &Choice, role: Role) -> Vec<String> {
     if c.is_claude() {
         return vec![];
     }
-    let place = if c.provider == "ollama" {
-        "Page text from this agent’s tests stays on this Mac.".to_owned()
-    } else {
-        format!("Page text from this agent’s tests goes to {}.", host(&base_of_id(&c.provider).unwrap_or_default()).unwrap_or_else(|| provider_name(&c.provider)))
+    let to = host(&base_of_id(&c.provider).unwrap_or_default()).unwrap_or_else(|| provider_name(&c.provider));
+    let place = match (role, c.provider == "ollama") {
+        (Role::Replay, true) => "Page text from this agent’s tests stays on this Mac.".to_owned(),
+        (Role::Replay, false) => format!("Page text from this agent’s tests goes to {to}."),
+        (Role::Explore, true) => "What you type in Chat and page text from this agent’s tests stay on this Mac.".to_owned(),
+        (Role::Explore, false) => format!("What you type in Chat and page text from this agent’s tests go to {to}."),
     };
     vec![place, NOT_TRIED.into()]
 }
@@ -552,7 +555,7 @@ fn after_lines(new: &[(Role, Parsed)], effective: &dyn Fn(Role) -> Choice) -> Ve
     let mut lines = Vec::new();
     for (role, p) in new {
         let c = p.choice.clone().unwrap_or_else(|| effective(*role));
-        for l in data_lines(&c) {
+        for l in data_lines(&c, *role) {
             if !lines.contains(&l) {
                 lines.push(l);
             }
@@ -728,7 +731,7 @@ pub fn role_json(a: Option<&crate::agents::Agent>, r: Role) -> serde_json::Value
     let c = &x.effective;
     let e = entry(&c.provider);
     let state = if c.is_claude() { State::Connected } else { e.as_ref().map_or(State::Connected, |e| e.state) };
-    let lines = data_lines(c);
+    let lines = data_lines(c, r);
     serde_json::json!({
         "choice": x.choice.as_ref().map(choice_json),
         "effective": choice_json(c),
@@ -1206,7 +1209,7 @@ pub async fn add(id: &str, address: Option<&str>, key: Option<String>, model_id:
         return Ok(Added { done: Done { line: format!("Changed {name}{what}{found}"), undo: None }, lines });
     }
     let line = if id == "ollama" {
-        lines.push("Tests that use Ollama keep page text on this Mac.".into());
+        lines.push("Chat and tests that use Ollama keep what you type and page text on this Mac.".into());
         if models.is_empty() && !list_failed {
             lines = vec!["Download one in Ollama, then run: fastpilot provider refresh ollama".into()];
             "Added Ollama · found on this Mac · no models yet".to_owned()
@@ -1214,7 +1217,7 @@ pub async fn add(id: &str, address: Option<&str>, key: Option<String>, model_id:
             format!("Added Ollama · found on this Mac · {n}")
         }
     } else {
-        lines.push(format!("Tests that use {name} send page text to {h}."));
+        lines.push(format!("Chat and tests that use {name} send what you type and page text to {h}."));
         if list_failed { format!("Added {name}") } else { format!("Added {name} · {n} found") }
     };
     let undo = crate::undo::record(&format!("Added {name}"), &format!("provider:{id}"), crate::undo::Op::RemoveProvider { id: id.clone() });

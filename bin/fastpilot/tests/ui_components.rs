@@ -484,7 +484,7 @@ async fn the_model_tab_and_providers_pick_any_providers_model_with_undo() {
     see(c, "Connected").await;
     see(c, "2 models").await;
     // The Model tab: Replay picks fake/m1 from the list at once, with Undo; Explore stays default.
-    open(c, "#/agents/default/model", "Which AI runs this agent’s tests. Each agent can use its own.").await;
+    open(c, "#/agents/default/model", "Which AI this agent uses. Each agent can use its own.").await;
     let tabs = eval(c, "[...document.querySelectorAll('.tabs2 a')].map((a) => a.textContent).join('|')").await;
     assert!(tabs.contains("Map|Model|About") || tabs.contains("Live|Model|About") || tabs.contains("Model"), "{tabs}");
     eval(c, "document.querySelector('.mpick').click(), 'ok'").await;

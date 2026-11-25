@@ -460,6 +460,120 @@ fn fake_openai() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     (port, seen)
 }
 
+/// An OpenAI-compatible server on this computer: `GET /v1/models` lists `chat-model`; each chat
+/// request is answered with plain text naming the model it was sent to. Logs each request line and body.
+type Requests = std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+fn fake_text_model() -> (u16, Requests) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut r = BufReader::new(s.try_clone().expect("clone"));
+            let (mut first, mut len) = (String::new(), 0usize);
+            let _ = r.read_line(&mut first);
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let v: Value = serde_json::from_slice(&body).unwrap_or_default();
+            log.lock().expect("log").push((first.trim().to_owned(), v.clone()));
+            let reply = if first.starts_with("GET /v1/models") {
+                json!({ "object": "list", "data": [{ "id": "chat-model", "object": "model" }, { "id": "chat-model-2", "object": "model" }] })
+            } else {
+                json!({ "choices": [{ "message": { "role": "assistant", "content": format!("Answered by {}.", v["model"].as_str().unwrap_or("?")) } }], "usage": { "prompt_tokens": 3, "completion_tokens": 2 } })
+            }
+            .to_string();
+            let mut s = s;
+            let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes());
+        }
+    });
+    (port, seen)
+}
+
+/// The owner (26 Nov 2026): Chat answers with the agent's "Explore and repair" model from its
+/// Model tab, on another provider or on Claude Code, never with Claude Code's default by itself.
+#[test]
+fn chat_answers_with_the_agents_explore_and_repair_model() {
+    let home = std::env::temp_dir().join(format!("fp-chat-explore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let (port, seen) = fake_text_model();
+    // Ollama "on this Mac" at an address nobody listens on: it does not answer.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr").port();
+    let ollama = format!("http://127.0.0.1:{closed}/v1");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_OLLAMA_URL", ollama.as_str())]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let claude_turns = || -> Vec<Value> {
+        let mut runs: Vec<Value> = std::fs::read_dir(home.join("claude-log")).into_iter().flatten().flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect();
+        runs.retain(|r| r["argv"].to_string().contains("fastpilot bot"));
+        runs
+    };
+
+    let (st, body) = post("/api/providers", json!({ "action": "add", "provider": "other", "base_url": format!("http://127.0.0.1:{port}/v1") }));
+    assert_eq!(st, 200, "{body}");
+    assert!(body.contains(&format!("Chat and tests that use 127.0.0.1:{port} send what you type and page text to 127.0.0.1:{port}.")), "the privacy line names Chat too: {body}");
+    let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "other:chat-model" }));
+    assert_eq!(st, 200, "{body}");
+
+    // Explore and repair on another provider: Chat talks to it, not to Claude Code.
+    let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "hello" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "default");
+    let bot = &v["messages"][1];
+    assert_eq!((bot["text"].as_str(), bot["error"].as_str()), (Some("Answered by chat-model."), None), "{bot}");
+    let asked: Vec<String> = seen.lock().expect("seen").iter().filter(|(l, _)| l.starts_with("POST /v1/chat/completions")).map(|(_, b)| b["model"].as_str().unwrap_or("").to_owned()).collect();
+    assert_eq!(asked, ["chat-model"], "one request, to the agent's Explore and repair model");
+    assert!(claude_turns().is_empty(), "Claude Code was not asked");
+
+    // Security L28: another model starts a new conversation: the earlier messages are not sent to it.
+    let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "other:chat-model-2" }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "second question" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "default");
+    assert_eq!(v["messages"][3]["text"].as_str(), Some("Answered by chat-model-2."), "{v}");
+    let last = seen.lock().expect("seen").last().cloned().expect("request");
+    let said: Vec<String> = last.1["messages"].as_array().expect("messages").iter().filter(|m| m["role"] != "system").map(|m| m["content"].as_str().unwrap_or("").to_owned()).collect();
+    assert_eq!(said, ["second question"], "nothing from the conversation with chat-model");
+
+    // Explore and repair on a Claude model: Chat runs Claude Code with that model.
+    let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "claude-opus-5-5" }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "hello again" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "default");
+    assert!(v["messages"][5]["error"].is_null(), "{v}");
+    let turns = claude_turns();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    let argv: Vec<&str> = turns[0]["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
+    assert!(argv.windows(2).any(|w| w == ["--model", "claude-opus-5-5"]), "{argv:?}");
+
+    // Its provider does not answer: Chat stops with one plain line; nothing goes to Claude Code.
+    let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "ollama:llama3" }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "and now?" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "default");
+    assert_eq!(
+        v["messages"][7]["error"].as_str(),
+        Some("Ollama is not running on this Mac. Chat in My tester uses its Explore and repair model, so it stopped. Nothing was switched for you. Open the Model tab to check it, or say “use the default for explore”."),
+        "{v}"
+    );
+    assert_eq!(claude_turns().len(), 1, "no Claude Code turn after the stop");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D10b: an agent on another provider (an OpenAI-compatible server) answers in Chat with the same
 /// fastpilot tools (not `config`), its key only as a bearer header, its conversation kept between
 /// messages, and every D9 rule: a looser limit it was not asked for gives no card (M1); asked for,

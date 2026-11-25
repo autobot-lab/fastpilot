@@ -727,7 +727,7 @@ async fn providers_change(axum::Json(body): axum::Json<Value>) -> Response {
             match models::add(&provider, text("base_url").as_deref(), text("key"), text("model_id").as_deref()).await {
                 Ok(added) => {
                     let rows = models::rows().await;
-                    let note = added.lines.iter().find(|l| l.starts_with("Tests that use")).cloned();
+                    let note = added.lines.iter().find(|l| l.starts_with("Chat and tests that use")).cloned();
                     axum::Json(json!({ "message": added.done.line, "note": note, "lines": added.lines, "undo": added.done.undo, "provider": row_of(&rows, &provider) })).into_response()
                 }
                 // G7 (design parity): the dashboard has no command to run again; the key is pasted.
