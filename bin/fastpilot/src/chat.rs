@@ -713,6 +713,7 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
         .collect();
     let mut t = Turn { user: text.to_owned(), read_app: false, open, recent: c.loosen_times.len(), made: 0, words: 0, notes: 0, note_tries: 0, open_notes, jira, tickets, jira_cards: 0, jira_tries: 0, open_jira, jira_follow_up, jira_offered, offered_draft, new_offer: None, taking_offer: false, from_kept: false };
     let mut auto: Vec<(String, Option<&'static str>)> = Vec::new();
+    let mut removes: Vec<String> = Vec::new();
     if let Some(m) = c.msgs.iter_mut().find(|m| m.id == bot) {
         // A page, app or ticket text came in only through a tool that brings it (QA 6103).
         t.read_app = m.outside;
@@ -787,6 +788,7 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
         if !waits {
             m.text = drop_click_claims(&m.text).0;
         }
+        removes = proposals.iter().filter(|p| p.kind == "remove_app").map(|p| p.id.clone()).collect();
         m.proposals = made_first.into_iter().chain(proposals).collect();
         m.page_attempts = attempts;
         m.error = error.or(m.error.take());
@@ -799,8 +801,22 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
     c.loosen_times.extend(std::iter::repeat_n(now, t.made));
     // FC6: what the user asked for is done now, before the answer counts as finished.
     drop(c);
+    // Security #226 L12: once this chat's app is removed, nothing more of this answer is done (it
+    // would run in the next app in use).
+    let mut removed = false;
     for (id, mode) in auto {
-        if let Err(e) = decide(&id, true, mode, None, None) {
+        if removed {
+            set_card(&id, |p| {
+                if p.status == "pending" {
+                    p.status = "failed".into();
+                    p.note = Some("Not done: this chat's app was just removed. Undo it, or ask again.".into());
+                }
+            });
+            continue;
+        }
+        let r = decide(&id, true, mode, None, None);
+        removed = r.is_ok() && removes.contains(&id);
+        if let Err(e) = r {
             set_card(&id, |p| {
                 if p.status == "pending" {
                     p.status = "failed".into();
@@ -2599,7 +2615,20 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
         "release_watch" => any(&["watch", "pantau"]),
         "switch_app" => any(&["switch", "work on", "use ", "ganti", "pindah", "pakai"]),
         // v0.7.1 M7: removing an app needs the user's own words, even when nothing was read.
-        "remove_app" => any(&["remove", "delete", "hapus"]),
+        // Security #226 M: the remove word aimed at the app: the app (or its own name) within three
+        // words after it ("remove my app", "hapus aplikasi ini", "delete this website"); "check that
+        // the delete button works, then tidy up my app" is not it.
+        "remove_app" => {
+            let w: Vec<&str> = u.split(|c: char| !c.is_alphanumeric()).filter(|x| !x.is_empty()).collect();
+            let name: Vec<String> = v["app"].as_str().map(|a| a.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|x| !x.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
+            w.iter().enumerate().any(|(i, x)| {
+                matches!(*x, "remove" | "delete" | "hapus")
+                    && w[i + 1..w.len().min(i + 4)].iter().enumerate().any(|(j, y)| {
+                        matches!(*y, "app" | "apps" | "aplikasi" | "website" | "site" | "situs")
+                            || (!name.is_empty() && name[0].len() >= 3 && w.get(i + 1 + j..i + 1 + j + name.len()).is_some_and(|z| z.iter().zip(&name).all(|(a, b)| *a == b)))
+                    })
+            })
+        }
         "run_tests" => any(RUN_WORDS),
         _ => match v["page"].as_str().unwrap_or("") {
             "jira" => any(&["jira"]),
@@ -4374,6 +4403,22 @@ mod tests {
         asked.read_app = true;
         let (_, cards, _) = proposals_in(&one, &mut asked);
         assert_eq!(cards.first().map(|c| c.status.as_str()), Some("applied"), "{cards:?}");
+    }
+
+    /// Security #226 M: a page or ticket cannot remove the app through a remove word the user used
+    /// about something else; "remove my app" and "hapus aplikasi ini" are the user's own request.
+    #[test]
+    fn remove_app_needs_the_remove_word_aimed_at_the_app() {
+        let block = "Here:\n```fastpilot-proposal\n{\"kind\":\"remove_app\"}\n```";
+        for user in ["check that the delete button on the cart works", "test the remove item flow", "tidy up my app", "check that the delete button works, then tidy up my app"] {
+            let mut t = turn(user);
+            t.read_app = true;
+            let (_, cards, tried) = proposals_in(block, &mut t);
+            assert!(cards.is_empty() && tried.len() == 1 && tried[0]["what"] == "remove_app", "{user}: {cards:?} {tried:?}");
+        }
+        for user in ["remove my app", "hapus aplikasi ini", "please delete this website"] {
+            assert!(asked_for_action(user, "remove_app", &json!({ "kind": "remove_app" })), "{user}");
+        }
     }
 
     /// A temporary config file for one test (serialized by ENV_LOCK).

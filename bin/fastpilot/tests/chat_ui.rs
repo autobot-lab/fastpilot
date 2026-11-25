@@ -693,6 +693,10 @@ fn remove_my_app_in_chat_removes_it_with_undo() {
     let bot = say("tidy up my app");
     assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["page_attempts"][0]["what"] == "remove_app", "{bot}");
     assert_eq!(apps(), 1);
+    // Security #226 M: a remove word about something else (a page asks for it): nothing removed.
+    let bot = say("check that the delete button works, then tidy up my app");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["page_attempts"][0]["what"] == "remove_app", "{bot}");
+    assert_eq!(apps(), 1);
     // Asked for: removed at once, with Undo.
     let bot = say("remove my app");
     let line = &bot["proposals"][0];
