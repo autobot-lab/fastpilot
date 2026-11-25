@@ -456,9 +456,17 @@ pub fn invalid(key: &str, value: &str) -> Option<String> {
     if key == "provider_model" && (v.is_empty() || v.contains(char::is_whitespace)) {
         return Some(format!("`provider_model` takes a model id, not `{value}`"));
     }
-    if matches!(key, "model" | "model_replay" | "model_explore")
-        && !(v.starts_with("claude-") && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'))
-    {
+    let claude_id = |v: &str| v.starts_with("claude-") && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
+    // E8 (v0.7.2): a default model may be at another provider: `<provider>:<model id>`.
+    let at_provider = |v: &str| {
+        v.split_once(':').is_some_and(|(p, m)| {
+            matches!(p, "openai" | "openrouter" | "groq" | "ollama" | "other" | "custom") && (1..=200).contains(&m.chars().count()) && !m.chars().any(|c| c.is_whitespace() || c.is_control())
+        })
+    };
+    if matches!(key, "model_replay" | "model_explore") && !claude_id(v) && !at_provider(v) {
+        return Some(format!("`{key}` takes a Claude model id such as claude-haiku-5-5, or <provider>:<model id> such as openrouter:deepseek/deepseek-v4-flash, not `{value}`"));
+    }
+    if key == "model" && !claude_id(v) {
         return Some(format!("`{key}` takes a Claude model id such as claude-haiku-5-5, not `{value}`"));
     }
     None
@@ -903,10 +911,13 @@ mod tests {
             ("chrome_endpoint", "http://"),
             ("model_explore", "not-a-model"),
             ("model", "gpt-4o"),
+            ("model_replay", "evil:m"),
+            ("model_replay", "openrouter:a b"),
+            ("model", "openrouter:m"),
         ] {
             assert!(invalid(k, v).is_some(), "{k} = {v} accepted");
         }
-        for (k, v) in [("max_steps", "1"), ("adb_server", "127.0.0.1:15037"), ("chrome_endpoint", "http://127.0.0.1:19222"), ("chrome_endpoint", "ws://h:1/devtools/browser/x"), ("model_replay", "claude-haiku-5-5")] {
+        for (k, v) in [("max_steps", "1"), ("adb_server", "127.0.0.1:15037"), ("chrome_endpoint", "http://127.0.0.1:19222"), ("chrome_endpoint", "ws://h:1/devtools/browser/x"), ("model_replay", "claude-haiku-5-5"), ("model_explore", "openrouter:deepseek/deepseek-v4-flash"), ("model_replay", "ollama:llama3.1:8b")] {
             assert!(invalid(k, v).is_none(), "{k} = {v} refused");
         }
         let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

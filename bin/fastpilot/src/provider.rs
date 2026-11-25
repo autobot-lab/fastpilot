@@ -18,6 +18,20 @@ pub struct Provider {
     pub base_url: String,
     pub model: String,
     key: Option<String>,
+    /// E8: the typed name (`openrouter`, `other`), the name in sentences (OpenRouter, the host for
+    /// other) and the command that chooses another model, for the stop line (T8.4).
+    pub id: String,
+    pub display: String,
+    pub stop_hint: String,
+}
+
+/// E8 (T8.4): why a run stops at its provider. Nothing is switched to another provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Halt {
+    NotRunning,
+    NotAnswering,
+    KeyNotAccepted,
+    ModelGone,
 }
 
 impl std::fmt::Debug for Provider {
@@ -90,7 +104,61 @@ impl Provider {
         if key.is_none() && name != "ollama" && fastpilot_core::policy::remote_host(&base_url).is_some() {
             return Err(format!("no API key for `{name}`: run `fastpilot config set-key {name}` (or set FASTPILOT_PROVIDER_API_KEY)"));
         }
-        Ok(Self { name: name.to_owned(), base_url: base_url.trim_end_matches('/').to_owned(), model, key })
+        let id = crate::models::canonical(name);
+        let display = if id == "other" { crate::models::host(&base_url).unwrap_or_else(|| "Other".into()) } else { crate::models::provider_name(&id) };
+        Ok(Self { name: name.to_owned(), base_url: base_url.trim_end_matches('/').to_owned(), model, key, id, display, stop_hint: String::new() })
+    }
+
+    /// E8: the provider and model of a choice (not Claude Code). The address is the connected
+    /// provider's own; the key is the one saved for that address and goes nowhere else. `Err` is
+    /// the stop line (T8.4): the run uses no other provider.
+    pub fn for_choice(c: &crate::models::Choice, stop_hint: &str) -> Result<Self, String> {
+        use crate::models;
+        let id = models::canonical(&c.provider);
+        let k = models::kind(&id).ok_or_else(|| format!("Stopped: there is no provider called “{id}”. Choose another model: {stop_hint}"))?;
+        let display = models::provider_name(&id);
+        let entry = models::entry(&id);
+        let base = match &entry {
+            Some(e) => models::base_of(e),
+            None if id == "ollama" => models::ollama_base(),
+            // A hosted provider whose key was saved before v0.7.2 (D10b): its own address.
+            None if k.base.is_some() && crate::keystore::get_stored(k.account).is_some() => k.base.unwrap_or_default().to_owned(),
+            None => {
+                // The older single `provider` setting (B2) keeps working as it was configured.
+                let var = |k: &str| fastpilot_core::config::var(k).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+                if var("FASTPILOT_PROVIDER").is_some_and(|p| models::canonical(&p) == id) {
+                    let mut p = Self::resolve(k.account, var("FASTPILOT_PROVIDER_BASE_URL"), Some(c.model.clone()), crate::keystore::get_bound(k.account)).map_err(|e| format!("Stopped: {e}"))?;
+                    p.stop_hint = stop_hint.to_owned();
+                    return Ok(p);
+                }
+                return Err(format!("Stopped: {display} is not connected. Add it first: fastpilot provider add {}", k.id));
+            }
+        };
+        let key_refused = || format!("Stopped: {display} did not accept the key. Run fastpilot provider add {} to save a new one, then run it again.", k.id);
+        let key = match crate::keystore::get_stored(k.account) {
+            None => None,
+            Some((key, Some(o))) if fastpilot_core::config::origin(&base).as_deref() == Some(o.as_str()) => Some(key),
+            Some((key, None)) if k.base.is_some_and(|b| fastpilot_core::config::origin(b) == fastpilot_core::config::origin(&base)) && id != "ollama" => Some(key),
+            // Saved for another address: not sent.
+            Some(_) => return Err(key_refused()),
+        };
+        if key.is_none() && fastpilot_core::policy::remote_host(&base).is_some() && id != "ollama" {
+            return Err(key_refused());
+        }
+        Ok(Self { name: k.account.to_owned(), base_url: base.trim_end_matches('/').to_owned(), model: c.model.clone(), key, id: k.id.to_owned(), display, stop_hint: stop_hint.to_owned() })
+    }
+
+    /// E8 (T8.4): the line a run stops with.
+    pub fn stop_line(&self, h: Halt) -> String {
+        match h {
+            Halt::NotRunning if self.id == "ollama" => "Stopped: Ollama is not running on this Mac. Start Ollama, then run it again.".into(),
+            Halt::NotRunning | Halt::NotAnswering => format!(
+                "Stopped: {} did not answer. Nothing was switched to another provider. Run fastpilot provider refresh {} to check it, or choose another model: {}",
+                self.display, self.id, self.stop_hint
+            ),
+            Halt::KeyNotAccepted => format!("Stopped: {} did not accept the key. Run fastpilot provider add {} to save a new one, then run it again.", self.display, self.id),
+            Halt::ModelGone => format!("Stopped: {} has no model called “{}” any more. Choose another: {}", self.display, self.model, self.stop_hint),
+        }
     }
 
     /// Redirects are not followed (Security Low 3): the request body (screen contents) would go
@@ -101,6 +169,12 @@ impl Provider {
 
     /// One chat-completions call. Errors never contain the key.
     pub(crate) async fn complete(&self, client: &reqwest::Client, body: &Value) -> Result<Value, String> {
+        self.call(client, body).await.map_err(|(_, e)| e)
+    }
+
+    /// [`Self::complete`], with why it failed when the provider cannot be used (E8, T8.4).
+    pub(crate) async fn call(&self, client: &reqwest::Client, body: &Value) -> Result<Value, (Option<Halt>, String)> {
+        let local = fastpilot_core::policy::remote_host(&self.base_url).is_none();
         let mut req = client.post(format!("{}/chat/completions", self.base_url)).header("User-Agent", concat!("fastpilot/", env!("CARGO_PKG_VERSION"))).json(body);
         if let Some(k) = &self.key {
             req = req.bearer_auth(k);
@@ -113,26 +187,35 @@ impl Provider {
             // Nobody listening: say where, and for Ollama how to start it.
             if e.is_connect() {
                 let hint = if self.name == "ollama" { "; is Ollama running (`ollama serve`) with the model pulled (`ollama pull <model>`)?" } else { "; is the server up and the URL right?" };
-                return mask(format!("cannot reach {} at {}{hint}", self.name, self.base_url));
+                return (Some(if local { Halt::NotRunning } else { Halt::NotAnswering }), mask(format!("cannot reach {} at {}{hint}", self.name, self.base_url)));
             }
-            mask(format!("{}: {e}", self.name))
+            (e.is_timeout().then_some(Halt::NotAnswering), mask(format!("{}: {e}", self.name)))
         })?;
         let status = resp.status();
         if status.is_redirection() {
             let to = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("?").chars().take(200).collect::<String>();
-            return Err(mask(format!(
-                "{} at {} answered with a redirect (HTTP {}) to {to}: fastpilot does not follow it; set provider_base_url to the final server if you trust it",
-                self.name,
-                self.base_url,
-                status.as_u16()
-            )));
+            return Err((
+                None,
+                mask(format!(
+                    "{} at {} answered with a redirect (HTTP {}) to {to}: fastpilot does not follow it; set provider_base_url to the final server if you trust it",
+                    self.name,
+                    self.base_url,
+                    status.as_u16()
+                )),
+            ));
         }
-        let text = resp.text().await.map_err(|e| mask(format!("{}: {e}", self.name)))?;
+        let text = resp.text().await.map_err(|e| (Some(Halt::NotAnswering), mask(format!("{}: {e}", self.name))))?;
         if !status.is_success() {
             let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"]["message"].as_str().map(str::to_owned)).unwrap_or_else(|| text.chars().take(300).collect());
-            return Err(mask(format!("{} answered HTTP {status}: {msg}", self.name)));
+            let halt = match status.as_u16() {
+                401 | 403 => Some(Halt::KeyNotAccepted),
+                404 if msg.to_lowercase().contains("model") => Some(Halt::ModelGone),
+                502..=504 => Some(Halt::NotAnswering),
+                _ => None,
+            };
+            return Err((halt, mask(format!("{} answered HTTP {status}: {msg}", self.name))));
         }
-        serde_json::from_str(&text).map_err(|e| format!("{}: not a chat-completions reply: {e}", self.name))
+        serde_json::from_str(&text).map_err(|e| (None, format!("{}: not a chat-completions reply: {e}", self.name)))
     }
 }
 
@@ -142,6 +225,8 @@ pub struct Outcome {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub failure: Option<String>,
+    /// E8: the provider could not be used (the failure is the T8.4 stop line).
+    pub halted: bool,
 }
 
 /// `text` without `key`, and without the partly masked forms some APIs echo back
@@ -210,7 +295,7 @@ where
     Fut: std::future::Future<Output = (String, bool)>,
     D: Fn() -> bool,
 {
-    let mut out = Outcome { turns: 0, input_tokens: 0, output_tokens: 0, failure: None };
+    let mut out = Outcome { turns: 0, input_tokens: 0, output_tokens: 0, failure: None, halted: false };
     let client = match Provider::client() {
         Ok(c) => c,
         Err(e) => {
@@ -230,9 +315,15 @@ where
         out.turns += 1;
         let body = json!({ "model": provider.model, "messages": messages, "tools": tools, "tool_choice": "auto" });
         let left = limit.saturating_sub(started.elapsed());
-        let reply = match tokio::time::timeout(left, provider.complete(&client, &body)).await {
+        let reply = match tokio::time::timeout(left, provider.call(&client, &body)).await {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
+            // E8 (T8.4): a provider that cannot be used stops the test with a plain line.
+            Ok(Err((Some(h), _))) if !provider.stop_hint.is_empty() => {
+                out.failure = Some(provider.stop_line(h));
+                out.halted = true;
+                return out;
+            }
+            Ok(Err((_, e))) => {
                 out.failure = Some(e);
                 return out;
             }

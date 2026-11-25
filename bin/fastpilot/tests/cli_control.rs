@@ -80,7 +80,7 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
 
     // `--help` lists the new commands.
     let (_, help) = fp(&home, &["--help"], "");
-    for line in ["  app        Add, list, switch or remove the apps fastpilot tests", "  schedule   Run tests on a timer: add, pause, resume", "  secret     Save test passwords for an app (values are never shown)", "  agent      Skills and Stop for an agent"] {
+    for line in ["  app        Add, list, switch or remove the apps fastpilot tests", "  schedule   Run tests on a timer: add, pause, resume", "  secret     Save test passwords for an app (values are never shown)", "  agent      Skills, models and Stop for an agent", "  provider   Connect AI providers: Claude Code, OpenAI, OpenRouter, Groq, Ollama, Other"] {
         assert!(help.contains(line), "{line}: {help}");
     }
 

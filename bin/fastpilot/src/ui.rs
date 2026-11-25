@@ -328,6 +328,8 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/skills", get(skills_api))
         .route("/api/agent-skills", get(agent_skills_api).post(agent_skills_change))
         .route("/api/provider", get(provider_api).post(provider_change))
+        .route("/api/providers", get(providers_api).post(providers_change))
+        .route("/api/agent-model", get(agent_model_api).post(agent_model_change))
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/removed", get(removed_list).post(removed_restore))
         .route("/api/undo", post(undo_api))
@@ -688,6 +690,110 @@ async fn provider_change(axum::Json(body): axum::Json<Value>) -> Response {
     }
 }
 
+// ---- E8 + E6 (v0.7.2): providers and models per agent -------------------------------------
+
+/// An error as the Model tab and Settings › AI model show it: the T8 sentence and its code.
+fn said_no(f: &crate::control::Fail) -> Response {
+    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(json!({ "error": f.msg, "code": f.code }))).into_response()
+}
+
+/// Settings › AI model and the picker: the connected providers (never a key), the Add list and the
+/// default models. No network call except looking for Ollama on this Mac (≤ 0.5 s).
+async fn providers_api() -> Response {
+    let rows = crate::models::rows().await;
+    axum::Json(json!({
+        "providers": rows.iter().map(crate::models::row_json).collect::<Vec<_>>(),
+        "addable": crate::models::addable(),
+        "defaults": { "replay": crate::models::choice_json(&crate::models::default_choice(crate::models::Role::Replay)), "explore": crate::models::choice_json(&crate::models::default_choice(crate::models::Role::Explore)) },
+        "keys_kept_in": crate::keystore::backend().describe(),
+    }))
+    .into_response()
+}
+
+/// `{action: add|edit, provider, key?, base_url?, model_id?}`, `{action: remove, provider}`,
+/// `{action: refresh, provider?}`. The key arrives only in this body, goes to the key store tied to
+/// the provider's own address, and is never sent back.
+async fn providers_change(axum::Json(body): axum::Json<Value>) -> Response {
+    use crate::models;
+    let text = |k: &str| body[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+    let provider = text("provider").unwrap_or_default();
+    let row_of = |rows: &[models::Row], id: &str| rows.iter().find(|r| r.id == models::canonical(id)).map(models::row_json);
+    match body["action"].as_str().unwrap_or("") {
+        a @ ("add" | "edit") => {
+            if a == "edit" && models::entry(&provider).is_none() && models::canonical(&provider) != "ollama" {
+                return said_no(&models::not_connected(&provider, crate::control::Surface::Cli));
+            }
+            match models::add(&provider, text("base_url").as_deref(), text("key"), text("model_id").as_deref()).await {
+                Ok(added) => {
+                    let rows = models::rows().await;
+                    let note = added.lines.iter().find(|l| l.starts_with("Tests that use")).cloned();
+                    axum::Json(json!({ "message": added.done.line, "note": note, "lines": added.lines, "undo": added.done.undo, "provider": row_of(&rows, &provider) })).into_response()
+                }
+                Err(f) => said_no(&f),
+            }
+        }
+        "remove" => match models::remove(&provider) {
+            Ok((line, lines, agents)) => axum::Json(json!({ "message": line, "lines": lines, "agents": agents })).into_response(),
+            Err(f) => said_no(&f),
+        },
+        "refresh" => {
+            let which = text("provider");
+            match models::refresh(which.as_deref()).await {
+                Ok(results) => {
+                    let rows = models::rows().await;
+                    let said: Vec<(bool, &'static str, String)> = results.iter().map(|(id, r)| models::refresh_line(id, r, crate::control::Surface::Cli)).collect();
+                    match (which, said.as_slice()) {
+                        (Some(_), [(false, code, msg)]) => said_no(&crate::control::fail(code, msg.clone())),
+                        (Some(p), [(true, _, msg)]) => axum::Json(json!({ "message": msg, "provider": row_of(&rows, &p) })).into_response(),
+                        _ => axum::Json(json!({ "messages": said.iter().map(|x| &x.2).collect::<Vec<_>>(), "providers": rows.iter().map(models::row_json).collect::<Vec<_>>() })).into_response(),
+                    }
+                }
+                Err(f) => said_no(&f),
+            }
+        }
+        _ => said_no(&crate::control::fail("usage", "Unknown action")),
+    }
+}
+
+/// The Model tab (`?agent=ID`) or, without an agent, the default models in Settings.
+async fn agent_model_api(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    use crate::models::{self, Role};
+    let agent = match q.get("agent").filter(|a| !a.is_empty()) {
+        Some(id) => match crate::control::resolve_agent(id) {
+            Ok(a) => Some(a),
+            Err(f) => return said_no(&f),
+        },
+        None => None,
+    };
+    let defaults = json!({ "replay": models::choice_json(&models::default_choice(Role::Replay)), "explore": models::choice_json(&models::default_choice(Role::Explore)) });
+    axum::Json(json!({
+        "agent": agent.as_ref().map(|a| a.id.clone()),
+        "name": agent.as_ref().map(|a| a.name.clone()),
+        "replay": models::role_json(agent.as_ref(), Role::Replay),
+        "explore": models::role_json(agent.as_ref(), Role::Explore),
+        "defaults": defaults,
+    }))
+    .into_response()
+}
+
+/// `{agent, replay?, explore?}` or `{default: true, replay?, explore?}`: a model is what the CLI
+/// takes ("haiku", "openrouter:deepseek/x", "default"). Applies at once, with Undo.
+async fn agent_model_change(axum::Json(body): axum::Json<Value>) -> Response {
+    let text = |k: &str| body[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+    let (replay, explore, agent, default) = (text("replay"), text("explore"), text("agent"), body["default"] == true);
+    let r = tokio::task::spawn_blocking(move || match (agent, default) {
+        (Some(_), true) => Err(crate::control::fail("default_with_agent", "--default changes every agent’s default. Leave the agent name out, or leave --default out. Nothing changed.")),
+        (Some(a), false) => crate::models::change_agent(&a, replay.as_deref(), explore.as_deref(), crate::control::Surface::Cli),
+        (None, _) => crate::models::change_default(replay.as_deref(), explore.as_deref(), crate::control::Surface::Cli),
+    })
+    .await
+    .unwrap_or_else(|e| Err(crate::control::fail("failed", e.to_string())));
+    match r {
+        Ok(c) => axum::Json(json!({ "message": c.done.line, "lines": c.lines, "undo": c.done.undo })).into_response(),
+        Err(f) => said_no(&f),
+    }
+}
+
 // ---- Chat (C4) ----------------------------------------------------------------------------
 
 /// `?agent=ID&chat=ID`: that chat of the agent (no chat: the agent's latest; none: an empty one).
@@ -855,7 +961,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "running": crate::chat::running(&a.id), "live": live.iter().filter(|(id, _)| *id == a.id).map(|(_, n)| n).sum::<usize>(), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() , "demo": demo_welcome(&a) })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "models": crate::models::short_label(&a), "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "running": crate::chat::running(&a.id), "live": live.iter().filter(|(id, _)| *id == a.id).map(|(_, n)| n).sum::<usize>(), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() , "demo": demo_welcome(&a) })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();

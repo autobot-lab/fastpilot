@@ -917,21 +917,173 @@ Usage: fastpilot secret <list|set|remove> [<NAME>] [--app <name>]
 Passwords go to the macOS Keychain. They are never part of a command,
 a chat or a tool call.";
 
-pub const AGENT_USAGE: &str = "fastpilot agent — skills and Stop for an agent
+pub const AGENT_USAGE: &str = "fastpilot agent — skills, models and Stop for an agent
 
-Usage: fastpilot agent <skills|stop> <agent> …
+Usage: fastpilot agent <skills|model|stop> <agent> …
 
   skills <agent>                   Show what the agent can do.
   skills <agent> --all             Show every skill, on or off.
   skills <agent> +id [+id …]       Add specialist skills.
   skills <agent> -id [-id …]       Remove specialist skills.
   skills <agent> reset             Back to General QA: turn off every specialist skill.
+  model [<agent>] [--replay <model>] [--explore <model>] [--default]
+                                   Show or change which AI the agent uses.
+                                   Run fastpilot agent model --help to see more.
   stop <agent>                     Stop every running chat of this agent.
                                    Browsers close and devices are freed.
                                    Other agents keep running.
 
 General QA is always on and cannot be removed.
 Example: fastpilot agent skills \"Android regression\" +safe-checkout +decision-table";
+
+/// T8.2 `fastpilot agent model --help`.
+pub const AGENT_MODEL_USAGE: &str = "fastpilot agent model — which AI an agent uses
+
+Usage: fastpilot agent model [<agent>] [--replay <model>] [--explore <model>] [--default]
+
+  <agent>               Show the models of this agent. With --replay or --explore, change them.
+  --replay <model>      The model that repeats recorded steps (fast and cheap).
+  --explore <model>     The model that explores a new test or repairs a failed one.
+  --default             Change the default for every agent that has not chosen its own.
+                        Do not give <agent> with --default.
+
+<model> is a model name, or <provider>:<model>, or “default” to follow the default.
+Run fastpilot provider models to see every model.
+
+Example:
+  fastpilot agent model \"Android regression\" --replay haiku --explore openrouter:deepseek/deepseek-v4-flash";
+
+/// T8.3 `fastpilot provider`.
+pub const PROVIDER_USAGE: &str = "fastpilot provider — the AI providers fastpilot can use
+
+Usage: fastpilot provider <list|add|remove|refresh|models> …
+
+  list                          Show the connected providers and their state.
+  add <provider> [<address>]    Connect a provider: openai, openrouter, groq, ollama or other.
+                                You type the key when asked; it is hidden.
+                                Ollama needs no key. “other” needs the server’s address,
+                                like https://llm.example.com/v1. To change an address or a key,
+                                run add again.
+  remove <provider>             Disconnect a provider and delete its key. Cannot be undone.
+  refresh [<provider>]          Check the connection again and reload the models.
+  models [<provider>] [--all]   Show models (20 per provider; --all shows up to 500).
+
+Keys go to the macOS Keychain. They are never part of a command, a chat or a tool call.
+A key is sent only to its own provider’s address.";
+
+/// A model change as the terminal prints it: the line, what follows it, then how to undo it.
+fn print_changed(c: &crate::models::Changed) {
+    println!("✓ {}", c.done.line);
+    for l in &c.lines {
+        println!("  {l}");
+    }
+    if let Some(id) = &c.done.undo {
+        println!("  Undo: fastpilot undo {id}");
+    }
+}
+
+/// `fastpilot agent model …` (T8.2).
+fn agent_model_cli(args: &[String]) -> Result<(), Fail> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{AGENT_MODEL_USAGE}");
+        return Ok(());
+    }
+    let words = plain(args, &["--replay", "--explore"]);
+    let (replay, explore) = (opt(args, "--replay"), opt(args, "--explore"));
+    let default = args.iter().any(|a| a == "--default");
+    if args.iter().any(|a| a.starts_with("--") && !matches!(a.as_str(), "--replay" | "--explore" | "--default")) || words.len() > 1 {
+        return Err(usage(AGENT_MODEL_USAGE));
+    }
+    let agent = words.first();
+    if default && agent.is_some() {
+        return Err(fail("default_with_agent", "--default changes every agent’s default. Leave the agent name out, or leave --default out. Nothing changed."));
+    }
+    match (agent, replay.is_some() || explore.is_some()) {
+        (None, false) => println!("{}", crate::models::show_defaults()),
+        (Some(a), false) => println!("{}", crate::models::show_agent(&resolve_agent(a)?)),
+        (None, true) if !default => return Err(usage(AGENT_MODEL_USAGE)),
+        (None, true) => print_changed(&crate::models::change_default(replay.as_deref(), explore.as_deref(), Surface::Cli)?),
+        (Some(a), true) => print_changed(&crate::models::change_agent(a, replay.as_deref(), explore.as_deref(), Surface::Cli)?),
+    }
+    Ok(())
+}
+
+/// `fastpilot provider list|add|remove|refresh|models` (T8.3). `read_key` asks for a key hidden
+/// (or reads a pipe); a key is never taken from the command line.
+pub async fn provider_cli(args: &[String], read_key: impl FnOnce(&str) -> Res<String>) -> Result<(), Fail> {
+    use crate::models;
+    let words = plain(args, &[]);
+    match (words.first().map(String::as_str), words.get(1)) {
+        (Some("list") | None, _) => {
+            println!("{}", models::list_text().await);
+            Ok(())
+        }
+        (Some("add"), None) => Err(usage(PROVIDER_USAGE)),
+        (Some("add"), Some(p)) => {
+            let p = models::canonical(p);
+            if p != "claude" && models::kind(&p).is_none() {
+                return Err(fail("provider_not_found", format!("No provider called {}. Providers: {}. Claude Code is always connected.", q(&p), models::TYPED)));
+            }
+            // Only "other" (and an Ollama elsewhere on this Mac) takes an address; anything else in
+            // the command would be a key.
+            let address = words.get(2).filter(|_| matches!(p.as_str(), "other" | "ollama")).cloned();
+            let extra = words.len() > 2 + usize::from(address.is_some()) || args.iter().any(|a| a.starts_with("--"));
+            if extra {
+                return Err(fail("value_refused", format!("Do not put the key in the command. Run: fastpilot provider add {p} and type it when asked. Nothing was saved.")));
+            }
+            let address = address.or_else(|| words.get(2).cloned());
+            if p == "other" && address.is_none() {
+                return Err(fail("bad_address", "“other” needs the server’s address, like https://llm.example.com/v1. Run: fastpilot provider add other <address>"));
+            }
+            if p != "claude" {
+                models::check_address(&p, address.as_deref())?;
+            }
+            let key = if p != "claude" && models::needs_key(&p, address.as_deref())? {
+                let h = address.as_deref().and_then(models::host).or_else(|| models::kind(&p).and_then(|k| k.base).and_then(models::host)).unwrap_or_default();
+                let prompt = if p == "other" { format!("API key for {h}. It is hidden as you type:\n") } else { format!("API key for {} ({h}). It is hidden as you type:\n", models::provider_name(&p)) };
+                let k = read_key(&prompt).unwrap_or_default();
+                if k.trim().is_empty() {
+                    return Err(fail("no_key", "No key was given. Run this in a terminal and type it when asked, or pipe it in. Nothing was saved."));
+                }
+                Some(k)
+            } else {
+                None
+            };
+            let added = models::add(&p, address.as_deref(), key, None).await?;
+            println!("✓ {}", added.done.line);
+            for l in &added.lines {
+                println!("  {l}");
+            }
+            if let Some(id) = &added.done.undo {
+                println!("  Undo: fastpilot undo {id}");
+            }
+            Ok(())
+        }
+        (Some("remove"), Some(p)) => {
+            let (line, lines, _) = models::remove(p)?;
+            println!("✓ {line}");
+            for l in lines {
+                println!("  {l}");
+            }
+            Ok(())
+        }
+        (Some("refresh"), which) => {
+            let results = models::refresh(which.map(String::as_str)).await?;
+            let mut all_ok = true;
+            for (id, r) in &results {
+                let (ok, _, line) = models::refresh_line(id, r, Surface::Cli);
+                all_ok &= ok;
+                println!("{} {line}", if ok { "✓" } else { "✗" });
+            }
+            if all_ok { Ok(()) } else { Err(fail("refresh_failed", "")) }
+        }
+        (Some("models"), which) => {
+            println!("{}", models::models_text(which.map(String::as_str), args.iter().any(|a| a == "--all")).await?);
+            Ok(())
+        }
+        _ => Err(usage(PROVIDER_USAGE)),
+    }
+}
 
 /// What a terminal command ends with: its exit code (TEXT §0.8: 0 done, 1 failed, 2 usage).
 pub fn exit_code(r: &Result<(), Fail>) -> i32 {
@@ -944,6 +1096,10 @@ pub fn exit_code(r: &Result<(), Fail>) -> i32 {
 
 /// Print a command's failure as the terminal shows it.
 pub fn print_fail(f: &Fail) {
+    // Its lines were printed already (`provider refresh`).
+    if f.msg.is_empty() {
+        return;
+    }
     if f.code == "usage" {
         eprintln!("{}", f.msg);
     } else {
@@ -1160,6 +1316,7 @@ pub fn agent_cli(args: &[String]) -> Result<(), Fail> {
             print_done(&done);
             Ok(())
         }
+        (Some("model"), _) => agent_model_cli(&args[1..]),
         (Some("stop"), Some(name)) => {
             let line = stop_agent(name, Surface::Cli)?;
             println!("✓ {line}");
@@ -1206,6 +1363,14 @@ fn refused(f: Fail) -> serde_json::Value {
 
 fn arg(args: &serde_json::Value, k: &str) -> Option<String> {
     args[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+fn models_no_model_given() -> Fail {
+    fail("no_model_given", "Say which model: replay, explore, or both. Use “default” to follow the default. Nothing changed.")
+}
+
+fn refused_agent_needed() -> Fail {
+    fail("agent_not_found", "Say which agent, or default: true for the default models. Nothing changed.")
 }
 
 fn no_app_mcp() -> Fail {
@@ -1554,7 +1719,124 @@ impl fastpilot_mcp::Control for McpControl {
                 let line = stop_agent(&arg(&args, "agent").unwrap_or_default(), s).map_err(refused)?;
                 said(if line.starts_with("Stopped") { format!("{line}\nSay “run it again” to start them again.") } else { line })
             }
-            ("agents", other) => Err(refused(unknown_action(other, &["list", "create", "skills", "stop"]))),
+            // ---- E8: models per agent
+            ("agents", "model") => {
+                use crate::models::{self, Role};
+                let (replay, explore) = (arg(&args, "replay"), arg(&args, "explore"));
+                let default = args["default"] == true;
+                let agent = arg(&args, "agent");
+                if default && agent.is_some() {
+                    return Err(refused(fail("default_with_agent", "default: true changes every agent’s default. Leave agent out, or leave default out. Nothing changed.")));
+                }
+                let row = |a: Option<&crate::agents::Agent>, r: Role| {
+                    let x = models::resolve(a, r);
+                    let c = &x.effective;
+                    let at = if c.is_claude() { String::new() } else { format!(" ({})", models::label(c).rsplit_once(" (").map(|(_, h)| h.trim_end_matches(')')).unwrap_or("")) };
+                    (format!("{}: {}{at}{}", r.label(), models::model_name(c), if x.choice.is_none() && a.is_some() { " (default)" } else { "" }), serde_json::json!({ "role": r.key(), "model": c.model, "provider": models::provider_name(&c.provider), "is_default": x.choice.is_none() }))
+                };
+                if replay.is_none() && explore.is_none() {
+                    return match agent {
+                        Some(name) => {
+                            let a = resolve_agent(&name).map_err(refused)?;
+                            let (r, e) = (row(Some(&a), Role::Replay), row(Some(&a), Role::Explore));
+                            said_with(format!("{} · {} · {}", a.name, r.0, e.0), serde_json::json!({ "items": [r.1, e.1] }))
+                        }
+                        None if default => {
+                            let (r, e) = (row(None, Role::Replay), row(None, Role::Explore));
+                            said_with(format!("Default models · {} · {}", r.0, e.0), serde_json::json!({ "items": [r.1, e.1] }))
+                        }
+                        None => Err(refused(models_no_model_given())),
+                    };
+                }
+                let changed = match (agent, default) {
+                    (Some(a), _) => models::change_agent(&a, replay.as_deref(), explore.as_deref(), s),
+                    (None, true) => models::change_default(replay.as_deref(), explore.as_deref(), s),
+                    (None, false) => Err(refused_agent_needed()),
+                }
+                .map_err(refused)?;
+                let note: Vec<&String> = changed.lines.iter().filter(|l| l.starts_with("Page text") || l.starts_with("This model")).collect();
+                let mut extra = serde_json::json!({});
+                if !note.is_empty() {
+                    extra["note"] = serde_json::json!(note.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(" "));
+                }
+                if let Some(id) = &changed.done.undo {
+                    extra["undo"] = serde_json::json!({ "tool": "history", "action": "undo", "change_id": id });
+                }
+                said_with(changed.done.line, extra)
+            }
+            ("agents", other) => Err(refused(unknown_action(other, &["list", "create", "skills", "model", "stop"]))),
+            // ---- E8: providers (never a key; no remove)
+            ("providers", a) if !args.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "action" | "provider" | "all"))) || !matches!(a, "list" | "models" | "refresh" | "request_add") => {
+                Err(refused(fail("value_refused", "This tool cannot take a key. To connect a provider, use action “request_add” and give the user the link or the command.")))
+            }
+            ("providers", "list") => {
+                let rows = rt.block_on(crate::models::rows());
+                let bad: Vec<String> = rows
+                    .iter()
+                    .filter(|r| r.state != crate::models::State::Connected)
+                    .map(|r| match r.state {
+                        crate::models::State::NotRunning => format!("{} is not running", r.name),
+                        crate::models::State::KeyNotAccepted => format!("{} did not accept the key", r.host.clone().unwrap_or_else(|| r.name.clone())),
+                        _ => format!("{} did not answer", r.host.clone().unwrap_or_else(|| r.name.clone())),
+                    })
+                    .collect();
+                let msg = if bad.is_empty() {
+                    format!("{}. Connected: {}.", plural(rows.len(), "provider", "providers"), rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "))
+                } else {
+                    format!("{}. {} {}: {}.", plural(rows.len(), "provider", "providers"), bad.len(), if bad.len() == 1 { "needs attention" } else { "need attention" }, bad.join("; "))
+                };
+                let items: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({ "name": r.name, "state": r.state.label(), "host": r.host, "model_count": r.models.len() + r.typed.iter().filter(|t| !r.models.contains(t)).count(), "note": r.message })).collect();
+                said_with(msg, serde_json::json!({ "items": items }))
+            }
+            ("providers", "models") => {
+                let rows = rt.block_on(crate::models::rows());
+                let want = arg(&args, "provider").map(|p| crate::models::canonical(&p));
+                if let Some(w) = &want
+                    && w != "claude"
+                    && crate::models::kind(w).is_none()
+                {
+                    return Err(refused(fail("provider_not_found", format!("No provider called {}. Providers: {}. Claude Code is always connected.", q(w), crate::models::TYPED))));
+                }
+                let limit = if args["all"] == true { crate::models::MAX_MODELS } else { 20 };
+                let mut parts = Vec::new();
+                let mut items = Vec::new();
+                for r in rows.iter().filter(|r| want.as_ref().is_none_or(|w| *w == r.id)) {
+                    let ids: Vec<String> = r.models.iter().chain(r.typed.iter().filter(|t| !r.models.contains(t))).cloned().collect();
+                    if r.id == "ollama" && ids.is_empty() {
+                        parts.push("Ollama has no models yet. Download one in Ollama, then use refresh.".to_owned());
+                        continue;
+                    }
+                    parts.push(if ids.len() > limit { format!("{} has {}. Showing {limit}.", r.name, plural(ids.len(), "model", "models")) } else { format!("{} has {}.", r.name, plural(ids.len(), "model", "models")) });
+                    items.extend(ids.into_iter().take(limit).map(|m| serde_json::json!({ "provider": r.id, "id": m })));
+                }
+                if parts.is_empty() {
+                    let w = want.unwrap_or_default();
+                    return Err(refused(crate::models::not_connected(&w, s)));
+                }
+                said_with(parts.join(" "), serde_json::json!({ "items": items }))
+            }
+            ("providers", "refresh") => {
+                let results = rt.block_on(crate::models::refresh(arg(&args, "provider").as_deref())).map_err(refused)?;
+                let lines: Vec<(bool, &'static str, String)> = results.iter().map(|(id, r)| crate::models::refresh_line(id, r, s)).collect();
+                match lines.as_slice() {
+                    [(false, code, msg)] => Err(refused(fail(code, msg.clone()))),
+                    _ => said(lines.iter().map(|l| l.2.clone()).collect::<Vec<_>>().join("\n")),
+                }
+            }
+            ("providers", _) => {
+                let p = crate::models::canonical(&arg(&args, "provider").unwrap_or_default());
+                let k = crate::models::kind(&p).ok_or_else(|| refused(fail("provider_not_found", format!("No provider called {}. Providers: {}. Claude Code is always connected.", q(&p), crate::models::TYPED))))?;
+                if k.id == "ollama" {
+                    return said("Ollama needs no key. Start Ollama on this Mac, then use action “refresh”.");
+                }
+                let link = std::fs::read_to_string(crate::browsers::dir().join("port")).ok().and_then(|p| p.trim().parse::<u16>().ok()).map(|p| format!("http://127.0.0.1:{p}/#/settings/ai-model")).unwrap_or_else(|| "Settings › AI model".into());
+                let command = format!("fastpilot provider add {}{}", k.id, if k.id == "other" { " <address>" } else { "" });
+                let name = if k.id == "other" { "another server".to_owned() } else { k.name.to_owned() };
+                said_with(
+                    format!("fastpilot never takes a key through chat. To connect {name}, open Settings › AI model › Add a provider in the dashboard: {link}. Or run this in Terminal: {command}"),
+                    serde_json::json!({ "dashboard_link": link, "command": command }),
+                )
+            }
             (other, _) => Err(refused(fail("unknown_tool", format!("fastpilot has no tool {}.", q(other))))),
         })();
         r
@@ -1564,6 +1846,45 @@ impl fastpilot_mcp::Control for McpControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E8 (T8.6): the MCP `providers` tool never takes a key and cannot add or remove a provider.
+    #[test]
+    fn mcp_providers_never_take_a_key() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("runtime").block_on(providers_never_take_a_key());
+    }
+
+    async fn providers_never_take_a_key() {
+        use fastpilot_mcp::Control;
+        let dir = std::env::temp_dir().join(format!("fdd-device-e8-mcp-{}", std::process::id()));
+        let old_home = std::env::var_os("HOME");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK (never the user's ~/.fastpilot).
+        unsafe {
+            std::env::set_var("HOME", &dir);
+            std::env::set_var("FASTPILOT_CONFIG", dir.join(".fastpilot/config.toml"));
+        }
+        for args in [
+            serde_json::json!({ "action": "list", "key": "sk-mcp-never" }),
+            serde_json::json!({ "action": "add", "provider": "openrouter" }),
+            serde_json::json!({ "action": "remove", "provider": "openrouter" }),
+            serde_json::json!({ "action": "request_add", "provider": "openrouter", "api_key": "sk-mcp-never" }),
+        ] {
+            let r = tokio::task::spawn_blocking(move || McpControl.call("providers", args)).await.expect("join");
+            let e = r.expect_err("refused");
+            assert_eq!(e["error"], "value_refused", "{e}");
+            assert!(e["message"].as_str().is_some_and(|m| m.starts_with("This tool cannot take a key.")) && !e.to_string().contains("sk-mcp-never"), "{e}");
+        }
+        let r = tokio::task::spawn_blocking(|| McpControl.call("providers", serde_json::json!({ "action": "request_add", "provider": "openrouter" }))).await.expect("join").expect("said");
+        assert!(r["message"].as_str().is_some_and(|m| m.starts_with("fastpilot never takes a key through chat. To connect OpenRouter")) && r["command"] == "fastpilot provider add openrouter", "{r}");
+        unsafe {
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            std::env::remove_var("FASTPILOT_CONFIG");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// FastTest (v0.7.1 dry run, Low): an INCONCLUSIVE ship check always says why.
     #[test]

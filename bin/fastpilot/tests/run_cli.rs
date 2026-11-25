@@ -75,7 +75,7 @@ fn headless_run_drives_claude_code() {
     }
     println!("{out}");
     assert!(ok, "{out}");
-    assert!(out.contains("✓ login-ok") && out.contains("claude-sonnet-5-5") && out.contains("1 passed, 0 failed"), "{out}");
+    assert!(out.contains("✓ login-ok") && out.contains("Sonnet 5.5 (Claude Code)") && out.contains("1 passed, 0 failed"), "{out}");
     // V042 (QA Low): a web-only run names only what it uses, no Android or iPhone counts.
     assert!(out.contains("1 tests, 1 workers, Web · Chrome\n") && !out.contains("android") && !out.contains(" ios"), "{out}");
     {
@@ -115,7 +115,8 @@ fn headless_run_drives_claude_code() {
     // Second run: the passing flow is now path memory, so the fast model replays it.
     let log2 = dir.join("claude2");
     let (ok, out) = run_on("tests/login.md", &dir, &log2, &[], &[]);
-    assert!(ok && out.contains("claude-haiku-5-5"), "{out}");
+    // E8: the line names the model that ran, as people read it.
+    assert!(ok && out.contains("Haiku 5.5 (Claude Code)"), "{out}");
     let c = calls(&log2);
     assert_eq!(arg(&c[0], "--model"), Some("claude-haiku-5-5"));
     assert_eq!(arg(&c[0], "--effort"), Some("low"));
@@ -397,7 +398,8 @@ fn provider_drives_a_run_without_claude_code() {
         return eprintln!("skipping: no Chrome");
     }
     assert!(ok, "{out}");
-    assert!(out.contains("driver: custom (fake-model-1)") && out.contains("✓ login-ok") && out.contains("1 passed, 0 failed"), "{out}");
+    // E8: the models line names the model and where it runs.
+    assert!(out.contains(&format!("models: fake-model-1 (127.0.0.1:{port})")) && out.contains("✓ login-ok") && out.contains("1 passed, 0 failed"), "{out}");
     assert!(!out.contains("sk-test-provider-999"), "key in the output:\n{out}");
     assert!(calls(&dir.join("claude")).is_empty(), "Claude Code must not run");
     let requests = log.lock().expect("log").clone();

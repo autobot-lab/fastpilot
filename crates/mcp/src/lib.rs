@@ -348,7 +348,7 @@ pub struct HistoryArgs {
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
 pub struct AgentsArgs {
-    /// list | create | skills | stop
+    /// list | create | skills | model | stop
     pub action: String,
     /// create: what the new agent should test, in the user's words.
     pub sentence: Option<String>,
@@ -360,6 +360,26 @@ pub struct AgentsArgs {
     pub remove: Option<Vec<String>>,
     /// skills: true turns off every specialist skill (back to General QA).
     pub reset: Option<bool>,
+    /// model: the Replay model: a model name (`haiku`), `<provider>:<model>` (`ollama:llama3.1:8b`), or `default`.
+    pub replay: Option<String>,
+    /// model: the Explore and repair model, written like `replay`.
+    pub explore: Option<String>,
+    /// model: true changes the default for agents that have not chosen their own (give no agent).
+    pub default: Option<bool>,
+}
+
+/// E8: providers. Never a key: anything else sent here is refused with value_refused.
+#[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
+pub struct ProvidersArgs {
+    /// list | models | refresh | request_add
+    pub action: String,
+    /// models, refresh, request_add: openai, openrouter, groq, ollama, other (or claude for models).
+    pub provider: Option<String>,
+    /// models: true shows up to 500 ids (default 20 per provider).
+    pub all: Option<bool>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1213,10 +1233,17 @@ impl FastPilot {
         self.control("history", &args, changes).await
     }
 
-    #[tool(description = own_words!("List agents, create one from a sentence, change an agent's skills, or stop an agent's running chats. Every agent has General QA, always on. Other skills are specialist skills that can be added to any agent. `stop` stops only the chats of the agent you name."))]
+    #[tool(description = own_words!("List agents, create one from a sentence, change an agent's skills, or stop an agent's running chats. Every agent has General QA, always on. Other skills are specialist skills that can be added to any agent. `stop` stops only the chats of the agent you name. `model` shows or changes which AI an agent uses for Replay and for Explore and repair. `default: true` changes the default for agents that have not chosen their own. Show `note` to the user too, as written."))]
     async fn agents(&self, Parameters(args): Parameters<AgentsArgs>) -> Result<CallToolResult, ErrorData> {
-        let changes = !(args.action == "list" || (args.action == "skills" && args.add.is_none() && args.remove.is_none() && args.reset != Some(true)));
+        let changes = !(args.action == "list"
+            || (args.action == "skills" && args.add.is_none() && args.remove.is_none() && args.reset != Some(true))
+            || (args.action == "model" && args.replay.is_none() && args.explore.is_none()));
         self.control("agents", &args, changes).await
+    }
+
+    #[tool(description = own_words!("List the connected AI providers and their models, or reload them. This tool never takes, returns or stores a key. To connect a provider, use `request_add` and give the user the link or the command. Never ask the user to type a key into the chat."))]
+    async fn providers(&self, Parameters(args): Parameters<ProvidersArgs>) -> Result<CallToolResult, ErrorData> {
+        self.control("providers", &args, false).await
     }
 
     #[tool(description = "Saved login state (web: cookies + localStorage), so a test can skip the login: save | load | list | delete. Files are owner-only, expire after FASTPILOT_STATE_EXPIRE_DAYS (30) and are encrypted when FASTPILOT_STATE_KEY is set. Same as the saveState / loadState steps.")]
