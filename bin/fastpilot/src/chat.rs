@@ -3609,7 +3609,8 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             return done_line(id, r);
         }
         Some("run_tests") => {
-            let r = crate::control::run_tests(data["test"].as_str().unwrap_or("all"), crate::control::Surface::Cli);
+            // v0.7.1 M6: the run is this chat's agent's (Live, Stop all).
+            let r = crate::control::run_tests(data["test"].as_str().unwrap_or("all"), crate::control::Surface::Cli, Some(&crate::agents::get_or_default(&agent)));
             return done_line(id, r);
         }
         Some("ship_check") => {

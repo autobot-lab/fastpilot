@@ -481,8 +481,9 @@ pub fn change_schedule(typed: &str, preset: &str, s: Surface) -> Result<(Schedul
     Ok((sched, done))
 }
 
-/// Run the app's saved tests now, in the background (one by its name, or "all").
-pub fn run_tests(name: &str, s: Surface) -> Result<Done, Fail> {
+/// Run the app's saved tests now, in the background (one by its name, or "all"). `agent`: the
+/// agent whose Chat asked for it; the run is that agent's, so its Stop all stops it (v0.7.1 M6).
+pub fn run_tests(name: &str, s: Surface, agent: Option<&crate::agents::Agent>) -> Result<Done, Fail> {
     let (title, path) = if name.eq_ignore_ascii_case("all") {
         let (_, dir, _) = saved_tests(s)?;
         ("Run all tests".to_owned(), dir)
@@ -491,7 +492,7 @@ pub fn run_tests(name: &str, s: Surface) -> Result<Done, Fail> {
         (schedule::tests_label(&p.to_string_lossy()), p)
     };
     let stem = if name.eq_ignore_ascii_case("all") { "all".to_owned() } else { path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
-    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}"))?;
+    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}"), agent)?;
     Ok(Done::plain(format!("Running {} · {}", q(&title), watch_in_live())))
 }
 
@@ -1196,14 +1197,21 @@ fn unknown_action(action: &str, actions: &[&str]) -> Fail {
 
 /// Start `fastpilot ARGS` in the background (the log goes to ~/fastpilot/logs/NAME.log), as the
 /// dashboard's buttons do. Returns the log's name, the run's id for Claude.
-pub fn start_background(args: &[&str], log_name: &str) -> Result<String, Fail> {
+/// `agent`: the run works for this agent (its Live tag and Stop all); `None`: this process's own
+/// (`FASTPILOT_AGENT` of a Chat's fastpilot is passed on as it is).
+pub fn start_background(args: &[&str], log_name: &str, agent: Option<&crate::agents::Agent>) -> Result<String, Fail> {
     let log = apps::root().join("logs").join(format!("{log_name}.log"));
     let could_not = |e: String| fail("failed", format!("The run could not start: {e}."));
     crate::filestore::ensure_dir(log.parent().unwrap_or(&apps::root()), true).map_err(could_not)?;
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| could_not(e.to_string()))?;
     let err = out.try_clone().map_err(|e| could_not(e.to_string()))?;
     let exe = std::env::current_exe().map_err(|e| could_not(e.to_string()))?;
-    let mut child = std::process::Command::new(exe).args(args).env("FASTPILOT_RUN_BY_PERSON", "1").stdin(std::process::Stdio::null()).stdout(out).stderr(err).spawn().map_err(|e| could_not(e.to_string()))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).env("FASTPILOT_RUN_BY_PERSON", "1").stdin(std::process::Stdio::null()).stdout(out).stderr(err);
+    if let Some(a) = agent {
+        cmd.env("FASTPILOT_AGENT", &a.id).env("FASTPILOT_AGENT_NAME", &a.name);
+    }
+    let mut child = cmd.spawn().map_err(|e| could_not(e.to_string()))?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
@@ -1343,7 +1351,7 @@ impl fastpilot_mcp::Control for McpControl {
                     format!("run-all-{test}")
                 } else {
                     let stem = if name.eq_ignore_ascii_case("all") { "all".to_owned() } else { path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
-                    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}")).map_err(refused)?
+                    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}"), None).map_err(refused)?
                 };
                 said_with(format!("Running {} · {}", q(&title), watch_in_live()), serde_json::json!({ "run_id": id }))
             }
@@ -1392,7 +1400,7 @@ impl fastpilot_mcp::Control for McpControl {
                 let minutes = args["minutes"].as_u64().unwrap_or(10).clamp(1, 60).to_string();
                 let mut a = vec!["map", target.as_str(), "--screens", screens.as_str(), "--minutes", minutes.as_str()];
                 a.extend(flag);
-                start_background(&a, &format!("map-{}", app.id)).map_err(refused)?;
+                start_background(&a, &format!("map-{}", app.id), None).map_err(refused)?;
                 said(format!("Mapping {} · up to {} or {} · {}", app.name, plural(screens.parse().unwrap_or(30), "screen", "screens"), plural(minutes.parse().unwrap_or(10), "minute", "minutes"), watch_in_live()))
             }
             ("map", "status") => {

@@ -1674,7 +1674,8 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     let home = std::env::temp_dir().join(format!("fp-chat-stopall-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
-    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    // A test run started from Chat takes a while (its stand-in waits before each step).
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CLAUDE_DELAY_MS", "8000"), ("FASTPILOT_VARS", "DEMO_PASS"), ("DEMO_PASS", "stop-all-demo")]);
     let post = |path: &str, body: Value| -> (u16, Value) {
         let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
         (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
@@ -1694,6 +1695,20 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     let other = made["agent"].as_str().expect("agent").to_owned();
     wait("the first answer of the new agent", &|| get(&format!("/api/chat?agent={other}&chat={}", made["chat"].as_str().unwrap_or("")))["busy"] == false);
     post("/api/chat", json!({ "agent": other, "chat": made["chat"], "message": "check the login and hold the session" }));
+    // v0.7.1 M6: a saved test My tester's Chat started (a `fastpilot run` of its own; its chat
+    // answers at once and frees its slot), in the app's saved tests.
+    let login = format!("file://{}/examples/demo/login.html", std::fs::canonicalize(ROOT).expect("root").display());
+    assert_eq!(post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": login } })).0, 200);
+    let (st, v) = post("/api/chat", json!({ "agent": "default", "new": true, "message": "run the login test" }));
+    assert_eq!(st, 200, "{v}");
+    let ran = v["chat"].as_str().expect("chat").to_owned();
+    wait("the run started from Chat", &|| get(&format!("/api/chat?agent=default&chat={ran}"))["messages"][1]["proposals"][0]["note"].as_str().is_some_and(|n| n.starts_with("Running ")));
+    // Its process works for My tester (Live's tag, what Stop all stops).
+    let run_pid = || -> Option<i64> {
+        std::fs::read_dir(home.join("live")).ok()?.flatten().filter_map(|e| serde_json::from_str::<Value>(&std::fs::read_to_string(e.path()).ok()?).ok()).find(|r| r["kind"] == "run" && r["agent"] == "default").and_then(|r| r["pid"].as_i64())
+    };
+    wait("the run is My tester's", &|| run_pid().is_some());
+    let pid = run_pid().expect("run");
     // Two running tests of My tester, each about to propose a schedule when it ends.
     let mut chats = Vec::new();
     for _ in 0..2 {
@@ -1701,7 +1716,7 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
         assert_eq!(st, 200, "{v}");
         chats.push(v["chat"].as_str().expect("chat").to_owned());
     }
-    wait("two sessions of My tester and one of the other agent in Live", &|| sessions("default") == 2 && sessions(&other) == 1);
+    wait("two sessions of My tester's chats and one of the other agent in Live", &|| sessions("default") >= 2 && sessions(&other) == 1);
     let me = get("/api/agents")["agents"].as_array().and_then(|a| a.iter().find(|x| x["agent"]["id"] == "default").cloned()).expect("me");
     assert_eq!(me["running"], 2, "the About panel's count: {me}");
 
@@ -1709,6 +1724,9 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     assert_eq!((st, r["message"].as_str(), r["next"].as_str()), (200, Some("Stopped 2 chats in My tester"), Some("Say “run it again” to start them again.")), "{r}");
     // Its sessions end (browsers closed), nothing holds a slot or a device, the chats say so.
     wait("My tester's sessions are gone", &|| sessions("default") == 0);
+    // M6: and the run its Chat started (it was not a chat).
+    let gone = || !std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success());
+    wait("the run My tester's Chat started is stopped", &gone);
     let claims: Vec<Value> = std::fs::read_dir(home.join("claims")).map(|d| d.flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect()).unwrap_or_default();
     let mine: Vec<&Value> = claims.iter().filter(|c| c["agent"].as_str().unwrap_or("default") == "default").filter(|c| { let pid = c["pid"].as_i64().unwrap_or(0); std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success()) }).collect();
     assert!(mine.is_empty(), "no slot or device is held for My tester: {mine:?}");
