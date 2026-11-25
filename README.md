@@ -5,8 +5,9 @@ You say what to check; AI runs it on your own computer, shows you every step liv
 what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
 blocked from the start.
 
-New in 0.7.1: say what you want in Chat and it is done at once, with one line and **Undo**.
-See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.1).
+New in 0.7.2: each agent can use its **own AI model**, **reports** of a run you can share, one-time
+codes asked once while the test waits, and a **Live** and **About** tab on every agent. fastpilot is
+now **MIT**-licensed. See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2).
 
 <img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard. On the left, the agent My tester with its chat. In the chat, one sentence became a test card: the steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only, Edit and Dismiss, with one-click schedules below them: Every 2 hours, Every night and Before each release.">
 
@@ -51,7 +52,9 @@ Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl
 Everything else happens in the dashboard.
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
-> pages and example tests, and prints what to say to Claude Code to try them.
+> pages and example tests, and opens the dashboard on the agent **Demo shop**. Say *"run the demo
+> tests"* in Chat: Pay is never pressed (it is blocked), and the answer ends with
+> *All 3 demo tests passed.* and one row per test.
 
 ### Developer mode: tests next to your code (optional)
 
@@ -81,9 +84,14 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
 - Only web? Chrome is enough.
 
 ### 2. AI model and passwords: **Settings**
-- **AI model:** Claude Code is used by default, with your own sign-in and no API key. fastpilot picks
-  the models itself. Other providers (OpenAI, OpenRouter, Groq, Ollama) can be chosen and are marked
-  "not tested yet".
+- **AI model:** Claude Code is used by default, with your own sign-in and no API key. Under
+  **Providers** you can add OpenAI, OpenRouter, Groq, Ollama (runs on this Mac, no key) or any
+  OpenAI-compatible server (**Other**, with its address). fastpilot loads the list of models from the
+  provider, and you can type a model id yourself. **Default models** are what new agents start with.
+  An API key is kept in this Mac's key store, never shown again, and sent only to its own provider.
+  We have tried Claude only: models from other providers are shown as "not tried with fastpilot yet",
+  and we have not run real OpenAI, OpenRouter or Groq accounts. Page text from the tests goes to the
+  provider you choose; with Ollama it stays on this Mac.
 - **Passwords:** you are not asked to add names first. The first time a check needs a password, a
   masked field appears in the same answer in Chat: type it once and click **Save and run**.
   **Settings › Secrets** only lists the passwords your tests use (names only, never values), with
@@ -95,8 +103,9 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
   the maker yet ([setup](docs/guide.md#jira)).
 
 ### 3. Agents and skills
-An agent is a tester for one app. **My tester** is there from the start, and the tabs (Chat, Skills,
-Schedules, History, Memory, Map) show after your first saved test.
+An agent is a tester for one app. **My tester** is there from the start. **Chat**, **Live** and
+**About** are there at once; **Skills**, **Schedules**, **History**, **Memory**, **Map** and **Model**
+show after your first saved test.
 - **New agent** (top left) asks for a website address, or say *"test my Android app"*. Or describe the
   agent in one sentence in Chat and click **Create**.
 - The **Skills** tab: **General QA** (8 skills) is always on. Specialist skills are switches, grouped by
@@ -104,6 +113,13 @@ Schedules, History, Memory, Map) show after your first saved test.
   checklists (safe checkout, login and one-time code, forms, accessibility, mobile) and acceptance
   tests. Each switch acts at once, with Undo. **Back to General QA** turns them all off.
 - Jira skills appear after you connect Jira.
+- The **Model** tab: choose the AI for this agent, one for **Replay** (repeats steps that are already
+  recorded, fast and cheap) and one for **Explore and repair** (a new test, or when a replay fails).
+  Each is **Same as default** or a provider and model, and they can come from different providers. If a
+  provider does not answer, the run stops with a plain message; nothing goes to another provider by
+  itself.
+- The **Live** tab shows only this agent's running tests. The **About** tab has its name, model,
+  skills, **Stop all** and **Remove agent** (with Undo).
 
 You can have several agents, for example "Checkout" on web and "Login" on Android. Each has its own
 chats, schedules, history, memory and map.
@@ -119,6 +135,11 @@ Write what you want in plain words:
 | Run everything | *Run a regression* (newly failing tests come first) |
 | Before a release | *Is staging ready to ship?* (one verdict: SHIP, SHIP WITH FIXES, DO NOT SHIP) |
 | Understand a failure | *Why did the checkout test fail?* |
+
+If a step needs a one-time code (an SMS or email code), fastpilot asks for it in Chat while the test
+waits, in a masked field. The code is used once and never saved, and it is typed only on the app's own
+website. If nobody types it within 3 minutes, the test stops with one red line; say *"run it again"*
+when you have the code.
 
 When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**, or one of the
 one-click schedules under them. A test is saved only when you click. The picture at the top of this
@@ -146,7 +167,12 @@ test at a time and the others wait their turn. Tests started by hand or by a sch
 <img src="docs/images/09-schedules.png" width="860" alt="The Schedules page: three one-click cards (Every 2 hours, Every night, Before each release), a switch for the release watch, and a list with one schedule that runs every 2 hours from 08:00 to 20:00, with its next run, a passed last run and a notification on failure.">
 
 ### 7. See results: **History** and **Memory**
-- **History:** every run and every Chat conversation, with report, screenshots, and video. Delete
+- **History:** every run and every Chat conversation, with report, screenshots, and video. **Make a
+  report** on a run (or ask Chat *"make a report of that run"*, or run `fastpilot report`) writes a
+  web page that opens offline and a Markdown file, with every screenshot of a failed test and the last
+  one of each passing test. fastpilot writes them itself, on this Mac, and nothing is uploaded. Passwords
+  and card numbers in the text show as `***`, but the screenshots show the page as it was: look at
+  them before you share. Open, Download and Copy Markdown are on the card. Delete
   one, several, or all, or let them be deleted after 7, 30 (the default), or 90 days. Removed apps,
   schedules, chats and agents are kept for 7 days under **Recently removed**, with **Restore**.
 - **Memory:** how each test is doing (Reliable, Unstable, Failing, Set aside), plus **project notes**
@@ -157,14 +183,17 @@ test at a time and the others wait their turn. Tests started by hand or by a sch
 | Where | What it's for |
 |---|---|
 | **Chat** (agents and their chats, on the left) | Ask for anything (see "Control everything from Chat" below). **+ New chat** starts another chat |
+| **Live** (tab) | The running tests of this agent |
+| **Model** | The AI for this agent: Replay, and Explore and repair |
+| **About** | Name, model, skills, **Stop all**, **Remove agent** |
 | **Skills** | General QA (always on) and specialist switches |
 | **Schedules** | One-click schedules, release watch, other times |
 | **History** | Past runs and conversations, **Recently removed** |
 | **Memory** | Test health and project notes |
 | **Map** | Which screens of your app have a test |
-| **Live** | Every running test, from all agents |
+| **Live** (bottom left) | Every running test, from all agents |
 | **Device** | Chrome, Android, iOS readiness and Fix buttons |
-| **Settings** | AI model, Limits & permissions, Secrets, Security (remembered browsers), Integrations |
+| **Settings** | AI model (default models and providers), Limits & permissions, Secrets, Security (remembered browsers), Integrations |
 
 ## Safe from the start
 
@@ -192,17 +221,21 @@ type in a terminal. All three use the same apps, tests, schedules and passwords.
 |---|---|
 | Your apps | `fastpilot app list`, `app add https://your-site` (or `app add com.shop.app --android`), `app switch NAME`, `app remove NAME` |
 | One-click schedules | `fastpilot schedule add` (every 2 hours, 8–20), `--nightly` or `--before-release`; `schedule pause ID`, `resume ID`, `remove ID` |
-| Agents | `fastpilot agent skills "My tester" +safe-checkout` (General QA is always on), `agent stop NAME` (stops that agent's running chats) |
+| Agents | `fastpilot agent skills "My tester" +safe-checkout` (General QA is always on), `agent stop NAME` (stops that agent's running chats), `agent model NAME --replay X --explore Y` (or `--default`) |
+| AI providers | `fastpilot provider list`, `add openrouter` (the key is read hidden), `models`, `refresh`, `remove NAME` |
+| Reports | `fastpilot report` (the newest run; `--open`, `--markdown`, `--list`) |
 | Test passwords | `fastpilot secret set TEST_PASSWORD` (typed hidden, or piped in; never on the command line), `secret list`, `secret remove NAME` |
 
 In Claude Code, just ask in your own words: *"add my app https://shop.example"*, *"run the login
 test"*, *"schedule all tests every night"*, *"pause that schedule"*, *"map the app"*, *"can we
 release?"*, *"make a checkout tester"*. fastpilot's tools `apps`, `tests`, `schedules`, `map`,
-`ship_check`, `secrets`, `memory`, `history` and `agents` do it. No tool takes a password's value:
-Claude tells you to set it in the dashboard or with `fastpilot secret set`.
+`ship_check`, `secrets`, `memory`, `history`, `reports`, `agents` and `providers` do it. No tool takes a
+password's value or an API key: Claude tells you to set it in the dashboard or in a terminal.
 
 In the dashboard Chat, what you ask for is done at once and shows as one line, such as
-*Paused schedule “Every night” · its history is kept*, with **Undo** on it. Loosening a safety limit
+*Paused schedule “Every night” · its history is kept*, with **Undo** on it. Renaming an app and
+changing an agent's model have **Undo** too, and typing *"undo"* undoes the newest line that has an
+Undo button in that chat. Loosening a safety limit
 still needs your click on its red card, and a password is still typed only in its masked field.
 
 <img src="docs/images/10-chat-result-undo.png" width="860" alt="The fastpilot Chat: a pasted website address was added as the app of My tester, and the answer is one line, Added Your website, with an Undo button.">
@@ -224,6 +257,10 @@ and typed only on that app's own website, wherever you set it from.
 A few things to say in Chat:
 
 - *"remove my app"* removes the app of the chat you are in, kept 7 days, with Undo.
+- *"rename this app to Shop (test)"* renames the app of the chat you are in, with Undo.
+- *"use Haiku for replay and Sonnet for explore"* sets this agent's models (with Undo). A provider has
+  to be connected first, in Settings › AI model.
+- *"make a report of the last run"* makes the report described under History.
 - *"stop tests after 5 minutes"* sets the time limit per test in minutes (built in: 30). A shorter time
   applies at once, with Undo. A longer one is a looser limit and needs the red card.
 - To stop everything an agent is running, click the agent's name at the top, then **Stop all** under
@@ -256,6 +293,8 @@ fastpilot doctor
 | A test stops with "Blocked by limits" | That's on purpose. See **Settings › Limits & permissions** |
 | A test stops with "setup needed: the test needs the password …" | In Chat, click **Save and run** on the card and type it once (or **Set value** in Settings › Secrets). In CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
 | A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's address with `fastpilot app list` |
+| A test stops with "no code was typed in 3 minutes" | On purpose: a one-time code is asked while the test waits. Say *"run it again"* and type the code when the card appears |
+| A model or provider is "Not running" or "Not answering" | Start it (Ollama), or check the address and key in **Settings › AI model**, then **Check again**. Runs that need it stop until it answers; they do not switch to another provider |
 | A test or chat runs too long | Click **Stop** in the chat, or **Stop all** under the agent's name. Or say *"stop tests after 5 minutes"* |
 
 ## Learn more
@@ -264,6 +303,6 @@ fastpilot doctor
   devices on another computer, known limits
 - [Physical phones](docs/real-devices.md)
 - [Release notes](https://github.com/autobot-lab/fastpilot/releases) (the latest is
-  [0.7.1](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.1))
+  [0.7.2](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2))
 
 License: [MIT](LICENSE). Versions up to 0.7.1 were released under Apache-2.0.
