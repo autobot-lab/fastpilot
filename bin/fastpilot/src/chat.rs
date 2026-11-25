@@ -981,7 +981,11 @@ fn run_message(tests: &std::path::Path, out: &str, demo: bool) -> (String, Optio
         _ => None,
     };
     match stopped {
-        Some(line) => (String::new(), Some(line)),
+        // Design e1c: the head in bold, "**Stopped at step 4:** no code was typed in 3 minutes. …".
+        Some(line) => match line.split_once(": ") {
+            Some((head, rest)) if head["Stopped at step ".len()..].bytes().all(|b| b.is_ascii_digit()) => (String::new(), Some(format!("**{head}:** {rest}"))),
+            _ => (String::new(), Some(line)),
+        },
         None => (run_answer(tests, out, demo), None),
     }
 }
@@ -4294,7 +4298,8 @@ mod tests {
         let none = std::path::Path::new("/nonexistent");
         let line = "Stopped at step 4: no code was typed in 3 minutes. Say “run it again” when you have the code.";
         let out = format!("✗ login-otp could not run [setup]: {line}\n\n1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures, in 180.0s\n");
-        assert_eq!(run_message(none, &out, false), (String::new(), Some(line.to_owned())));
+        let red = "**Stopped at step 4:** no code was typed in 3 minutes. Say “run it again” when you have the code.";
+        assert_eq!(run_message(none, &out, false), (String::new(), Some(red.to_owned())));
         let key = "f2-run-result-test";
         CHATS.lock().unwrap_or_else(|p| p.into_inner()).insert(key.into(), Chat { runs: 1, removed: true, ..Default::default() });
         post_run_result(key, none, "✓ a 1.0s, 1 turns, haiku: ok\n", false);
