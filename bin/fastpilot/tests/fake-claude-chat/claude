@@ -95,6 +95,17 @@ if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN") a
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": said[-1]}]}})
         emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 1, "result": said[-1], "usage": {"input_tokens": 1, "output_tokens": 1}})
         sys.exit(0)
+    if "kode dari hp" in low:
+        # E1: a step types a one-time code. fastpilot asks the person in the dashboard, waits, and
+        # types it; the bot only ever sees ${MOTMAINA_OTP}.
+        ok = ok and call("run_flow", {"flow": "- inputText: { into: Code, text: \"${MOTMAINA_OTP}\" }\n- assertVisible: { text: code accepted, timeout: 3000 }\n", "session": "chat1"})
+        call("session", {"action": "stop", "id": "chat1"})
+        proc.stdin.close()
+        proc.wait(timeout=10)
+        said.append("Code step: passed." if ok else "Code step: failed.")
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": said[-1]}]}})
+        emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "num_turns": 1, "result": said[-1], "usage": {"input_tokens": 1, "output_tokens": 1}})
+        sys.exit(0)
     if any(l.strip() == "check the login" for l in low.splitlines()) or "run that check again" in low:
         # QA #6103: the wizard's "Check the login" with the test account; stops with "setup
         # needed" until the account is saved, then passes on "run that check again".

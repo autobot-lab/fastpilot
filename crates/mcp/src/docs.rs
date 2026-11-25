@@ -75,6 +75,10 @@ code are masked as `***` in everything returned, like `FASTPILOT_VARS`. `readOtp
 matching message (Mailpit `/api/v1`, MailHog `/api/v2`, any URL's body, or the Android SMS inbox) and
 the first run of `length` digits (default 4–8) after `after`; clear the inbox in setup if old codes
 could match.
+A one-time code sent to a person's phone (`${LOGIN_OTP}`: a name ending in _OTP, _CODE or _PIN) is
+never a saved secret. Under `fastpilot ui` the step that types it waits up to 3 minutes while the
+dashboard asks the person for it (used once, masked, never returned); anywhere else the flow fails
+with "one-time code needed" and nothing is typed.
 
 Settings: the `config` tool lists and changes settings (allowed_domains, confirm_actions,
 headful, model_replay, ...); environment variables win. An agent may only make guard rails stricter.

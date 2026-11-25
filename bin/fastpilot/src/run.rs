@@ -1229,8 +1229,12 @@ fn cannot_start(case: &Case) -> Option<CaseResult> {
     if !missing.is_empty() {
         return Some(CaseResult::needs_secrets(case, &missing));
     }
-    // E1: a one-time code nobody here can give (no person to type it, no inbox to read it from) is
-    // a plain setup problem, never "needs the secret".
+    // E1: a one-time code nobody here can give (no dashboard where a person types it, no inbox to
+    // read it from) is a plain setup problem, never "needs the secret". Under the dashboard the
+    // run asks for it at its step.
+    if fastpilot_core::codes::dir().is_some() {
+        return None;
+    }
     missing_codes(case).first().map(|code| {
         CaseResult::setup_problem(case, &format!("Could not run: a step needs the one-time code {code}. A person types it during the run (start it from the dashboard), or the test reads it from a test inbox or the emulator's SMS."))
     })
@@ -1246,6 +1250,7 @@ pub async fn run_with_retries(
     if let Some(r) = cannot_start(case) {
         return r;
     }
+    fastpilot_core::codes::set_test(if case.title.is_empty() { &case.id } else { &case.title }, &code_names(&case.text));
     if breaker.is_open() {
         return CaseResult::skipped(case, "skipped: the infra circuit breaker is open (consecutive infra failures)");
     }

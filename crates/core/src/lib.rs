@@ -3,6 +3,7 @@
 
 pub mod change;
 pub mod claim;
+pub mod codes;
 pub mod config;
 pub mod jira;
 pub mod live;

@@ -132,8 +132,8 @@ async fn a_refused_save_says_why_in_the_card() {
 async fn open_ui(home: &Path, project: &Path, env: &[(&str, &str)]) -> (Ui, Client) {
     std::fs::create_dir_all(project.join("tests")).expect("project");
     std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
-        .args(["ui", "--no-open"])
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+    cmd.args(["ui", "--no-open"])
         .current_dir(project)
         .env("HOME", home)
         .env("FASTPILOT_DIR", project.join(".fastpilot"))
@@ -143,9 +143,12 @@ async fn open_ui(home: &Path, project: &Path, env: &[(&str, &str)]) -> (Ui, Clie
         .env("FAKE_CHAT_DELAY_MS", "0")
         .env("FAKE_CHAT_NO_RUN", "1")
         .envs(env.iter().copied())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("ui");
+        .stdout(std::process::Stdio::piped());
+    // `("FASTPILOT_DIR", "")`: as installed, with apps (Chat's fastpilot works for the app in use).
+    if env.contains(&("FASTPILOT_DIR", "")) {
+        cmd.env_remove("FASTPILOT_DIR");
+    }
+    let mut child = cmd.spawn().expect("ui");
     let mut link = String::new();
     BufReader::new(child.stdout.take().expect("stdout")).read_line(&mut link).expect("link");
     let ui = Ui(child);
@@ -319,6 +322,43 @@ async fn save_and_run_runs_the_check_after_an_answer_that_ran_nothing() {
     see(&client, "The test account is saved now. Run that check again with it.").await;
     // The stand-in answers "Correct login: …" only after it opened the browser session for the check.
     see(&client, "Correct login:").await;
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// E1: a step types a one-time code sent to the person's phone. The run waits; Chat shows one
+/// hidden field ("Type the code sent to your phone"); the person types it once and the step goes on
+/// with it. The code is never in the chat, in what the bot got, or left on disk.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dashboard_asks_for_a_one_time_code_while_the_step_waits() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-otp-ask-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("site")).expect("site");
+    let page = home.join("site/code.html");
+    std::fs::write(&page, "<!doctype html><label>Code <input id=c aria-label=Code></label><p id=o>waiting</p><script>c.addEventListener('input', () => { o.textContent = c.value === '48213' ? 'code accepted' : 'wrong code'; });</script>").expect("page");
+    let target = std::fs::canonicalize(&page).expect("page").to_string_lossy().into_owned();
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FAKE_CHAT_NO_RUN", ""), ("FAKE_CHAT_TARGET", &target), ("FASTPILOT_DIR", ""), ("FASTPILOT_KEYSTORE", "file")]).await;
+    // The code is typed only on the app's own site (Security #233 M1): the app is this page.
+    let add = format!("(async () => {{ await api('/api/apps', {{ action: 'add', name: 'Shop', targets: {{ web: {} }} }}); location.hash = '#/agents/default/chat'; return 'ok'; }})()", serde_json::to_string(&format!("file://{target}")).expect("url"));
+    eval(&client, &add).await;
+    see(&client, "What should I test?").await;
+    say(&client, "tes kode dari HP saya").await;
+    see(&client, "Type the code sent to your phone").await;
+    let field = eval(&client, "(() => { const i = document.querySelector('#code-ask input'); return [i.type, i.autocomplete, document.querySelectorAll('#code-ask input').length, document.getElementById('code-ask').textContent.includes('MOTMAINA_OTP')].join('|'); })()").await;
+    assert_eq!(field.trim_matches('"'), "password|one-time-code|1|true", "one hidden field, named");
+    eval(&client, "(() => { document.querySelector('#code-ask input').value = '48213'; [...document.querySelectorAll('#code-ask button')].find((b) => b.textContent === 'Use code').click(); return 'ok'; })()").await;
+    see(&client, "Code step: passed.").await;
+    assert_eq!(eval(&client, "String(!!document.getElementById('code-ask'))").await.trim_matches('"'), "false", "the field is gone");
+    // Never kept: not in the chat, not in what the bot was given, nothing left in the code folder.
+    let chat = eval(&client, "(async () => JSON.stringify(await api('/api/chat?agent=default')))()").await;
+    assert!(!chat.contains("48213"), "{chat}");
+    for e in std::fs::read_dir(home.join("claude-log")).into_iter().flatten().flatten() {
+        assert!(!std::fs::read_to_string(e.path()).unwrap_or_default().contains("48213"), "the bot never gets the code");
+    }
+    assert_eq!(std::fs::read_dir(home.join(".fastpilot/ui/codes")).map(|d| d.count()).unwrap_or(0), 0, "nothing left on disk");
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }
