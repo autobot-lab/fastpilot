@@ -1411,6 +1411,27 @@ fn expand(s: &str, mut var: impl FnMut(&str) -> Result<String, String>) -> Resul
     Ok(out)
 }
 
+/// E1: a `${NAME}` that holds a one-time code (it changes on every sign-in, so it is never a saved
+/// secret): the name says so (`LOGIN_OTP`, `SMS_CODE`, `PIN`), or `text`, the step it is in, does
+/// ("Type the one-time code", "Isi kode OTP").
+pub fn is_code(name: &str, text: &str) -> bool {
+    let parts: Vec<&str> = name.split('_').filter(|p| !p.is_empty()).collect();
+    let by_name = parts.last().is_some_and(|p| ["OTP", "TOTP", "CODE", "PIN", "MFA", "2FA"].contains(p)) || parts.first() == Some(&"OTP");
+    let words: Vec<String> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    let says = |phrase: &[&str]| words.windows(phrase.len()).any(|w| w.iter().zip(phrase).all(|(a, b)| a == b));
+    // Security #229 L2: a step's words never make a password, token or key a code.
+    let secret_name = ["PASS", "TOKEN", "SECRET", "KEY"].iter().any(|w| name.contains(w));
+    by_name || !secret_name && [&["otp"][..], &["one", "time", "code"], &["onetime", "code"], &["verification", "code"], &["kode"], &["2fa"]].iter().any(|p| says(p))
+}
+
+/// E1: what a run says when it reaches a one-time code it cannot get (never "setup needed: the
+/// test needs the password", which makes a password card).
+pub fn code_needed(name: &str) -> String {
+    format!(
+        "one-time code needed: the step needs the one-time code {name}, sent when signing in. It is never a saved password. A person types it while the test runs in the dashboard, or the test reads it from a test inbox or the emulator's SMS (readOtp); nothing was typed"
+    )
+}
+
 fn is_var(n: &str) -> bool {
     let mut chars = n.chars();
     chars.next().is_some_and(|c| c.is_ascii_uppercase() || c == '_')
@@ -1443,6 +1464,10 @@ fn lookup(name: &str) -> Result<String, String> {
     // from the environment.
     let saved = crate::secrets::lookup(name);
     if saved.is_none() && !allowed().iter().any(|a| a == name) {
+        // E1: a one-time code is typed by a person while the run waits (dashboard runs only).
+        if crate::codes::is_run_code(name) {
+            return crate::codes::ask(name);
+        }
         return Err(format!(
             "setup needed: the test needs the password {name} and it is not saved for this app. The user sets it once in the dashboard (ask for it in Chat, or Settings › Secrets), or lists it in FASTPILOT_VARS and gives it in the environment fastpilot starts in; nothing was typed"
         ));
@@ -1463,6 +1488,7 @@ fn lookup(name: &str) -> Result<String, String> {
             }
             Ok(v)
         }
+        None if crate::codes::is_run_code(name) => crate::codes::ask(name),
         None => Err(format!(
             "setup needed: the test needs the password {name} and it is not set for this app. The user sets it once in the dashboard (Settings › Secrets › {name} › Set value), or sets it in the environment fastpilot starts in; nothing was typed"
         )),
@@ -1546,6 +1572,37 @@ pub(crate) fn substitute(s: &str) -> Result<String, String> {
 /// Like `substitute`, flow-local variables (runFlow `env`, captures) first.
 pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
     expand(s, |n| local.get(n).cloned().map_or_else(|| lookup(n), Ok))
+}
+
+/// Like `substitute_with`, for a check before the step runs: a one-time code with no fixed value
+/// is left empty, never asked for (E1: the person is asked once, when the step types it).
+pub(crate) fn substitute_for_check(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
+    expand(s, |n| match local.get(n) {
+        Some(v) => Ok(v.clone()),
+        None if unsaved_code(n) => Ok(String::new()),
+        None => lookup(n),
+    })
+}
+
+/// E1: a one-time code with no fixed value here: the person is asked for it when its step runs.
+fn unsaved_code(name: &str) -> bool {
+    crate::codes::is_run_code(name) && crate::secrets::lookup(name).is_none() && std::env::var(name).is_err()
+}
+
+/// Security #233 M1: does `text` type a one-time code the person will be asked for? Such a step
+/// is held to the app's own site (S-1) before anyone is asked, like one with a saved password.
+pub(crate) fn asks_code(text: &str, local: &HashMap<String, String>) -> bool {
+    var_names(text).iter().any(|n| !local.contains_key(n) && unsaved_code(n))
+}
+
+/// Security #233 M1: a code the person typed is masked and kept to the app's own site (S-1), as
+/// a saved password is, whatever local name a step copies it to.
+pub(crate) fn keep_on_site(value: &str) {
+    add_secret(value);
+    let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+    if !kept.iter().any(|v| v == value) {
+        kept.push(value.to_owned());
+    }
 }
 
 /// Replace allowed variables' values with their `${NAME}` (prompts written by people, e.g. a
@@ -1749,8 +1806,14 @@ fn locate_branches(branches: &mut [Branch], lines: &[&str], from: usize, to: usi
 /// (runFlow `env`); blocks may not contain session or parallel steps.
 fn check_step(step: &Step, defined: &mut HashSet<String>, out: &mut dyn FnMut(String)) {
     for v in step.vars() {
+        // E1: a one-time code is asked for when its step runs, not while the flow is checked.
+        let unasked = || match crate::codes::dir() {
+            Some(_) => Ok(String::new()),
+            None => Err(code_needed(&v)),
+        };
+        let usable = if unsaved_code(&v) { unasked() } else { lookup(&v) };
         if !defined.contains(&v)
-            && let Err(e) = lookup(&v)
+            && let Err(e) = usable
         {
             out(e);
         }
@@ -2074,6 +2137,25 @@ mod tests {
         assert_eq!(find_secret("TapOn(Text(\"Save\"))", "a", 0), None);
     }
 
+    /// E1: one-time codes are run-time values, by their name or by the words of their step.
+    #[test]
+    fn tells_a_one_time_code_from_a_password() {
+        for (name, step) in [
+            ("MOTMAINA_OTP", "Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit"),
+            ("SMS", "Isi kode OTP ${SMS} di kolom 5 digit"),
+            ("X", "Type the one-time code ${X}"),
+            ("X", "Enter the verification code ${X}"),
+            ("LOGIN_CODE", ""),
+            ("PIN", ""),
+            ("OTP_EMAIL", ""),
+        ] {
+            assert!(is_code(name, step), "{name} in {step:?}");
+        }
+        for (name, step) in [("TEST_PASSWORD", "Type ${TEST_PASSWORD} and the verification code"), ("API_TOKEN", "Isi kode ${API_TOKEN}"), ("DEMO_PASS", "Sign in with ${DEMO_PASS}"), ("CODENAME", ""), ("PINTU", "Open the footprint page"), ("TEST_PASSWORD", "Type ${TEST_PASSWORD}"), ("PROMO", "Enter the voucher ${PROMO}")] {
+            assert!(!is_code(name, step), "{name} in {step:?}");
+        }
+    }
+
     #[test]
     fn substitutes_env() {
         assert_eq!(var_names("a ${X} b ${Y_2} `${a.b}` $${Z}"), vec!["X", "Y_2"]);
@@ -2083,6 +2165,13 @@ mod tests {
         let e = substitute("${HOME}").expect_err("not allowlisted");
         assert!(e.contains("ask for it in Chat, or Settings › Secrets") && e.contains("nothing was typed"), "{e}");
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
+        // E1: a one-time code nobody can save is not reported as a missing password.
+        let e = substitute("${MOTMAINA_OTP}").expect_err("no code");
+        assert!(e.starts_with("one-time code needed:") && !e.contains("setup needed") && e.contains("nothing was typed"), "{e}");
+        // E1: with no dashboard to ask (a terminal or Claude Code's own MCP), the flow says so
+        // before anything runs.
+        let errs = check_flow("- inputText: { into: Code, text: \"${MOTMAINA_OTP}\" }\n", &[]).expect_err("nobody to ask");
+        assert!(errs.iter().any(|e| e.message.starts_with("one-time code needed:")), "{errs:?}");
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }
 

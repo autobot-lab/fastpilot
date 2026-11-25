@@ -1,7 +1,7 @@
 ---
 name: release-check
 description: Decide if a build or a staging release is ready, with one verdict - SHIP, SHIP WITH FIXES, DO NOT SHIP, or INCONCLUSIVE - backed by evidence. Use before a release, after a deploy to staging, or when the user asks "can we release?", "is it ready?", "go/no-go".
-license: Apache-2.0
+license: MIT
 ---
 
 # Release check

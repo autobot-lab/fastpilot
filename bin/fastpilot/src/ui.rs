@@ -189,6 +189,10 @@ pub async fn ui(args: &[String]) -> Res<()> {
     }
     // E6: work in the current app's folder (or this project folder, listed as a Repo app).
     crate::apps::enter(true);
+    // E1: runs and Chat started from here ask this dashboard for a one-time code (one hidden field
+    // in Chat) instead of failing; a run started in a terminal has no one to ask.
+    // SAFETY: set once at start, before this dashboard starts any run, chat or thread of its own.
+    unsafe { std::env::set_var(fastpilot_core::codes::ENV, code_dir()) };
     // v0.7.1 FC8: agents from before get their explicit skill list (General QA + what they had).
     for name in crate::control::migrate_skills() {
         tracing::info!(agent = %name, "skills: General QA plus the specialist skills it had");
@@ -317,6 +321,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/chat/run", post(chat_run))
         .route("/api/chat/undo", post(chat_undo))
+        .route("/api/codes", get(codes_list).post(codes_answer))
         .route("/api/chats", get(chats_api))
         .route("/api/claude/signin", post(claude_signin))
         .route("/api/agents", get(agents_api).post(agents_change))
@@ -443,8 +448,9 @@ async fn guard(State(ui): State<Arc<Ui>>, req: Request, next: Next) -> Response 
                 "this link was already used or has expired (it works once, for 10 minutes). Run `fastpilot ui` again for a new link.",
             );
         }
-        // Trade the code for a session cookie, and drop it from the address bar.
-        let mut r = Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, "/").body(Body::empty()).unwrap_or_default();
+        // Trade the code for a session cookie, and drop it from the address bar. E2: open on the
+        // Chat of the app in use.
+        let mut r = Response::builder().status(StatusCode::SEE_OTHER).header(header::LOCATION, start_page()).body(Body::empty()).unwrap_or_default();
         set_session(&ui, &mut r, None);
         return r;
     }
@@ -787,6 +793,26 @@ async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     }
 }
 
+/// E1: where runs started from this dashboard ask for one-time codes (owner-only).
+fn code_dir() -> std::path::PathBuf {
+    crate::browsers::dir().join("codes")
+}
+
+/// E1: the one-time codes runs wait for now (names and tests, never a value).
+async fn codes_list() -> Response {
+    axum::Json(json!({ "codes": fastpilot_core::codes::pending(&code_dir()) })).into_response()
+}
+
+/// E1 `{id, code}`: the person typed the code a run waits for; it goes to that run once, and is
+/// never kept, logged or shown.
+async fn codes_answer(axum::Json(body): axum::Json<Value>) -> Response {
+    let (Some(id), Some(code)) = (body["id"].as_str(), body["code"].as_str()) else { return refuse(StatusCode::BAD_REQUEST, "id and code are required") };
+    match fastpilot_core::codes::answer(&code_dir(), id, code) {
+        Ok(()) => axum::Json(json!({ "message": "Code sent to the test." })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
 /// `{id}`: Run now on a saved test's card.
 async fn chat_run(axum::Json(body): axum::Json<Value>) -> Response {
     let Some(id) = body["id"].as_str() else { return refuse(StatusCode::BAD_REQUEST, "id is required") };
@@ -827,7 +853,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "running": crate::chat::running(&a.id), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "demo": demo_welcome(&a), "running": crate::chat::running(&a.id), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();
@@ -851,6 +877,28 @@ async fn agents_api() -> Response {
     let saved_tests = std::env::current_dir().ok().map(|d| d.join("tests")).filter(|d| d.is_dir()).map_or(0, |d| test_files(&d).len());
     axum::Json(json!({ "agents": list, "saved_tests": saved_tests, "current_app": crate::apps::current().map(|a| a.id), "devices": devices, "suggestions": agents::SUGGESTED_INSTRUCTIONS, "providers": providers, "claude_models": claude, "default_model": crate::run::model_explore(),
         "focuses": focuses, "new_defaults": agents::new_defaults() })).into_response()
+}
+
+/// E2 (v0.7.2): for the agent of the demo app, the titles of the tests in its `tests/` folder (the
+/// Chat welcome lists them), or why the demo folder cannot be read. `null` for any other agent.
+fn demo_welcome(a: &crate::agents::Agent) -> Value {
+    let Some(app) = crate::agents::app_of(a).filter(|x| x.demo) else { return Value::Null };
+    let tests = app.repo.as_ref().map(|r| test_files(&r.join("tests"))).unwrap_or_default();
+    if tests.is_empty() {
+        return json!({ "error": "I couldn’t open the demo. Close fastpilot and start `fastpilot demo` again." });
+    }
+    json!({ "tests": tests.into_iter().map(|(_, title)| title).collect::<Vec<_>>() })
+}
+
+/// E2 (v0.7.2): where the dashboard opens after its link: the Chat of the agent that tests the app
+/// in use (the folder `fastpilot` or `fastpilot demo` started in), else the page itself.
+fn start_page() -> String {
+    let Some(app) = crate::apps::current() else { return "/".into() };
+    crate::agents::list()
+        .into_iter()
+        .find(|a| crate::agents::app_of(a).is_some_and(|x| x.id == app.id))
+        .filter(|a| a.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .map_or_else(|| "/".into(), |a| format!("/#/agents/{}/chat", a.id))
 }
 
 /// FC4: "Shop staging · Website" under an agent's name: the app it tests (the current app for the

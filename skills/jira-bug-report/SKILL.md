@@ -1,7 +1,7 @@
 ---
 name: jira-bug-report
 description: Turn a failed fastpilot run into a Jira issue through the Atlassian MCP server - summary, steps, expected vs actual, environment, and links to the report and video - shown to the user first and sent only after their OK in chat. Use when the user says "log this in Jira", "create a Jira bug for this failure" or "make a ticket for it", and Claude Code has the Atlassian server connected.
-license: Apache-2.0
+license: MIT
 ---
 
 # Jira bug report

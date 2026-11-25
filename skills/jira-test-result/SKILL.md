@@ -1,7 +1,7 @@
 ---
 name: jira-test-result
 description: Post a fastpilot result (passed or failed, the checks, a link to the report) as a comment on a Jira ticket through the Atlassian MCP server, after the user's OK in chat. It changes the ticket's status only when the user asks for that in their own words. Use when the user says "post the result on SHOP-123", "comment the test result in Jira" or "mark SHOP-123 as tested".
-license: Apache-2.0
+license: MIT
 ---
 
 # Jira test result

@@ -1,7 +1,7 @@
 ---
 name: bug-report
 description: Turn a failed fastpilot test or something odd you saw into a clear bug report a developer can act on - title, steps, expected vs actual, evidence, environment, and how sure we are. Use when a test fails, when the user says "write a bug report", "log this bug", "make a Jira ticket", or after a regression finds a newly failing test.
-license: Apache-2.0
+license: MIT
 ---
 
 # Bug report

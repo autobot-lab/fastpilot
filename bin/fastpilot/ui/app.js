@@ -1488,7 +1488,8 @@ function testCard(p) {
   } else if (p.status === "cancelled") {
     foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dismissed");
   }
-  const note = p.status === "pending" && p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
+  // E1: one message only: the red refusal where the person clicked replaces a note that says the same.
+  const note = p.status === "pending" && p.note && chatRefused[p.id] !== p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
   const detail = p.detail ? h("details", { class: "t-detail" }, h("summary", {}, "Details"), h("p", { class: "s" }, p.detail)) : null;
   return h("section", { class: "grp prop test " + p.status, "aria-label": (p.schedules ? "Save test & schedule: " : "Save test: ") + p.title, "data-pid": String(p.id) },
     head, h("div", { class: "prop-body" }, body, note, detail, refusedNow, foot));
@@ -2028,6 +2029,17 @@ window.setChatNotice = (r) => { chatNotice = { key: draftKey(), message: r.messa
 
 let chatDraft = { key: null, text: "", focused: false };
 const draftKey = () => `${chatAgent}/${chatId || "new"}`;
+// E2 (v0.7.2, e2a): `fastpilot demo` opens on the demo agent: plain text (no form, no chips) with the
+// tests of the demo folder, by their titles.
+function demoWelcome(d) {
+  if (d.error) return h("li", { class: "msg bot demo-welcome" }, h("div", { class: "res bd", role: "alert" }, d.error));
+  const n = d.tests.length;
+  return h("li", { class: "msg bot demo-welcome" },
+    h("p", { class: "md" }, h("b", {}, "This is the demo."), ` It has a small practice shop and ${n} test${n === 1 ? "" : "s"} that ${n === 1 ? "is" : "are"} ready to run. Nothing here touches your own apps.`),
+    h("ul", { class: "md" }, d.tests.map((t) => h("li", {}, t))),
+    h("p", { class: "md" }, "Say “run the demo tests” to watch them. To test your own website, paste its address."));
+}
+
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
   let root = document.getElementById("chat-root");
@@ -2051,6 +2063,8 @@ function renderChat() {
         h("p", { class: "rule" }, "Passwords are never typed here.")));
     if (chatHost) chatHost.replaceChildren(root); else $body().replaceChildren(root);
     queueMicrotask(() => growBox(input));
+    codeShown = null;
+    pollCodes();
   }
   const box = document.getElementById("chat-input");
   if (chatPrefill && box) { box.value = chatPrefill; chatPrefill = null; box.focus(); growBox(box); }
@@ -2058,13 +2072,18 @@ function renderChat() {
   const log = document.getElementById("chat-log");
   const scroll = document.getElementById("chat-scroll");
   const msgs = (chatData && chatData.messages) || [];
-  const sig = JSON.stringify(msgs) + (chatData && chatData.error) + JSON.stringify([chatData && chatData.waiting, chatData && chatData.device_wait, chatData && chatData.signin]);
+  // E2: the demo agent's welcome comes with the sidebar's data (it can arrive after the chat).
+  const demo = window.Shell && chatAgent !== "new" ? (Shell.agentData(chatAgent) || {}).demo : null;
+  if (!msgs.length && window.Shell && !Shell.data()) Shell.refresh().then(() => { chatSig = ""; renderChat(); });
+  const sig = JSON.stringify(msgs) + (chatData && chatData.error) + JSON.stringify([chatData && chatData.waiting, chatData && chatData.device_wait, chatData && chatData.signin, demo]);
   if (sig === chatSig) return;
   chatSig = sig;
   const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
   root.classList.toggle("empty-chat", !msgs.length && !(chatData && chatData.error));
   if (chatData && chatData.error) {
     log.replaceChildren(h("li", { class: "res bd", role: "alert" }, "Cannot read the chat: " + chatData.error));
+  } else if (!msgs.length && demo) {
+    log.replaceChildren(demoWelcome(demo));
   } else if (!msgs.length) {
     // FC4 empty state: a greeting and the box. No suggestions.
     log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?"), h("p", { class: "sub" }, HINT.empty)));
@@ -2078,6 +2097,54 @@ function renderChat() {
   if (atBottom || msgs.length) scroll.scrollTop = scroll.scrollHeight;
 }
 
+// E1: a run waits for a one-time code (sent to the person's phone): one hidden field in Chat,
+// above the message box. The code goes to that run once; it is never kept or sent to the bot.
+let codeShown = null, codeTimer = null;
+async function pollCodes() {
+  clearTimeout(codeTimer);
+  codeTimer = null;
+  if (!document.getElementById("chat-root")) return;
+  let list = [];
+  try { list = (await api("/api/codes")).codes || []; } catch (_) { list = []; }
+  showCode(list[0] || null);
+  if (document.getElementById("chat-root")) codeTimer = setTimeout(pollCodes, 2000);
+}
+
+function showCode(a) {
+  const dock = document.querySelector("#chat-root .dock");
+  let el = document.getElementById("code-ask");
+  if (!dock || !a) { el?.remove(); codeShown = null; return; }
+  const left = Math.max(0, Math.round((a.until_ms - Date.now()) / 1000));
+  const time = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
+  if (el && codeShown === a.id) { el.querySelector(".code-left").textContent = time; return; }
+  el?.remove();
+  codeShown = a.id;
+  const input = h("input", { type: "password", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "12", spellcheck: "false", "aria-label": "One-time code" });
+  const send = h("button", { class: "btn p", type: "button" }, "Use code");
+  const go = async () => {
+    const code = input.value.trim();
+    if (!code) { input.focus(); return; }
+    send.disabled = true;
+    try {
+      await api("/api/codes", { id: a.id, code });
+      input.value = "";
+      document.getElementById("code-ask")?.remove();
+      toast("Code sent to the test.", true);
+    } catch (e) {
+      send.disabled = false;
+      toast(e.message);
+    }
+  };
+  send.addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); go(); } });
+  el = h("section", { id: "code-ask", class: "grp prop code-ask", role: "group", "aria-label": "Type the code sent to your phone" },
+    h("h3", { class: "gh" }, icon("lock"), h("b", {}, "Type the code sent to your phone")),
+    h("div", { class: "prop-body" },
+      h("p", { class: "s" }, (a.test ? a.test + " is waiting for " : "A test is waiting for ") + a.name + (a.site ? " on " + a.site : "") + ". It is used once and never saved."),
+      h("div", { class: "btns" }, input, send, h("span", { class: "s code-left" }, time))));
+  dock.prepend(el);
+  input.focus();
+}
 
 // ---- Schedules (C3, D5) ----
 let schedData = null, schedBusy = false, schedForm = null; // schedForm: null | { id?, ... }

@@ -1,7 +1,7 @@
 ---
 name: mobile-basics
 description: Phone-specific checks for Android and iOS apps - permissions, the back button, offline and slow network, notifications, app restarts, keyboard covering fields, other languages. Use when the user tests an Android or iPhone app, or asks for mobile checks on an emulator, simulator or physical phone.
-license: Apache-2.0
+license: MIT
 ---
 
 # Mobile basics

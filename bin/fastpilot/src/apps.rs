@@ -38,6 +38,9 @@ pub struct App {
     /// environment value readable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<String>,
+    /// E2 (v0.7.2): the practice shop `fastpilot demo` wrote; its Chat starts with the demo welcome.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub demo: bool,
 }
 
 impl App {
@@ -133,7 +136,7 @@ pub fn add(name: &str, targets: Targets) -> Result<App, String> {
     // A fresh id: not in use, not retired, and no folder of that name left on disk.
     let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
     let id = (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(free).unwrap_or(base);
-    let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms(), secrets: Vec::new() };
+    let app = App { id: id.clone(), name, targets, repo: None, created_ms: now_ms(), secrets: Vec::new(), demo: false };
     // Its own folder for tests, memory and map, owner-only (#180 L3).
     crate::filestore::ensure_dir(&app.dir(), true)?;
     s.apps.push(app.clone());
@@ -239,13 +242,42 @@ pub fn add_repo(folder: &Path) -> Result<App, String> {
     let slugged = slug(&name);
     let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
     let id = (1..).map(|n| if n == 1 { slugged.clone() } else { format!("{slugged}-{n}") }).find(free).unwrap_or(slugged);
-    let app = App { id: id.clone(), name, targets: Targets::default(), repo: Some(folder), created_ms: now_ms(), secrets: Vec::new() };
+    let app = App { id: id.clone(), name, targets: Targets::default(), repo: Some(folder), created_ms: now_ms(), secrets: Vec::new(), demo: false };
     s.apps.push(app.clone());
     if s.current.is_none() {
         s.current = Some(id);
     }
     save(&s)?;
     Ok(app)
+}
+
+/// E2 (v0.7.2): the folder `fastpilot demo` wrote, as the app "fastpilot demo" (a website: its own
+/// `demo/index.html`), made the app in use. The same folder again (`--force`) is the same app; a
+/// second demo folder elsewhere gets "fastpilot demo (2)". Its tests are the folder's `tests/`.
+pub fn add_demo(folder: &Path) -> Result<App, String> {
+    let folder = std::fs::canonicalize(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let web = url::Url::from_file_path(folder.join("demo/index.html")).map_err(|()| "the demo folder has no usable path".to_owned())?.to_string();
+    let _held = hold();
+    let mut s = load();
+    let id = match s.apps.iter_mut().find(|a| a.repo.as_deref() == Some(folder.as_path())) {
+        Some(a) => {
+            a.targets.web = Some(web);
+            a.demo = true;
+            a.id.clone()
+        }
+        None => {
+            let name = (1..).map(|n| if n == 1 { "fastpilot demo".to_owned() } else { format!("fastpilot demo ({n})") }).find(|n| !s.apps.iter().any(|a| a.name.eq_ignore_ascii_case(n))).unwrap_or_default();
+            let slugged = slug(&name);
+            let free = |id: &String| !s.apps.iter().any(|a| &a.id == id) && !s.retired.contains(id) && !root().join("apps").join(id).exists();
+            let id = (1..).map(|n| if n == 1 { slugged.clone() } else { format!("{slugged}-{n}") }).find(free).unwrap_or(slugged);
+            let targets = Targets { web: Some(web), ..Default::default() };
+            s.apps.push(App { id: id.clone(), name, targets, repo: Some(folder), created_ms: now_ms(), secrets: Vec::new(), demo: true });
+            id
+        }
+    };
+    s.current = Some(id.clone());
+    save(&s)?;
+    Ok(s.apps.into_iter().find(|a| a.id == id).expect("just saved"))
 }
 
 /// E6: start in the right folder, so every "here" (`.fastpilot`, `tests/`, the map, notes) is the
@@ -545,7 +577,7 @@ mod tests {
         let t = check_targets(Targets { web: Some(" https://staging.shop.example ".into()), android: Some("com.shop.app".into()), ios: Some(String::new()) }).expect("ok");
         assert_eq!((t.web.as_deref(), t.android.as_deref(), t.ios.as_deref()), (Some("https://staging.shop.example/"), Some("com.shop.app"), None));
         assert_eq!(name_from(&t), "Shop staging");
-        let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0, secrets: Vec::new() };
+        let a = App { id: "x".into(), name: "x".into(), targets: t, repo: None, created_ms: 0, secrets: Vec::new(), demo: false };
         assert_eq!(a.kinds(), ["web", "android"]);
     }
 }

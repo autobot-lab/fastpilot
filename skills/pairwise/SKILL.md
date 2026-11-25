@@ -1,7 +1,7 @@
 ---
 name: pairwise
 description: Test many options that combine (payment method x shipping x country x language) with a small set of runs that still covers every pair of values. Use when there are 3 or more settings or choices that can be mixed and trying all combinations would take too many runs, or when the user asks for "pairwise", "all-pairs" or "combinations".
-license: Apache-2.0
+license: MIT
 ---
 
 # Pairwise

