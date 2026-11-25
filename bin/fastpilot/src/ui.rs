@@ -189,6 +189,10 @@ pub async fn ui(args: &[String]) -> Res<()> {
     }
     // E6: work in the current app's folder (or this project folder, listed as a Repo app).
     crate::apps::enter(true);
+    // E1: runs and Chat started from here ask this dashboard for a one-time code (one hidden field
+    // in Chat) instead of failing; a run started in a terminal has no one to ask.
+    // SAFETY: set once at start, before this dashboard starts any run, chat or thread of its own.
+    unsafe { std::env::set_var(fastpilot_core::codes::ENV, code_dir()) };
     // v0.7.1 FC8: agents from before get their explicit skill list (General QA + what they had).
     for name in crate::control::migrate_skills() {
         tracing::info!(agent = %name, "skills: General QA plus the specialist skills it had");
@@ -317,6 +321,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/chat/decide", post(chat_decide))
         .route("/api/chat/run", post(chat_run))
         .route("/api/chat/undo", post(chat_undo))
+        .route("/api/codes", get(codes_list).post(codes_answer))
         .route("/api/chats", get(chats_api))
         .route("/api/claude/signin", post(claude_signin))
         .route("/api/agents", get(agents_api).post(agents_change))
@@ -783,6 +788,26 @@ async fn chat_decide(axum::Json(body): axum::Json<Value>) -> Response {
     };
     match r {
         Ok(msg) => axum::Json(json!({ "message": msg, "chat": crate::chat::card_state(id) })).into_response(),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
+    }
+}
+
+/// E1: where runs started from this dashboard ask for one-time codes (owner-only).
+fn code_dir() -> std::path::PathBuf {
+    crate::browsers::dir().join("codes")
+}
+
+/// E1: the one-time codes runs wait for now (names and tests, never a value).
+async fn codes_list() -> Response {
+    axum::Json(json!({ "codes": fastpilot_core::codes::pending(&code_dir()) })).into_response()
+}
+
+/// E1 `{id, code}`: the person typed the code a run waits for; it goes to that run once, and is
+/// never kept, logged or shown.
+async fn codes_answer(axum::Json(body): axum::Json<Value>) -> Response {
+    let (Some(id), Some(code)) = (body["id"].as_str(), body["code"].as_str()) else { return refuse(StatusCode::BAD_REQUEST, "id and code are required") };
+    match fastpilot_core::codes::answer(&code_dir(), id, code) {
+        Ok(()) => axum::Json(json!({ "message": "Code sent to the test." })).into_response(),
         Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }

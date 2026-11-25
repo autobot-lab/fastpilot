@@ -338,7 +338,9 @@ impl Ctx {
     }
 
     fn subst(&self, s: &str) -> Result<String> {
-        substitute_with(s, &guard(&self.vars)).map_err(Error::Flow)
+        // Not under the lock: a one-time code can wait for a person (E1).
+        let vars = guard(&self.vars).clone();
+        substitute_with(s, &vars).map_err(Error::Flow)
     }
 }
 
@@ -1372,7 +1374,8 @@ fn set_var(ctx: &Ctx, name: &str, value: String, secret: bool) {
 /// (A variable that cannot be filled fails the step itself, with its own message.)
 fn holds_app_secret(ctx: &Ctx, text: &str) -> bool {
     // As written (the value itself, L2), then with its variables filled in.
-    crate::dsl::holds_app_secret(text) || (!crate::dsl::var_names(text).is_empty() && ctx.subst(text).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
+    let vars = guard(&ctx.vars).clone();
+    crate::dsl::holds_app_secret(text) || (!crate::dsl::var_names(text).is_empty() && crate::dsl::substitute_for_check(text, &vars).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
 }
 
 async fn http_request(h: &HttpRequest, ctx: &Ctx) -> Result<Option<String>> {

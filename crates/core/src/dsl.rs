@@ -1461,8 +1461,9 @@ fn lookup(name: &str) -> Result<String, String> {
     // from the environment.
     let saved = crate::secrets::lookup(name);
     if saved.is_none() && !allowed().iter().any(|a| a == name) {
-        if is_code(name, "") {
-            return Err(code_needed(name));
+        // E1: a one-time code is typed by a person while the run waits (dashboard runs only).
+        if crate::codes::is_run_code(name) {
+            return crate::codes::ask(name);
         }
         return Err(format!(
             "setup needed: the test needs the password {name} and it is not saved for this app. The user sets it once in the dashboard (ask for it in Chat, or Settings › Secrets), or lists it in FASTPILOT_VARS and gives it in the environment fastpilot starts in; nothing was typed"
@@ -1484,7 +1485,7 @@ fn lookup(name: &str) -> Result<String, String> {
             }
             Ok(v)
         }
-        None if is_code(name, "") => Err(code_needed(name)),
+        None if crate::codes::is_run_code(name) => crate::codes::ask(name),
         None => Err(format!(
             "setup needed: the test needs the password {name} and it is not set for this app. The user sets it once in the dashboard (Settings › Secrets › {name} › Set value), or sets it in the environment fastpilot starts in; nothing was typed"
         )),
@@ -1509,6 +1510,16 @@ pub(crate) fn substitute(s: &str) -> Result<String, String> {
 /// Like `substitute`, flow-local variables (runFlow `env`, captures) first.
 pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
     expand(s, |n| local.get(n).cloned().map_or_else(|| lookup(n), Ok))
+}
+
+/// Like `substitute_with`, for a check before the step runs: a one-time code with no fixed value
+/// is left empty, never asked for (E1: the person is asked once, when the step types it).
+pub(crate) fn substitute_for_check(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
+    expand(s, |n| match local.get(n) {
+        Some(v) => Ok(v.clone()),
+        None if crate::codes::is_run_code(n) && crate::secrets::lookup(n).is_none() && std::env::var(n).is_err() => Ok(String::new()),
+        None => lookup(n),
+    })
 }
 
 /// Replace allowed variables' values with their `${NAME}` (prompts written by people, e.g. a
@@ -1711,8 +1722,14 @@ fn locate_branches(branches: &mut [Branch], lines: &[&str], from: usize, to: usi
 /// (runFlow `env`); blocks may not contain session or parallel steps.
 fn check_step(step: &Step, defined: &mut HashSet<String>, out: &mut dyn FnMut(String)) {
     for v in step.vars() {
+        // E1: a one-time code is asked for when its step runs, not while the flow is checked.
+        let unasked = || match crate::codes::dir() {
+            Some(_) => Ok(String::new()),
+            None => Err(code_needed(&v)),
+        };
+        let usable = if crate::codes::is_run_code(&v) && crate::secrets::lookup(&v).is_none() && std::env::var(&v).is_err() { unasked() } else { lookup(&v) };
         if !defined.contains(&v)
-            && let Err(e) = lookup(&v)
+            && let Err(e) = usable
         {
             out(e);
         }
@@ -2050,6 +2067,10 @@ mod tests {
         // E1: a one-time code nobody can save is not reported as a missing password.
         let e = substitute("${MOTMAINA_OTP}").expect_err("no code");
         assert!(e.starts_with("one-time code needed:") && !e.contains("setup needed") && e.contains("nothing was typed"), "{e}");
+        // E1: with no dashboard to ask (a terminal or Claude Code's own MCP), the flow says so
+        // before anything runs.
+        let errs = check_flow("- inputText: { into: Code, text: \"${MOTMAINA_OTP}\" }\n", &[]).expect_err("nobody to ask");
+        assert!(errs.iter().any(|e| e.message.starts_with("one-time code needed:")), "{errs:?}");
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }
 
