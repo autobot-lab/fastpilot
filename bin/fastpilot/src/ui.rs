@@ -1749,6 +1749,7 @@ fn static_file(path: &str) -> Option<(&'static str, &'static [u8])> {
         "fix.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/fix.js")),
         "apps.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/apps.js")),
         "map.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/map.js")),
+        "models.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/models.js")),
         "agents.js" => ("text/javascript; charset=utf-8", include_bytes!("../ui/agents.js")),
         "logo.svg" => ("image/svg+xml", include_bytes!("../ui/logo.svg")),
         "fonts/bricolage-grotesque-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/bricolage-grotesque-600.woff2")),
