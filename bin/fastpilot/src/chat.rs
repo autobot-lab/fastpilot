@@ -163,6 +163,9 @@ struct Chat {
     /// D10b: the conversation so far for an agent on another provider (chat-completions messages,
     /// without the system prompt). Dropped with the session (M6).
     history: Vec<Value>,
+    /// Security L28: the provider address and model `history` was sent to. Another one starts with
+    /// an empty conversation, so earlier messages never go to a provider the user picked later.
+    history_for: Option<String>,
     /// QA (notes): the project notes this Claude Code conversation was given (its fastpilot read them
     /// once at its start), so a resumed turn can carry notes the user changed since.
     notes_given: Option<String>,
@@ -1726,7 +1729,14 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, explore_of: O
     let tools = crate::provider::openai_tools(&tools);
     let http = crate::provider::Provider::client()?;
     let mut messages = vec![json!({ "role": "system", "content": system })];
-    messages.extend(chat_of(agent).history.clone());
+    let to = format!("{} {}", p.base_url, p.model);
+    {
+        let mut c = chat_of(agent);
+        if c.history_for.as_deref() != Some(to.as_str()) {
+            c.history.clear();
+        }
+        messages.extend(c.history.clone());
+    }
     messages.push(json!({ "role": "user", "content": text }));
     let (mut input, mut output) = (0, 0);
     for _ in 0..40 {
@@ -1784,7 +1794,11 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, explore_of: O
         let cut = keep.iter().skip(1).position(|m| m["role"] == "user").map(|i| i + 1).unwrap_or(keep.len());
         keep.drain(..cut);
     }
-    chat_of(agent).history = keep;
+    {
+        let mut c = chat_of(agent);
+        c.history = keep;
+        c.history_for = Some(to);
+    }
     crate::agents::record_usage(&chat_agent(agent), input, output);
     Ok(())
 }

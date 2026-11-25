@@ -488,7 +488,7 @@ fn fake_text_model() -> (u16, Requests) {
             let v: Value = serde_json::from_slice(&body).unwrap_or_default();
             log.lock().expect("log").push((first.trim().to_owned(), v.clone()));
             let reply = if first.starts_with("GET /v1/models") {
-                json!({ "object": "list", "data": [{ "id": "chat-model", "object": "model" }] })
+                json!({ "object": "list", "data": [{ "id": "chat-model", "object": "model" }, { "id": "chat-model-2", "object": "model" }] })
             } else {
                 json!({ "choices": [{ "message": { "role": "assistant", "content": format!("Answered by {}.", v["model"].as_str().unwrap_or("?")) } }], "usage": { "prompt_tokens": 3, "completion_tokens": 2 } })
             }
@@ -535,13 +535,24 @@ fn chat_answers_with_the_agents_explore_and_repair_model() {
     assert_eq!(asked, ["chat-model"], "one request, to the agent's Explore and repair model");
     assert!(claude_turns().is_empty(), "Claude Code was not asked");
 
+    // Security L28: another model starts a new conversation: the earlier messages are not sent to it.
+    let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "other:chat-model-2" }));
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "second question" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_agent(&ui, "default");
+    assert_eq!(v["messages"][3]["text"].as_str(), Some("Answered by chat-model-2."), "{v}");
+    let last = seen.lock().expect("seen").last().cloned().expect("request");
+    let said: Vec<String> = last.1["messages"].as_array().expect("messages").iter().filter(|m| m["role"] != "system").map(|m| m["content"].as_str().unwrap_or("").to_owned()).collect();
+    assert_eq!(said, ["second question"], "nothing from the conversation with chat-model");
+
     // Explore and repair on a Claude model: Chat runs Claude Code with that model.
     let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": "claude-opus-5-5" }));
     assert_eq!(st, 200, "{body}");
     let (st, body) = post("/api/chat", json!({ "agent": "default", "message": "hello again" }));
     assert_eq!(st, 200, "{body}");
     let v = wait_agent(&ui, "default");
-    assert!(v["messages"][3]["error"].is_null(), "{v}");
+    assert!(v["messages"][5]["error"].is_null(), "{v}");
     let turns = claude_turns();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let argv: Vec<&str> = turns[0]["argv"].as_array().expect("argv").iter().filter_map(Value::as_str).collect();
@@ -554,7 +565,7 @@ fn chat_answers_with_the_agents_explore_and_repair_model() {
     assert_eq!(st, 200, "{body}");
     let v = wait_agent(&ui, "default");
     assert_eq!(
-        v["messages"][5]["error"].as_str(),
+        v["messages"][7]["error"].as_str(),
         Some("Ollama is not running on this Mac. Chat in My tester uses its Explore and repair model, so it stopped. Nothing was switched for you. Open the Model tab to check it, or say “use the default for explore”."),
         "{v}"
     );
