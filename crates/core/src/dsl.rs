@@ -1479,6 +1479,11 @@ pub(crate) fn holds_app_secret(text: &str) -> bool {
     APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| !v.is_empty() && find_secret(text, v, 0).is_some())
 }
 
+/// Security #237 M1: is `value` exactly a password saved for the app (read in this process)?
+pub(crate) fn is_app_value(value: &str) -> bool {
+    !value.is_empty() && APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| v == value)
+}
+
 /// E5: values shorter than this are short: they match only as a whole value.
 const SHORT: usize = 4;
 
