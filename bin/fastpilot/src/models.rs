@@ -518,9 +518,9 @@ pub fn data_lines(c: &Choice) -> Vec<String> {
         return vec![];
     }
     let place = if c.provider == "ollama" {
-        "Page text and screenshots from this agent’s tests stay on this Mac.".to_owned()
+        "Page text from this agent’s tests stays on this Mac.".to_owned()
     } else {
-        format!("Page text and screenshots from this agent’s tests go to {}.", host(&base_of_id(&c.provider).unwrap_or_default()).unwrap_or_else(|| provider_name(&c.provider)))
+        format!("Page text from this agent’s tests goes to {}.", host(&base_of_id(&c.provider).unwrap_or_default()).unwrap_or_else(|| provider_name(&c.provider)))
     };
     vec![place, NOT_TRIED.into()]
 }
@@ -1206,7 +1206,7 @@ pub async fn add(id: &str, address: Option<&str>, key: Option<String>, model_id:
         return Ok(Added { done: Done { line: format!("Changed {name}{what}{found}"), undo: None }, lines });
     }
     let line = if id == "ollama" {
-        lines.push("Tests that use Ollama keep page text and screenshots on this Mac.".into());
+        lines.push("Tests that use Ollama keep page text on this Mac.".into());
         if models.is_empty() && !list_failed {
             lines = vec!["Download one in Ollama, then run: fastpilot provider refresh ollama".into()];
             "Added Ollama · found on this Mac · no models yet".to_owned()
@@ -1214,7 +1214,7 @@ pub async fn add(id: &str, address: Option<&str>, key: Option<String>, model_id:
             format!("Added Ollama · found on this Mac · {n}")
         }
     } else {
-        lines.push(format!("Tests that use {name} send page text and screenshots to {h}."));
+        lines.push(format!("Tests that use {name} send page text to {h}."));
         if list_failed { format!("Added {name}") } else { format!("Added {name} · {n} found") }
     };
     let undo = crate::undo::record(&format!("Added {name}"), &format!("provider:{id}"), crate::undo::Op::RemoveProvider { id: id.clone() });

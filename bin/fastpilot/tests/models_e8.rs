@@ -178,7 +178,7 @@ fn providers_list_their_models_or_say_why_not() {
     // Other, on this computer: no key asked, the list loaded from the server.
     let base = format!("http://127.0.0.1:{pa}/v1");
     let (ok, out) = h.fp(&["provider", "add", "other", &base]);
-    assert!(ok && out.contains(&format!("✓ Added 127.0.0.1:{pa} · 2 models found")) && out.contains(&format!("Tests that use 127.0.0.1:{pa} send page text and screenshots to 127.0.0.1:{pa}.")) && out.contains("Undo: fastpilot undo "), "{out}");
+    assert!(ok && out.contains(&format!("✓ Added 127.0.0.1:{pa} · 2 models found")) && out.contains(&format!("Tests that use 127.0.0.1:{pa} send page text to 127.0.0.1:{pa}.")) && out.contains("Undo: fastpilot undo "), "{out}");
     assert!(la.lock().expect("log").iter().any(|(l, ..)| l.starts_with("GET /v1/models")), "the list comes from the server");
     let (ok, out) = h.fp(&["provider", "models", "other"]);
     assert!(ok && out.contains("model-a, vendor/model-a2"), "{out}");
@@ -222,9 +222,9 @@ fn two_agents_run_on_their_own_models_and_the_report_says_which() {
     assert!(ok && out.contains("Ollama") && out.contains("this Mac · found automatically · 1 model"), "{out}");
     let (ok, out) = h.fp(&["agent", "model", "Android regression", "--replay", "other:model-a", "--explore", "model-a"]);
     assert!(ok && out.contains("✓ Changed models in Android regression · Replay: Haiku 5.5 → model-a · Explore and repair: Sonnet 5.5 → model-a"), "{out}");
-    assert!(out.contains(&format!("Page text and screenshots from this agent’s tests go to 127.0.0.1:{pa}.")) && out.contains("This model is not tried with fastpilot yet.") && out.contains("It applies from the next run."), "{out}");
+    assert!(out.contains(&format!("Page text from this agent’s tests goes to 127.0.0.1:{pa}.")) && out.contains("This model is not tried with fastpilot yet.") && out.contains("It applies from the next run."), "{out}");
     let (ok, out) = h.fp(&["agent", "model", "Checkout QA", "--explore", "ollama:model-b"]);
-    assert!(ok && out.contains("✓ Changed Explore and repair model in Checkout QA · Sonnet 5.5 → model-b") && out.contains("Page text and screenshots from this agent’s tests stay on this Mac."), "{out}");
+    assert!(ok && out.contains("✓ Changed Explore and repair model in Checkout QA · Sonnet 5.5 → model-b") && out.contains("Page text from this agent’s tests stays on this Mac."), "{out}");
     let (ok, out) = h.fp(&["agent", "model", "Checkout QA", "--explore", "ollama:model-b"]);
     assert!(ok && out.contains("✓ Explore and repair in Checkout QA already uses model-b. Nothing changed."), "{out}");
     let (ok, out) = h.fp(&["agent", "model", "Checkout QA"]);
