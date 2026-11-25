@@ -50,6 +50,12 @@ pub enum Op {
     RestoreAgent { id: String },
     /// v0.7.1 FC5: "Added … as a new agent": the agent goes, and the app when it was added then.
     RemoveNewAgent { agent: String, app: Option<String> },
+    /// v0.7.2 E8: an agent's models before the change.
+    AgentModels { agent: String, replay: Option<crate::models::Choice>, explore: Option<crate::models::Choice>, models_set: bool },
+    /// E8: the default models' settings before the change (`None`: not set).
+    DefaultModels { replay: Option<String>, explore: Option<String> },
+    /// E8: "Added OpenRouter": the provider goes and its key is deleted.
+    RemoveProvider { id: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -241,6 +247,19 @@ pub fn undo(id: Option<&str>, by: Surface) -> Result<String, Fail> {
             }
             undone
         }
+        Op::AgentModels { agent, replay, explore, models_set } => {
+            let mut a = crate::agents::get(agent).ok_or_else(|| fail("failed", format!("{} is not there any more.", q(&c.line))))?;
+            a.replay.clone_from(replay);
+            a.explore.clone_from(explore);
+            a.models_set = *models_set;
+            crate::agents::update(a)?;
+            undone
+        }
+        Op::DefaultModels { replay, explore } => {
+            crate::models::restore_defaults(replay.as_deref(), explore.as_deref())?;
+            undone
+        }
+        Op::RemoveProvider { id } => format!("{undone}{}", crate::models::undo_add(id)?),
         Op::RestoreAgent { id } => restore_agent(id).map_err(|e| if e.code == "expired" { expired(&c) } else { e })?,
         Op::RestoreChat { id } => restore_chat(id).map_err(|e| if e.code == "expired" { expired(&c) } else { e })?,
     };

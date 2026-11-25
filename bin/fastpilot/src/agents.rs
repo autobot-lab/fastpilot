@@ -83,6 +83,14 @@ pub struct Agent {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// E8 (v0.7.2): its Replay and Explore and repair models; `None` = Same as default. Once
+    /// `models_set`, these are what its runs use (the older `provider`/`model` stay for its Chat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<crate::models::Choice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explore: Option<crate::models::Choice>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub models_set: bool,
     /// More blocked words for this agent only (on top of the global list; stricter only).
     #[serde(default)]
     pub blocked: Vec<String>,
@@ -442,6 +450,18 @@ pub fn check(mut a: Agent) -> Res<Agent> {
             }
             a.provider = Some(p.to_owned());
             a.model = Some(m.to_owned());
+        }
+    }
+    // E8: a known provider and a plain model id for each role.
+    for c in [&a.replay, &a.explore].into_iter().flatten() {
+        if c.provider != "claude" && crate::models::kind(&c.provider).is_none() {
+            return Err(format!("Unknown provider \"{}\"", c.provider));
+        }
+        if c.model.trim().is_empty() || c.model.chars().count() > 200 || c.model.contains(char::is_whitespace) || c.model.chars().any(hidden) {
+            return Err(format!("\"{}\" is not a model id", c.model));
+        }
+        if c.provider == "claude" && fastpilot_core::config::invalid("model", &c.model).is_some() {
+            return Err(format!("Claude Code takes a Claude model, not \"{}\"", c.model));
         }
     }
     a.skills.dedup();

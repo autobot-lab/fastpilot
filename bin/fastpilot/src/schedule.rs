@@ -1225,21 +1225,9 @@ pub fn counts(output: &str) -> Option<(u64, u64)> {
 /// blocked words (stricter only), and its id for Live.
 pub fn agent_env(agent: Option<&str>) -> Vec<(String, String)> {
     let Some(a) = agent.and_then(crate::agents::get) else { return vec![] };
+    // E8: the run reads the agent's Replay and Explore models itself (FASTPILOT_AGENT), each at its
+    // own provider; nothing about a provider is passed here.
     let mut env = vec![("FASTPILOT_AGENT".to_owned(), a.id.clone()), ("FASTPILOT_AGENT_NAME".to_owned(), a.name.clone())];
-    match (a.provider.as_deref(), a.model.as_deref()) {
-        (Some(p), Some(m)) if p != "claude" => {
-            env.push(("FASTPILOT_PROVIDER".into(), p.into()));
-            env.push(("FASTPILOT_PROVIDER_MODEL".into(), m.into()));
-            if let Some(base) = fastpilot_core::config::preset_base(p) {
-                env.push(("FASTPILOT_PROVIDER_BASE_URL".into(), base.into()));
-            }
-        }
-        (_, Some(m)) => {
-            env.push(("FASTPILOT_PROVIDER".into(), "claude".into()));
-            env.push(("FASTPILOT_MODEL".into(), m.into()));
-        }
-        _ => {}
-    }
     if let Some(b) = crate::agents::block_actions(&a) {
         env.push(("FASTPILOT_BLOCK_ACTIONS".into(), b));
     }
@@ -1812,8 +1800,11 @@ mod tests {
         let env = agent_env(Some(&a.id));
         let get = |k: &str| env.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
         assert_eq!(get("FASTPILOT_AGENT"), Some("groq-tester"));
-        assert_eq!((get("FASTPILOT_PROVIDER"), get("FASTPILOT_PROVIDER_MODEL")), (Some("groq"), Some("some-model")));
-        assert_eq!(get("FASTPILOT_PROVIDER_BASE_URL"), Some("https://api.groq.com/openai/v1"));
+        // E8: the run takes the agent's models from the agent itself, per role.
+        assert_eq!((get("FASTPILOT_PROVIDER"), get("FASTPILOT_PROVIDER_MODEL"), get("FASTPILOT_MODEL")), (None, None, None));
+        let groq = crate::models::Choice { provider: "groq".into(), model: "some-model".into() };
+        assert_eq!(crate::models::own_choice(&a, crate::models::Role::Replay).as_ref(), Some(&groq));
+        assert_eq!(crate::models::own_choice(&a, crate::models::Role::Explore).as_ref(), Some(&groq));
         assert_eq!(get("FASTPILOT_BLOCK_ACTIONS"), Some("default,Confirm order"));
         assert!(agent_env(None).is_empty() && agent_env(Some("nobody")).is_empty());
         unsafe { std::env::remove_var("FASTPILOT_CONFIG") };

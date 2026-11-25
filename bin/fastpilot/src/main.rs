@@ -20,6 +20,7 @@ mod init;
 mod jira_api;
 mod jira_cli;
 mod map;
+mod models;
 mod ios_setup;
 mod github;
 mod keystore;
@@ -62,7 +63,8 @@ commands:
   app        Add, list, switch or remove the apps fastpilot tests
   schedule   Run tests on a timer: add, pause, resume
   secret     Save test passwords for an app (values are never shown)
-  agent      Skills and Stop for an agent
+  agent      Skills, models and Stop for an agent
+  provider   Connect AI providers: Claude Code, OpenAI, OpenRouter, Groq, Ollama, Other
   undo       Undo the newest change, or see what you can bring back
   schedule watch TESTS --every MIN --for HOURS [--os] [--github owner/repo]
                                      after a release: run TESTS every MIN minutes for HOURS hours, hear only
@@ -321,6 +323,19 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 "secret" => control::secret_cli(&args[1..], |prompt| read_secret(prompt).map_err(|e| e.to_string())),
                 _ => control::agent_cli(&args[1..]),
             };
+            if let Err(f) = &r {
+                control::print_fail(f);
+                std::process::exit(control::exit_code(&r));
+            }
+            Ok(())
+        }
+        // E8 (v0.7.2): the AI providers.
+        Some("provider") => {
+            if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") {
+                println!("{}", control::PROVIDER_USAGE);
+                return Ok(());
+            }
+            let r = control::provider_cli(&args[1..], |prompt| read_secret(prompt).map_err(|e| e.to_string())).await;
             if let Err(f) = &r {
                 control::print_fail(f);
                 std::process::exit(control::exit_code(&r));

@@ -28,12 +28,10 @@ use crate::pool::{Device, Pool};
 pub const DEFAULT_EXPLORE: &str = "claude-sonnet-5-5";
 pub const DEFAULT_REPLAY: &str = "claude-haiku-5-5";
 
+/// The Claude model for Explore (E8: a default at another provider is not a Claude model, so Claude
+/// Code then uses the built-in one; runs use [`crate::models::resolve`]).
 pub fn model_explore() -> String {
-    fastpilot_core::config::var("FASTPILOT_MODEL_EXPLORE").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_EXPLORE.into())
-}
-/// Replaying a path-memory hint (PRD §12.5: the fast model); `model_replay` setting overrides.
-pub fn model_replay() -> String {
-    fastpilot_core::config::var("FASTPILOT_MODEL_REPLAY").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_REPLAY.into())
+    fastpilot_core::config::var("FASTPILOT_MODEL_EXPLORE").ok().filter(|m| m.starts_with("claude-")).unwrap_or_else(|| DEFAULT_EXPLORE.into())
 }
 /// One Claude Code invocation may take this long before it is stopped.
 const CASE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -910,10 +908,10 @@ struct Session {
 }
 
 /// Run Claude Code once on `prompt` with only this test's fastpilot tools.
-async fn claude_session(prompt: &str, model: &str, addr: &str, token: &str) -> Session {
+async fn claude_session(prompt: &str, model: &str, replay: bool, addr: &str, token: &str) -> Session {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "fastpilot".into());
     let config = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp-bridge", addr, token] } } });
-    let effort = if model == model_replay() { "low" } else { "medium" };
+    let effort = if replay { "low" } else { "medium" };
     let child = tokio::process::Command::new(claude_bin())
         .args(["-p", "--output-format", "json", "--model", model, "--effort", effort])
         .args(["--append-system-prompt", SYSTEM])
@@ -973,12 +971,25 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     fp.set_record(opts.record);
     fp.set_reset(opts.reset);
     let hint = fp.hint(&case.id);
-    let mut model = match (&opts.model, &hint) {
-        (Some(m), _) => m.clone(),
-        (None, Some(_)) => model_replay(),
-        (None, None) => model_explore(),
+    // E8: Replay for a test with path memory, else Explore and repair; each role is the agent's own
+    // model or the default, at any provider. `--model` (or `model`) runs everything on one model.
+    let me = crate::models::run_agent();
+    let forced = opts.model.as_deref().map(|m| match crate::models::parse(m, crate::control::Surface::Cli) {
+        Ok(crate::models::Parsed { choice: Some(c), .. }) => c,
+        _ => crate::models::Choice::claude(m),
+    });
+    let pick_role = |r: crate::models::Role| -> (crate::models::Choice, bool) {
+        match &forced {
+            Some(c) => (c.clone(), false),
+            None => {
+                let x = crate::models::resolve(me.as_ref(), r);
+                let own = x.choice.is_some();
+                (x.effective, own)
+            }
+        }
     };
-    let mut models = vec![model.clone()];
+    let mut role = if hint.is_some() && forced.is_none() { crate::models::Role::Replay } else { crate::models::Role::Explore };
+    let mut models: Vec<String> = Vec::new();
     let plan: Vec<String> = case
         .platforms()
         .iter()
@@ -1038,84 +1049,92 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     let mut turns = 0;
     let mut forced_class = None;
     let mut failure = None;
-    // B2: an OpenAI-compatible provider drives the same tools in-process, with the same limits.
-    // A configured provider that cannot be used (key refused for this server, missing model) fails
-    // the test with the reason: never a silent fall back to Claude Code.
-    let configured = crate::provider::Provider::configured();
-    let provider_chosen = configured.is_some();
-    let provider = match configured {
-        Some(Ok(p)) => Some(p),
-        Some(Err(e)) => {
-            failure = Some(format!("provider: {e}"));
-            None
-        }
-        None => None,
-    };
-    if let Some(p) = &provider {
-        models = vec![format!("{}:{}", p.name, p.model)];
-        let a = agent.clone();
-        let task = crate::provider::Task {
-            system: SYSTEM,
-            prompt: &intro,
-            tools: crate::provider::openai_tools(&Agent::tools(case.side.as_ref())),
-            max_turns: opts.max_steps + 5,
-            limit: case_timeout(),
-        };
-        let o = crate::provider::drive(
-            p,
-            task,
-            move |name, args| {
-                let a = a.clone();
-                async move {
-                    let v = a.call(&name, args).await;
-                    let text = v["content"].as_array().map(|c| c.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-                    (text, v["isError"] == true)
+    // B2/E8: Claude Code, or an OpenAI-compatible provider driving the same tools in-process with
+    // the same limits. A provider that cannot be used stops the test with a plain line: never a
+    // silent switch to another provider. The one hand-over is the designed one: a failed replay
+    // goes on with Explore and repair (which may be at another provider).
+    let mut prompt = intro;
+    let mut served: Option<(String, tokio::task::JoinHandle<()>)> = None;
+    loop {
+        let (choice, own) = pick_role(role);
+        models.push(crate::models::label(&choice));
+        if choice.is_claude() {
+            if served.is_none() {
+                match serve(agent.clone(), token.clone()).await {
+                    Ok(s) => served = Some(s),
+                    Err(e) => {
+                        failure = Some(format!("cannot serve the tools to Claude Code: {e}"));
+                        break;
+                    }
                 }
-            },
-            || lock(&agent.verdict).is_some(),
-        )
-        .await;
-        turns = o.turns;
-        usage.input = o.input_tokens;
-        usage.output = o.output_tokens;
-        if lock(&agent.verdict).is_none() {
-            failure = o.failure;
-        }
-    }
-    let serving = if provider_chosen { Err(std::io::Error::other("not used")) } else { serve(agent.clone(), token.clone()).await };
-    match serving {
-        Err(_) if provider_chosen => {}
-        Err(e) => failure = Some(format!("cannot serve the tools to Claude Code: {e}")),
-        Ok((addr, server)) => {
-            let mut prompt = intro;
-            loop {
-                let s = claude_session(&prompt, &model, &addr, &token).await;
-                turns += s.turns;
-                usage.input += s.usage.input;
-                usage.output += s.usage.output;
-                usage.cache_read += s.usage.cache_read;
-                let verdict = lock(&agent.verdict).clone();
-                if verdict.is_none() && s.failure.is_some() {
-                    failure = s.failure;
-                    break;
-                }
-                // The hint no longer applies: hand over to the larger model, sessions as they are.
-                let replay_failed = agent.replay_failed.load(std::sync::atomic::Ordering::SeqCst);
-                if replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && opts.model.is_none() && model == model_replay() {
-                    model = model_explore();
-                    models.push(model.clone());
-                    lock(&agent.transcript).push(format!("replay failed: switching to {model}"));
-                    *lock(&agent.verdict) = None;
-                    prompt = format!(
-                        "{prompt}\n\nThe path-memory replay failed. The sessions are still open where it stopped: take a \
-                         snapshot, explore from there, and call finish."
-                    );
-                    continue;
-                }
+            }
+            let addr = served.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+            let s = claude_session(&prompt, &choice.model, role == crate::models::Role::Replay, &addr, &token).await;
+            turns += s.turns;
+            usage.input += s.usage.input;
+            usage.output += s.usage.output;
+            usage.cache_read += s.usage.cache_read;
+            if lock(&agent.verdict).is_none() && s.failure.is_some() {
+                failure = s.failure;
                 break;
             }
-            server.abort();
+        } else {
+            let hint_cmd = crate::models::choose_other(me.as_ref(), role, own);
+            let p = match crate::provider::Provider::for_choice(&choice, &hint_cmd) {
+                Ok(p) => p,
+                Err(stop) => {
+                    failure = Some(stop);
+                    break;
+                }
+            };
+            let a = agent.clone();
+            let task = crate::provider::Task {
+                system: SYSTEM,
+                prompt: &prompt,
+                tools: crate::provider::openai_tools(&Agent::tools(case.side.as_ref())),
+                max_turns: opts.max_steps + 5,
+                limit: case_timeout(),
+            };
+            let o = crate::provider::drive(
+                &p,
+                task,
+                move |name, args| {
+                    let a = a.clone();
+                    async move {
+                        let v = a.call(&name, args).await;
+                        let text = v["content"].as_array().map(|c| c.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+                        (text, v["isError"] == true)
+                    }
+                },
+                || lock(&agent.verdict).is_some(),
+            )
+            .await;
+            turns += o.turns;
+            usage.input += o.input_tokens;
+            usage.output += o.output_tokens;
+            if lock(&agent.verdict).is_none() && o.failure.is_some() {
+                failure = o.failure;
+                break;
+            }
         }
+        // The hint no longer applies: hand over to Explore and repair, sessions as they are.
+        let verdict = lock(&agent.verdict).clone();
+        let replay_failed = agent.replay_failed.load(std::sync::atomic::Ordering::SeqCst);
+        if role == crate::models::Role::Replay && replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && forced.is_none() {
+            role = crate::models::Role::Explore;
+            let next = crate::models::label(&pick_role(role).0);
+            lock(&agent.transcript).push(format!("replay failed: switching to {next}"));
+            *lock(&agent.verdict) = None;
+            prompt = format!(
+                "{prompt}\n\nThe path-memory replay failed. The sessions are still open where it stopped: take a \
+                 snapshot, explore from there, and call finish."
+            );
+            continue;
+        }
+        break;
+    }
+    if let Some((_, server)) = served {
+        server.abort();
     }
     let mut transcript = std::mem::take(&mut *lock(&agent.transcript));
     let verdict = lock(&agent.verdict).clone();
@@ -1155,7 +1174,16 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
     // It never ran (no browser, the agent could not start): not a failure of the test (FastTest M3).
     let could_not_run = forced_class == Some(Class::Infra) && (turns == 0 || start_failed);
     let (class, report) = match fp.finish_test(&case.id, passed, &notes, passed_on_retry, could_not_run).await {
-        Ok(f) => (forced_class.or(f.class), Some(f.report)),
+        Ok(f) => {
+            // E8: the run's report says which model really ran (one line).
+            if !models.is_empty()
+                && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&f.report)
+            {
+                use std::io::Write;
+                let _ = writeln!(file, "\nModel: {}", models.join(" → "));
+            }
+            (forced_class.or(f.class), Some(f.report))
+        }
         Err(e) => {
             transcript.push(format!("report failed: {e}"));
             (forced_class.or((!passed).then_some(Class::Product)), None)
@@ -1322,11 +1350,19 @@ pub async fn run(target: &Path, opts: Options) -> Result<(), Box<dyn Error + Sen
     };
     // The user's own Claude Code does the thinking (no API key, their login and plan), unless an
     // OpenAI-compatible provider is configured (B2).
-    let provider = crate::provider::Provider::configured().transpose()?;
-    if let Some(p) = &provider {
-        println!("driver: {} ({}) at {}", p.name, p.model, p.base_url);
+    // E8: the models this run uses; Claude Code is needed only when one of them is a Claude model.
+    let me = crate::models::run_agent();
+    let roles: Vec<crate::models::Choice> = match opts.model.as_deref() {
+        Some(m) => vec![match crate::models::parse(m, crate::control::Surface::Cli) {
+            Ok(crate::models::Parsed { choice: Some(c), .. }) => c,
+            _ => crate::models::Choice::claude(m),
+        }],
+        None => [crate::models::Role::Replay, crate::models::Role::Explore].into_iter().map(|r| crate::models::resolve(me.as_ref(), r).effective).collect(),
+    };
+    if roles.iter().any(|c| !c.is_claude()) {
+        println!("models: {}", roles.iter().map(crate::models::label).collect::<Vec<_>>().join(" · "));
     }
-    if provider.is_none()
+    if roles.iter().any(crate::models::Choice::is_claude)
         && let Err(why) = claude_ready().await
     {
         return Err(format!("fastpilot run needs Claude Code. {why} (Or set FASTPILOT_CLAUDE.)").into());

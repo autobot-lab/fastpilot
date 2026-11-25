@@ -60,7 +60,7 @@ fn check_provider(provider: &str) -> Result<(), String> {
 
 /// A key is one printable token: no spaces, quotes or control characters (it is quoted for
 /// `security -i`, and a pasted newline would be part of it).
-fn check_key(key: &str) -> Result<(), String> {
+pub fn check_key(key: &str) -> Result<(), String> {
     if key.is_empty() || key.len() > 4096 || !key.chars().all(|c| c.is_ascii_graphic() && c != '"' && c != '\\' && c != '\'') {
         return Err("the key must be one line of printable characters, without spaces or quotes".into());
     }
@@ -102,6 +102,32 @@ pub fn set(provider: &str, key: &str) -> Result<&'static str, String> {
     store(provider, key)?;
     store(&format!("{provider}.origin"), &tied_to)?;
     Ok(backend().describe())
+}
+
+/// E8: keep `key` for provider account `provider`, tied to `origin` (the provider's own address,
+/// from the provider list): it is sent nowhere else.
+pub fn set_bound(provider: &str, key: &str, origin: &str) -> Result<(), String> {
+    check_provider(provider)?;
+    let key = key.trim();
+    check_key(key)?;
+    store(provider, key)?;
+    store(&format!("{provider}.origin"), origin)
+}
+
+/// E8: the stored key and the origin it was saved for, never the environment's key (that one is
+/// for the older single `provider` setting only: with several providers it would go to all).
+pub fn get_stored(provider: &str) -> Option<(String, Option<String>)> {
+    check_provider(provider).ok()?;
+    let key = load(provider)?;
+    Some((key, load(&format!("{provider}.origin"))))
+}
+
+/// E8: delete a provider's stored key (and its origin); nothing when there is none.
+pub fn forget(provider: &str) {
+    if check_provider(provider).is_ok() {
+        remove(provider);
+        remove(&format!("{provider}.origin"));
+    }
 }
 
 /// The origin (`https://host[:port]`) a stored key was saved for; it is sent nowhere else.
