@@ -147,6 +147,14 @@ if "save it" in low:
     if "every 2 hours" in low:
         test["schedule"] = {"every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}
     text.append("I wrote the test from your request:\n```fastpilot-proposal\n" + json.dumps(test) + "\n```")
+if "login dengan otp" in low:
+    # E1 (user, v0.7.1): the real bot's test for a phone number and an SMS one-time code.
+    test = {"kind": "test", "title": "Login dengan nomor HP Indonesia + OTP", "platform": "web", "target": "examples/demo/login.html",
+            "steps": ["Isi nomor telepon 81200000000", "Klik Lanjut", "Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit", "Klik Lanjut", "Pastikan menu Akun terlihat"]}
+    if "tiap 2 jam" in low:
+        test["title"] = "Login OTP tiap 2 jam"
+        test["schedule"] = {"every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}
+    text.append("Ini tesnya. fastpilot akan menanyakan nilainya saat dibutuhkan.\n```fastpilot-proposal\n" + json.dumps(test) + "\n```")
 if "../" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "../../outside", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "test", "id": "/tmp/fastpilot-evil", "title": "Evil", "target": "x", "steps": ["a"]}) + "\n```")

@@ -97,6 +97,9 @@ async fn a_refused_save_says_why_in_the_card() {
     see(&client, "Not saved:").await;
     let said = eval(&client, "(() => { const r = document.querySelector('.prop-refused'); return r ? r.textContent + '|' + r.getAttribute('role') + '|' + (document.activeElement === r) : 'none'; })()").await;
     assert!(said.contains("already saved") && said.contains("|alert|true"), "{said}");
+    // E1: one message only: the red refusal replaces the note that said the same.
+    let twice = eval(&client, "String(document.querySelector('.prop.test').textContent.split('is already saved').length - 1)").await;
+    assert_eq!(twice.trim_matches('"'), "1", "the same message is shown once");
     assert_eq!(std::fs::read_to_string(project.join("tests/login-demo.md")).expect("kept"), "# Login\n", "the existing test is kept");
 
     // L062-13: Edit after the refused click. The form holds the bot's draft.
