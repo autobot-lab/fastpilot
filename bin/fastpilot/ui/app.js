@@ -1395,6 +1395,30 @@ function testCard(p) {
     head, h("div", { class: "prop-body" }, body, note, detail, refusedNow, foot));
 }
 
+// E9 (e9a): the report of a run. Open, Download (web page or Markdown) and Copy Markdown; made on this
+// Mac, nothing uploaded; the screenshots show the page as it was.
+function reportCard(p) {
+  const q = (kind, dl) => `/api/report?id=${encodeURIComponent(p.saved.report)}&kind=${kind}${dl ? "&download=1" : ""}`;
+  const copy = h("button", { type: "button", class: "btn", onclick: async () => {
+    try {
+      const r = await fetch(q("md"));
+      if (!r.ok) throw new Error((await r.text()).replace(/^fastpilot ui: /, "").trim());
+      await navigator.clipboard.writeText(await r.text());
+      toast("Copied · Paste it into Jira, Confluence or Claude", true);
+    } catch (e) { toast(e.message || "Could not copy the report."); }
+  } }, "Copy Markdown");
+  const dl = h("details", { class: "dl-menu" }, h("summary", { class: "btn" }, "Download"),
+    h("div", { class: "dl-list", role: "menu" },
+      h("a", { role: "menuitem", href: q("html", true), download: "fastpilot-report.html" }, h("b", {}, "Web page (.html)"), h("small", {}, "Opens in any browser, works offline")),
+      h("a", { role: "menuitem", href: q("md", true), download: "fastpilot-report.md" }, h("b", {}, "Markdown (.md)"), h("small", {}, "For Jira, Confluence or Claude.ai"))));
+  return h("section", { class: "grp prop report-card", "aria-label": "Test report", "data-pid": String(p.id) },
+    h("h3", { class: "gh" }, icon("history"), h("b", {}, "Test report")),
+    h("div", { class: "prop-body" },
+      h("p", {}, p.note, ". Made on this Mac; nothing is uploaded."),
+      h("p", { class: "s muted" }, "Screenshots show the page as it was. Look at them before you share."),
+      h("div", { class: "btns" }, h("a", { class: "btn p", href: q("html"), target: "_blank", rel: "noopener" }, "Open"), dl, copy)));
+}
+
 async function chatUndo(id) {
   try {
     const r = await api("/api/chat/undo", { id, agent: chatAgent });
@@ -1713,6 +1737,7 @@ function proposalCard(p) {
   if (p.kind === "jira_issue" || p.kind === "jira_comment") return jiraCard(p);
   if (p.kind === "agent" && p.status !== "refused") return agentCard(p);
   if (p.kind === "setting" && p.setting) return settingCard(p);
+  if (p.kind === "report" && p.status === "applied" && p.saved && p.saved.report) return reportCard(p);
   if (p.kind === "test" && p.status !== "refused") return testCard(p);
   const page = p.kind === "open" ? OPEN[p.open] || null : null;
   const head = h("h3", { class: "gh" }, icon(KIND_ICON[p.kind] || (page && page.icon) || "shield"), p.title,

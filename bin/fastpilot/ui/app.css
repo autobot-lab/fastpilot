@@ -938,3 +938,9 @@ body:not(.on-chat) .body{max-width:956px;width:100%;margin:0 auto;padding-top:8p
 .toast .toast-sub{display:block;opacity:.85;margin-top:2px}
 .toast .btn.sm{margin-left:10px}
 @media (max-width:700px){.mrow{flex-direction:column}.mrow-r{align-items:stretch}.mpick,.mlist,.amenu{width:100%}}
+/* E9: the report card */
+.report-card .dl-menu{position:relative;display:inline-block}
+.report-card .dl-menu summary{list-style:none;cursor:pointer}.report-card .dl-menu summary::-webkit-details-marker{display:none}
+.report-card .dl-list{position:absolute;z-index:10;top:100%;left:0;margin-top:4px;min-width:280px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px;display:flex;flex-direction:column}
+.report-card .dl-list a{display:flex;flex-direction:column;padding:8px 10px;border-radius:8px;color:var(--ink);text-decoration:none}
+.report-card .dl-list a small{color:var(--muted)}.report-card .dl-list a:hover,.report-card .dl-list a:focus{background:var(--soft)}

@@ -1264,7 +1264,9 @@ switches to an app the user's message names; {\"kind\":\"remove_app\"} removes t
 asks to remove or delete it (kept 7 days, Undo; add \"app\" only for another app the user's message names); \
 {\"kind\":\"rename_app\",\"name\":\"Shop (test)\"} renames this chat's own app to the name in the user's message \
 (there is no apps page: to rename, the user says \"rename this app to …\"; to remove, \"remove this app\"); \
-{\"kind\":\"run_tests\",\"test\":\"login\"} runs a saved test now (its \
+{\"kind\":\"report\"} makes a report of the newest run (a web page and a Markdown file, with screenshots) when \
+the user asks for a report or an artifact; fastpilot writes it, you never write files (add \"run\" with a History id for \
+another run); {\"kind\":\"run_tests\",\"test\":\"login\"} runs a saved test now (its \
 file name without .md, or \"all\"); {\"kind\":\"agent_model\",\"replay\":\"haiku\",\"explore\":\"openrouter:deepseek/deepseek-v4-flash\"} \
 changes this agent's models when the user names the model (replay repeats recorded steps, explore makes a new test or \
 repairs one; give one or both, both when the user does not say which; \"default\" follows the default; a model at \
@@ -1858,7 +1860,7 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
         // a tested page or a ticket cannot make one.
         // FC3/FC6: these act at once, so a page or a ticket can never start one (#201 L1); removing a
         // schedule needs the user's own words even when nothing was read.
-        Some(kind @ ("map" | "run_all" | "open" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model"))
+        Some(kind @ ("map" | "run_all" | "open" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model" | "report"))
             if (t.read_app || !t.tickets.is_empty() || kind == "remove_app" || kind == "rename_app" || kind == "agent_model" || (kind == "schedule_change" && v["do"] == "remove")) && !asked_for_action(&t.user, kind, &v) =>
         {
             if attempts.iter().filter(|a| a["kind"] == "action").count() < 3 {
@@ -1870,7 +1872,7 @@ fn cards(body: &str, t: &mut Turn, found: &mut Vec<Proposal>, attempts: &mut Vec
         Some("map") => found.push(map_card().unwrap_or_else(|e| refused("map", "The app cannot be mapped", e))),
         Some("run_all") => found.push(run_all_card(&v).unwrap_or_else(|e| refused("run_all", "This test cannot run on every platform", e))),
         Some("open") => found.push(open_card(&v).unwrap_or_else(|e| refused("open", "This step is not in the dashboard", e))),
-        Some(kind @ ("schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model")) => found.push(control_card(kind, &v, &t.user).unwrap_or_else(|e| refused(kind, "This cannot be done from here", e))),
+        Some(kind @ ("schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model" | "report")) => found.push(control_card(kind, &v, &t.user).unwrap_or_else(|e| refused(kind, "This cannot be done from here", e))),
         Some("limits" | "settings") => {
             // QA #5980 bug 4: a secret name to add is a password the user needs: the C1 card that
             // asks for it in the masked dialog (same rules as any `open` card), not a limit. A name
@@ -2741,6 +2743,8 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
         // E3: renaming needs the user's own words, even when nothing was read.
         "rename_app" => any(&["rename", "call it", "name it", "ganti nama", "ubah nama", "namai", "namanya jadi"]),
         "run_tests" => any(RUN_WORDS),
+        // E9: a report only from the user's own words.
+        "report" => any(&["report", "reports", "artifact", "laporan", "rapor"]),
         // E8: every model the card sets is named in the user's own message ("use Haiku for this
         // agent", "explore with openrouter:deepseek/x", "back to the default").
         "agent_model" => {
@@ -2938,6 +2942,8 @@ fn control_card(kind: &str, v: &Value, user: &str) -> Res<Proposal> {
             }
             Ok(card("Model".into(), json!({ "kind": kind, "replay": replay, "explore": explore })))
         }
+        // E9: a report of the newest run, or of the run the bot names (an id from History).
+        "report" => Ok(card("Test report".into(), json!({ "kind": kind, "run": v["run"].as_str().map(str::trim).filter(|r| !r.is_empty()) }))),
         "run_tests" => {
             let which = v["test"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("all").to_owned();
             if which != "all" {
@@ -2973,7 +2979,7 @@ fn done_line(id: &str, r: Result<crate::control::Done, crate::control::Fail>) ->
 /// FC6: the kinds Chat does at once (with a result line).
 fn acts_at_once(p: &Proposal, _user: &str) -> Option<Option<&'static str>> {
     match p.kind.as_str() {
-        "app" | "map" | "run_all" | "schedule" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model" => Some(None),
+        "app" | "map" | "run_all" | "schedule" | "schedule_change" | "ship_check" | "release_watch" | "switch_app" | "run_tests" | "remove_app" | "rename_app" | "agent_model" | "report" => Some(None),
         // A drafted test keeps its card (Edit, and Save & schedule) until the new card design (FC4).
         _ => None,
     }
@@ -3887,6 +3893,25 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             let me = crate::agents::get_or_default(&agent);
             let r = crate::models::change_agent(&me.id, data["replay"].as_str(), data["explore"].as_str(), crate::control::Surface::Cli).map(|c| c.done);
             return done_line(id, r);
+        }
+        Some("report") => {
+            return match crate::reports::make(data["run"].as_str(), crate::control::Surface::Mcp) {
+                Ok(made) => {
+                    set_card(id, |p| {
+                        p.status = "applied".into();
+                        p.note = Some(made.line.clone());
+                        p.saved = Some(json!({ "report": made.id }));
+                    });
+                    Ok(made.line)
+                }
+                Err(f) => {
+                    set_card(id, |p| {
+                        p.status = "failed".into();
+                        p.note = Some(f.msg.clone());
+                    });
+                    Err(f.msg)
+                }
+            };
         }
         Some("run_tests") => {
             // v0.7.1 M6: the run is this chat's agent's (Live, Stop all).

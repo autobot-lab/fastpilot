@@ -1675,6 +1675,23 @@ impl fastpilot_mcp::Control for McpControl {
             }
             ("history", "undo") => crate::undo::undo(arg(&args, "change_id").as_deref(), s).map(said).map_err(refused)?,
             ("history", other) => Err(refused(unknown_action(other, &["runs", "show", "removed", "undo"]))),
+            // ---- reports (E9)
+            ("reports", "make") => {
+                let made = crate::reports::make(arg(&args, "run_id").as_deref(), s).map_err(refused)?;
+                said_with(made.line, serde_json::json!({ "files": { "html": made.html, "markdown": made.md }, "note": crate::reports::NOTE }))
+            }
+            ("reports", "list") => {
+                let take = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+                let all = crate::reports::list(take);
+                let made: Vec<&(fastpilot_memory::history::Item, bool)> = all.iter().filter(|(_, has)| *has).collect();
+                let items: Vec<serde_json::Value> = all.iter().map(|(r, has)| serde_json::json!({ "run_id": r.id, "test": r.title, "when": when(r.finished_ms), "result": if r.failed > 0 { format!("{} of {} failed", r.failed, r.tests) } else { "passed".into() }, "has_report": has })).collect();
+                let msg = match made.first() {
+                    Some((r, _)) => format!("{}. Newest: {} · {} · {}.", plural(made.len(), "report", "reports"), r.title, when(r.finished_ms), if r.failed > 0 { format!("{} of {} failed", r.failed, r.tests) } else { "passed".into() }),
+                    None => "No reports yet.".into(),
+                };
+                said_with(msg, serde_json::json!({ "items": items }))
+            }
+            ("reports", other) => Err(refused(unknown_action(other, &["make", "list"]))),
             // ---- agents
             ("agents", "list") => {
                 let all = crate::agents::list();

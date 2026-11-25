@@ -18,8 +18,8 @@ Two ways in:
   only after the user saw the exact text and said yes, `jira_create_issue` and `jira_comment` (they file
   a request the user sends from the Integrations page or with the terminal command fastpilot jira approve).
   The dashboard's pages, only when the user asks in their own message: `apps`, `tests`, `schedules`, `map`,
-  `ship_check`, `secrets` (names only, never a value), `memory`, `history`, `agents`. Show their message
-  as written.
+  `ship_check`, `secrets` (names only, never a value), `memory`, `history`, `agents`, `providers`
+  (never a key), `reports` (a report of a run, made on this Mac). Show their message as written.
 - **Shell CLI** (when only a shell is available): `fastpilot open <url|app>`, `fastpilot snapshot -i`,
   `fastpilot click @e3`, `fastpilot fill "Email" a@b.com`, `fastpilot wait "Dashboard"`,
   `fastpilot assert visible "Dashboard"`, `fastpilot flow file.yaml`, `fastpilot close`. Sessions stay

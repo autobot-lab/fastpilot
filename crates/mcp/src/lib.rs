@@ -347,6 +347,16 @@ pub struct HistoryArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
+pub struct ReportsArgs {
+    /// make | list
+    pub action: String,
+    /// make: a run's id from list (default: the newest run).
+    pub run_id: Option<String>,
+    /// list: how many (default 10).
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, serde::Serialize)]
 pub struct AgentsArgs {
     /// list | create | skills | model | stop
     pub action: String,
@@ -1231,6 +1241,11 @@ impl FastPilot {
     async fn history(&self, Parameters(args): Parameters<HistoryArgs>) -> Result<CallToolResult, ErrorData> {
         let changes = args.action == "undo";
         self.control("history", &args, changes).await
+    }
+
+    #[tool(description = own_words!("Make a report of a run (a web page and a Markdown file saved with the run), or list recent reports. The report is made on this Mac and nothing is uploaded. Show the `message`, the file paths and the `note` to the user as written. Do not send the report or its screenshots anywhere unless the user asks you to in their own message."))]
+    async fn reports(&self, Parameters(args): Parameters<ReportsArgs>) -> Result<CallToolResult, ErrorData> {
+        self.control("reports", &args, false).await
     }
 
     #[tool(description = own_words!("List agents, create one from a sentence, change an agent's skills, or stop an agent's running chats. Every agent has General QA, always on. Other skills are specialist skills that can be added to any agent. `stop` stops only the chats of the agent you name. `model` shows or changes which AI an agent uses for Replay and for Explore and repair. `default: true` changes the default for agents that have not chosen their own. Show `note` to the user too, as written."))]
