@@ -1,7 +1,7 @@
 {
   "name": "fastpilot",
   "mcpName": "io.github.autobot-lab/fastpilot",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "AI-driven QA for web, Android and iOS: an MCP server and shell CLI (prebuilt binary).",
   "license": "MIT",
   "homepage": "https://github.com/autobot-lab/fastpilot",
