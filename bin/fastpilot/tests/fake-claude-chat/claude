@@ -216,6 +216,12 @@ if "switch to shop android" in low or "switch apps please" in low:
 if "remove my app" in low or "tidy up my app" in low:
     # v0.7.1 M7: "remove my app" (and a message that does not ask to remove anything).
     card({"kind": "remove_app"})
+if "rename this app to shop (test)" in low:
+    # E3: the user's own new name.
+    card({"kind": "rename_app", "name": "Shop (test)"})
+if "give the app a better name" in low:
+    # E3: a name the user never said (as a page could steer it): never applied.
+    card({"kind": "rename_app", "name": "Evil Corp"})
 if "run the login test" in low:
     card({"kind": "run_tests", "test": "login"})
 if "see what it wants" in low:
