@@ -1709,6 +1709,9 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     };
     wait("the run is My tester's", &|| run_pid().is_some());
     let pid = run_pid().expect("run");
+    // Security #225 L11: what the run started (its claude) ends with it.
+    let group = || -> usize { std::process::Command::new("pgrep").args(["-g", &pid.to_string()]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0) };
+    wait("the run started its claude", &|| group() >= 2);
     // Two running tests of My tester, each about to propose a schedule when it ends.
     let mut chats = Vec::new();
     for _ in 0..2 {
@@ -1727,6 +1730,7 @@ fn stop_all_ends_one_agents_chats_safely_and_only_its_own() {
     // M6: and the run its Chat started (it was not a chat).
     let gone = || !std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success());
     wait("the run My tester's Chat started is stopped", &gone);
+    wait("and nothing it started is left", &|| group() == 0);
     let claims: Vec<Value> = std::fs::read_dir(home.join("claims")).map(|d| d.flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect()).unwrap_or_default();
     let mine: Vec<&Value> = claims.iter().filter(|c| c["agent"].as_str().unwrap_or("default") == "default").filter(|c| { let pid = c["pid"].as_i64().unwrap_or(0); std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success()) }).collect();
     assert!(mine.is_empty(), "no slot or device is held for My tester: {mine:?}");

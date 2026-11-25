@@ -812,6 +812,11 @@ fn same_process(pid: u32, record_ms: u64) -> bool {
     record_ms != 0 && now.saturating_sub(secs * 1000) <= record_ms + 5000
 }
 
+/// `pid` leads its own process group (`ps -o pgid=` is the pid itself).
+fn group_leader(pid: u32) -> bool {
+    std::process::Command::new("ps").args(["-o", "pgid=", "-p", &pid.to_string()]).stderr(std::process::Stdio::null()).output().ok().is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == pid.to_string())
+}
+
 /// `ps` elapsed time (`[[dd-]hh:]mm:ss`) in seconds.
 fn etime_secs(t: &str) -> Option<u64> {
     let (days, rest) = match t.split_once('-') {
@@ -848,7 +853,10 @@ pub fn stop_agent(agent: &str, s: Surface) -> Result<String, Fail> {
         return Ok(format!("Nothing to stop. {} has no running chats.", a.name));
     }
     for pid in &pids {
-        let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        // A run that leads its own group (started in the background or by launchd): the whole group,
+        // so its claude and Chrome end with it (Security #225 L11). Else the process alone.
+        let target = if group_leader(*pid) { format!("-{pid}") } else { pid.to_string() };
+        let _ = std::process::Command::new("kill").args(["-TERM", "--", &target]).status();
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while pids.iter().any(|p| alive(*p)) && std::time::Instant::now() < deadline {
@@ -1211,6 +1219,10 @@ pub fn start_background(args: &[&str], log_name: &str, agent: Option<&crate::age
     if let Some(a) = agent {
         cmd.env("FASTPILOT_AGENT", &a.id).env("FASTPILOT_AGENT_NAME", &a.name);
     }
+    // Security #225 L11: its own process group, so Stop all ends what it started too (its claude,
+    // their MCP bridge, its Chrome), not only the run.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = cmd.spawn().map_err(|e| could_not(e.to_string()))?;
     std::thread::spawn(move || {
         let _ = child.wait();
