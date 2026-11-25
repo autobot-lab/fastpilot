@@ -1397,6 +1397,13 @@ pub fn start_background(args: &[&str], log_name: &str, agent: Option<&crate::age
     if let Some(a) = agent {
         cmd.env("FASTPILOT_AGENT", &a.id).env("FASTPILOT_AGENT_NAME", &a.name);
     }
+    // F1: started by the dashboard: the run is for its app (the one whose tests it found), also
+    // when the dashboard's folder is not that app's; the same key check as Chat's fastpilot.
+    if std::env::var_os("FASTPILOT_DIR").is_none()
+        && let (Some(app), Some(key)) = (apps::current(), crate::ui::APP_KEY.get())
+    {
+        cmd.env("FASTPILOT_APP", &app.id).env("FASTPILOT_APP_KEY", key);
+    }
     // Security #225 L11: its own process group, so Stop all ends what it started too (its claude,
     // their MCP bridge, its Chrome), not only the run.
     #[cfg(unix)]

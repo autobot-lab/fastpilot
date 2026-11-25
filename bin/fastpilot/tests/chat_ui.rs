@@ -1649,6 +1649,102 @@ fn chat_does_schedules_release_checks_apps_and_runs_at_once_with_undo() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// F1 (FastTest, v0.7.2): Chat first. `fastpilot ui` in an empty folder, the app added from Chat,
+/// a saved test with the app's password and one with a one-time code, "run the … test": the run uses
+/// the app's password and asks for the code once. Chat keeps its history in that folder's
+/// `.fastpilot`, which made it look like a project, so the runs had no app ("needs the secret …, and
+/// it is not set", "no app is in use"). A run from a terminal there still gets no app's passwords.
+#[test]
+fn a_chat_first_app_runs_its_tests_with_its_password_and_asks_its_code_once() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-first-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let dash = home.join("empty");
+    std::fs::create_dir_all(&dash).expect("folder");
+    std::fs::create_dir_all(home.join("site")).expect("site");
+    let page = home.join("site/shop.html");
+    std::fs::write(&page, "<!doctype html><title>Shop</title><label>Email <input aria-label=Email></label><label>Password <input id=p type=password aria-label=Password></label><button onclick=\"o.textContent = p.value === 'f1-pass-9' ? 'Budi' : 'wrong password'\">Masuk</button><label>Code <input id=c aria-label=Code></label><p id=o>waiting</p><script>c.addEventListener('input', () => { o.textContent = c.value === '48213' ? 'code accepted' : 'wrong code'; });</script>").expect("page");
+    let target = std::fs::canonicalize(&page).expect("page").to_string_lossy().into_owned();
+    let env = [("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_DIR", ""), ("FASTPILOT_KEYSTORE", "file"), ("FASTPILOT_RETRY_BUDGET", "0")];
+    let ui = start_ui_in(&home, &dash, &env);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str| -> Value {
+        let (st, body) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default()
+    };
+    let fp = |args: &[&str], env: &[(&str, &str)], stdin: &str| -> String {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+        c.args(args).current_dir(&dash).env("HOME", &home).env("FASTPILOT_KEYSTORE", "file").env("FASTPILOT_CLAUDE", FAKE).env("FASTPILOT_RETRY_BUDGET", "0");
+        c.env_remove("FASTPILOT_DIR").env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_VARS").env_remove("DEMO_PASS");
+        c.envs(env.iter().copied()).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = c.spawn().expect("fastpilot");
+        child.stdin.take().expect("stdin").write_all(stdin.as_bytes()).expect("stdin");
+        let out = child.wait_with_output().expect("fastpilot");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    // The run's summary in its log (the dashboard starts it in the background).
+    let ran = |name: &str| -> String {
+        let log = home.join(format!("fastpilot/logs/run-{name}.log"));
+        let until = Instant::now() + Duration::from_secs(120);
+        loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains(" tests: ") {
+                return text;
+            }
+            assert!(Instant::now() < until, "the run did not end: {text}");
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    };
+
+    // 1. The app, from Chat; the dashboard stays in its folder, where Chat keeps its history.
+    let bot = say(&format!("add the app file://{target} please"));
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("app"), Some("applied")), "{bot}");
+    assert!(dash.join(".fastpilot").is_dir(), "Chat's history is kept in the dashboard's folder");
+    // 2. Two saved tests there, and the app's password.
+    std::fs::create_dir_all(dash.join("tests")).expect("tests");
+    let test = |title: &str, steps: &str| format!("# {title}\nplatform: web\ntarget: file://{target}\n{steps}");
+    std::fs::write(dash.join("tests/login.md"), test("Login", "- Sign in with a@b.com / ${DEMO_PASS} and tap \"Masuk\"\n- Check that \"Budi\" is visible\n")).expect("test");
+    std::fs::write(dash.join("tests/code.md"), test("Code", "- Type the code sent to the phone, ${MOTMAINA_OTP}, into Code\n- Check that \"code accepted\" is visible\n")).expect("test");
+    let out = fp(&["secret", "set", "DEMO_PASS"], &[], "f1-pass-9\n");
+    assert!(out.contains("Saved password DEMO_PASS for"), "{out}");
+
+    // 3. "Run the test": the app's password is typed on its own page.
+    let bot = say("run the login test");
+    assert_eq!(bot["proposals"][0]["status"], "applied", "{bot}");
+    let log = ran("login");
+    assert!(log.contains("1 tests: 1 passed") && !log.contains("needs the secret"), "{log}");
+    // The one-time code: asked once in the dashboard, for this app, then typed and passed.
+    let bot = say("run the code test");
+    assert_eq!(bot["proposals"][0]["status"], "applied", "{bot}");
+    let until = Instant::now() + Duration::from_secs(90);
+    let asked = loop {
+        let v: Value = serde_json::from_str(&request(ui.port, "GET", "/api/codes", &ui.cookie, "", false).1).expect("codes");
+        if v["codes"].as_array().is_some_and(|c| !c.is_empty()) {
+            break v["codes"].clone();
+        }
+        let text = std::fs::read_to_string(home.join("fastpilot/logs/run-code.log")).unwrap_or_default();
+        assert!(Instant::now() < until && !text.contains(" tests: "), "no code was asked: {text}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!((asked.as_array().map(Vec::len), asked[0]["name"].as_str(), asked[0]["test"].as_str()), (Some(1), Some("MOTMAINA_OTP"), Some("Code")), "{asked}");
+    let (st, body) = post("/api/codes", json!({ "id": asked[0]["id"], "code": "48213" }));
+    assert_eq!(st, 200, "{body}");
+    let log = ran("code");
+    assert!(log.contains("1 tests: 1 passed") && !log.contains("no app is in use"), "{log}");
+
+    // A run from a terminal in this folder (no dashboard key, or a wrong one): no app's passwords.
+    let setup = "could not run [setup]: Could not run: needs the secret DEMO_PASS, and it is not set.";
+    assert!(fp(&["run", "tests/login.md"], &[], "").contains(setup));
+    let wrong = "0123456789abcdef0123456789abcdef";
+    let app = serde_json::from_str::<Value>(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("apps")["current"].as_str().unwrap_or("").to_owned();
+    assert!(fp(&["run", "tests/login.md"], &[("FASTPILOT_APP", app.as_str()), ("FASTPILOT_APP_KEY", wrong)], "").contains(setup));
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// v0.7.1 FC4: an agent has many chats (OpenBot style). Each message starts or continues its own
 /// chat; chats answer side by side up to `max_parallel` and the next one waits for a free slot; Stop
 /// ends one chat's answer and nothing it was about to make is made; an older chat opens again with

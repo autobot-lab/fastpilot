@@ -313,26 +313,32 @@ pub fn enter(make_current: bool) -> Option<App> {
 }
 
 /// `fastpilot run`: the app whose saved passwords this run may use (the folder's app, else the
-/// current one), without moving out of the folder the test paths are relative to.
+/// current one), without moving out of the folder the test paths are relative to. In a project
+/// folder that is no listed app's: only the app the dashboard named for this run (F1: the folder
+/// `fastpilot ui` was started in keeps Chat's history in `.fastpilot`, so it looks like a project).
 pub fn scope_here() {
     let here = std::env::current_dir().ok();
-    let app = here.as_deref().and_then(app_at).or_else(|| if here.as_deref().is_some_and(is_project) { None } else { current() });
+    let app = here.as_deref().and_then(app_at).or_else(|| if here.as_deref().is_some_and(is_project) { named() } else { current() });
     set_scope(app.as_ref());
 }
 
 /// QA #6103: `FASTPILOT_APP` (set by the dashboard's Chat for its own fastpilot) names the app
 /// whose passwords this process may use. Only a listed app; nothing moves; S-1 still applies.
-/// Security #208 L1: only with `FASTPILOT_APP_KEY` equal to the running dashboard's key file, which
-/// a repo's `.mcp.json` cannot know.
 pub fn scope_named() {
-    let (Ok(id), Ok(key)) = (std::env::var("FASTPILOT_APP"), std::env::var("FASTPILOT_APP_KEY")) else { return };
-    let kept = std::fs::read_to_string(crate::browsers::dir().join("app-key")).unwrap_or_default();
-    if key.len() < 32 || kept.trim() != key {
-        return;
-    }
-    if let Some(app) = get(&id) {
+    if let Some(app) = named() {
         set_scope(Some(&app));
     }
+}
+
+/// The app `FASTPILOT_APP` names. Security #208 L1: only with `FASTPILOT_APP_KEY` equal to the
+/// running dashboard's key file, which a repo's `.mcp.json` cannot know.
+fn named() -> Option<App> {
+    let (Ok(id), Ok(key)) = (std::env::var("FASTPILOT_APP"), std::env::var("FASTPILOT_APP_KEY")) else { return None };
+    let kept = std::fs::read_to_string(crate::browsers::dir().join("app-key")).unwrap_or_default();
+    if key.len() < 32 || kept.trim() != key {
+        return None;
+    }
+    get(&id)
 }
 
 /// The listed app whose folder `dir` is.

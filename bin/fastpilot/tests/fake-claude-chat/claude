@@ -227,6 +227,8 @@ if "report of the last run" in low:
     card({"kind": "report"})
 if "run the login test" in low:
     card({"kind": "run_tests", "test": "login"})
+if "run the code test" in low:
+    card({"kind": "run_tests", "test": "code"})
 if "see what it wants" in low:
     card({"kind": "schedule_change", "schedule": "All tests · every night", "do": "pause"})
     card({"kind": "switch_app", "app": "Shop Android"})
