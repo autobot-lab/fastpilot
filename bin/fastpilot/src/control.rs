@@ -496,7 +496,9 @@ pub fn change_schedule(typed: &str, preset: &str, s: Surface) -> Result<(Schedul
 
 /// Run the app's saved tests now, in the background (one by its name, or "all"). `agent`: the
 /// agent whose Chat asked for it; the run is that agent's, so its Stop all stops it (v0.7.1 M6).
-pub fn run_tests(name: &str, s: Surface, agent: Option<&crate::agents::Agent>) -> Result<Done, Fail> {
+/// F2: `on_end` gets the tests it ran (a file or a folder) and what it printed, once the run has
+/// ended (Chat posts the result).
+pub fn run_tests(name: &str, s: Surface, agent: Option<&crate::agents::Agent>, on_end: Option<OnEnd>) -> Result<Done, Fail> {
     let (title, path) = if name.eq_ignore_ascii_case("all") {
         let (_, dir, _) = saved_tests(s)?;
         ("Run all tests".to_owned(), dir)
@@ -505,7 +507,11 @@ pub fn run_tests(name: &str, s: Surface, agent: Option<&crate::agents::Agent>) -
         (schedule::tests_label(&p.to_string_lossy()), p)
     };
     let stem = if name.eq_ignore_ascii_case("all") { "all".to_owned() } else { path.file_stem().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
-    start_background(&["run", &path.to_string_lossy()], &format!("run-{stem}"), agent)?;
+    let on_end = on_end.map(|f| -> Box<dyn FnOnce(String) + Send> {
+        let path = path.clone();
+        Box::new(move |out| f(&path, out))
+    });
+    start_background_then(&["run", &path.to_string_lossy()], &format!("run-{stem}"), agent, on_end)?;
     Ok(Done::plain(format!("Running {} · {}", q(&title), watch_in_live())))
 }
 
@@ -1386,6 +1392,14 @@ fn unknown_action(action: &str, actions: &[&str]) -> Fail {
 /// `agent`: the run works for this agent (its Live tag and Stop all); `None`: this process's own
 /// (`FASTPILOT_AGENT` of a Chat's fastpilot is passed on as it is).
 pub fn start_background(args: &[&str], log_name: &str, agent: Option<&crate::agents::Agent>) -> Result<String, Fail> {
+    start_background_then(args, log_name, agent, None)
+}
+
+/// What a run started in the background does when it ends.
+pub type OnEnd = Box<dyn FnOnce(&Path, String) + Send>;
+
+/// [`start_background`]; `on_end` gets what this run wrote to its log once it has ended.
+fn start_background_then(args: &[&str], log_name: &str, agent: Option<&crate::agents::Agent>, on_end: Option<Box<dyn FnOnce(String) + Send>>) -> Result<String, Fail> {
     let log = apps::root().join("logs").join(format!("{log_name}.log"));
     let could_not = |e: String| fail("failed", format!("The run could not start: {e}."));
     crate::filestore::ensure_dir(log.parent().unwrap_or(&apps::root()), true).map_err(could_not)?;
@@ -1408,9 +1422,14 @@ pub fn start_background(args: &[&str], log_name: &str, agent: Option<&crate::age
     // their MCP bridge, its Chrome), not only the run.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let from = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
     let mut child = cmd.spawn().map_err(|e| could_not(e.to_string()))?;
     std::thread::spawn(move || {
         let _ = child.wait();
+        if let Some(f) = on_end {
+            let bytes = std::fs::read(&log).unwrap_or_default();
+            f(String::from_utf8_lossy(bytes.get(usize::try_from(from).unwrap_or(0)..).unwrap_or_default()).into_owned());
+        }
     });
     Ok(log_name.to_owned())
 }

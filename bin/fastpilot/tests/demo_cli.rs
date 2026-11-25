@@ -107,6 +107,9 @@ fn http(port: u16, path: &str, cookie: &str) -> String {
 }
 /// `redeem`: trade the link's code here (for the API); else the code is left for a browser.
 fn dashboard(folder: &Path, home: &Path, redeem: bool) -> Dash {
+    dashboard_with(folder, home, redeem, &[])
+}
+fn dashboard_with(folder: &Path, home: &Path, redeem: bool, env: &[(&str, &str)]) -> Dash {
     use std::io::BufRead;
     // Its own port, before `--no-open`: `demo_offers_the_dashboard` stops every "ui --no-open" of
     // this binary when it ends, and may run at the same time.
@@ -119,6 +122,7 @@ fn dashboard(folder: &Path, home: &Path, redeem: bool) -> Dash {
         .env_remove("FASTPILOT_DIR")
         .env("FASTPILOT_KEYSTORE", "file")
         .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        .envs(env.iter().copied())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -224,6 +228,65 @@ async fn demo_opens_the_dashboard_on_the_demo_agent_with_its_tests() {
     assert_eq!(code, Some(0), "{out}");
     let d = dashboard(&folder, &tmp, true);
     check(&d);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn post(d: &Dash, path: &str, body: &Value) -> Value {
+    use std::io::{Read, Write};
+    let body = body.to_string();
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", d.port)).expect("connect");
+    write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nCookie: {}\r\n\r\n{body}", d.port, d.port, body.len(), d.cookie).expect("write");
+    let mut out = String::new();
+    s.read_to_string(&mut out).expect("read");
+    serde_json::from_str(out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")).unwrap_or_else(|e| panic!("{path}: {e}\n{out}"))
+}
+
+/// F2 (FastTest v0.7.2): `fastpilot demo`, the dashboard in the demo folder, Chat "run the demo
+/// tests": "Check the login" could not run (DEMO_PASS was only in `.mcp.json`, which a run started
+/// from Chat does not read) and Chat said only "Running…". Now the demo password is the demo app's
+/// own (used on the demo pages only) and the chat gets the result when the run ends.
+#[test]
+fn the_demo_tests_run_from_chat_all_pass_and_chat_says_so() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let tmp = std::env::temp_dir().join(format!("fp-demo-f2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("tmp");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+        .arg("demo")
+        .current_dir(&tmp)
+        .env("HOME", &tmp)
+        .env_remove("FASTPILOT_CONFIG")
+        .env_remove("FASTPILOT_DIR")
+        .env_remove("FASTPILOT_VARS")
+        .env_remove("DEMO_PASS")
+        .env("FASTPILOT_KEYSTORE", "file")
+        .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+        .output()
+        .expect("demo");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let fake = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-claude-chat/claude");
+    let d = dashboard_with(&tmp.join("fastpilot-demo"), &tmp, true, &[("FASTPILOT_CLAUDE", fake), ("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1"), ("FASTPILOT_ADB_SERVER", "127.0.0.1:1")]);
+    let sent = post(&d, "/api/chat", &json!({ "message": "run the demo tests" }));
+    let chat = sent["chat"].as_str().unwrap_or_default().to_owned();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let answer = loop {
+        let v = api(&d, &format!("/api/chat?chat={chat}"));
+        let msgs = v["messages"].as_array().cloned().unwrap_or_default();
+        if let Some(m) = msgs.iter().skip(2).find(|m| m["role"] == "bot") {
+            assert_eq!(v["running"], false, "{v}");
+            break m["text"].as_str().unwrap_or("").to_owned();
+        }
+        assert!(std::time::Instant::now() < end, "no result in Chat: {v}");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
+    assert!(answer.starts_with("**All 3 demo tests passed.**"), "{answer}");
+    for row in ["| Check the login | Passed |", "| Add a product to the cart | Passed |", "| Fill in the card form \\(stops before Pay\\) | Passed |"] {
+        assert!(answer.contains(row), "{row}: {answer}");
+    }
+    assert!(answer.trim_end().ends_with("To try your own website, paste its address."), "{answer}");
     drop(d);
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -281,7 +281,10 @@ fn register(dir: &Path) {
     if std::env::var_os("FASTPILOT_DIR").is_some() {
         return;
     }
-    match crate::apps::add_demo(dir).and_then(|app| crate::agents::demo_agent(&app.id).map(|a| (app, a))) {
+    // F2 (FastTest v0.7.2): the demo password is the demo app's own, so runs started from Chat or
+    // the dashboard (which read no `.mcp.json`) can sign in; it is used only on the demo's pages.
+    let saved = |app: crate::apps::App| crate::control::set_secret(&app, "DEMO_PASS", DEMO_PASS, "demo").map(|()| app);
+    match crate::apps::add_demo(dir).and_then(saved).and_then(|app| crate::agents::demo_agent(&app.id).map(|a| (app, a))) {
         Ok((app, agent)) => println!("  ✓ {:<42} agent “{}” in the dashboard", format!("app “{}”", app.name), agent.name),
         Err(e) => println!("  ! the demo could not be added to the dashboard: {e}"),
     }

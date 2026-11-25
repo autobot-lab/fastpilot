@@ -170,6 +170,16 @@ elif "${MOTMAINA_OTP}" in prompt:
     call("session", {"action": "start", "id": "w", "target": named})
     r = call("run_flow", {"flow": "- inputText: { into: Code, text: \"${MOTMAINA_OTP}\" }\n- assertVisible: { text: code accepted, timeout: 3000 }\n"})
     call("finish", {"status": "fail" if r.get("isError") else "pass", "notes": entry["calls"][-1]["text"][:300] if r.get("isError") else "code accepted"})
+elif any(l.startswith("target: demo/") for l in prompt.splitlines()):
+    # F2: a test of the `fastpilot demo` folder (run there): its page; the login signs in with the
+    # demo password, the other pages only open.
+    page = next(l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target: demo/"))
+    r = call("session", {"action": "start", "id": "w", "target": page})
+    if not r.get("isError") and page.endswith("login.html"):
+        r = call("run_flow", {"flow": "- inputText: { into: Email, text: a@b.com }\n"
+                                      "- inputText: { into: Password, text: \"${DEMO_PASS}\" }\n"
+                                      "- tapOn: Masuk\n- assertVisible: Budi\n"})
+    call("finish", {"status": "fail" if r.get("isError") else "pass", "notes": "checked " + page})
 else:
     # A test whose target is a full file address (a run outside the repo) opens that page.
     named = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target: file://")), "")

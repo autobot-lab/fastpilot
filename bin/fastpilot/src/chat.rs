@@ -177,6 +177,8 @@ struct Chat {
     removed: bool,
     /// FC5: the phone the person asked about last ("look again" asks again).
     phone_last: Option<&'static str>,
+    /// F2: runs this chat started that have not ended yet (their result is posted here).
+    runs: usize,
 }
 
 impl Chat {
@@ -265,7 +267,7 @@ pub fn state(agent: &str, chat: Option<&str>) -> Value {
 
 fn state_of(key: &str) -> Value {
     let c = chat_of(key);
-    let (past, mut msgs, busy, agent) = (c.past.clone(), c.msgs.clone(), c.busy, c.agent_id());
+    let (past, mut msgs, busy, agent, running) = (c.past.clone(), c.msgs.clone(), c.busy, c.agent_id(), c.runs > 0);
     drop(c);
     // FC6: an older result line whose thing changed later has no Undo.
     let ids: Vec<String> = msgs.iter().flat_map(|m| &m.proposals).filter_map(|p| p.undo_id.clone()).collect();
@@ -282,7 +284,7 @@ fn state_of(key: &str) -> Value {
     // device another chat uses waits for that device.
     let ahead = if busy { slot_wait(key) } else { None };
     let device = if busy { device_wait(key) } else { None };
-    json!({ "agent": agent, "chat": key, "title": title, "messages": all, "busy": busy, "waiting": ahead.map(|n| json!({ "ahead": n })), "device_wait": device.as_ref().map(|d| &d.0), "device_ahead": device.map(|d| d.1), "signin": busy_signin(&all) })
+    json!({ "agent": agent, "chat": key, "title": title, "messages": all, "busy": busy, "running": running, "waiting": ahead.map(|n| json!({ "ahead": n })), "device_wait": device.as_ref().map(|d| &d.0), "device_ahead": device.map(|d| d.1), "signin": busy_signin(&all) })
 }
 
 /// The chat that holds card `id`, as the page shows it (after a click on that card).
@@ -934,7 +936,13 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
         CHATS.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
         return;
     }
-    // D7: kept in History after every answer, so it outlives this page and this process.
+    drop(c);
+    keep(key);
+}
+
+/// D7: chat `key` kept in History, so it outlives this page and this process.
+fn keep(key: &str) {
+    let c = chat_of(key);
     let mut all = c.past.clone();
     all.extend(c.msgs.iter().filter_map(|m| serde_json::to_value(m).ok()));
     let session = c.session.clone();
@@ -943,6 +951,77 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
         tracing::warn!(error = %e, "the conversation is not saved in History");
     }
     fastpilot_core::config::keep_out_of_git();
+}
+
+/// F2 (FastTest v0.7.2): a run this chat started has ended: its result as a message of the chat
+/// ("All 3 demo tests passed." and a table of the tests), not only "Running…".
+fn post_run_result(key: &str, tests: &std::path::Path, out: &str, demo: bool) {
+    // F4 (agreed with Bug Fixer): one test stopped because nobody typed its one-time code: its own
+    // line, in red, nothing else ("Stopped at step N: no code was typed in 3 minutes. …").
+    let not_typed = out.lines().filter(|l| ["✓ ", "~ ", "✗ ", "q "].iter().any(|m| l.starts_with(m))).collect::<Vec<_>>();
+    let stopped = match not_typed.as_slice() {
+        [one] => one.split_once(" could not run [setup]: ").map(|(_, w)| w.trim()).filter(|w| w.starts_with("Stopped at step ")).map(str::to_owned),
+        _ => None,
+    };
+    let (text, error) = match stopped {
+        Some(line) => (String::new(), Some(line)),
+        None => (run_answer(tests, out, demo), None),
+    };
+    // Security L23: a chat removed or deleted while its run went on stays gone.
+    {
+        let mut map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(c) = map.get_mut(key) else { return };
+        c.runs = c.runs.saturating_sub(1);
+        if c.removed {
+            return;
+        }
+        c.next += 1;
+        let id = c.next;
+        c.msgs.push(Msg { id, role: "bot", text, tools: vec![], proposals: vec![], error, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, stopped: false, outside: false, needs: vec![] });
+    }
+    keep(key);
+}
+
+/// The result of a run as Markdown: one sentence and a row per test (its title, and why it failed
+/// or could not run). Text from the run (a reason) is escaped: it can come from a tested page.
+fn run_answer(tests: &std::path::Path, out: &str, demo: bool) -> String {
+    use crate::reports::md_escape;
+    let titles: Vec<(String, String)> = crate::run::load(tests).unwrap_or_default().into_iter().map(|c| (c.id, c.title)).collect();
+    let title = |id: &str| titles.iter().find(|(i, _)| i == id).map_or(id, |(_, t)| t.as_str()).to_owned();
+    let mut rows = Vec::new();
+    for l in out.lines() {
+        let Some((mark, rest)) = l.split_once(' ').filter(|(m, _)| ["✓", "~", "✗", "q"].contains(m)) else { continue };
+        let id = rest.split_whitespace().next().unwrap_or("");
+        let why = rest.split_once(": ").map(|(_, w)| w.trim()).filter(|w| !w.is_empty());
+        let result = match (mark, why) {
+            ("✓" | "~", _) => "Passed".to_owned(),
+            ("✗", Some(w)) if rest.contains(" could not run [setup]") => format!("Could not run: {w}"),
+            ("q", w) => format!("Failed, set aside{}", w.map(|w| format!(": {w}")).unwrap_or_default()),
+            (_, Some(w)) => format!("Failed: {w}"),
+            (_, None) => "Failed".to_owned(),
+        };
+        rows.push((title(id), result));
+    }
+    if rows.is_empty() {
+        return format!("**The run ended without a result.** {}", md_escape(&crate::schedule::summarize(out, false)));
+    }
+    let passed = rows.iter().filter(|(_, r)| r == "Passed").count();
+    let n = rows.len();
+    let head = if passed == n {
+        let what = if demo { "demo tests" } else if n == 1 { "test" } else { "tests" };
+        if n == 1 && !demo { "**The test passed.**".to_owned() } else { format!("**All {n} {what} passed.**{}", if demo { " This is what a result looks like for your own app too." } else { "" }) }
+    } else {
+        let line = crate::schedule::summarize(out, false);
+        format!("**{}.**", md_escape(line.split(" — ").next().unwrap_or(&line)))
+    };
+    let mut text = format!("{head}\n\n| Test | Result |\n|---|---|\n");
+    for (t, r) in &rows {
+        text.push_str(&format!("| {} | {} |\n", md_escape(t), md_escape(r)));
+    }
+    if demo && passed == n {
+        text.push_str("\nTo try your own website, paste its address.");
+    }
+    text
 }
 
 /// D7: History deletes conversation `id`. When it is open in Chat it goes from Chat too; while
@@ -3933,8 +4012,17 @@ pub fn decide(id: &str, apply: bool, mode: Option<&str>, edit: Option<&Value>, c
             };
         }
         Some("run_tests") => {
-            // v0.7.1 M6: the run is this chat's agent's (Live, Stop all).
-            let r = crate::control::run_tests(data["test"].as_str().unwrap_or("all"), crate::control::Surface::Cli, Some(&crate::agents::get_or_default(&agent)));
+            // v0.7.1 M6: the run is this chat's agent's (Live, Stop all). F2: its result is posted in
+            // this chat when it ends.
+            let demo = crate::apps::current().is_some_and(|a| a.demo);
+            let chat = key.clone();
+            let on_end: crate::control::OnEnd = Box::new(move |tests, out| post_run_result(&chat, tests, &out, demo));
+            chat_of(&key).runs += 1;
+            let r = crate::control::run_tests(data["test"].as_str().unwrap_or("all"), crate::control::Surface::Cli, Some(&crate::agents::get_or_default(&agent)), Some(on_end));
+            if r.is_err() {
+                let mut c = chat_of(&key);
+                c.runs = c.runs.saturating_sub(1);
+            }
             return done_line(id, r);
         }
         Some("ship_check") => {
@@ -4193,6 +4281,26 @@ mod tests {
 
     /// E4: a bot-chosen password name becomes the test account's, the same name everywhere.
     /// F3: only a message that asks to undo and nothing else is an undo request.
+    /// F4 + Security L23: a run that stopped because no code was typed posts that one red line;
+    /// a chat that was deleted while its run went on does not come back.
+    #[test]
+    fn a_run_result_is_one_line_for_a_missed_code_and_never_revives_a_deleted_chat() {
+        let key = "f2-run-result-test";
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).insert(key.into(), Chat { runs: 1, ..Default::default() });
+        let line = "Stopped at step 4: no code was typed in 3 minutes. Say “run it again” when you have the code.";
+        post_run_result(key, std::path::Path::new("/nonexistent"), &format!("✗ login-otp could not run [setup]: {line}\n\n1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures, in 180.0s\n"), false);
+        let (msg, runs) = {
+            let map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+            let c = map.get(key).expect("chat");
+            (c.msgs.last().map(|m| (m.text.clone(), m.error.clone())), c.runs)
+        };
+        assert_eq!(msg, Some((String::new(), Some(line.to_owned()))));
+        assert_eq!(runs, 0);
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
+        post_run_result(key, std::path::Path::new("/nonexistent"), "✓ a 1.0s, 1 turns, haiku: ok\n", false);
+        assert!(!CHATS.lock().unwrap_or_else(|p| p.into_inner()).contains_key(key), "a deleted chat stays deleted");
+    }
+
     #[test]
     fn undo_that_is_only_a_bare_undo_request() {
         for yes in ["undo that", "Undo", "undo it please", "undo the last change", "batalkan itu", "tolong urungkan yang tadi"] {

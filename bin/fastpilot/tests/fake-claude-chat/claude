@@ -231,6 +231,9 @@ if "give the app a better name" in low:
 if "report of the last run" in low:
     # E9: the user asks for a report; fastpilot makes the files itself.
     card({"kind": "report"})
+if "run the demo tests" in low:
+    # F2: the demo's first run, as the demo's welcome suggests.
+    card({"kind": "run_tests", "test": "all"})
 if "run the login test" in low:
     card({"kind": "run_tests", "test": "login"})
 if "run the code test" in low:

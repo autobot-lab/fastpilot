@@ -1128,7 +1128,8 @@ async function loadChat() {
   chatData = data;
   if (chatShown()) renderChat();
   clearTimeout(chatTimer);
-  if (chatData.busy && chatShown()) chatTimer = setTimeout(loadChat, 800);
+  // F2: a run this chat started posts its result here when it ends.
+  if ((chatData.busy || chatData.running) && chatShown()) chatTimer = setTimeout(loadChat, chatData.busy ? 800 : 2000);
   // The sidebar's spinner and title follow the chat.
   if (window.Shell && (was !== !!chatData.busy)) Shell.refresh();
 }

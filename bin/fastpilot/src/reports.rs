@@ -140,7 +140,7 @@ fn html_escape(s: &str) -> String {
 
 /// Page text as Markdown text: no link, image, HTML tag or table cell can come from it
 /// (Security L18).
-fn md_escape(s: &str) -> String {
+pub(crate) fn md_escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
