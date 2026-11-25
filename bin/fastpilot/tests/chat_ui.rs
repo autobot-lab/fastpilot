@@ -954,6 +954,55 @@ fn chat_knows_the_projects_secrets_and_asks_for_a_missing_password_in_place() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// E4 (user, v0.7.1): after reading the app, the bot's test typed `${ACP_PASSWORD}` while the
+/// password card asked for TEST_USER and TEST_PASSWORD (the page-turn rule), so the saved test kept
+/// an unknown name. Now the test is written with the test account's name before it is saved, the
+/// card asks for that one name, and the bot's words say it.
+#[test]
+fn the_password_card_and_the_test_use_the_same_name() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-e4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::create_dir_all(&project).expect("project");
+    let ui = start_ui_in(&home, &project, &[]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+
+    let (st, _) = post("/api/chat", json!({ "message": "tes login staging acp lalu simpan tesnya" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let bot = &v["messages"][1];
+    assert!(bot["tools"].to_string().contains("session · start"), "the bot read the app this turn: {bot}");
+    let cards = bot["proposals"].as_array().cloned().unwrap_or_default();
+    let test = cards.iter().find(|p| p["kind"] == "test").cloned().expect("test card");
+    let pw: Vec<&Value> = cards.iter().filter(|p| p["kind"] == "open" && p["open"] == "secrets").collect();
+    assert!(test["steps"].to_string().contains("Isi password ${TEST_PASSWORD}") && !test["draft"].to_string().contains("ACP_PASSWORD"), "{test}");
+    assert!(test["note"].is_null(), "{test}");
+    assert!(pw.len() == 1 && pw[0]["names"] == json!(["TEST_PASSWORD"]), "one card, the test's own name: {pw:?}");
+    let text = bot["text"].as_str().unwrap_or("");
+    assert!(text.contains("TEST_PASSWORD") && !text.contains("ACP_PASSWORD"), "{text}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": test["id"], "apply": true, "mode": "test" }));
+    assert_eq!(st, 200, "{body}");
+    let file = std::fs::read_dir(project.join("tests")).expect("tests").flatten().next().expect("saved");
+    let saved = std::fs::read_to_string(file.path()).expect("file");
+    assert!(saved.contains("${TEST_PASSWORD}") && !saved.contains("ACP_PASSWORD"), "{saved}");
+
+    // A name the user gave in their own message is kept: the card asks for that same name.
+    let (st, _) = post("/api/chat", json!({ "message": "tes login staging acp pakai ACP_PASSWORD, simpan sebagai tes kedua" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let cards = v["messages"][3]["proposals"].as_array().cloned().unwrap_or_default();
+    let test = cards.iter().find(|p| p["kind"] == "test").cloned().expect("test card");
+    let pw: Vec<&Value> = cards.iter().filter(|p| p["kind"] == "open" && p["open"] == "secrets").collect();
+    assert!(test["steps"].to_string().contains("${ACP_PASSWORD}"), "{test}");
+    assert!(pw.len() == 1 && pw[0]["names"] == json!(["ACP_PASSWORD"]), "{pw:?}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// E1 (user, v0.7.1): the bot's test for an SMS one-time code (`Isi kode OTP ${MOTMAINA_OTP} di
 /// kolom 5 digit`) was refused: "${MOTMAINA_OTP} … is not a saved secret … add the secret in
 /// Settings › Secrets", twice (orange, then red "Not saved"). A one-time code is got when the test

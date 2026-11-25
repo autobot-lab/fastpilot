@@ -734,6 +734,53 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
             proposals.clear();
             attempts.clear();
         }
+        // E4: one name per password. In a turn that read a page or a ticket, a password name the bot
+        // chose for a drafted test (not the test account, not saved for this app, not in the user's
+        // own words: Security #208 M1) becomes the test account's, in the test itself before it is
+        // saved, on the bot's own password card and in its words: the card asks for the name the
+        // test uses.
+        if (t.read_app || !t.tickets.is_empty()) && !asks_password(&t.user) {
+            let gated = |n: &str| !(n == "TEST_USER" || n == "TEST_PASSWORD" || saved.iter().any(|s| s == n) || t.user.contains(n));
+            let mut renamed: Vec<(String, &'static str)> = Vec::new();
+            for p in proposals.iter_mut().filter(|p| p.kind == "test" && p.status == "pending") {
+                let Ok(draft) = test_of(&p.data) else { continue };
+                let map: Vec<(String, &'static str)> = missing_passwords(&draft).into_iter().filter(|n| gated(n)).map(|n| (n.clone(), account_name(&n))).collect();
+                if map.is_empty() {
+                    continue;
+                }
+                let mut data = p.data.clone();
+                let rename = |v: &mut Value| {
+                    if let Some(x) = v.as_str() {
+                        *v = json!(rename_vars(x, &map));
+                    }
+                };
+                rename(&mut data["title"]);
+                rename(&mut data["target"]);
+                data["steps"].as_array_mut().into_iter().flatten().for_each(rename);
+                data["targets"].as_object_mut().into_iter().flat_map(|o| o.values_mut()).for_each(rename);
+                if let Ok(q) = test_card(p.id.clone(), &data) {
+                    *p = q;
+                    renamed.extend(map);
+                }
+            }
+            if !renamed.is_empty() {
+                for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
+                    let mut names: Vec<String> = Vec::new();
+                    for n in &p.names {
+                        let n = renamed.iter().find(|(from, _)| from == n).map_or(n.as_str(), |(_, to)| to).to_owned();
+                        if !names.contains(&n) {
+                            names.push(n);
+                        }
+                    }
+                    if let Ok(q) = open_card(&json!({ "kind": "open", "page": "secrets", "names": names })) {
+                        *p = q;
+                    }
+                }
+                for (from, to) in &renamed {
+                    m.text = rename_word(&m.text, from, to);
+                }
+            }
+        }
         // E1: a drafted test that types a password with no value here gets the password card in this
         // answer (never "add it in Settings"), merged with the bot's own; the gates below apply.
         let need: Vec<String> = proposals.iter().filter(|p| p.kind == "test" && p.status == "pending").filter_map(|p| test_of(&p.data).ok()).flat_map(|t| missing_passwords(&t)).collect();
@@ -3517,6 +3564,33 @@ fn open_codes(t: &TestDraft) -> Vec<String> {
     secret_names(t).into_iter().filter(|(n, code)| *code && !known.iter().any(|(k, has)| k == n && *has)).map(|(n, _)| n).collect()
 }
 
+/// E4: the test account name a password name of a test becomes: `TEST_USER` for a user name,
+/// email, login or phone, else `TEST_PASSWORD`.
+fn account_name(name: &str) -> &'static str {
+    let user = name.split('_').any(|p| ["USER", "USERNAME", "EMAIL", "LOGIN", "PHONE", "ACCOUNT"].contains(&p));
+    if user && !name.contains("PASS") { "TEST_USER" } else { "TEST_PASSWORD" }
+}
+
+/// E4: `${FROM}` written as `${TO}`, for each pair.
+fn rename_vars(text: &str, map: &[(String, &'static str)]) -> String {
+    map.iter().fold(text.to_owned(), |t, (from, to)| t.replace(&format!("${{{from}}}"), &format!("${{{to}}}")))
+}
+
+/// E4: the name `from` written as `to` where it stands as a whole name (bare or as `${NAME}`).
+fn rename_word(text: &str, from: &str, to: &str) -> String {
+    let name = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(i) = text[at..].find(from) {
+        let (start, end) = (at + i, at + i + from.len());
+        out.push_str(&text[at..start]);
+        out.push_str(if name(text[..start].chars().next_back()) || name(text[end..].chars().next()) { from } else { to });
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 /// E1: the one line a test with a one-time code gets when it runs on a schedule (no blocking).
 const CODE_ON_SCHEDULE: &str = "Scheduled runs need a code fastpilot can read (test inbox or SMS on the emulator) or a fixed test code.";
 
@@ -3997,6 +4071,18 @@ pub fn run_saved(id: &str) -> Res<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E4: a bot-chosen password name becomes the test account's, the same name everywhere.
+    #[test]
+    fn a_password_name_maps_to_one_test_account_name() {
+        assert_eq!(account_name("ACP_PASSWORD"), "TEST_PASSWORD");
+        assert_eq!(account_name("ACP_EMAIL"), "TEST_USER");
+        assert_eq!(account_name("SHOP_USERNAME"), "TEST_USER");
+        assert_eq!(account_name("USER_PASS"), "TEST_PASSWORD");
+        let map = vec![("ACP_PASSWORD".to_owned(), "TEST_PASSWORD")];
+        assert_eq!(rename_vars("Isi password ${ACP_PASSWORD} lalu ${ACP_PASSWORD_2}", &map), "Isi password ${TEST_PASSWORD} lalu ${ACP_PASSWORD_2}");
+        assert_eq!(rename_word("Save ACP_PASSWORD (not ACP_PASSWORD_OLD) below.", "ACP_PASSWORD", "TEST_PASSWORD"), "Save TEST_PASSWORD (not ACP_PASSWORD_OLD) below.");
+    }
 
     /// E1: the bot writes a one-time code as a run-time value and never promises what a card refuses.
     #[test]

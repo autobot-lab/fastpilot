@@ -158,6 +158,12 @@ if "save it" in low:
     if "every 2 hours" in low:
         test["schedule"] = {"every": "hours", "hours": 2, "from": "08:00", "to": "20:00", "notify": {"os": True}}
     text.append("I wrote the test from your request:\n```fastpilot-proposal\n" + json.dumps(test) + "\n```")
+if "staging acp" in low:
+    # E4 (user, v0.7.1): the bot named the password itself after reading the app, and made its own card.
+    text.append("Tesnya butuh password ACP_PASSWORD. Simpan dulu lewat kartu di bawah, nanti saya jalankan lagi.\n```fastpilot-proposal\n" + json.dumps({
+        "kind": "test", "title": "Login ACP staging", "platform": "web", "target": "examples/demo/login.html",
+        "steps": ["Isi email qa@acp.example", "Isi password ${ACP_PASSWORD}", "Klik Masuk", "Pastikan dashboard terlihat"]}) + "\n```\n```fastpilot-proposal\n"
+        + json.dumps({"kind": "open", "page": "secrets", "names": ["ACP_PASSWORD"]}) + "\n```")
 if "login dengan otp" in low:
     # E1 (user, v0.7.1): the real bot's test for a phone number and an SMS one-time code.
     test = {"kind": "test", "title": "Login dengan nomor HP Indonesia + OTP", "platform": "web", "target": "examples/demo/login.html",
