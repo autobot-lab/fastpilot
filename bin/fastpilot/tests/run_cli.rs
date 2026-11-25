@@ -634,6 +634,99 @@ fn a_run_leaves_its_outcome_for_the_doctor() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// F4b (FastTest, v0.7.2 round 2): the same, on a test with path memory, so the run starts with
+/// Replay and a failed replay hands over to Explore. Nobody types the code during the replay: the
+/// test stops there, with the one line. Before, the hand-over to Explore started a second Claude
+/// Code session that asked for the code again and waited a second time (392.8 s with 3 minutes).
+#[test]
+fn a_code_nobody_types_during_a_replay_is_asked_once_and_explore_does_not_start() {
+    if !python() {
+        return eprintln!("skipping: no python3");
+    }
+    let dir = std::env::temp_dir().join(format!("fastpilot-run-code-replay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (home, here, codes, log) = (dir.join("home"), dir.join("work"), dir.join("codes"), dir.join("claude"));
+    for d in [&home, &here.join("tests"), &log] {
+        std::fs::create_dir_all(d).expect("dir");
+    }
+    let page = dir.join("code.html");
+    std::fs::write(&page, "<!doctype html><title>Shop</title><label>Code <input id=c aria-label=Code></label><p id=o>waiting</p><script>c.addEventListener('input', () => { o.textContent = c.value === '48213' ? 'code accepted' : 'wrong code'; });</script>").expect("page");
+    let target = format!("file://{}", std::fs::canonicalize(&page).expect("page").display());
+    std::fs::write(here.join("tests/code.md"), format!("# Login with SMS code\nid: sms-login\nplatform: web\ntarget: {target}\n- Open the login page\n- Type the code sent to the phone, ${{MOTMAINA_OTP}}, into Code\n- Check that \"code accepted\" is visible\n")).expect("test");
+    // Started from the dashboard's Chat (#253): the app named with the dashboard's key, so the run
+    // keeps its app after its first pass leaves `.fastpilot` (path memory) in this folder.
+    let key = "0123456789abcdef0123456789abcdef";
+    std::fs::create_dir_all(home.join(".fastpilot/ui")).expect("ui");
+    std::fs::write(home.join(".fastpilot/ui/app-key"), key).expect("key");
+    let app = std::cell::RefCell::new(String::new());
+    let fp = |args: &[&str], wait_ms: &str| -> (bool, String) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"))
+            .args(args)
+            .current_dir(&here)
+            .env("HOME", &home)
+            .env("FASTPILOT_APP", app.borrow().as_str())
+            .env("FASTPILOT_APP_KEY", key)
+            .env("FASTPILOT_KEYSTORE", "file")
+            .env("FASTPILOT_CLAUDE", FAKE)
+            .env("FAKE_CLAUDE_LOG", &log)
+            .env("FASTPILOT_CODE_DIR", &codes)
+            .env("FASTPILOT_CODE_WAIT_MS", wait_ms)
+            .env("FASTPILOT_RETRY_BUDGET", "3")
+            .env("FASTPILOT_ADB_SERVER", "127.0.0.1:1")
+            .env_remove("FASTPILOT_DIR")
+            .env_remove("FASTPILOT_CONFIG")
+            .env_remove("FASTPILOT_VARS")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("ANTHROPIC_AUTH_TOKEN")
+            .output()
+            .expect("fastpilot");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = fp(&["app", "add", &target], "600");
+    assert!(ok, "{out}");
+    let apps: Value = serde_json::from_str(&std::fs::read_to_string(home.join("fastpilot/apps.json")).expect("apps")).expect("apps");
+    *app.borrow_mut() = apps["apps"][0]["id"].as_str().expect("app id").to_owned();
+    // 1. The person types the code (as the dashboard's field does): the test passes and its path is
+    // remembered, so the next run replays it.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let typist = {
+        let (codes, stop) = (codes.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                for e in std::fs::read_dir(&codes).into_iter().flatten().flatten() {
+                    let p = e.path();
+                    if p.extension().is_some_and(|x| x == "ask") && !p.with_extension("code").exists() {
+                        let _ = std::fs::write(p.with_extension("code"), "48213");
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    };
+    let (ok, out) = fp(&["run", "tests/code.md"], "20000");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    typist.join().expect("typist");
+    assert!(ok && out.contains("1 tests: 1 passed"), "{out}");
+    for e in std::fs::read_dir(&log).expect("log").flatten() {
+        std::fs::remove_file(e.path()).expect("log");
+    }
+
+    // 2. Nobody types it: the replay waits once, and the test stops there.
+    let (ok, out) = fp(&["run", "tests/code.md"], "600");
+    assert!(!ok, "{out}");
+    let line = "Stopped at step 2: no code was typed in 3 minutes. Say “run it again” when you have the code.";
+    assert!(out.contains(&format!("✗ sms-login could not run [setup]: {line}")), "{out}");
+    assert!(!out.contains("[agent]") && !out.contains("attempts"), "{out}");
+    let runs = calls(&log);
+    // It was the replay (the remembered path was given) that waited, and no Explore session followed.
+    assert!(runs.first().is_some_and(|c| arg(c, "--effort") == Some("low") && c["prompt"].as_str().is_some_and(|p| !p.contains("No path memory for this test yet"))), "not a replay: {runs:?}");
+    assert_eq!(runs.len(), 1, "the code was asked again after the replay: {out}");
+    let missed = runs.iter().flat_map(|c| c["calls"].as_array().cloned().unwrap_or_default()).filter(|c| c["text"].as_str().is_some_and(|t| t.contains("Nobody typed the one-time code in time"))).count();
+    assert_eq!(missed, 1, "{runs:?}");
+    assert_eq!(std::fs::read_dir(&codes).map(|d| d.count()).unwrap_or(0), 0, "nothing left to answer");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// F4 (FastTest, v0.7.2; design e1c): a run started from the dashboard asks for a one-time code and
 /// nobody types it. The test stops at once with one line, "Stopped at step N: no code was typed in 3
 /// minutes. Say “run it again” when you have the code." (no variable name), as a setup problem:

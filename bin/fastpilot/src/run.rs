@@ -1144,10 +1144,12 @@ async fn run_case(case: &Case, opts: &Options, passed_on_retry: bool, devices: &
                 break;
             }
         }
-        // The hint no longer applies: hand over to Explore and repair, sessions as they are.
+        // The hint no longer applies: hand over to Explore and repair, sessions as they are. F4b: not
+        // when nobody typed the one-time code: the test ends there (Explore would ask for it again).
         let verdict = lock(&agent.verdict).clone();
         let replay_failed = agent.replay_failed.load(std::sync::atomic::Ordering::SeqCst);
-        if role == crate::models::Role::Replay && replay_failed && !verdict.as_ref().is_some_and(|v| v.0) && forced.is_none() {
+        let no_code = lock(&agent.no_code).is_some();
+        if role == crate::models::Role::Replay && replay_failed && !no_code && !verdict.as_ref().is_some_and(|v| v.0) && forced.is_none() {
             role = crate::models::Role::Explore;
             let next = crate::models::label(&pick_role(role).0);
             lock(&agent.transcript).push(format!("replay failed: switching to {next}"));
