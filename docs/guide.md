@@ -1008,7 +1008,8 @@ fastpilot run tests/ --changed release-1  # compared with a branch, tag or commi
   Since 0.7.2 this is also on a page: `fastpilot ui` › Settings › AI model › **Providers** (**+ Add a provider**: OpenAI,
   OpenRouter, Groq, Ollama or Other with its address; the key is sent once to the key store and never shown again; the
   list of models is loaded from the provider, and a model id you type still works) and **Default models**. Each agent can
-  choose its own Replay and Explore-and-repair model on its **Model** tab, or in a terminal with
+  choose its own Replay and Explore-and-repair model on its **Model** tab (its Chat answers with the Explore-and-repair
+  model, so Chat messages go to that provider too), or in a terminal with
   `fastpilot agent model NAME --replay X --explore Y` and `fastpilot provider list|add|remove|refresh|models`. We have tried
   Claude only, and have not run real OpenAI, OpenRouter or Groq accounts.
 - Exit code ≠ 0 if a test outside quarantine fails. `FASTPILOT_VARS` values written in a

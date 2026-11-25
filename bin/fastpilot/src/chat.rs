@@ -1527,7 +1527,19 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
     // D6: the project notes, read once for this turn (marked as the user's own context; notes with
     // hidden characters or a secret are left out by `for_agents`).
     let notes = fastpilot_memory::notes::Notes::from_env().for_agents();
-    if me.provider.as_deref().is_some_and(|p| p != "claude") {
+    // The owner (26 Nov 2026): Chat talks with the agent's "Explore and repair" model (Model tab, E8),
+    // on Claude Code or another provider. An agent made before v0.7.2 with its own provider (D10b)
+    // and no Model tab choice yet keeps that provider as it was set up. A provider that cannot
+    // answer stops this turn with its own line; nothing switches to Claude Code by itself.
+    let explore = crate::models::resolve(Some(&me), crate::models::Role::Explore);
+    let older = !me.models_set && me.provider.as_deref().is_some_and(|p| p != "claude");
+    if older || !explore.effective.is_claude() {
+        let p = if older {
+            crate::provider::Provider::for_agent(me.provider.as_deref().unwrap_or(""), me.model.as_deref().unwrap_or("")).map_err(|e| format!("{} cannot answer: {e}", me.name))?
+        } else {
+            let hint = crate::models::choose_other(Some(&me), crate::models::Role::Explore, explore.choice.is_some());
+            crate::provider::Provider::for_choice(&explore.effective, &hint)?
+        };
         // Another provider never sees fastpilot's MCP instructions: the notes go in its system prompt.
         let notes_part = notes.as_deref().map(|n| format!("\n\n{n}")).unwrap_or_default();
         let system = format!("{SYSTEM}\n\n{}{}{}{notes_part}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me));
@@ -1535,14 +1547,13 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
             Some(t) => format!("{t}\n\n{USER_MARK}\n{text}"),
             None => text.to_owned(),
         };
-        return turn_provider(agent, &me, &said, bot, &system, &env).await;
+        return turn_provider(agent, p, (!older).then_some(me.name.as_str()), &said, bot, &system, &env).await;
     }
     // QA B1: an old Claude Code answers every message with an API error; say what to do first.
     crate::run::claude_ready().await?;
     let mcp = json!({ "mcpServers": { "fastpilot": { "type": "stdio", "command": exe, "args": ["mcp"], "env": env } } });
     let mut cmd = tokio::process::Command::new(crate::run::claude_bin());
-    let model = me.model.clone().unwrap_or_else(crate::run::model_explore);
-    cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &model])
+    cmd.args(["-p", "--output-format", "stream-json", "--verbose", "--model", &explore.effective.model])
         // The skill library (S5): the index here, each skill's text through docs(topic: "skill/<name>").
         .args(["--append-system-prompt", &format!("{SYSTEM}\n\n{}{}{}", fastpilot_mcp::skills::index_of(&me.skills), context(), crate::agents::prompt(&me))])
         .args(["--mcp-config", &mcp.to_string(), "--strict-mcp-config"])
@@ -1678,11 +1689,11 @@ async fn turn(agent: &str, text: &str, tickets: Option<&str>, bot: u64, resume: 
 /// D10b: one Chat turn for an agent on an OpenAI-compatible provider. Its model gets the same
 /// fastpilot tools through a `fastpilot mcp` of its own (with the agent's environment, guard rails
 /// pinned at its start), never the `config` tool; its text goes through the same cards (M1-M15).
-async fn turn_provider(agent: &str, me: &crate::agents::Agent, text: &str, bot: u64, system: &str, env: &Value) -> Res<()> {
+/// `explore_of`: the agent's name when the provider is its Explore and repair model (Model tab):
+/// a provider that does not answer stops the turn with the g19r line.
+async fn turn_provider(agent: &str, p: crate::provider::Provider, explore_of: Option<&str>, text: &str, bot: u64, system: &str, env: &Value) -> Res<()> {
     use rmcp::ServiceExt;
     use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
-    let p = crate::provider::Provider::for_agent(me.provider.as_deref().unwrap_or(""), me.model.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{} cannot answer: {e}", me.name))?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let vars: Vec<(String, String)> = env.as_object().into_iter().flatten().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect();
     let cmd = tokio::process::Command::new(exe).configure(move |c| {
@@ -1690,12 +1701,18 @@ async fn turn_provider(agent: &str, me: &crate::agents::Agent, text: &str, bot: 
     });
     let transport = TokioChildProcess::new(cmd).map_err(|e| format!("fastpilot's tools could not start: {e}"))?;
     let tools_client = ().serve(transport).await.map_err(|e| format!("fastpilot's tools could not start: {e}"))?;
-    let result = provider_loop(agent, &p, &tools_client, text, bot, system).await;
+    let result = provider_loop(agent, &p, explore_of, &tools_client, text, bot, system).await;
     let _ = tools_client.cancel().await;
     result
 }
 
-async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client: &rmcp::service::RunningService<rmcp::RoleClient, ()>, text: &str, bot: u64, system: &str) -> Res<()> {
+/// g19r: Chat on the agent's Explore and repair model stops when its provider does not answer.
+fn chat_stopped(p: &crate::provider::Provider, agent: &str) -> String {
+    let first = if p.id == "ollama" { "Ollama is not running on this Mac.".to_owned() } else { format!("{} did not answer.", p.display) };
+    format!("{first} Chat in {agent} uses its Explore and repair model, so it stopped. Nothing was switched for you. Open the Model tab to check it, or say “use the default for explore”.")
+}
+
+async fn provider_loop(agent: &str, p: &crate::provider::Provider, explore_of: Option<&str>, tools_client: &rmcp::service::RunningService<rmcp::RoleClient, ()>, text: &str, bot: u64, system: &str) -> Res<()> {
     let tools: Vec<Value> = tools_client
         .list_all_tools()
         .await
@@ -1714,7 +1731,14 @@ async fn provider_loop(agent: &str, p: &crate::provider::Provider, tools_client:
     let (mut input, mut output) = (0, 0);
     for _ in 0..40 {
         let body = json!({ "model": p.model, "messages": messages, "tools": tools, "tool_choice": "auto" });
-        let reply = tokio::time::timeout(Duration::from_secs(300), p.complete(&http, &body)).await.map_err(|_| format!("{} did not answer within 5 minutes", p.name))??;
+        use crate::provider::Halt;
+        let reply = match (tokio::time::timeout(Duration::from_secs(300), p.call(&http, &body)).await, explore_of) {
+            (Ok(Ok(reply)), _) => reply,
+            (Err(_) | Ok(Err((Some(Halt::NotAnswering | Halt::NotRunning), _))), Some(a)) => return Err(chat_stopped(p, a)),
+            (Ok(Err((Some(h), _))), Some(_)) => return Err(p.stop_line(h)),
+            (Err(_), None) => return Err(format!("{} did not answer within 5 minutes", p.name)),
+            (Ok(Err((_, e))), _) => return Err(e),
+        };
         input += reply["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
         output += reply["usage"]["completion_tokens"].as_u64().unwrap_or(0);
         let msg = reply["choices"][0]["message"].clone();

@@ -949,7 +949,7 @@ Usage: fastpilot agent model [<agent>] [--replay <model>] [--explore <model>] [-
 
   <agent>               Show the models of this agent. With --replay or --explore, change them.
   --replay <model>      The model that repeats recorded steps (fast and cheap).
-  --explore <model>     The model that explores a new test or repairs a failed one.
+  --explore <model>     The model Chat answers with. It also explores a new test and repairs a failed one.
   --default             Change the default for every agent that has not chosen its own.
                         Do not give <agent> with --default.
 

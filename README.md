@@ -118,7 +118,8 @@ show after your first saved test.
   tests. Each switch acts at once, with Undo. **Back to General QA** turns them all off.
 - Jira skills appear after you connect Jira.
 - The **Model** tab: choose the AI for this agent, one for **Replay** (repeats steps that are already
-  recorded, fast and cheap) and one for **Explore and repair** (a new test, or when a replay fails).
+  recorded, fast and cheap) and one for **Explore and repair** (talks with you in Chat, makes new tests, and
+  fixes a replay that fails).
   Each is **Same as default** or a provider and model, and they can come from different providers. If a
   provider does not answer, the run stops with a plain message; nothing goes to another provider by
   itself.
