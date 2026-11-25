@@ -1063,6 +1063,17 @@ fn adopt(agent: &str, app: &crate::apps::App, made: Option<String>, mine: Option
 /// start it. `true` when that was the whole answer (no bot needed). Only the person's own message
 /// is read here, never a page or a ticket (#201 L1).
 pub(crate) async fn first_steps(agent: &str, key: &str, text: &str, bot: u64) -> bool {
+    // F3 (v0.7.2): "undo that" in the person's own message undoes this chat's newest result line,
+    // the same as its Undo button. No bot: it cannot refuse, and no page or ticket can ask for it.
+    if asks_undo(text) {
+        let newest = chat_of(key).msgs.iter().rev().flat_map(|m| m.proposals.iter().rev()).find(|p| p.status == "applied" && p.undo_id.is_some()).map(|p| p.id.clone());
+        let line = match newest {
+            Some(id) => undo(&id).unwrap_or_else(|e| e),
+            None => "Nothing to undo in this chat.".to_owned(),
+        };
+        with_bot(key, bot, |m| m.text = line);
+        return true;
+    }
     let me = crate::agents::get_or_default(agent);
     let mine = crate::agents::app_of(&me);
     if let Some(url) = address_in(text).filter(|u| asks_to_add(text, u)) {
@@ -1134,6 +1145,14 @@ pub(crate) async fn first_steps(agent: &str, key: &str, text: &str, bot: u64) ->
         Err(f) => with_bot(key, bot, |m| m.text = f.msg),
     }
     true
+}
+
+/// F3: a message that only asks to undo the last change ("undo that", "undo", "batalkan itu").
+fn asks_undo(text: &str) -> bool {
+    const FILLER: &[&str] = &["please", "pls", "that", "it", "this", "the", "last", "change", "one", "tolong", "dong", "ya", "itu", "ini", "yang", "tadi", "terakhir", "perubahan"];
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty() && !FILLER.contains(w)).collect();
+    matches!(words.as_slice(), ["undo" | "batalkan" | "urungkan"])
 }
 
 /// FC5: a click on one app of the "Which app?" card adds it (a choice, not a confirmation). Only
@@ -4173,6 +4192,17 @@ mod tests {
     use super::*;
 
     /// E4: a bot-chosen password name becomes the test account's, the same name everywhere.
+    /// F3: only a message that asks to undo and nothing else is an undo request.
+    #[test]
+    fn undo_that_is_only_a_bare_undo_request() {
+        for yes in ["undo that", "Undo", "undo it please", "undo the last change", "batalkan itu", "tolong urungkan yang tadi"] {
+            assert!(asks_undo(yes), "{yes}");
+        }
+        for no in ["undo the login test and run it", "how do I undo a schedule?", "rename this app to Undo", "don't undo that", "check the login"] {
+            assert!(!asks_undo(no), "{no}");
+        }
+    }
+
     #[test]
     fn a_password_name_maps_to_one_test_account_name() {
         assert_eq!(account_name("ACP_PASSWORD"), "TEST_PASSWORD");

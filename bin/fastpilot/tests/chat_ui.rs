@@ -787,6 +787,20 @@ fn rename_this_app_in_chat_renames_it_with_undo() {
     let (st, v) = post("/api/undo", json!({ "id": line["undo_id"] }));
     assert_eq!(st, 200, "{v}");
     assert_eq!(name(), before, "Undo gives the old name back");
+    // F3 (FastTest v0.7.2): "undo that" undoes the newest result line, like its Undo button, and
+    // shows no notice that a page asked for an action: the user asked.
+    let bot = say("rename this app to Shop (test)");
+    let line = bot["proposals"][0]["id"].clone();
+    assert_eq!(name(), "Shop (test)");
+    let bot = say("undo that");
+    assert_eq!(name(), before, "undo that gives the old name back: {bot}");
+    assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty) && bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert!(bot["text"].as_str().is_some_and(|t| t.starts_with("Undone")), "{bot}");
+    let v = wait_idle(&ui);
+    let undone = v["messages"].as_array().expect("msgs").iter().flat_map(|m| m["proposals"].as_array().cloned().unwrap_or_default()).find(|p| p["id"] == line).expect("line");
+    assert_eq!(undone["status"], "undone", "the line shows it was undone");
+    let bot = say("undo that");
+    assert!(bot["text"].as_str().is_some_and(|t| t.starts_with("Nothing to undo")) && name() == before, "nothing left to undo: {bot}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

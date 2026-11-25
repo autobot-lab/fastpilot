@@ -219,6 +219,12 @@ if "remove my app" in low or "tidy up my app" in low:
 if "rename this app to shop (test)" in low:
     # E3: the user's own new name.
     card({"kind": "rename_app", "name": "Shop (test)"})
+if "undo that" in low:
+    # F3: what a model did with "undo that": it renamed the app back on its own.
+    card({"kind": "rename_app", "name": "Shop"})
+if "use haiku for this agent" in low:
+    # E8: the user names the model.
+    card({"kind": "agent_model", "replay": "haiku", "explore": "haiku"})
 if "give the app a better name" in low:
     # E3: a name the user never said (as a page could steer it): never applied.
     card({"kind": "rename_app", "name": "Evil Corp"})
