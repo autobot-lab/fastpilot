@@ -332,8 +332,9 @@ function pageMemory() {
   if (memData.mode === "read-only") notes.push(h("div", { class: "mem-note" }, "Memory is read-only here (FASTPILOT_MEMORY=readonly): runs use it but do not change it."));
   const remembered = tests.some((t) => t.status !== "new");
   if (!tests.length || !remembered) {
-    $body().replaceChildren(...notes, h("div", { class: "grp" }, h("div", { class: "empty" }, icon("memory", "big"), h("b", {}, "Nothing remembered yet"),
-      h("span", {}, "After a test passes once, fastpilot remembers how, and runs get faster.")), MEM_SAY ? sayIt(MEM_SAY) : null));
+    // E10 (e10d): one sentence, one button to this agent's Chat.
+    $body().replaceChildren(...notes, h("div", { class: "grp" }, UI.empty({ icon: "memory", title: "Nothing remembered yet",
+      text: "After a test passes once, fastpilot remembers how, and runs get faster.", action: Shell.toChat() })));
     return;
   }
   const pick = tests.find((t) => t.id === memPick) || tests.find((t) => t.status === "unstable" || t.status === "failing") || tests[0];

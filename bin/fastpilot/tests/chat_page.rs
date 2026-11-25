@@ -435,15 +435,15 @@ async fn every_agent_has_live_and_about_tabs() {
     eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
     see(&client, "What should I test?").await;
     let tabs = eval(&client, "[...document.querySelectorAll('.tabs2 a')].map((a) => a.textContent).join('|')").await;
-    assert_eq!(tabs.trim_matches('"'), "Chat|Live|About", "before a saved test: Chat, Live and About");
+    assert_eq!(tabs.trim_matches('"'), NINE_TABS, "before a saved test: all nine tabs (E10)");
     eval(&client, "[...document.querySelectorAll('.tabs2 a')].find((a) => a.textContent === 'Live').click(), 'ok'").await;
     see(&client, "Nothing is running").await;
     see(&client, "Tests that run for My tester show up here, so you can watch them and take over.").await;
     let go = eval(&client, "[...document.querySelectorAll('a.btn')].find((a) => a.textContent.includes('Go to Chat'))?.getAttribute('href') || 'none'").await;
     assert_eq!(go.trim_matches('"'), "#/agents/default/chat");
     // Arrow keys move between the tabs.
-    let moved = eval(&client, "(() => { const links = [...document.querySelectorAll('.tabs2 a')]; links[1].focus(); links[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return document.activeElement.textContent; })()").await;
-    assert_eq!(moved.trim_matches('"'), "About");
+    let moved = eval(&client, "(() => { const links = [...document.querySelectorAll('.tabs2 a')]; links[1].focus(); links[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); const a = document.activeElement.textContent; links[8].focus(); links[8].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return a + '|' + document.activeElement.textContent; })()").await;
+    assert_eq!(moved.trim_matches('"'), "Skills|Chat", "Live → Skills; About wraps to Chat");
     eval(&client, "location.hash = '#/agents/default/about', 'ok'").await;
     see(&client, "About My tester").await;
     see(&client, "say “rename this agent to …” in Chat").await;
@@ -475,6 +475,67 @@ async fn every_agent_has_live_and_about_tabs() {
     assert_eq!(listed.trim_matches('"'), "false|Live, 1 running", "only this agent's test, and the count on the tab");
     let _ = call(&mine, "session", json!({ "action": "stop", "id": "mine1" })).await;
     let _ = call(&theirs, "session", json!({ "action": "stop", "id": "theirs1" })).await;
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+async fn open_tab(client: &Client, name: &str) {
+    eval(client, &format!("[...document.querySelectorAll('.tabs2 a')].find((a) => a.textContent === '{name}').click(), 'ok'")).await;
+}
+
+const NINE_TABS: &str = "Chat|Live|Skills|Schedules|History|Memory|Map|Model|About";
+
+/// E10 (e10a–e10d): a new agent, before any test is saved, shows all nine tabs on its Chat page and
+/// on every tab page; its Model tab picks a model and saves it; Schedules, History and Memory say what
+/// is missing in one sentence with one button to this agent's Chat; no tab is blank or an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_agent_shows_all_nine_tabs_and_sets_its_model_before_any_test() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-e10-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    let made = eval(&client, "(async () => { const r = await api('/api/agents', { action: 'create', agent: { id: '', name: 'Checkout QA', job: 'Tests checkout.', devices: ['web'], app: 'https://shop.example', instructions: [], blocked: [], provider: null, model: null, skills: [] } }); const a = await (await fetch('/api/agents')).json(); return r.agent.id + '|' + a.saved_tests; })()").await;
+    let (id, saved) = made.trim_matches('"').split_once('|').expect("agent id");
+    assert_eq!(saved, "0", "no saved test");
+    eval(&client, &format!("location.hash = '#/agents/{id}/chat', location.reload(), 'ok'")).await;
+    see(&client, "What should I test?").await;
+    let tabs = || eval(&client, "[...document.querySelectorAll('.tabs2 a')].map((a) => a.textContent).join('|')");
+    assert_eq!(tabs().await.trim_matches('"'), NINE_TABS, "a new agent, no saved test: all nine tabs");
+
+    // Model works before any test: pick a Replay model; it is saved for this agent.
+    open_tab(&client, "Model").await;
+    see(&client, "Which AI runs this agent’s tests. Each agent can use its own.").await;
+    let picked = eval(&client, "(() => { document.querySelector('.mpick').click(); const o = [...document.querySelectorAll('#mlist [role=option]')].find((o) => o.dataset.v.startsWith('claude:') && o.getAttribute('aria-selected') !== 'true'); o.click(); return o.dataset.v.slice('claude:'.length); })()").await;
+    see(&client, "Changed Replay model").await;
+    let saved = eval(&client, &format!("(async () => {{ const d = await (await fetch('/api/agent-model?agent={id}')).json(); return d.replay.choice ? d.replay.choice.model : 'default'; }})()")).await;
+    assert_eq!(saved, picked, "the Model tab saved the picked Replay model");
+    assert_eq!(tabs().await.trim_matches('"'), NINE_TABS);
+
+    // Schedules, History and Memory: a title, one sentence, one button to this agent's Chat.
+    for (tab, title, sentence) in [
+        ("Schedules", "No saved test yet", "A schedule runs a saved test by itself. Make your first test in Chat, then come back."),
+        ("History", "No runs yet", "Your test runs show up here after the first one."),
+        ("Memory", "Nothing remembered yet", "After a test passes once, fastpilot remembers how, and runs get faster."),
+    ] {
+        open_tab(&client, tab).await;
+        see(&client, title).await;
+        see(&client, sentence).await;
+        assert_eq!(tabs().await.trim_matches('"'), NINE_TABS, "{tab}");
+        let page = eval(&client, "[document.querySelectorAll('#body button.p').length, document.querySelector('#body .empty button.p')?.textContent, document.querySelectorAll('#body [role=alert]').length].join('|')").await;
+        assert_eq!(page.trim_matches('"'), "1|Make a test in Chat|0", "{tab}: one button, no error");
+        eval(&client, "document.querySelector('#body .empty button.p').click(), 'ok'").await;
+        see(&client, "What should I test?").await;
+        assert_eq!(eval(&client, "location.hash").await.trim_matches('"'), format!("#/agents/{id}/chat"), "{tab}: the button opens this agent's Chat");
+    }
+    // Skills, Map, Live and About are never blank and never an error.
+    for (tab, text) in [("Skills", "General QA"), ("Map", "Add your app first"), ("Live", "Nothing is running"), ("About", "About Checkout QA")] {
+        open_tab(&client, tab).await;
+        see(&client, text).await;
+        assert_eq!(tabs().await.trim_matches('"'), NINE_TABS, "{tab}");
+        assert_eq!(eval(&client, "String(document.querySelectorAll('#body [role=alert]').length)").await, "\"0\"", "{tab}: no error");
+    }
     let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
     let _ = std::fs::remove_dir_all(&home);
 }

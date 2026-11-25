@@ -135,9 +135,12 @@ function allBox(kind, rows) {
   return box;
 }
 
+// E10 (e10c): no run yet, also when History has nothing at all.
+const noRuns = () => UI.empty({ icon: "history", title: "No runs yet", text: "Your test runs show up here after the first one.", action: Shell.toChat() });
+
 function runsTable() {
   const rows = visibleRuns();
-  if (!rows.length) return h("div", { class: "empty small" }, histData.runs.length ? "No run matches." : "No runs yet. They show up here after your first test.");
+  if (!rows.length) return histData.runs.length ? h("div", { class: "empty small" }, "No run matches.") : noRuns();
   return h("div", { class: "tbl-wrap" }, h("table", { class: "tbl hist-tbl" },
     h("thead", {}, h("tr", {}, h("th", { class: "cb" }, allBox("runs", rows)), ["Run", "Result", "When", ""].map((t) => h("th", {}, t)))),
     h("tbody", {}, rows.map((r) => {
@@ -209,8 +212,7 @@ function pageHistory() {
   }
   if (!total) {
     $body().replaceChildren(...(histData.error ? [h("div", { class: "err", role: "alert" }, "Could not read History: " + histData.error)] : []),
-      h("div", { class: "grp" }, h("div", { class: "empty" }, icon("history", "big"), h("b", {}, "No history yet"),
-        h("span", {}, "Runs and conversations show up here after your first test."))));
+      h("div", { class: "grp" }, noRuns()));
     return;
   }
   const kind = histTab;
