@@ -437,8 +437,8 @@ headful = true
 flow_timeout = 600
 ```
 
-**In the browser:** `fastpilot ui` opens the dashboard (Chat, Live, Schedules, History, Memory, Map, Device and
-Settings) in your default browser (only
+**In the browser:** `fastpilot ui` opens the dashboard (each agent has Chat, Live, Skills, Schedules, History, Memory, Map,
+Model and About; then Device and Settings) in your default browser (only
 `127.0.0.1`, random port; `--no-open` only prints the link, `--port N` picks the port, `--help` shows help).
 The link holds a **one-time** code that is valid for 10 minutes. Once opened, the code is swapped for a session cookie
 and stops working (run `fastpilot ui` again for a new link). Run `fastpilot ui` yourself,
@@ -685,11 +685,11 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_CHROME_ENDPOINT` | Chrome on another computer for all web sessions: `http://host:port` or `ws://...` |
 | `FASTPILOT_LOG` | tracing filter, e.g. `debug` (logs go to stderr; stdout is used by MCP) |
 
-## Tools (23)
+## Tools (25)
 
-The 14 below are for driving a test, plus `related_tests` and the Jira tools. Nine more do what the dashboard pages
-do: `apps`, `tests`, `schedules`, `map`, `ship_check`, `secrets`, `memory`, `history` and `agents`. No tool takes a
-password's value.
+The 14 below are for driving a test, plus `related_tests` and the Jira tools. Eleven more do what the dashboard pages
+do: `apps`, `tests`, `schedules`, `map`, `ship_check`, `secrets`, `memory`, `history`, `reports`, `agents` and `providers`.
+No tool takes a password's value or an API key.
 
 | Tool | Purpose |
 |---|---|
@@ -933,8 +933,8 @@ fastpilot run tests/ --changed release-1  # compared with a branch, tag or commi
   are not given.
 - Tests with a path memory hint are replayed by a fast model (`claude-haiku-5-5`). If the replay fails
   or there is no hint yet, a balanced model (`claude-sonnet-5-5`) continues from the last screen (both can be
-  changed under Settings › AI model › More options, or `model_replay`, `model_explore`; Opus is a choice there,
-  not the default). `--model` (or `model`) forces one model, and `--max-steps` limits the number of tool calls per test (default 30).
+  changed per agent on its Model tab, for all agents under Settings › AI model › Default models, or with `model_replay`,
+  `model_explore`; Opus is a choice there, not the default). `--model` (or `model`) forces one model, and `--max-steps` limits the number of tool calls per test (default 30).
 - Failures are retried while `FASTPILOT_RETRY_BUDGET` (default 3) is not used up; a retry that passes = flaky.
   After `FASTPILOT_BREAKER` (default 3) infra failures in a row, the remaining tests are skipped as infra.
 - `--workers N` runs N tests at once. Each test has its own Chrome. Booted Android devices and iOS simulators
@@ -1005,8 +1005,12 @@ fastpilot run tests/ --changed release-1  # compared with a branch, tag or commi
   page URLs, including local paths like `file:///Users/<nama>/…`) also reaches that provider. `${NAMA}`
   values are still masked as `***`. Use a local Ollama if test data must not leave this computer.
 
-  The same is available on a page: `fastpilot ui` › Settings › AI model › *who runs the tests* (provider, Base URL, model,
-  API key, **Test the connection**). The key is sent once to the key store and is never shown again.
+  Since 0.7.2 this is also on a page: `fastpilot ui` › Settings › AI model › **Providers** (**+ Add a provider**: OpenAI,
+  OpenRouter, Groq, Ollama or Other with its address; the key is sent once to the key store and never shown again; the
+  list of models is loaded from the provider, and a model id you type still works) and **Default models**. Each agent can
+  choose its own Replay and Explore-and-repair model on its **Model** tab, or in a terminal with
+  `fastpilot agent model NAME --replay X --explore Y` and `fastpilot provider list|add|remove|refresh|models`. We have tried
+  Claude only, and have not run real OpenAI, OpenRouter or Groq accounts.
 - Exit code ≠ 0 if a test outside quarantine fails. `FASTPILOT_VARS` values written in a
   test case are sent to the model as `${NAMA}`, never as their values.
 
