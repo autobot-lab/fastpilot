@@ -5,11 +5,14 @@ You say what to check; AI runs it on your own computer, shows you every step liv
 what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
 blocked from the start.
 
+New in 0.7.1: say what you want in Chat and it is done at once, with one line and **Undo**.
+See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.1).
+
+<img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard. On the left, the agent My tester with its chat. In the chat, one sentence became a test card: the steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only, Edit and Dismiss, with one-click schedules below them: Every 2 hours, Every night and Before each release.">
+
 <img src="docs/images/demo.gif" width="860" alt="A 60-second tour of fastpilot: one sentence in Chat becomes a test card, Save and schedule runs it every 2 hours, Live shows each step on web and on an Android emulator where the Pay button is blocked, and a failing test is explained in plain words.">
 
-*A 60-second tour, sped up where the AI is thinking. Chat turns one sentence into a test, Live shows each step on web and on an Android emulator (the Pay button is blocked), and a failing test says why.*
-
-<img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard: an agent called QA Checkout gets one sentence in Chat and answers with a Save test and schedule card that lists the test steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only and Edit.">
+*A 60-second tour, sped up where the AI is thinking. It was recorded with 0.5.1, so the dashboard looks different now; the steps are the same.*
 
 ## Start in 2 steps
 
@@ -30,11 +33,13 @@ fastpilot
 
 Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl-C` closes it.
 
-- The first time, paste your app's address and click **Check the login**. fastpilot asks for the
-  test account right there, once, in a masked field. It is kept in this Mac's Keychain for that app
-  and typed only on that app's own website, never into the chat.
-- Your tests, schedules and notes live in `~/fastpilot`, one workspace for all your apps. Switch apps
-  at the top left.
+- The first screen is Chat. Paste your app's address (or say *"test my Android app"*) and fastpilot
+  adds the app itself. An address that does not load is not added. Then say *"check the login"*.
+- If the test needs a password, fastpilot asks for the test account right there, once, in a masked
+  field, in that same answer. Click **Save and run**. It is kept in this Mac's Keychain for that app
+  and typed only on that app's own website, never into Chat.
+- Your tests, schedules and notes live in `~/fastpilot`. Each app has its own tester (agent), listed on
+  the left.
 - The first `fastpilot` also adds fastpilot to Claude Code for every folder, so Claude Code can run
   your tests too.
 - Typed again while the dashboard runs, `fastpilot` opens the same dashboard with a fresh link.
@@ -50,7 +55,7 @@ Your browser opens the dashboard. Keep the Terminal open while you use it; `Ctrl
 Everything else happens in the dashboard.
 
 > Just want to look around first? Run `fastpilot demo` instead. It makes a demo folder with demo
-> pages and example tests, and opens the dashboard on it.
+> pages and example tests, and prints what to say to Claude Code to try them.
 
 ### Developer mode: tests next to your code (optional)
 
@@ -74,33 +79,42 @@ For CI, a password can also come from the environment (`export DEMO_PASS=...`).
 
 ### 1. Check your devices: **Device**
 Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why not.
-- **Install Chrome** and **Set up an emulator** are one-click **Fix** buttons. Each asks you first,
-  showing the size and the time it takes.
+- **Install Chrome**, **Set up an emulator** and **Set up iPhone testing** are **Fix** buttons. Each
+  asks you first and says what it will do. They work only from this page, never from Chat.
 - **iPhone** testing needs a one-time setup with your Xcode (about 5 minutes).
 - Only web? Chrome is enough.
 
 <img src="docs/images/02-device.png" width="860" alt="fastpilot's Device page: two Android emulators installed on this computer, each with a Start button, and the iPhone simulators tests can use.">
 
-### 2. Pick the AI and store passwords: **Settings**
-- **AI model:** pick the provider, then the model. Claude Code is the default. Other providers
-  (OpenAI, OpenRouter, Groq, Ollama) also work, and are marked "not tested yet".
-- **Secrets:** add the names of passwords your tests need, for example `TEST_PASS`. Tests write them as
-  `${TEST_PASS}`, and they always show as `***`. Never type a password in Chat.
-- **Limits & permissions:** see the next section, "Safe from the start".
+*This picture of the Device page shows the older look.*
 
-### 3. Make an agent: **Agents › New agent**
-An agent is a tester with its own job, devices, instructions, and skills.
-- Fill in three things: what it tests, where (Web, Android emulator, iPhone simulator…), and its
-  instructions. Click a suggested instruction to add it.
-- **Skills** are ready-made test know-how, grouped by technique: boundary values, decision tables,
-  regression, safe checkout, and more. Suggested skills are already ticked, each with a reason.
-  With Atlassian's MCP server in Claude Code, three Jira skills turn tickets into tests, log a
-  failed run as a bug and post results; each write to Jira waits for your OK
-  ([setup](docs/guide.md#jira)).
-- Or simply describe the agent in one sentence in Chat and click **Create**.
+### 2. AI model and passwords: **Settings**
+- **AI model:** Claude Code is used by default, with your own sign-in and no API key. fastpilot picks
+  the models itself. Other providers (OpenAI, OpenRouter, Groq, Ollama) can be chosen and are marked
+  "not tested yet".
+- **Passwords:** you are not asked to add names first. The first time a check needs a password, a
+  masked field appears in the same answer in Chat: type it once and click **Save and run**.
+  **Settings › Secrets** only lists the passwords your tests use (names only, never values), with
+  **Replace** and **Remove**.
+- **Limits & permissions:** one "You are protected" statement, example changes you can click (they go
+  to Chat), and every limit under **Every limit**. See the next section, "Safe from the start".
+- **Security** lists the browsers you chose to remember. **Integrations** has Jira (**Sign in with
+  Atlassian**, Jira Cloud only), webhook and GitHub. A real Atlassian sign-in has not been tested by
+  the maker yet ([setup](docs/guide.md#jira)).
+
+### 3. Agents and skills
+An agent is a tester for one app. **My tester** is there from the start, and the tabs (Chat, Skills,
+Schedules, History, Memory, Map) show after your first saved test.
+- **New agent** (top left) asks for a website address, or say *"test my Android app"*. Or describe the
+  agent in one sentence in Chat and click **Create**.
+- The **Skills** tab: **General QA** (8 skills) is always on. Specialist skills are switches, grouped by
+  technique (equivalence partitions, boundary values, decision table, state transitions, pairwise),
+  checklists (safe checkout, login and one-time code, forms, accessibility, mobile) and acceptance
+  tests. Each switch acts at once, with Undo. **Back to General QA** turns them all off.
+- Jira skills appear after you connect Jira.
 
 You can have several agents, for example "Checkout" on web and "Login" on Android. Each has its own
-**Chat, Live, Schedules, Instructions, Skills, History** and **Agent settings**.
+chats, schedules, history, memory and map.
 
 ### 4. Ask for a test: **Chat**
 Write what you want in plain words:
@@ -114,43 +128,51 @@ Write what you want in plain words:
 | Before a release | *Is staging ready to ship?* (one verdict: SHIP, SHIP WITH FIXES, DO NOT SHIP) |
 | Understand a failure | *Why did the checkout test fail?* |
 
-When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**. Nothing is
-saved before you click. The picture at the top of this page shows such a card.
+When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**, or one of the
+one-click schedules under them. A test is saved only when you click. The picture at the top of this
+page shows such a card.
 
 ### 5. Watch it run: **Live**
 Watch every test step by step, on web, Android, and iOS. **Take over** if you need to tap something
 yourself, then hand it back to the AI. Several agents can run at the same time; a phone runs one
-test at a time and the others wait their turn.
+test at a time and the others wait their turn. Tests started by hand or by a schedule show up here too.
 
-<img src="docs/images/08-live.png" width="860" alt="The Live page: the QA Checkout agent is testing the event tickets page in Chrome; four steps are done and the fifth, waiting for the reservation message, is running, with Enlarge and Take over buttons.">
+<img src="docs/images/08-live.png" width="860" alt="The Live page: a scheduled test, Free shipping for members, is running in Chrome. Step 2 of 4 is running, step 1 is done, and the card has Enlarge and Take over buttons. The step history is listed below it.">
 
 ### 6. Run it automatically: **Schedules**
-- **Every N hours** (with active hours, for example 08:00–20:00), every day, or every week.
+- **One click:** three buttons run all of the app's tests by themselves: **Every 2 hours (8–20)**,
+  **Every night** (2:00) and **Before each release** (it runs when you ask Chat *"Can we release?"*).
+  A button that is on says **On · Turn off**.
 - **Run now** for any schedule.
-- **Release watch:** after a release, re-check every few minutes for a few hours and only tell you
-  about new problems.
-- Get notified by Slack webhook, Mac notification, or GitHub issue when something fails.
+- **Release watch** is one switch: after a release, re-check every 10 minutes for 2 hours and only
+  tell you about new problems. It ends by itself.
+- **Other times** (New schedule): pick which tests and when (every day, on weekdays or weekly).
+- When something fails you get a notification on this computer. Under **Other times** you can also
+  add a webhook (a Slack-compatible URL) or a GitHub issue.
 - Or just ask in Chat: *"run the checkout tests every 2 hours"*.
 
-<img src="docs/images/09-schedules.png" width="860" alt="The Schedules page: a test that runs every 2 hours from 08:00 to 20:00 and a release watch that checks every 10 minutes, each with its next run, a passed last run and a Mac notification on failure.">
+<img src="docs/images/09-schedules.png" width="860" alt="The Schedules page: three one-click cards (Every 2 hours, Every night, Before each release), a switch for the release watch, and a list with one schedule that runs every 2 hours from 08:00 to 20:00, with its next run, a passed last run and a notification on failure.">
 
 ### 7. See results: **History** and **Memory**
 - **History:** every run and every Chat conversation, with report, screenshots, and video. Delete
-  one, several, or all, or let them be deleted after 7, 30, or 90 days.
+  one, several, or all, or let them be deleted after 7, 30 (the default), or 90 days. Removed apps,
+  schedules, chats and agents are kept for 7 days under **Recently removed**, with **Restore**.
 - **Memory:** how each test is doing (Reliable, Unstable, Failing, Set aside), plus **project notes**
   every agent reads, for example *"Staging is https://staging.yourapp.com"* or *"Login uses a code"*.
 
 ## Dashboard map
 
-| Menu | What it's for |
+| Where | What it's for |
 |---|---|
-| **Agents** | Your testers: Chat, Live, Schedules, Instructions, Skills, History, Agent settings. Also the skill **Library** |
-| **Live** | Every running test, from all agents |
-| **Schedules** | All schedules and release watches |
+| **Chat** (agents and their chats, on the left) | Ask for anything (see "Control everything from Chat" below). **+ New chat** starts another chat |
+| **Skills** | General QA (always on) and specialist switches |
+| **Schedules** | One-click schedules, release watch, other times |
+| **History** | Past runs and conversations, **Recently removed** |
 | **Memory** | Test health and project notes |
-| **History** | Past runs and conversations |
+| **Map** | Which screens of your app have a test |
+| **Live** | Every running test, from all agents |
 | **Device** | Chrome, Android, iOS readiness and Fix buttons |
-| **Settings** | AI model, Limits & permissions, Secrets, Security (remembered browsers) |
+| **Settings** | AI model, Limits & permissions, Secrets, Security (remembered browsers), Integrations |
 
 ## Safe from the start
 
@@ -159,6 +181,8 @@ test at a time and the others wait their turn.
 - The AI can make the rules stricter, never looser. To loosen one, **you** approve it: Chat shows a red
   card that quotes what you asked, and allowing **Pay** also needs you to type "Pay". Text on a tested
   page can never ask for a change.
+- Actions start only from your own message. Text from a page or a ticket cannot start a change, a run
+  or a card.
 - Every change is kept in `~/.fastpilot/audit.jsonl`.
 
 Want to test a checkout for real? Ask in Chat: *"Allow the Pay button for this project"*, or open
@@ -189,6 +213,8 @@ In the dashboard Chat, what you ask for is done at once and shows as one line, s
 *Paused schedule “Every night” · its history is kept*, with **Undo** on it. Loosening a safety limit
 still needs your click on its red card, and a password is still typed only in its masked field.
 
+<img src="docs/images/10-chat-result-undo.png" width="860" alt="The fastpilot Chat: a pasted website address was added as the app of My tester, and the answer is one line, Added Your website, with an Undo button.">
+
 There is no setup form: paste your website's address in the dashboard Chat and it is added (an
 address that does not load is not added), or say *"test my Android app"* and pick it from the apps
 on the running emulator. A new address in an agent that already has an app makes a new agent.
@@ -202,6 +228,15 @@ Every change can be undone: the terminal prints `Undo: fastpilot undo <id>`, and
 shows what you can undo. Removing an app or a schedule keeps it 7 days (History › Recently removed,
 with Restore). A password is kept for its app in this Mac's Keychain
 and typed only on that app's own website, wherever you set it from.
+
+A few things to say in Chat:
+
+- *"remove my app"* removes the app of the chat you are in, kept 7 days, with Undo.
+- *"stop tests after 5 minutes"* sets the time limit per test in minutes (built in: 30). A shorter time
+  applies at once, with Undo. A longer one is a looser limit and needs the red card.
+- To stop everything an agent is running, click the agent's name at the top, then **Stop all** under
+  **Running now**. It stops every running chat of that agent, including the Claude Code and browsers
+  they started, and leaves other agents running. It shows only while something runs.
 
 ## Prefer the terminal?
 
@@ -227,14 +262,16 @@ fastpilot doctor
 | iPhone isn't ready | `fastpilot setup ios` (once, with Xcode) |
 | fastpilot doesn't show up in Claude | Run `fastpilot doctor`, then `fastpilot init --global` |
 | A test stops with "Blocked by limits" | That's on purpose. See **Settings › Limits & permissions** |
-| A test stops with "setup needed: the test needs the password …" | In Chat, click **Save and run** on the card and type it once (or Settings › Secrets). In CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
-| A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's website in Settings › Your apps |
+| A test stops with "setup needed: the test needs the password …" | In Chat, click **Save and run** on the card and type it once (or **Set value** in Settings › Secrets). In CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
+| A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's address with `fastpilot app list` |
+| A test or chat runs too long | Click **Stop** in the chat, or **Stop all** under the agent's name. Or say *"stop tests after 5 minutes"* |
 
 ## Learn more
 
 - **[Full guide](docs/guide.md)**: writing tests by hand, all settings, Android, iOS, Claude Desktop,
   devices on another computer, known limits
 - [Physical phones](docs/real-devices.md)
-- [Release notes](https://github.com/autobot-lab/fastpilot/releases)
+- [Release notes](https://github.com/autobot-lab/fastpilot/releases) (the latest is
+  [0.7.1](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.1))
 
 License: [Apache-2.0](LICENSE)

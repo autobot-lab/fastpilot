@@ -7,6 +7,9 @@ steps you need to get going.
 
 You need: macOS or Linux, Chrome, and [Claude Code](https://claude.com/claude-code), already signed in.
 
+In a hurry? Run `fastpilot` and follow the [README](../README.md#start-in-2-steps): paste your app's address
+in Chat. The steps below use Claude Code in a terminal.
+
 **1. Install** (about 1 minute)
 
 ```bash
@@ -434,15 +437,17 @@ headful = true
 flow_timeout = 600
 ```
 
-**In the browser:** `fastpilot ui` opens the Live, Settings, and Device pages in your default browser (only
+**In the browser:** `fastpilot ui` opens the dashboard (Chat, Live, Schedules, History, Memory, Map, Device and
+Settings) in your default browser (only
 `127.0.0.1`, random port; `--no-open` only prints the link, `--port N` picks the port, `--help` shows help).
 The link holds a **one-time** code that is valid for 10 minutes. Once opened, the code is swapped for a session cookie
 and stops working (run `fastpilot ui` again for a new link). Run `fastpilot ui` yourself,
 not through an AI agent: anyone who opens the page can loosen the limits. If
 `config.toml` is broken, the Settings page shows the error and saves nothing until the file
 is fixed.
-It contains the AI model for `fastpilot run`, Limits & permissions, the names of your Secrets (their values never show), and
-the `doctor` results with a Check again button. Changes made on this page are user changes: they may
+Settings has the AI model, Limits & permissions, Secrets (names only, their values never show; **Replace** and
+**Remove**), Security (remembered browsers) and Integrations (Jira, webhook, GitHub). The Device page has the `doctor`
+results with a Check again button. Changes made on this page are user changes: they may
 loosen limits, they are written atomically to the file (mode 600), and they apply from the next run. All assets and fonts
 are inside the binary, so this page works without internet.
 
@@ -505,8 +510,9 @@ sent to the browser.
   tests and a ship check of the app's own address. **Watch for 2 hours after a release** is one switch: every
   10 minutes for 2 hours, the first run is the "before", and you hear only about a problem that is new since then.
 - `fastpilot ship-check` with no page checks the current app's address (Add app in the dashboard).
-- **More options** has the full form: which tests (picked from the list, nothing to type), other times,
-  Slack and GitHub messages (the GitHub repo is filled in from the project's own repo).
+- **Other times** (New schedule) has the full form: which tests (picked from the list, nothing to type), other
+  times, a webhook (a Slack-compatible URL) and GitHub messages (the GitHub repo is filled in from the
+  project's own repo).
 
 - Schedules are stored in `~/.fastpilot/schedules.json` and registered with the system scheduler **only when you
   save them**: a launchd LaunchAgent on macOS (`~/Library/LaunchAgents/dev.fastpilot.schedule.<id>.plist`),
@@ -679,7 +685,11 @@ Every env below (except `FASTPILOT_STATE_KEY` and `FASTPILOT_LOG`) can also go i
 | `FASTPILOT_CHROME_ENDPOINT` | Chrome on another computer for all web sessions: `http://host:port` or `ws://...` |
 | `FASTPILOT_LOG` | tracing filter, e.g. `debug` (logs go to stderr; stdout is used by MCP) |
 
-## Tools (14)
+## Tools (23)
+
+The 14 below are for driving a test, plus `related_tests` and the Jira tools. Nine more do what the dashboard pages
+do: `apps`, `tests`, `schedules`, `map`, `ship_check`, `secrets`, `memory`, `history` and `agents`. No tool takes a
+password's value.
 
 | Tool | Purpose |
 |---|---|
