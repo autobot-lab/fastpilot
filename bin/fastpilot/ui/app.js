@@ -1826,7 +1826,7 @@ function proposalCard(p) {
       // bot wrote).
       // QA #5980 bug 4: a password the user asked for: asked here, one masked dialog per name.
       p.kind === "open" && p.open === "secrets" && (p.names || []).length
-        ? h("button", { class: "btn p", onclick: () => askSecrets(p) }, p.rerun ? "Save and run" : "Set the password")
+        ? h("button", { class: "btn p", onclick: () => askSecrets(p) }, p.rerun ? "Save and run" : "Save password")
       : page ? h("a", { class: "btn p", href: page.href, onclick: () => { chatDecide(p.id, true); } }, page.verb)
       // UXA8: a note fastpilot offers on its own ("Remember this?") is kept with "Remember it".
         : h("button", { class: "btn p", onclick: async () => { await chatDecide(p.id, true); if (p.kind === "app" && window.Apps) Apps.reload(); } }, p.kind === "schedule" ? "Create schedule" : p.kind === "note" ? (p.title === "Remember this?" ? "Remember it" : "Add note") : VERB[p.kind] || "Save changes"),

@@ -669,9 +669,14 @@ pub fn send(agent: &str, chat: Option<&str>, text: &str) -> Res<String> {
 /// after a Stop: nothing half-made), and the chat is kept in History.
 fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<String>, stopped: bool) {
     let jira = fastpilot_core::jira::connected_settings();
-    // The chat's own app, for its password cards (read before the chat lock: `chat_app` takes it).
-    let own = chat_app(key).and_then(|id| crate::apps::get(&id)).or_else(crate::apps::current).map(|a| json!({ "id": a.id, "name": a.name }));
+    // The chat's own app, for its password cards (read before the chat lock: `chat_app` takes it),
+    // and the names it has a saved password for (names only, never a value: Security #224 L9).
+    let own_app = chat_app(key).and_then(|id| crate::apps::get(&id)).or_else(crate::apps::current);
+    let own = own_app.as_ref().map(|a| json!({ "id": a.id, "name": a.name }));
+    let saved = own_app.map(|a| a.secrets).unwrap_or_default();
     let mut c = chat_of(key);
+    // FastTest 7345 N2: the user asked for a check in this chat, so a saved password runs it again.
+    let asked_check = c.msgs.iter().any(|m| m.role == "user" && asks_check(&m.text));
     let now = change::now_ms();
     c.loosen_times.retain(|t| now.saturating_sub(*t) < 3_600_000);
     let open: Vec<(String, Option<String>)> = c
@@ -729,11 +734,22 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
             proposals.clear();
             attempts.clear();
         }
+        // FastTest 7345 N1: the bot's password card in a turn that read a page or a ticket, asked for
+        // by a check or a login (not the word "password"): the same names as a run's card (Security
+        // #208 M1); any other name a page could have chosen becomes the test account's.
+        if (t.read_app || !t.tickets.is_empty()) && !asks_password(&t.user) {
+            for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
+                if p.names.iter().any(|n| !(n == "TEST_USER" || n == "TEST_PASSWORD" || saved.contains(n) || t.user.contains(n.as_str())))
+                    && let Ok(q) = open_card(&json!({ "kind": "open", "page": "secrets", "names": test_account_names(&saved) }))
+                {
+                    *p = q;
+                }
+            }
+        }
         // QA #6103: a run that stopped for a password gets fastpilot's own card ("Save and
         // run"), whatever the bot wrote; a Secrets card of the bot's is merged into it.
         // Security #208 M1: when outside text was read, only the test account, the app's own saved
         // names or names in the user's message; anything else keeps the normal, gated card.
-        let saved = crate::apps::current().map(|a| a.secrets).unwrap_or_default();
         m.needs.retain(|n| !t.read_app || n == "TEST_USER" || n == "TEST_PASSWORD" || saved.contains(n) || t.user.contains(n.as_str()));
         if !m.needs.is_empty() {
             proposals.retain(|p| !(p.kind == "open" && p.open.as_deref() == Some("secrets")));
@@ -747,23 +763,28 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
             }
         }
         // FastTest 7013: the bot's own password card after it ran a check: saving it runs the check
-        // again, as the bot says it will ("Save and run").
-        let ran = m.tools.iter().any(|t| ["session", "run_flow", "check_flow", "tests", "ship_check"].contains(&t.split(" · ").next().unwrap_or("")));
+        // again, as the bot says it will ("Save and run"). FastTest 7345 N2: also when the bot ran
+        // nothing yet, if the user asked for a check in this chat (the bot does it once it is saved).
+        let ran = asked_check || m.tools.iter().any(|t| ["session", "run_flow", "check_flow", "tests", "ship_check"].contains(&t.split(" · ").next().unwrap_or("")));
         for p in proposals.iter_mut().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
             p.rerun |= ran;
             p.app.clone_from(&own);
         }
         // v0.7.1 M2: the bot said a hidden field would ask for the password, but made no card:
         // fastpilot shows the test account's card itself, in this answer (never a promise alone).
-        if !stopped && promises_password_field(&m.text) && !proposals.iter().any(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty()) {
-            let app = own.as_ref().and_then(|a| a["id"].as_str()).map(str::to_owned);
-            let missing: Vec<&str> = ["TEST_USER", "TEST_PASSWORD"].into_iter().filter(|n| !app.as_deref().is_some_and(|a| fastpilot_core::secrets::has(a, n))).collect();
-            let names = if missing.is_empty() { vec!["TEST_USER", "TEST_PASSWORD"] } else { missing };
-            if let Ok(mut p) = open_card(&json!({ "kind": "open", "page": "secrets", "names": names })) {
-                p.rerun = ran;
-                p.app.clone_from(&own);
-                proposals.push(p);
-            }
+        if !stopped
+            && promises_password_field(&m.text)
+            && !proposals.iter().any(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty())
+            && let Ok(mut p) = open_card(&json!({ "kind": "open", "page": "secrets", "names": test_account_names(&saved) }))
+        {
+            p.rerun = ran;
+            p.app.clone_from(&own);
+            proposals.push(p);
+        }
+        // FastTest 7345 N2: a password card that runs nothing is never promised to run the check.
+        let secrets = proposals.iter().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets") && !p.names.is_empty());
+        if secrets.clone().next().is_some() && !secrets.clone().any(|p| p.rerun) {
+            m.text = drop_rerun_claims(&m.text).0;
         }
         // S8: the release verdict and a bug report as cards, built from their fields.
         if let Some((card, rest)) = crate::report_cards::verdict(&m.text) {
@@ -2634,7 +2655,9 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
             "jira" => any(&["jira"]),
             // v0.7.1 M2 (FastTest D3): the test account is asked for whatever words were used ("check
             // the login with a@b.com"); other names only when the user's words ask for a password.
-            "secrets" => any(&["password", "secret", "sandi"]) || test_account_only(v),
+            // FastTest 7345 N1: asking for a password is not a risky action: a check or a login the
+            // user asked for may ask for it too (its names: `finish`); never a page or a ticket alone.
+            "secrets" => asks_password(user) || test_account_only(v) || asks_check(user),
             "device" => any(&["device", "emulator", "simulator", "phone", "iphone", "android", "perangkat"]),
             "history" => any(&["history", "riwayat", "delete", "hapus"]),
             _ => false,
@@ -2647,6 +2670,34 @@ fn asked_for_action(user: &str, kind: &str, v: &Value) -> bool {
 fn test_account_only(v: &Value) -> bool {
     let names: Vec<&str> = v["names"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     !names.is_empty() && names.iter().all(|n| matches!(*n, "TEST_USER" | "TEST_PASSWORD"))
+}
+
+/// The user's own words ask about a password ("ask me for the password", "simpan sandi").
+fn asks_password(user: &str) -> bool {
+    let u = user.to_lowercase();
+    ["password", "secret", "sandi"].iter().any(|w| has_phrase(&u, w))
+}
+
+/// FastTest 7345 N1/N2: the user's own words ask for a check, a test or a login ("check the login
+/// with a@b.com", "run the login test", "cek login").
+fn asks_check(user: &str) -> bool {
+    let u = user.to_lowercase();
+    ["check", "test", "tests", "login", "log in", "sign in", "verify", "try", "cek", "tes", "uji", "coba", "periksa", "masuk"].iter().chain(RUN_WORDS).any(|w| has_phrase(&u, w))
+}
+
+/// The test account's names still to set for this app; both when both are saved (a wrong one).
+fn test_account_names(saved: &[String]) -> Vec<&'static str> {
+    let missing: Vec<&str> = ["TEST_USER", "TEST_PASSWORD"].into_iter().filter(|n| !saved.iter().any(|s| s == n)).collect();
+    if missing.is_empty() { vec!["TEST_USER", "TEST_PASSWORD"] } else { missing }
+}
+
+/// FastTest 7345 N2: the bot's own promise to run something again ("Once you've set it, I'll run
+/// the check again"), for an answer whose password card runs nothing.
+fn drop_rerun_claims(text: &str) -> (String, Vec<String>) {
+    drop_sentences(text, |s| {
+        let low = s.to_lowercase().replace('\u{2019}', "'");
+        low.contains("again") && ["i'll", "i will", "fastpilot runs", "fastpilot will"].iter().any(|p| low.contains(p))
+    })
 }
 
 /// v0.7.1 M2: the bot's words promise a hidden field for a password ("fastpilot will ask you for it
@@ -4376,6 +4427,21 @@ mod tests {
 
     fn settings(changes: Value) -> String {
         format!("Here:\n```fastpilot-proposal\n{}\n```", json!({ "kind": "settings", "changes": changes }))
+    }
+
+    /// FastTest 7345 N1/N2: a check or a login the user asked for may ask for the password (never a
+    /// page alone); a card that runs nothing loses only the bot's own promise to run it again.
+    #[test]
+    fn a_check_may_ask_for_the_password_and_no_rerun_is_promised_in_vain() {
+        let pw = json!({ "kind": "open", "page": "secrets", "names": ["DEMO_PASS"] });
+        for (user, want) in [("check the login with a@b.com", true), ("cek login dengan a@b.com", true), ("run the login test", true), ("save my password", true), ("what does the page say?", false), ("summarise the ticket", false)] {
+            assert_eq!(asked_for_action(user, "open", &pw), want, "{user}");
+        }
+        assert_eq!(test_account_names(&[]), ["TEST_USER", "TEST_PASSWORD"]);
+        assert_eq!(test_account_names(&["TEST_USER".to_owned()]), ["TEST_PASSWORD"]);
+        assert_eq!(test_account_names(&["TEST_USER".to_owned(), "TEST_PASSWORD".to_owned()]), ["TEST_USER", "TEST_PASSWORD"]);
+        let (kept, dropped) = drop_rerun_claims("I can't log in yet. Once you've set it, I'll run the check again. The page says: try again later.");
+        assert_eq!((kept.as_str(), dropped), ("I can't log in yet. The page says: try again later.", vec!["Once you've set it, I'll run the check again.".to_owned()]));
     }
 
     /// FastTest 7044 M2 + Security #222: fastpilot's own "needs your click" goes; a finding about the

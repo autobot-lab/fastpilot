@@ -595,10 +595,12 @@ fn chat_schedules_every_n_hours_after_a_click() {
     let _ = std::fs::remove_dir_all(home);
 }
 
-/// v0.7.1 M2 (FastTest 7044 M1, D3): "check the login with a@b.com" (no word "password"), after the
-/// bot ran a check: the hidden password card for the test account is in that same answer, with
-/// "Save and run"; when the bot only promises the field, fastpilot shows the card itself. Another
-/// name from a turn that read the app still needs the user's own words (Security #208 M1).
+/// v0.7.1 M2 (FastTest 7044 M1, D3) and FastTest 7345 N1: "check the login with a@b.com" (no word
+/// "password"), after the bot ran a check: the hidden password card is in that same answer, with
+/// "Save and run", and no "a tested page asked" notice. Real Claude's words ("save DEMO_PASS with the
+/// card below. Once you've set it, I'll run the check again.") and its card for a name it chose in a
+/// turn that read the page: the card asks for the test account (Security #208 M1). When the bot
+/// only promises the field, fastpilot shows the card itself.
 #[test]
 fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
     let home = std::env::temp_dir().join(format!("fp-chat-d3-{}", std::process::id()));
@@ -618,6 +620,37 @@ fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
         assert_eq!((cards[0]["status"].as_str(), &cards[0]["names"], cards[0]["rerun"].as_bool()), (Some("pending"), &names, Some(true)), "{said}: {bot}");
         assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "{said}: not a page's attempt: {bot}");
     }
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// FastTest 7345 N2: "Save and run" runs. The user asked for a check in this chat, and the bot ran
+/// nothing yet: the card still runs it again once saved. A password card in a chat that asked for
+/// no check runs nothing, so it says "Save" and the bot's "I'll run the check again" is dropped.
+#[test]
+fn a_password_card_runs_the_check_the_user_asked_for_or_promises_nothing() {
+    let home = std::env::temp_dir().join(format!("fp-chat-n2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let say = |text: &str| -> Value {
+        let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": text }).to_string(), true);
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot")
+    };
+    let secrets = |bot: &Value| -> Value { bot["proposals"].as_array().and_then(|p| p.iter().find(|p| p["open"] == "secrets")).cloned().unwrap_or_default() };
+    // No check asked for: nothing to run again, and nothing promised.
+    let bot = say("ask me for the password");
+    let card = secrets(&bot);
+    assert_eq!((card["status"].as_str(), card["rerun"] == true), (Some("pending"), false), "{bot}");
+    let text = bot["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Here is the card for it.") && !text.contains("again"), "{text}");
+    // The user asks for a check; the bot ran nothing in this answer: saving runs it.
+    let bot = say("ask me for the password and then check the login with a@b.com");
+    assert!(bot["tools"].as_array().is_none_or(Vec::is_empty), "the stand-in ran nothing: {bot}");
+    let card = secrets(&bot);
+    assert_eq!((card["status"].as_str(), card["rerun"] == true), (Some("pending"), true), "{bot}");
+    assert!(bot["text"].as_str().unwrap_or_default().contains("I'll run the check again"), "a promise that is kept stays: {bot}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }
@@ -1337,12 +1370,14 @@ fn chat_gives_the_password_card_the_user_asked_for() {
     let bot = say("I need a password for the test account, set that up");
     let (st, body) = post("/api/chat/decide", json!({ "id": bot["proposals"][0]["id"], "apply": true }));
     assert_eq!(st, 200, "{body}");
-    // A page in a turn that read the app: no card for a name that is not the test account's, and
-    // the attempt carries no raw proposal.
+    // A page in a turn that read the app: never a card for a name that is not the test account's
+    // (FastTest 7345 N1: the user asked for a check, so the test account's card instead), and
+    // nothing carries the raw proposal.
     let bot = say("check the login page and tell me what it needs");
-    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty), "{bot}");
-    let tries = bot["page_attempts"].as_array().cloned().unwrap_or_default();
-    assert!(!tries.is_empty() && tries.iter().all(|a| a["kind"] == "action" && a.get("said").is_none()), "{bot}");
+    assert!(!bot["proposals"].to_string().contains("GITHUB_TOKEN"), "{bot}");
+    for c in bot["proposals"].as_array().cloned().unwrap_or_default() {
+        assert_eq!((c["open"].as_str(), &c["names"]), (Some("secrets"), &json!(["TEST_USER", "TEST_PASSWORD"])), "{bot}");
+    }
     assert!(!bot.to_string().contains("\\\"kind\\\""), "{bot}");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
