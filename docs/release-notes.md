@@ -1,7 +1,50 @@
 ## What's new in 0.7.2
 
+Pick the AI model for each agent, share a report of a run, and type one-time codes during a test without ever saving them. fastpilot is now under the MIT license.
+
+### A model for each agent
+- **Replay and Explore models per agent.** Each agent can run its replays on one model and its exploring and repairing on another. The **Model** tab (and Settings › AI model) shows both, with **Undo** after a change. "Default" follows the Settings model.
+- **Providers.** Claude Code is built in. Add **OpenAI**, **OpenRouter** or **Groq** with just a key, **Ollama** running on this Mac (found by itself, no key), or **Other**: any OpenAI-compatible server by its address.
+- **The model list comes from the provider.** If a provider cannot list its models, you can type a model id. Keys are kept in your computer's key store, tied to that provider's own address, and sent only there.
+- **No silent switch.** If a provider does not answer, refuses the key, or no longer has the model, the test stops with a plain line. fastpilot does not start another model for you. Removing a provider puts its agents back on the default and says which.
+- The run report names the model used. From the terminal: `fastpilot agent model` and `fastpilot provider list|add|remove|refresh|models`. For Claude Code: the `providers` tool and the `model` action of `agents`. No key is ever taken on a command line or by Claude Code.
+- **Only Claude has been tested in practice.** Other providers were tested against stand-in servers, not real accounts. Text from the page goes to the provider you pick; the dashboard says so when you add one.
+
+### Reports
+- **"Make a report of the last run"** in Chat gives a **Test report** card with Open, Download (web page or Markdown) and Copy Markdown. **History** has **Make a report** on every run, and the terminal has `fastpilot report [<run-id>] [--open] [--markdown] [--list]`. Claude Code can use the new `reports` tool.
+- fastpilot writes the report itself, so it works the same with any model. The web page opens offline. Passwords and card numbers in the text show as `***`, and nothing is uploaded.
+
+### One-time codes
+- **A code is asked once, while the step waits.** When a test needs an SMS or email code, the dashboard shows one hidden field above the message box for up to 3 minutes. The code goes to that run only and is never saved, sent to the AI, or written to a log.
+- **If nobody types it,** the test stops at once with one red line, "Stopped at step N: no code was typed in 3 minutes. Say "run it again" when you have the code." It no longer tries again with a second model.
+- A test that needs a code can be saved from Chat with no warning. In a terminal or a scheduled run nobody can type it: the run says so and does not pass.
+
+### Easier to use
+- **Live and About tabs for every agent,** from the first start, with Stop all and Remove in About.
+- **Passwords can be 1 character** long, and short ones are hidden only where they appear as a whole value.
+- **`fastpilot demo`** opens on the "Demo shop" agent with its three tests, and the demo tests sign in when run from Chat. The run ends with "All 3 demo tests passed.", and Chat posts the result when a run ends.
+- **Rename an app from Chat.** Rename and model changes have **Undo**, and "undo that" undoes the last change Chat made.
+- A waiting chat says "· 1 ahead", and every control shows a keyboard focus ring.
+
+### Fixes
+- **An app added from Chat uses its own password** when Chat runs a test, on Schedules › Run now, and on a schedule's timer. The password card and the test use the same name.
+- If the wrong key is pasted, the dashboard now says "paste it again".
+- Run results in Chat show page text without stray backslashes.
+
+### Safety
+- A step that reads a code from a web address (`readOtp`) never sends a saved password to another site.
+- A session or a flow's own variables never ask for a one-time code before the own-site check.
+- Chat changes a model only when your own message names it; text from a page or a ticket cannot pick where page text goes.
+
 ### License
-- fastpilot is now MIT-licensed. Versions up to 0.7.1 were released under Apache-2.0.
+- **fastpilot is now under the MIT license** (versions up to 0.7.1 were Apache-2.0). The npm package ships the `LICENSE` file, and the GitHub Action is under MIT too.
+
+### Known limits
+- **Report screenshots are not blurred.** They show the page as it was, including anything typed in a field. Look at them before you share a report.
+- Schedules saved before 0.7.2 for an app added from Chat have no app: save them again from the dashboard.
+- **Jira Cloud only** (addresses ending in `.atlassian.net`). A real Atlassian sign-in has not been tested by the maker yet.
+- **Windows is not supported.** Homebrew is not available yet.
+- Not tested yet: models other than Claude on real accounts, Linux, physical Android phones and iPhones, and the real Keychain in the release gate (it ran with a file store).
 
 ## What's new in 0.7.1
 
