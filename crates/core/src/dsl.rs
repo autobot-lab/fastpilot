@@ -1418,7 +1418,9 @@ pub fn is_code(name: &str, text: &str) -> bool {
     let by_name = parts.last().is_some_and(|p| ["OTP", "TOTP", "CODE", "PIN", "MFA", "2FA"].contains(p)) || parts.first() == Some(&"OTP");
     let words: Vec<String> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
     let says = |phrase: &[&str]| words.windows(phrase.len()).any(|w| w.iter().zip(phrase).all(|(a, b)| a == b));
-    by_name || [&["otp"][..], &["one", "time", "code"], &["onetime", "code"], &["verification", "code"], &["kode"], &["2fa"]].iter().any(|p| says(p))
+    // Security #229 L2: a step's words never make a password, token or key a code.
+    let secret_name = ["PASS", "TOKEN", "SECRET", "KEY"].iter().any(|w| name.contains(w));
+    by_name || !secret_name && [&["otp"][..], &["one", "time", "code"], &["onetime", "code"], &["verification", "code"], &["kode"], &["2fa"]].iter().any(|p| says(p))
 }
 
 /// E1: what a run says when it reaches a one-time code it cannot get (never "setup needed: the
@@ -2033,7 +2035,7 @@ mod tests {
         ] {
             assert!(is_code(name, step), "{name} in {step:?}");
         }
-        for (name, step) in [("DEMO_PASS", "Sign in with ${DEMO_PASS}"), ("CODENAME", ""), ("PINTU", "Open the footprint page"), ("TEST_PASSWORD", "Type ${TEST_PASSWORD}"), ("PROMO", "Enter the voucher ${PROMO}")] {
+        for (name, step) in [("TEST_PASSWORD", "Type ${TEST_PASSWORD} and the verification code"), ("API_TOKEN", "Isi kode ${API_TOKEN}"), ("DEMO_PASS", "Sign in with ${DEMO_PASS}"), ("CODENAME", ""), ("PINTU", "Open the footprint page"), ("TEST_PASSWORD", "Type ${TEST_PASSWORD}"), ("PROMO", "Enter the voucher ${PROMO}")] {
             assert!(!is_code(name, step), "{name} in {step:?}");
         }
     }
