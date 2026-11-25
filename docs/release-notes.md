@@ -1,3 +1,43 @@
+## What's new in 0.7.1
+
+Full control from Chat: say what you want in the dashboard Chat, the terminal or Claude Code, and fastpilot does it at once and shows one result line with **Undo**.
+
+### Full control from Chat
+- **Dashboard Chat does what the pages do.** Pause, resume, change or run a schedule, ask "can we release?", turn the release watch on, switch app, or run a test, all in one sentence. The answer is a result line, not a card to approve.
+- **Chat like a messenger.** An agents sidebar with many chats per agent (each keeps its own conversation), safe Markdown answers, **Stop** while it works, and a short queue when more chats run than allowed at once.
+- **Start in Chat, no form.** The first screen is Chat. Paste your address and fastpilot adds the app itself; "test my Android app" or "my iPhone app" lists the apps on your running emulator or simulator and adds the one you pick.
+- **Each Chat works in its own agent's app,** so a chat no longer touches another app.
+- **Skills tab** per agent: General QA is always on, and specialist skills are switches. New agents start on General QA; an agent saved with no skill list becomes General QA (its old list is in `fastpilot undo --list`).
+- **One look for every page.** "More options" is gone from the pages.
+
+### Terminal and Claude Code
+- **From the terminal:** `fastpilot app`, `fastpilot schedule`, `fastpilot secret`, `fastpilot agent skills` and `fastpilot agent stop`. A password is read from a hidden prompt or stdin, never from the command line.
+- **For Claude Code:** the dashboard's pages and agents are MCP tools (`apps`, `tests`, `schedules`, `map`, `ship_check`, `secrets`, `memory`, `history`, `agents`). No tool accepts a password value.
+
+### Undo and Stop
+- **Undo for every change,** in Chat, the terminal (`fastpilot undo`) and Claude Code.
+- **Removing is a soft delete.** Apps, schedules, chats and agents are kept for 7 days under History › **Recently removed**, with Restore. "Remove my app" in Chat does this too.
+- **Stop all** in "About this agent" stops every running chat of that agent, including the Claude Code and browsers they started, and leaves other agents running.
+
+### Passwords and time
+- **The password card appears in the same answer** when a check you asked for needs a password, and **Save and run** runs that check after saving. If there is nothing to run again, the button says **Save password**. The password is still typed only in the masked field.
+- **The time limit per test is in minutes.** A shorter time applies at once with Undo; a longer one still needs the red card.
+
+### Safety
+- **Actions start only from your own message.** Text from a page or a ticket cannot start a change, a run or a card, and an agent or note made from Claude Code is not read as your rules.
+
+### Fixes
+- A change Chat already made no longer says "needs your click", and no text mentions things that are gone.
+- The release check runs every test suite in a debug build with its debug-only hook.
+
+### Known limits
+- **Jira Cloud only** (addresses ending in `.atlassian.net`). A real Atlassian sign-in has not been tested by the maker yet; it was tested with a stand-in Atlassian server.
+- One map per app. The phone map has no network guard.
+- **Windows is not supported.** Homebrew is not available yet.
+- After saving a test from a Chat card, the bot does not yet know the card was clicked and may offer a second one.
+- Chat answers in the queue do not yet show "1 ahead".
+- Not tested yet: models other than Claude, Linux, physical Android phones and iPhones, the real Keychain in the final gate run (it ran with a file store), and a screen reader.
+
 ## What's new in 0.7.0
 
 Easy from the first minute: install once, run `fastpilot`, paste your address, and the rest is clicks.

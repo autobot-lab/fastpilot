@@ -1,6 +1,6 @@
 {
   "name": "fastpilot",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "AI-driven QA for web, Android and iOS: an MCP server that drives Chrome, emulators and simulators, plus 24 testing skills (ISTQB techniques, checklists, regression, bug and release reports).",
   "author": { "name": "autobot-lab", "url": "https://github.com/autobot-lab" },
   "homepage": "https://github.com/autobot-lab/fastpilot",
