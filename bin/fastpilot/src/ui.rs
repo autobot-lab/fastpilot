@@ -730,6 +730,8 @@ async fn providers_change(axum::Json(body): axum::Json<Value>) -> Response {
                     let note = added.lines.iter().find(|l| l.starts_with("Tests that use")).cloned();
                     axum::Json(json!({ "message": added.done.line, "note": note, "lines": added.lines, "undo": added.done.undo, "provider": row_of(&rows, &provider) })).into_response()
                 }
+                // G7 (design parity): the dashboard has no command to run again; the key is pasted.
+                Err(f) if f.code == "key_not_accepted" => said_no(&crate::control::fail(f.code, f.msg.replace("Check it and run the command again.", "Check it and paste it again."))),
                 Err(f) => said_no(&f),
             }
         }

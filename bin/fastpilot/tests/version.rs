@@ -21,3 +21,21 @@ fn the_npm_package_and_cargo_have_the_same_version() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).arg("--version").output().expect("run");
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "fastpilot 0.7.1");
 }
+
+/// FastTest v0.7.2 (Low): the npm tarball had no `LICENSE`, though `license` says MIT. The package
+/// carries the repository's license file, the same text, and `npm pack` puts it in.
+#[test]
+fn the_npm_package_ships_the_mit_license() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let pkg: serde_json::Value = serde_json::from_str(include_str!("../../../packaging/npm/package.json")).expect("package.json");
+    assert_eq!(pkg["license"], "MIT");
+    let license = std::fs::read_to_string(format!("{root}/packaging/npm/LICENSE")).expect("packaging/npm/LICENSE");
+    assert_eq!(license, std::fs::read_to_string(format!("{root}/LICENSE")).expect("LICENSE"), "the same text as the repository's LICENSE");
+    assert!(license.starts_with("MIT License"));
+    let Ok(out) = std::process::Command::new("npm").args(["pack", "--dry-run", "--json", "--ignore-scripts"]).current_dir(format!("{root}/packaging/npm")).output() else {
+        return eprintln!("skipping npm pack: no npm");
+    };
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("npm pack --json");
+    let files: Vec<&str> = listed[0]["files"].as_array().expect("files").iter().filter_map(|f| f["path"].as_str()).collect();
+    assert!(files.contains(&"LICENSE"), "npm pack puts LICENSE in: {files:?}");
+}
