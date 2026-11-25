@@ -1,8 +1,0 @@
-# fastpilot: test runs, chats and saved logins of this computer; not for git.
-*
-!.gitignore
-# Visual baselines are shared with the team (not this computer's actual and diff images).
-!baselines/
-!baselines/*.png
-baselines/*.actual.png
-baselines/*.diff.png

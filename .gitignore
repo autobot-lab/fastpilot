@@ -1,6 +1,6 @@
 /target
 /logs
-/.fastpilot
+.fastpilot/
 /dist
 /packaging/npm/vendor
 /packaging/npm/*.tgz
