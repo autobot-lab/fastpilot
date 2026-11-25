@@ -1645,9 +1645,13 @@ fn chats_answer_side_by_side_wait_for_a_slot_stop_and_come_back() {
     assert_ne!(a_id, b_id);
     std::thread::sleep(Duration::from_millis(600));
     let waiting = chat(&b_id);
-    assert_eq!((waiting["busy"].as_bool(), waiting["waiting"]["ahead"].as_u64()), (Some(true), Some(0)), "{waiting}");
+    // S1 (FastTest backlog): the first in the queue has the answering chat ahead of it: "· 1 ahead",
+    // in the chat and on its sidebar row.
+    assert_eq!((waiting["busy"].as_bool(), waiting["waiting"]["ahead"].as_u64()), (Some(true), Some(1)), "{waiting}");
     assert!(chat(&a_id)["waiting"].is_null());
     let list = get("/api/chats?agent=default")["chats"].clone();
+    let row = |id: &str| list.as_array().expect("chats").iter().find(|c| c["id"] == id).cloned().expect("row");
+    assert_eq!((row(&b_id)["waiting"].as_u64(), row(&a_id)["waiting"].is_null()), (Some(1), true), "{list}");
     let titles: Vec<&str> = list.as_array().expect("chats").iter().filter_map(|c| c["title"].as_str()).collect();
     assert_eq!(titles, ["hello from the second chat", "hello from the first chat"], "newest first: {list}");
     assert!(list.as_array().expect("chats").iter().all(|c| c["busy"] == true));

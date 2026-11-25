@@ -281,8 +281,8 @@ fn state_of(key: &str) -> Value {
     // FC4: a chat over the limit of answers at once waits for a free slot; one whose test needs a
     // device another chat uses waits for that device.
     let ahead = if busy { slot_wait(key) } else { None };
-    let device = if busy { fastpilot_core::claim::entries().into_iter().find(|e| e.waiting && e.chat.as_deref() == Some(key)).map(|e| e.reason) } else { None };
-    json!({ "agent": agent, "chat": key, "title": title, "messages": all, "busy": busy, "waiting": ahead.map(|n| json!({ "ahead": n })), "device_wait": device, "signin": busy_signin(&all) })
+    let device = if busy { device_wait(key) } else { None };
+    json!({ "agent": agent, "chat": key, "title": title, "messages": all, "busy": busy, "waiting": ahead.map(|n| json!({ "ahead": n })), "device_wait": device.as_ref().map(|d| &d.0), "device_ahead": device.map(|d| d.1), "signin": busy_signin(&all) })
 }
 
 /// The chat that holds card `id`, as the page shows it (after a click on that card).
@@ -329,7 +329,7 @@ pub fn chats(agent: &str) -> Vec<Value> {
     let order = |id: &str| agent.conversations.iter().position(|c| c == id).unwrap_or(usize::MAX);
     for (id, title, busy, _) in &live {
         let updated = kept.iter().find(|k| &k.id == id).map_or(u64::MAX, |k| k.updated_ms);
-        out.push(json!({ "id": id, "title": title, "updated_ms": updated, "busy": busy, "waiting": if *busy { slot_wait(id) } else { None }, "order": order(id) }));
+        out.push(json!({ "id": id, "title": title, "updated_ms": updated, "busy": busy, "waiting": if *busy { wait_ahead(id) } else { None }, "order": order(id) }));
     }
     for k in kept.iter().filter(|k| agent.conversations.contains(&k.id) && !live.iter().any(|l| l.0 == k.id)) {
         out.push(json!({ "id": k.id, "title": k.title, "updated_ms": k.updated_ms, "busy": false, "waiting": null, "order": order(&k.id) }));
@@ -416,8 +416,24 @@ impl Drop for InLine {
 }
 
 /// How many chats wait before chat `key` (`None`: it is not waiting).
+/// S1 (FastTest backlog): how many go before a chat that waits for a free slot: the chats queued
+/// before it, plus the one whose answer it waits for (so the first in the queue has 1 ahead).
 fn slot_wait(key: &str) -> Option<usize> {
-    SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.iter().position(|k| k == key)
+    SLOTS.lock().unwrap_or_else(|p| p.into_inner()).waiting.iter().position(|k| k == key).map(|n| n + 1)
+}
+
+/// S1: a chat whose test waits for a device another chat uses: the reason, and how many use or wait
+/// for that device before it (at least 1).
+fn device_wait(key: &str) -> Option<(String, usize)> {
+    let all = fastpilot_core::claim::entries();
+    let me = all.iter().find(|e| e.waiting && e.chat.as_deref() == Some(key))?;
+    let ahead = all.iter().filter(|o| o.platform == me.platform && o.device == me.device && o.session != me.session && (!o.waiting || o.since_ms < me.since_ms)).count();
+    Some((me.reason.clone(), ahead.max(1)))
+}
+
+/// S1: a busy chat's place in a queue, for the sidebar ("Waiting · 1 ahead").
+fn wait_ahead(key: &str) -> Option<usize> {
+    slot_wait(key).or_else(|| device_wait(key).map(|d| d.1))
 }
 
 /// The app chat `key` works in: its agent's app (`None` while `FASTPILOT_DIR` pins a folder, or the

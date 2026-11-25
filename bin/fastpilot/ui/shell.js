@@ -60,11 +60,13 @@ function avatar(x) {
 function chatRow(x, c, current) {
   const on = c.id === current;
   const title = c.title || "New chat";
+  // S1: a chat that waits its turn says how many go first.
+  const waits = c.busy && c.waiting !== null && c.waiting !== undefined;
   const del = h("button", { type: "button", class: "del", "aria-label": `Remove chat “${title}”`, title: "Remove chat", onclick: (e) => { e.preventDefault(); e.stopPropagation(); removeChat(x.agent.id, c, title); } }, icon("close", "sm"));
   return h("li", { class: "crow-li" },
     h("a", { class: "crow" + (on ? " on" : ""), href: `#/agents/${x.agent.id}/chat/${c.id}`, "aria-current": on ? "page" : null, title },
-      h("span", { class: "t" }, title),
-      c.busy ? h("span", { class: "spin", role: "img", "aria-label": c.waiting !== null && c.waiting !== undefined ? "Waiting" : "Working" }) : null),
+      h("span", { class: "t" }, title, waits ? h("small", { class: "wait" }, `Waiting · ${c.waiting} ahead`) : null),
+      c.busy ? h("span", { class: "spin", role: "img", "aria-label": waits ? "Waiting" : "Working" }) : null),
     del);
 }
 

@@ -363,6 +363,28 @@ async fn the_dashboard_asks_for_a_one_time_code_while_the_step_waits() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// S1 (FastTest backlog): a chat that waits its turn says "Waiting · 1 ahead" on its sidebar row,
+/// and every tab, button and row shows the 2 px blue focus ring when reached with the keyboard.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_chat_says_how_many_go_first_and_keyboard_focus_shows() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-s1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::write(home.join(".fastpilot/config.toml"), "max_parallel = 1\n").expect("config");
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FAKE_CHAT_DELAY_MS", "6000")]).await;
+    eval(&client, "(async () => { await api('/api/chat', { agent: 'default', new: true, message: 'hello from the first chat' }); const b = await api('/api/chat', { agent: 'default', new: true, message: 'hello from the second chat' }); location.hash = '#/agents/default/chat/' + b.chat; return 'ok'; })()").await;
+    see(&client, "Waiting · 1 ahead").await;
+    let ring = eval(&client, "(() => { const out = []; for (const sel of ['.tabs2 a', '.crow', 'button.btn, button']) { const el = document.querySelector(sel); if (!el) { out.push(sel + ':none'); continue; } el.focus({ focusVisible: true }); const s = getComputedStyle(el); out.push(s.outlineStyle + ' ' + s.outlineWidth + ' ' + s.outlineColor + ' ' + s.outlineOffset); } return out.join('|'); })()").await;
+    for part in ring.trim_matches('"').split('|') {
+        assert!(part.starts_with("solid 2px rgb(36, 89, 214) 2px") || part.ends_with(":none"), "focus ring: {ring}");
+    }
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// v0.7.1 FC4b: one look for the whole dashboard. On every page: no "More options" (nothing hidden
 /// behind one), no hard shadow on cards or buttons, control borders in the --ctl grey; Settings has
 /// one tab bar with Integrations in it; Integrations shows the webhook as it is and no "Coming

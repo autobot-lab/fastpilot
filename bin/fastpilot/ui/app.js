@@ -1982,7 +1982,7 @@ function chatMsg(m, last) {
   if (m.role === "user") return h("li", { class: "msg me" }, h("div", { class: "me-b" }, m.text));
   const working = !m.done;
   const waiting = working && last && chatData && chatData.waiting ? `Waiting for a free slot${chatData.waiting.ahead ? ` · ${chatData.waiting.ahead} ahead` : ""}`
-    : working && last && chatData && chatData.device_wait ? "Waiting: another chat is using this device" : null;
+    : working && last && chatData && chatData.device_wait ? `Waiting: another chat is using this device${chatData.device_ahead ? ` · ${chatData.device_ahead} ahead of you` : ""}` : null;
   const signin = last && chatData && chatData.signin && m.error;
   return h("li", { class: "msg bot" },
     h("div", { class: "who" }, h("span", { class: "fmark", "aria-hidden": "true" }, "f"), "fastpilot"),

@@ -887,3 +887,9 @@ body:not(.on-chat) .body{max-width:956px;width:100%;margin:0 auto;padding-top:8p
 .page-h2{font:700 20px var(--display);margin:18px 0 12px}
 .hist-tab.on,.hist-f.on{box-shadow:none}
 @media (max-width:900px){body:not(.on-chat) .top{padding-left:64px}}
+
+/* S1: every tab, button and row shows a 2 px blue ring with a 2 px gap when reached with the keyboard. */
+.tabs2 a:focus-visible,.crow:focus-visible,.aghd:focus-visible,.hist-tab:focus-visible,button:focus-visible,a.btn:focus-visible,[role=tab]:focus-visible,[role=menuitem]:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.crow .t small.wait{display:block;font-size:11.5px;font-weight:400;color:var(--muted);line-height:1.2}
+.crow:has(small.wait){height:auto;min-height:34px;padding-top:4px;padding-bottom:4px}
+.tabs2{padding-block:4px;margin-block:-4px}
