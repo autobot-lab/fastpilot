@@ -332,7 +332,7 @@ pub fn scope_named() {
 
 /// The app `FASTPILOT_APP` names. Security #208 L1: only with `FASTPILOT_APP_KEY` equal to the
 /// running dashboard's key file, which a repo's `.mcp.json` cannot know.
-fn named() -> Option<App> {
+pub fn named() -> Option<App> {
     let (Ok(id), Ok(key)) = (std::env::var("FASTPILOT_APP"), std::env::var("FASTPILOT_APP_KEY")) else { return None };
     let kept = std::fs::read_to_string(crate::browsers::dir().join("app-key")).unwrap_or_default();
     if key.len() < 32 || kept.trim() != key {

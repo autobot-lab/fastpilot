@@ -118,6 +118,10 @@ pub struct Schedule {
     /// R1: a release watch (with `every: minutes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<Watch>,
+    /// F1b: the app whose saved passwords its runs may use when its tests are in a folder that is
+    /// no listed app's (the folder the dashboard was started in). Set only by `save` (`owner_app`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 fn yes() -> bool {
@@ -719,6 +723,9 @@ fn save_in(store: &mut Store, mut s: Schedule, webhook: Option<&str>) -> Res<Sch
     }
     s.name = s.name.trim().to_owned();
     s.tests = s.tests.trim().to_owned();
+    // F1b: never the caller's value (a page body or a Chat proposal): the one kept, else the app
+    // of whoever saves it, if that is the dashboard or a fastpilot it named the app for.
+    s.app = store.schedules.iter().find(|x| x.id == s.id).and_then(|x| x.app.clone()).or_else(|| owner_app(&s));
     validate(&s)?;
     match webhook.map(str::trim) {
         Some("") => {
@@ -855,6 +862,7 @@ pub fn preset_on(key: &str, tests: &str, tests_label: &str, agent: Option<String
         enabled: true,
         agent,
         watch: None,
+        app: None,
     };
     Ok((save(s, None)?, true))
 }
@@ -878,6 +886,7 @@ pub fn release_watch(tests: &str, on: bool) -> Res<Option<Schedule>> {
                 enabled: true,
                 agent: None,
                 watch: None,
+                app: None,
             };
             let s = save(with_watch(s, Some(2))?, None)?;
             start_now(&s.id)?;
@@ -1036,6 +1045,16 @@ pub async fn run(id: &str) -> Res<bool> {
     // D10b: an agent's schedule runs with that agent's provider and model, and its extra words.
     for (k, v) in agent_env(s.agent.as_deref()) {
         cmd.env(k, v);
+    }
+    // F1b: the app it was saved for, named the way the dashboard names it for a run Chat starts
+    // (#253, Security #208 L1: with the dashboard's key). `fastpilot run` still prefers the app
+    // whose folder it runs in, and S-1 still holds. No other app's name passes through.
+    cmd.env_remove("FASTPILOT_APP").env_remove("FASTPILOT_APP_KEY");
+    if std::env::var_os("FASTPILOT_DIR").is_none()
+        && let Some(app) = s.app.as_deref()
+        && let Ok(key) = std::fs::read_to_string(crate::browsers::dir().join("app-key"))
+    {
+        cmd.env("FASTPILOT_APP", app).env("FASTPILOT_APP_KEY", key.trim());
     }
     // PF4: during a release watch, ship checks compare speed with the check before the watch began.
     if let Some(w) = s.watch.as_ref().filter(|w| w.started_ms > 0) {
@@ -1219,6 +1238,17 @@ pub fn counts(output: &str) -> Option<(u64, u64)> {
     let l = output.lines().rev().find(|l| l.contains(" tests: ") && l.contains(" passed"))?;
     let num = |after: &str| l.split(after).next().and_then(|x| x.rsplit([' ', ':', ',']).find(|w| !w.is_empty())).and_then(|w| w.parse::<u64>().ok());
     Some((num(" passed")?, num(" tests:")?))
+}
+
+/// F1b: the app a schedule saved now belongs to: in the dashboard, its agent's app or the current
+/// one (as for a run Chat starts, #253); in a fastpilot the dashboard named an app for (its Chat's
+/// Claude Code), that app. Saved anywhere else (a terminal, a repo's own Claude Code): none.
+fn owner_app(s: &Schedule) -> Option<String> {
+    if crate::ui::APP_KEY.get().is_some() {
+        let agent = s.agent.as_deref().and_then(crate::agents::get);
+        return agent.as_ref().and_then(crate::agents::app_of).or_else(crate::apps::current).map(|a| a.id);
+    }
+    crate::apps::named().map(|a| a.id)
 }
 
 /// The environment of a scheduled run for `agent`: its provider and model (D10b), its extra
@@ -1494,6 +1524,7 @@ pub async fn cli(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send
                 enabled: true,
                 agent: None,
                 watch: None,
+                app: None,
             };
             let s = save(with_watch(s, Some(hours))?, None)?;
             start_now(&s.id)?;
@@ -1604,6 +1635,7 @@ mod tests {
             enabled: true,
             agent: None,
             watch: None,
+            app: None,
         }
     }
 
@@ -1755,6 +1787,7 @@ mod tests {
             enabled: true,
             agent: None,
             watch: None,
+            app: None,
         };
         let base = save(mk("base".into()), None).expect("base").id;
         std::thread::scope(|s| {

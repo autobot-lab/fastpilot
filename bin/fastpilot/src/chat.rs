@@ -3416,6 +3416,7 @@ fn schedule_of(v: &Value) -> Res<schedule::Schedule> {
             until_ms: change::now_ms() + v["for_hours"].as_u64().unwrap_or(0).min(25) * 3_600_000,
             ..Default::default()
         }),
+        app: None,
     };
     if let Some(w) = &s.watch
         && !(1..=24).contains(&((w.until_ms - change::now_ms() + 60_000) / 3_600_000))
@@ -3457,7 +3458,7 @@ fn when_of(v: &Value) -> Res<(schedule::When, schedule::Notify)> {
     };
     schedule::check_when(&when)?;
     if let Some(repo) = &notify.github {
-        schedule::validate(&schedule::Schedule { id: "x".into(), name: "x".into(), tests: "/".into(), when: when.clone(), notify: schedule::Notify { github: Some(repo.clone()), ..Default::default() }, enabled: true, agent: None, watch: (when.every == schedule::Every::Minutes).then(|| schedule::Watch { until_ms: change::now_ms() + 3_600_000, ..Default::default() }) })?;
+        schedule::validate(&schedule::Schedule { id: "x".into(), name: "x".into(), tests: "/".into(), when: when.clone(), notify: schedule::Notify { github: Some(repo.clone()), ..Default::default() }, enabled: true, agent: None, watch: (when.every == schedule::Every::Minutes).then(|| schedule::Watch { until_ms: change::now_ms() + 3_600_000, ..Default::default() }), app: None })?;
     }
     Ok((when, notify))
 }
@@ -4117,6 +4118,7 @@ fn save_test(key: &str, agent: &str, id: &str, data: &Value, mode: Option<&str>,
                 enabled: true,
                 agent: (agent != crate::agents::DEFAULT).then(|| agent.to_owned()),
                 watch: None,
+                app: None,
             };
             match schedule::save(s, None) {
                 Ok(s) if s.when.every == schedule::Every::Release => {
