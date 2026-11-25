@@ -138,8 +138,10 @@ Write what you want in plain words:
 
 If a step needs a one-time code (an SMS or email code), fastpilot asks for it in Chat while the test
 waits, in a masked field. The code is used once and never saved, and it is typed only on the app's own
-website. If nobody types it within 3 minutes, the test stops with one red line; say *"run it again"*
-when you have the code.
+website. If nobody types it within 3 minutes, the test stops there, once, with one red line
+(*Stopped at step N: no code was typed in 3 minutes…*); say *"run it again"* when you have the code.
+A test that needs a one-time code cannot run by itself on a schedule, because nobody is there to type
+it: it says *Could not run* (never a pass). Start it from the dashboard.
 
 When a test is ready, a card shows its steps: **Save & schedule** or **Save test only**, or one of the
 one-click schedules under them. A test is saved only when you click. The picture at the top of this
@@ -156,7 +158,9 @@ test at a time and the others wait their turn. Tests started by hand or by a sch
 - **One click:** three buttons run all of the app's tests by themselves: **Every 2 hours (8–20)**,
   **Every night** (2:00) and **Before each release** (it runs when you ask Chat *"Can we release?"*).
   A button that is on says **On · Turn off**.
-- **Run now** for any schedule.
+- **Run now** for any schedule. A schedule saved from the dashboard uses the app's saved passwords,
+  on **Run now** and on its timer. A schedule you made for an app added in Chat before 0.7.2 may say it
+  needs a password: save it again from the dashboard.
 - **Release watch** is one switch: after a release, re-check every 10 minutes for 2 hours and only
   tell you about new problems. It ends by itself.
 - **Other times** (New schedule): pick which tests and when (every day, on weekdays or weekly).
