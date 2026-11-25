@@ -1484,6 +1484,22 @@ pub(crate) fn is_app_value(value: &str) -> bool {
     !value.is_empty() && APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| v == value)
 }
 
+/// Security #237 M1: a value made from a saved password (a runFlow `env` like `${PIN}x`) is held to
+/// the app's site and masked like the password itself.
+pub(crate) fn keep_app_value(value: &str) {
+    add_secret(value);
+    let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+    if !value.is_empty() && !kept.iter().any(|v| v == value) {
+        kept.push(value.to_owned());
+    }
+}
+
+/// Security #237 M1: does `text` name a `${NAME}` saved for the app (a short password is found by
+/// its name, wherever it is put)?
+pub(crate) fn names_app_secret(text: &str) -> bool {
+    var_names(text).iter().any(|n| crate::secrets::lookup(n).is_some())
+}
+
 /// E5: values shorter than this are short: they match only as a whole value.
 const SHORT: usize = 4;
 
