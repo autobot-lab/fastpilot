@@ -164,6 +164,12 @@ if "Side by side:" in prompt and "step" in entry["tools"]:
     side_by_side()
 elif "android" in plan:
     call("finish", {"status": "pass", "notes": plan})
+elif "${MOTMAINA_OTP}" in prompt:
+    # E1: a step types a one-time code; fastpilot asks the person in the dashboard for it.
+    named = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target: file://")), "")
+    call("session", {"action": "start", "id": "w", "target": named})
+    r = call("run_flow", {"flow": "- inputText: { into: Code, text: \"${MOTMAINA_OTP}\" }\n- assertVisible: { text: code accepted, timeout: 3000 }\n"})
+    call("finish", {"status": "fail" if r.get("isError") else "pass", "notes": entry["calls"][-1]["text"][:300] if r.get("isError") else "code accepted"})
 else:
     # A test whose target is a full file address (a run outside the repo) opens that page.
     named = next((l.split(":", 1)[1].strip() for l in prompt.splitlines() if l.startswith("target: file://")), "")
