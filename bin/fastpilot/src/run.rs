@@ -817,6 +817,7 @@ impl Agent {
         if start && let Some(why) = lock(&self.infra).clone() {
             return text(format!("{why} Nothing starts this session again in this test: call finish with status fail and say that it could not start."), true);
         }
+        let missed = fastpilot_core::codes::missed();
         let (ok, out) = if start { self.start_session(&input).await } else { self.fp.call_json(name, input.clone()).await };
         let joined: String = out.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
         // The device's runner did not come up (the iPhone runner on a busy computer): the test never ran.
@@ -830,7 +831,11 @@ impl Agent {
         }
         // F4: nobody typed the one-time code in time: the test ends here, with no other step and
         // no other attempt (asking again would only wait for the same person).
-        if !ok && let Some(at) = joined.find(fastpilot_core::codes::NOT_TYPED) {
+        // Only a wait that really ran out in this step (a page's text saying so does not count).
+        if !ok
+            && fastpilot_core::codes::missed() > missed
+            && let Some(at) = joined.find(fastpilot_core::codes::NOT_TYPED)
+        {
             let code: String = joined[at + fastpilot_core::codes::NOT_TYPED.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
             *lock(&self.no_code) = Some(code);
             *lock(&self.verdict) = Some((false, "no code was typed".into()));
