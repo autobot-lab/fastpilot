@@ -580,7 +580,7 @@ async fn every_page_can_be_said_in_chat_and_cards_open_only_our_pages() {
     // Security #221 M1: the card carries its chat's app; the dialog names it and saves there.
     eval(c, "(async () => { const r = await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); window.__app = { id: r.app.id, name: r.app.name }; window.__decided = null; window.chatDecide = async (id) => { window.__decided = id; }; document.body.append(proposalCard({ id: 'pw', kind: 'open', open: 'secrets', title: 'Set the password', rows: [], names: ['TEST_USER', 'TEST_PASSWORD'], app: window.__app, status: 'pending' })); return 'ok'; })()").await;
     let button = eval(c, "(() => { const b = document.querySelector('[data-pid=\"pw\"] .btn.p'); b.click(); return b.tagName + '|' + b.textContent; })()").await;
-    assert_eq!(button, "\"BUTTON|Set the password\"");
+    assert_eq!(button, "\"BUTTON|Save password\"");
     see(c, "Set TEST_USER (a user name)").await;
     see(c, "It is saved in this Mac's Keychain for Shop").await;
     assert_eq!(eval(c, "(() => { const i = document.querySelector('dialog.cdlg input'); const t = i.type; i.value = 'a@b.com'; i.form.requestSubmit(); return t; })()").await, "\"text\"");

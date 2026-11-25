@@ -294,6 +294,32 @@ async fn the_about_panel_reads_first_and_closes_with_escape() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// FastTest 7345 N2: "Save and run" runs. "ask me for the password and then check the login with
+/// a@b.com": the bot runs nothing in that answer and shows the password card. The person clicks
+/// Save and run and types the password in the masked dialog; the check then starts in that chat
+/// by itself (fastpilot's sentence, then a new answer that opens the browser session).
+#[tokio::test(flavor = "multi_thread")]
+async fn save_and_run_runs_the_check_after_an_answer_that_ran_nothing() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-save-run-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FAKE_CHAT_NO_RUN", ""), ("FASTPILOT_KEYSTORE", "file")]).await;
+    eval(&client, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); location.hash = '#/agents/default/chat'; return 'ok'; })()").await;
+    see(&client, "What should I test?").await;
+    say(&client, "ask me for the password and then check the login with a@b.com").await;
+    see(&client, "Save and run").await;
+    eval(&client, "[...document.querySelectorAll('.prop .btn.p')].find((b) => b.textContent === 'Save and run').click(), 'ok'").await;
+    see(&client, "Set DEMO_PASS").await;
+    eval(&client, "(() => { const i = document.querySelector('dialog.cdlg input'); i.value = 'fp-save-run-1'; i.form.requestSubmit(); return 'ok'; })()").await;
+    see(&client, "The test account is saved now. Run that check again with it.").await;
+    // The stand-in answers "Correct login: …" only after it opened the browser session for the check.
+    see(&client, "Correct login:").await;
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// v0.7.1 FC4b: one look for the whole dashboard. On every page: no "More options" (nothing hidden
 /// behind one), no hard shadow on cards or buttons, control borders in the --ctl grey; Settings has
 /// one tab bar with Integrations in it; Integrations shows the webhook as it is and no "Coming

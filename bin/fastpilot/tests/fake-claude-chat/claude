@@ -50,7 +50,8 @@ time.sleep(int(os.environ.get("FAKE_CHAT_DELAY_MS", "0")) / 1000)
 low = prompt.lower()
 said = []
 
-if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN"):
+# FastTest 7345 N2: "ask me for the password and then check the login": the bot runs nothing yet.
+if ("tes" in low or "login" in low) and not os.environ.get("FAKE_CHAT_NO_RUN") and "ask me for the password" not in low:
     server = json.loads(opt("--mcp-config"))["mcpServers"]["fastpilot"]
     # As Claude Code does: its own environment plus the config's `env`.
     proc = subprocess.Popen([server["command"], *server["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={**os.environ, **server.get("env", {})})
@@ -259,8 +260,11 @@ if "blokir" in low:
 if "javascript" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"allow_eval_script": False}}) + "\n```")
 if "check the login with a@b.com" in low:
-    # FastTest 7044 M1 (D3): real Claude's answer that needs the test account, with its card.
-    text.append("To sign in I need the test account. fastpilot will ask you for it in a masked field.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets", "names": ["TEST_USER", "TEST_PASSWORD"]}) + "\n```")
+    # FastTest 7345 N1: real Claude's words (no "masked field") and its card for a name it chose.
+    text.append("I can't log in yet because the password isn't saved. Please save DEMO_PASS with the card below. Once you've set it, I'll run the check again.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets", "names": ["DEMO_PASS"]}) + "\n```")
+elif "ask me for the password" in low:
+    # FastTest 7345 N2: a password card in a chat that asked for no check: nothing to run again.
+    text.append("Here is the card for it. Once you've set it, I'll run the check again.\n```fastpilot-proposal\n" + json.dumps({"kind": "open", "page": "secrets", "names": ["TEST_PASSWORD"]}) + "\n```")
 if "check the login with b@c.com" in low:
     # The same promise without a card.
     text.append("To sign in I need the password. fastpilot will ask you for it in a masked field.")
