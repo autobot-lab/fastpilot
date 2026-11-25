@@ -1,8 +1,8 @@
 // fastpilot ui: the page frame (v0.7.1 FC4, HANDOFF-fc4-fc5 "Layout"). Left, the agents sidebar like
 // OpenBot: "+ New agent", every agent (only the open one shows its chats: the 5 newest, "Show all",
 // "+ New chat", a spinner on a chat that is answering), and Live, Device and Settings at the foot.
-// Above the page, the agent's name and app with its tabs (Chat · Skills · Schedules · History ·
-// Memory · Map), or the page's own title. Under about 900 px the sidebar is a drawer behind a Menu
+// Above the page, the agent's name and app with its nine tabs (Chat · Live · Skills · Schedules · History ·
+// Memory · Map · Model · About, E10), or the page's own title. Under about 900 px the sidebar is a drawer behind a Menu
 // button. Uses h(), icon(), api() and toast() from app.js. Server text is always set as text.
 (() => {
 "use strict";
@@ -128,10 +128,9 @@ function header() {
   const x = byId(r.agent || agentId());
   if (!x) { hdr.replaceChildren(); return; }
   const tab = r.page === "agents" ? r.tab : r.page;
-  // Before the first saved test: Chat, Live and About only (E7); then every tab.
-  const shown = data.saved_tests > 0 || !["chat", "live", "about"].includes(tab) ? TABS : TABS.filter(([k]) => ["chat", "live", "about"].includes(k));
+  // E10: all nine tabs on every agent from the first start; an empty tab says what to do next.
   const live = x.live || 0;
-  const tabs = h("nav", { class: "tabs2", "aria-label": `${x.agent.name}: sections`, onkeydown: tabKeys }, shown.map(([k, t]) => {
+  const tabs = h("nav", { class: "tabs2", "aria-label": `${x.agent.name}: sections`, onkeydown: tabKeys }, TABS.map(([k, t]) => {
     const href = OWN_TABS.includes(k) ? `#/agents/${x.agent.id}/${k}` : `#/${k}`;
     const on = k === tab;
     const count = k === "live" && live ? h("span", { class: "tcount", "aria-hidden": "true" }, String(live)) : null;
@@ -347,5 +346,7 @@ window.Shell = {
   // A chat's own list entry (newest first): the chat to open for `#/agents/<id>/chat`.
   newestChat: () => (chats.agent === agentId() && chats.list.length ? chats.list[0].id : null),
   closeDrawer,
+  // E10 (e10b–e10d): the one button on an agent's empty Schedules, History and Memory.
+  toChat: () => ({ label: "Make a test in Chat", icon: "chat", onclick: () => { location.hash = `#/agents/${agentId()}/chat`; } }),
 };
 })();

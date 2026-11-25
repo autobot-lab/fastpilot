@@ -2444,12 +2444,11 @@ function pageSchedules() {
     : h("div", { class: "grp" }, h("div", { class: "gh" }, "schedules · empty"),
       UI.empty({ icon: "clock", title: "Nothing is scheduled yet",
         text: "Turn on one of the buttons above, or say it in Chat: \"run the checkout tests every 2 hours\". You get a message only when something fails." }));
-  // L07-1: no saved test yet: nothing to schedule, so no form with an empty list; one way to Chat.
+  // L07-1, E10 (e10b): no saved test yet: nothing to schedule, so no form with an empty list; one way to this agent's Chat.
   if (!(schedData.tests || []).length) {
     const first = h("div", { class: "grp sched-first" },
       UI.empty({ icon: "tests", title: "No saved test yet",
-        text: "A schedule runs your saved tests by themselves. Make your first test in Chat, then come back here.",
-        action: { label: "Make a test first in Chat", icon: "chat", onclick: () => { location.hash = "#/agents"; } } }));
+        text: "A schedule runs a saved test by itself. Make your first test in Chat, then come back.", action: Shell.toChat() }));
     $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, first, list.length ? table : null));
     return;
   }

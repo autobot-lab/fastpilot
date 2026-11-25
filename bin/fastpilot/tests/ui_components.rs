@@ -154,7 +154,7 @@ async fn shared_components_draw_no_null_and_behave_the_same_everywhere() {
     // L07-1: no saved test yet: one empty state with one way to Chat, no form with an empty list.
     open(c, "#/schedules", "No saved test yet").await;
     let first = eval(c, "[document.querySelectorAll('#body .empty button.p').length, document.querySelector('#body .empty button.p').textContent, !!document.querySelector('.sched-form, .more, .presets'), [...document.querySelectorAll('#body button')].some((b) => b.textContent.includes('New schedule'))].join('|')").await;
-    assert_eq!(first, "\"1|Make a test first in Chat|false|false\"");
+    assert_eq!(first, "\"1|Make a test in Chat|false|false\"");
     // S5/A1 (seamless-v13 s4a): title and subtitle; "New schedule" lives under More options.
     let top = eval(c, "[document.querySelector('#top .ph-title h1').textContent, document.querySelector('#top .ph-title .s').textContent, !!document.querySelector('#top .right'), /null/.test(document.getElementById('top').textContent)].join('|')").await;
     assert_eq!(top, "\"Schedules|Run your tests by themselves|false|false\"");
