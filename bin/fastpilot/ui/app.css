@@ -893,3 +893,12 @@ body:not(.on-chat) .body{max-width:956px;width:100%;margin:0 auto;padding-top:8p
 .crow .t small.wait{display:block;font-size:11.5px;font-weight:400;color:var(--muted);line-height:1.2}
 .crow:has(small.wait){height:auto;min-height:34px;padding-top:4px;padding-bottom:4px}
 .tabs2{padding-block:4px;margin-block:-4px}
+
+/* E7: Live and About tabs */
+.tabs2 a .tcount{display:inline-block;min-width:18px;height:18px;margin-left:6px;padding:0 5px;border-radius:9px;background:var(--ink);color:#fff;font:600 11px/18px var(--sans);text-align:center;vertical-align:1px}
+.about-tab{max-width:760px}
+.about-tab h2{margin:0 0 12px}
+.about-tab .ab-rows dd small,.about-tab .ab-box small{display:block;color:var(--muted);margin-top:4px}
+.about-tab .ab-link{display:inline-flex;align-items:center;gap:4px;color:var(--ink)}
+.about-tab .ab-rm{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.about-tab .btn.danger{color:var(--bad);border-color:var(--bad);background:none}

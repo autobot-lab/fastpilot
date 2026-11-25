@@ -858,6 +858,13 @@ function stepsPanel(s) {
 
 const LIVE_SAY = ["Run all my tests now", "Why did the last run fail?"];
 
+// E7 (e7c): an agent's Live tab with nothing running.
+function liveAgentEmpty(a) {
+  return h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "Nothing is running"),
+    h("span", {}, `Tests that run for ${a.name} show up here, so you can watch them and take over.`),
+    h("a", { class: "btn p", href: `#/agents/${a.id}/chat` }, icon("chat", "sm"), "Go to Chat"));
+}
+
 function liveEmpty() {
   return h("div", { class: "grp" }, h("div", { class: "gh" }, "live · empty"),
     h("div", { class: "empty" }, icon("live", "big"), h("b", {}, "No test is running yet"),
@@ -895,7 +902,7 @@ async function control(s, op, extra) {
 }
 
 async function refreshLive() {
-  try { renderLive(await api("/api/live")); } catch (_) { /* the next poll shows it */ }
+  try { renderLive(await liveData()); } catch (_) { /* the next poll shows it */ }
 }
 
 async function toggleTakeover(key, opener) {
@@ -1103,13 +1110,14 @@ function renderLive(data) {
   const q = (data.queue || []).length;
   // No null children: replaceChildren writes them as the text "null" (FastTest, final report).
   $top().replaceChildren(...[icon("live"), h("h1", { tabindex: "-1" }, "Live"), livePill(sessions),
-    q ? h("span", { class: "pill warn" }, `${q} queued`) : null].filter(Boolean));
+    q && !liveAgent ? h("span", { class: "pill warn" }, `${q} queued`) : null].filter(Boolean));
+  const who = liveAgent && window.Shell ? (Shell.agentData(liveAgent) || {}).agent : null;
   if (!sessions.length) {
     stopWatching();
     liveCards.clear();
     stepsSig = "";
     closeZoom(false);
-    $body().replaceChildren(liveExtras(data), liveEmpty(), sayIt(LIVE_SAY));
+    $body().replaceChildren(...(who ? [liveAgentEmpty(who)] : [liveExtras(data), liveEmpty(), sayIt(LIVE_SAY)]));
     return;
   }
   const keys = new Set(sessions.map((s) => `${s.pid}:${s.id}`));
@@ -1126,7 +1134,9 @@ function renderLive(data) {
     root = h("div", { id: "live-root" }, h("div", { class: "lgrid", id: "live-grid" }), h("div", { id: "live-steps" }), sayIt(LIVE_SAY));
     $body().replaceChildren(root);
   }
-  if (!root.contains(document.getElementById("live-extra"))) root.prepend(liveExtras(data)); else liveExtras(data);
+  if (who) {
+    if (!document.getElementById("live-for")) root.prepend(h("p", { id: "live-for", class: "sub" }, `Tests running now for ${who.name}. Take over to click for yourself.`));
+  } else if (!root.contains(document.getElementById("live-extra"))) root.prepend(liveExtras(data)); else liveExtras(data);
   const grid = document.getElementById("live-grid");
   for (const s of sessions) {
     const k = `${s.pid}:${s.id}`;
@@ -1176,15 +1186,27 @@ function takeBanner(sessions) {
 
 // Off the Live page: the Live state every few seconds, for the banner (and the takeover's keep-alive).
 async function globalLive() {
-  if ((location.hash || HOME).startsWith("#/live")) return;
+  if (onLive()) return;
   try { lastLive = await api("/api/live"); takeBanner(lastLive.sessions); } catch (_) { /* next time */ }
 }
 setInterval(globalLive, 4000);
 
+// E7: the Live page, or an agent's Live tab (`#/agents/<id>/live`): only that agent's tests.
+let liveAgent = null;
+function onLive() {
+  const hash = location.hash || HOME;
+  return hash.startsWith("#/live") || /^#\/agents\/[^/]+\/live/.test(hash);
+}
+async function liveData() {
+  const d = await api("/api/live");
+  if (liveAgent) d.sessions = (d.sessions || []).filter((s) => (s.agent || "default") === liveAgent);
+  return d;
+}
+
 async function pollLive() {
-  if (!(location.hash || HOME).startsWith("#/live")) return;
+  if (!onLive()) return;
   try {
-    renderLive(await api("/api/live"));
+    renderLive(await liveData());
   } catch (e) {
     $body().replaceChildren(h("div", { class: "err", role: "alert" }, "Cannot read the sessions: ", rich(e.message)));
   }
@@ -2549,7 +2571,10 @@ function render() {
     Apps.route();
     return;
   }
-  if (page !== "live") stopLive();
+  // E7: the Live page or an agent's Live tab; switching between them starts the list again.
+  const agentLive = page === "agents" && hash.split("/")[3] === "live" ? hash.split("/")[2] : null;
+  if (!onLive() || agentLive !== liveAgent) stopLive();
+  liveAgent = agentLive;
   // FC4: the sidebar and the title row (agent and tabs, or the page's name).
   if (window.Shell) Shell.frame();
   if (page === "agents") {
@@ -2558,7 +2583,7 @@ function render() {
     if (id === "new" || (id !== "create" && (!tab || tab === "chat"))) { chatPage(id, id === "new" ? null : extra || null); return; }
   }
   if (chatHost) { chatHost = null; clearTimeout(chatTimer); }
-  if (page === "live") {
+  if (page === "live" || agentLive) {
     if (!liveTimer) {
       $top().replaceChildren(icon("live"), h("h1", { tabindex: "-1" }, "Live"));
       $body().replaceChildren(h("div", { class: "empty" }, h("div", { class: "spin", role: "status", "aria-label": "Loading" }), h("b", {}, "Reading sessions…")));

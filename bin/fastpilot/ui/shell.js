@@ -7,7 +7,9 @@
 (() => {
 "use strict";
 
-const TABS = [["chat", "Chat"], ["skills", "Skills"], ["schedules", "Schedules"], ["history", "History"], ["memory", "Memory"], ["map", "Map"]];
+// E7: Live sits next to Chat and About comes last; both show from the first start.
+const TABS = [["chat", "Chat"], ["live", "Live"], ["skills", "Skills"], ["schedules", "Schedules"], ["history", "History"], ["memory", "Memory"], ["map", "Map"], ["about", "About"]];
+const OWN_TABS = ["chat", "live", "skills", "about"];
 const SHOWN = 5;
 const KEY = "fastpilot.agent";
 let data = null; // /api/agents
@@ -125,15 +127,26 @@ function header() {
   const x = byId(r.agent || agentId());
   if (!x) { hdr.replaceChildren(); return; }
   const tab = r.page === "agents" ? r.tab : r.page;
-  // Before the first saved test there is only Chat (HANDOFF item 5): no tab row.
-  const tabs = data.saved_tests > 0 || tab !== "chat"
-    ? h("nav", { class: "tabs2", "aria-label": `${x.agent.name}: sections` }, TABS.map(([k, t]) => {
-      const href = k === "chat" || k === "skills" ? `#/agents/${x.agent.id}/${k}` : `#/${k}`;
-      const on = k === tab;
-      return h("a", { href, class: on ? "on" : "", "aria-current": on ? "page" : null }, t);
-    }))
-    : null;
+  // Before the first saved test: Chat, Live and About only (E7); then every tab.
+  const shown = data.saved_tests > 0 || !["chat", "live", "about"].includes(tab) ? TABS : TABS.filter(([k]) => ["chat", "live", "about"].includes(k));
+  const live = x.live || 0;
+  const tabs = h("nav", { class: "tabs2", "aria-label": `${x.agent.name}: sections`, onkeydown: tabKeys }, shown.map(([k, t]) => {
+    const href = OWN_TABS.includes(k) ? `#/agents/${x.agent.id}/${k}` : `#/${k}`;
+    const on = k === tab;
+    const count = k === "live" && live ? h("span", { class: "tcount", "aria-hidden": "true" }, String(live)) : null;
+    return h("a", { href, class: on ? "on" : "", "aria-current": on ? "page" : null, "aria-label": count ? `Live, ${live} running` : null }, t, count);
+  }));
   hdr.replaceChildren(h("div", { class: "nm" }, h("h1", {}, h("button", { type: "button", class: "agname", "aria-haspopup": "dialog", title: "About this agent", onclick: (e) => openAbout(x.agent.id, e.currentTarget) }, x.agent.name, icon("chev", "sm"))), h("span", { class: "sub" }, x.app_line || "No app yet")), ...(tabs ? [tabs] : []));
+}
+
+// E7: arrow keys move between the tabs; Tab leaves the row.
+function tabKeys(e) {
+  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+  const links = [...e.currentTarget.querySelectorAll("a")];
+  const i = links.indexOf(document.activeElement);
+  if (i < 0) return;
+  e.preventDefault();
+  links[(i + (e.key === "ArrowRight" ? 1 : links.length - 1)) % links.length].focus();
 }
 
 // ---- FC-STOP: About this agent (g12a, g18a): read first; changes are said in Chat. "Running now ·
@@ -148,6 +161,51 @@ function closeAbout() {
   about = null;
   if (back && back.isConnected) back.focus();
 }
+// What "About" shows, in the panel from the agent's name and in the About tab (E7): the same rows.
+function aboutParts(x, inTab) {
+  const a = x.agent;
+  const row = (k, v, extra) => [h("dt", {}, k), h("dd", {}, v, extra ? h("small", {}, extra) : null)];
+  const n = x.running || 0;
+  const model = a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
+  const told = [a.job, ...(a.instructions || [])].filter(Boolean).join(" ");
+  const run = n ? [h("h3", {}, "Running now"), h("div", { class: "ab-box ab-run", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, n === 1 ? "1 chat is running" : `${n} chats are running`),
+    h("button", { type: "button", class: "btn", "data-fk": "stop", "aria-label": `Stop all ${n} running ${n === 1 ? "chat" : "chats"} in ${a.name}`, onclick: () => stopAll(a) }, `Stop all (${n})`))] : null;
+  if (!inTab) {
+    return [
+      h("dl", { class: "ab-rows" }, row("Name", a.name), row("Tests", x.app_line || "No app yet"), row("Model", model[0], model[1])),
+      run,
+      told ? [h("h3", {}, "What it is told"), h("div", { class: "ab-box" }, told)] : null,
+      h("h3", {}, "Skills"), h("a", { class: "ab-box ab-link", href: `#/agents/${a.id}/skills`, onclick: closeAbout }, x.skills_line || "General QA", icon("chev", "sm")),
+      h("div", { class: "ab-foot" }, h("p", { class: "sub" }, "To change anything here, say it in Chat, for example “rename this agent to Checkout QA”."),
+        a.id === "default" ? null : h("button", { type: "button", class: "btn", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent"))].flat().filter(Boolean);
+  }
+  // The tab (e7d): rows, what it is told, running now, remove.
+  return [
+    h("h2", { id: "about-title" }, `About ${a.name}`),
+    h("dl", { class: "ab-rows" }, row("Name", a.name, "say “rename this agent to …” in Chat"), row("Tests", x.app_line || "No app yet"), row("Model", model[0], model[1]),
+      [h("dt", {}, "Skills"), h("dd", {}, h("a", { class: "ab-link", href: `#/agents/${a.id}/skills` }, x.skills_line || "General QA", icon("chev", "sm")))]),
+    h("h3", {}, "What it is told"), h("div", { class: "ab-box" }, told || "Nothing yet.", h("small", {}, "To change it, say it in Chat, for example “always use the test account”.")),
+    run,
+    a.id === "default" ? null : [h("h3", {}, "Remove"), h("div", { class: "ab-box ab-rm" }, h("span", {}, "Remove this agent · Its chats, tests and history are kept for 7 days. You can undo it."),
+      h("button", { type: "button", class: "btn danger", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent"))]].flat().filter(Boolean);
+}
+
+// E7: the About tab, kept up to date while it is open (Running now comes and goes).
+let aboutTab = null;
+function aboutPage(id, box) {
+  clearTimeout(aboutTab);
+  const draw1 = () => {
+    if (!box.isConnected) return;
+    const x = byId(id);
+    if (!x) return;
+    const keep = box.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+    box.replaceChildren(h("div", { class: "about-tab" }, ...aboutParts(x, true)));
+    if (keep) box.querySelector(`[data-fk="${keep}"]`)?.focus();
+    aboutTab = setTimeout(async () => { await load(); draw1(); }, 1500);
+  };
+  draw1();
+}
+
 function drawAbout() {
   if (!about) return;
   const x = byId(about.id);
@@ -155,20 +213,10 @@ function drawAbout() {
   const a = x.agent;
   const panel = document.getElementById("about-panel");
   const keep = panel.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
-  const row = (k, v, extra) => [h("dt", {}, k), h("dd", {}, v, extra ? h("small", {}, extra) : null)];
-  const n = x.running || 0;
-  const model = a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
-  const told = [a.job, ...(a.instructions || [])].filter(Boolean).join(" ");
   panel.replaceChildren(...[
     h("div", { class: "ab-head" }, h("h2", { id: "about-title" }, `About ${a.name}`),
       h("button", { type: "button", class: "iconbtn", "aria-label": "Close", "data-fk": "close", onclick: closeAbout }, icon("close", "sm"))),
-    h("dl", { class: "ab-rows" }, row("Name", a.name), row("Tests", x.app_line || "No app yet"), row("Model", model[0], model[1])),
-    n ? [h("h3", {}, "Running now"), h("div", { class: "ab-box ab-run", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, n === 1 ? "1 chat is running" : `${n} chats are running`),
-      h("button", { type: "button", class: "btn", "data-fk": "stop", "aria-label": `Stop all ${n} running ${n === 1 ? "chat" : "chats"} in ${a.name}`, onclick: () => stopAll(a) }, `Stop all (${n})`))] : null,
-    told ? [h("h3", {}, "What it is told"), h("div", { class: "ab-box" }, told)] : null,
-    h("h3", {}, "Skills"), h("a", { class: "ab-box ab-link", href: `#/agents/${a.id}/skills`, onclick: closeAbout }, x.skills_line || "General QA", icon("chev", "sm")),
-    h("div", { class: "ab-foot" }, h("p", { class: "sub" }, "To change anything here, say it in Chat, for example “rename this agent to Checkout QA”."),
-      a.id === "default" ? null : h("button", { type: "button", class: "btn", "data-fk": "remove", onclick: () => removeAgent(a) }, "Remove agent"))].flat().filter(Boolean));
+    ...aboutParts(x, false)]);
   if (keep) panel.querySelector(`[data-fk="${keep}"]`)?.focus();
   else if (keep === null && !panel.contains(document.activeElement)) panel.querySelector('[data-fk="close"]').focus();
   // Live while it is open: the count, and the row goes when nothing runs.
@@ -291,6 +339,7 @@ window.Shell = {
   setAgent,
   agentData: (id) => byId(id || agentId()),
   openAbout,
+  aboutPage,
   data: () => data,
   // A chat's own list entry (newest first): the chat to open for `#/agents/<id>/chat`.
   newestChat: () => (chats.agent === agentId() && chats.list.length ? chats.list[0].id : null),
