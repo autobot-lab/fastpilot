@@ -618,6 +618,10 @@ fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
         assert_eq!((cards[0]["status"].as_str(), &cards[0]["names"], cards[0]["rerun"].as_bool()), (Some("pending"), &names, Some(true)), "{said}: {bot}");
         assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "{said}: not a page's attempt: {bot}");
     }
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// FastTest 7044 M2 (v0.7.1): what Chat does at once is never described as waiting for a click.
 /// The bot's "It needs your click to be saved" above a schedule made at once is dropped; its test
 /// result ("When you click Pay … nothing happens") stays.
