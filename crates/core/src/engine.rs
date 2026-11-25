@@ -1539,6 +1539,16 @@ async fn otp_texts(o: &ReadOtp, ctx: &Ctx, d: Option<&dyn Driver>) -> Result<Vec
 
 /// Poll the source until a code shows up; it becomes `${into}` (always redacted).
 async fn read_otp(o: &ReadOtp, ctx: &Ctx, d: Option<&dyn Driver>) -> Result<Option<String>> {
+    // S-1 (Security M2): a password in the address of a code service (http, Mailpit, MailHog) goes
+    // only to its app's own site, checked before the first request, as for httpRequest. By value,
+    // and by name: a short saved value may not be recognisable in the text.
+    // A one-time code in it is left out for the check, so nobody is asked for one first (#233 M1).
+    if let Some(url) = o.url.as_deref()
+        && (holds_app_secret(ctx, url) || crate::dsl::var_names(url).iter().any(|n| crate::secrets::lookup(n).is_some()))
+    {
+        let at = crate::dsl::substitute_for_check(url, &guard(&ctx.vars).clone()).map_err(Error::Flow)?;
+        crate::secrets::allowed_at(Some(&at), Platform::Web).map_err(Error::Flow)?;
+    }
     let timeout = o.timeout.unwrap_or(Duration::from_secs(30));
     let deadline = Instant::now() + timeout;
     loop {
@@ -2406,6 +2416,96 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Security M2 (7722): readOtp from http, Mailpit or MailHog filled a saved password into its
+    /// address and sent it anywhere (no own-site check, also with no session). Now it is refused
+    /// before any request; a code service address without a password still works.
+    #[tokio::test]
+    // The environment and the process-wide app scope stay as set for the whole test.
+    #[allow(clippy::await_holding_lock)]
+    async fn read_otp_never_sends_a_saved_password_to_another_site() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = std::env::temp_dir().join(format!("fp-m2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let old_home = std::env::var_os("HOME");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("FASTPILOT_KEYSTORE", "file");
+            for k in ["SHOP_PIN", "LONG_PASS", "TEST_PASSWORD"] {
+                std::env::remove_var(k);
+            }
+        }
+        for (name, value) in [("SHOP_PIN", "7"), ("LONG_PASS", "rahasia123"), ("TEST_PASSWORD", "shop-pass-9")] {
+            crate::secrets::set("shop", name, value).expect("save");
+        }
+        crate::secrets::set_scope(Some(crate::secrets::Scope { app: "shop".into(), web: Some("https://shop.example/login".into()), android: None, ios: None }));
+        // A local listener stands in for the other site: it counts every request it gets.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("addr").port();
+        let hits = Arc::new(Mutex::new(Vec::<String>::new()));
+        let h2 = hits.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for mut c in listener.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let n = c.read(&mut buf).unwrap_or(0);
+                h2.lock().unwrap_or_else(|p| p.into_inner()).push(String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_owned());
+                let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            }
+        });
+        let ctx = Ctx {
+            records: Mutex::new(Vec::new()),
+            stop_on_fail: true,
+            deadline: Instant::now() + Duration::from_secs(60),
+            vars: Mutex::new(HashMap::new()),
+            clipboard: Mutex::new(None),
+            recording: Mutex::new(None),
+            last_action: Mutex::new(HashMap::new()),
+            live: None,
+        };
+        let step = |yaml: String| crate::dsl::parse_flow(&yaml).expect("flow").steps.remove(0).step;
+        for yaml in [
+            format!("- readOtp: {{ from: http, url: \"http://127.0.0.1:{port}/?p=${{SHOP_PIN}}&q=${{LONG_PASS}}\", into: CODE, timeout: 1000 }}\n"),
+            format!("- readOtp: {{ from: mailpit, url: \"http://127.0.0.1:{port}/${{TEST_PASSWORD}}\", timeout: 1000 }}\n"),
+            format!("- readOtp: {{ from: mailhog, url: \"http://127.0.0.1:{port}/?k=${{TEST_PASSWORD}}\", timeout: 1000 }}\n"),
+        ] {
+            let e = sessionless(&step(yaml.clone()), &ctx, None).await.expect_err(&yaml);
+            assert!(e.to_string().contains("only used on its own website"), "refused before sending: {yaml} {e}");
+        }
+        // A one-time code in the address: refused before anyone is asked for it (#233 M1, L3).
+        let codes = home.join("codes");
+        // SAFETY: as above.
+        unsafe {
+            std::env::set_var(crate::codes::ENV, &codes);
+            std::env::set_var("FASTPILOT_CODE_WAIT_MS", "300");
+        }
+        let yaml = format!("- readOtp: {{ from: http, url: \"http://127.0.0.1:{port}/?c=${{PHONE_OTP}}\", into: CODE, timeout: 1000 }}\n");
+        let e = sessionless(&step(yaml.clone()), &ctx, None).await.expect_err(&yaml);
+        assert!(!e.to_string().contains("one-time code needed") && e.to_string().contains("only used on its own website"), "refused before asking: {e}");
+        // SAFETY: as above.
+        unsafe {
+            std::env::remove_var(crate::codes::ENV);
+            std::env::remove_var("FASTPILOT_CODE_WAIT_MS");
+        }
+        assert!(hits.lock().unwrap_or_else(|p| p.into_inner()).is_empty(), "the other site got no request: {:?}", hits.lock().unwrap_or_else(|p| p.into_inner()));
+        // A code service with no password in its address is asked as before.
+        let plain = step(format!("- readOtp: {{ from: http, url: \"http://127.0.0.1:{port}/sms\", into: CODE, timeout: 1000 }}\n"));
+        assert!(sessionless(&plain, &ctx, None).await.is_err_and(|e| e.to_string().contains("no one-time code")));
+        let got = hits.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(!got.is_empty() && got.iter().all(|l| l.starts_with("GET /sms ")), "{got:?}");
+        crate::secrets::set_scope(None);
+        // SAFETY: as above.
+        unsafe {
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            std::env::remove_var("FASTPILOT_KEYSTORE");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Records the order of calls; any platform.
