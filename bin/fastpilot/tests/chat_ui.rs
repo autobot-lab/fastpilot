@@ -1684,6 +1684,86 @@ fn chat_does_schedules_release_checks_apps_and_runs_at_once_with_undo() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// F1b (FastTest, v0.7.2): the same Chat-first folder, with a nightly schedule of its tests. Run now
+/// on the Schedules page, and the scheduled run itself (the command the system scheduler starts, in
+/// `/`, with nothing of the dashboard in its environment), use the app's password. They said "needs
+/// the secret DEMO_PASS": `fastpilot schedule run` named no app, and the folder is no listed app's.
+/// A schedule made from a terminal there, and a terminal run, still get no app's passwords.
+#[test]
+fn a_chat_first_apps_schedule_uses_its_password_on_run_now_and_on_its_timer() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-chat-first-sched-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let dash = home.join("empty");
+    std::fs::create_dir_all(&dash).expect("folder");
+    std::fs::create_dir_all(home.join("site")).expect("site");
+    let page = home.join("site/shop.html");
+    std::fs::write(&page, "<!doctype html><title>Shop</title><label>Email <input aria-label=Email></label><label>Password <input id=p type=password aria-label=Password></label><button onclick=\"o.textContent = p.value === 'f1b-pass-7' ? 'Budi' : 'wrong password'\">Masuk</button><p id=o>waiting</p>").expect("page");
+    let target = std::fs::canonicalize(&page).expect("page").to_string_lossy().into_owned();
+    let sched_dir = home.join("LaunchAgents");
+    let sched_dir = sched_dir.to_string_lossy().into_owned();
+    let env = [("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_DIR", ""), ("FASTPILOT_KEYSTORE", "file"), ("FASTPILOT_RETRY_BUDGET", "0"), ("FASTPILOT_NOTIFY_DRY", "1")];
+    let ui = start_ui_in(&home, &dash, &env);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    // A fastpilot started by hand or by the system scheduler: none of the dashboard's environment.
+    let fp = |args: &[&str], cwd: &Path, stdin: &str| -> String {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));
+        c.args(args).current_dir(cwd).env_clear().env("HOME", &home).env("PATH", std::env::var("PATH").unwrap_or_default());
+        c.env("FASTPILOT_KEYSTORE", "file").env("FASTPILOT_CLAUDE", FAKE).env("FASTPILOT_RETRY_BUDGET", "0").env("FASTPILOT_NOTIFY_DRY", "1");
+        c.env("FASTPILOT_SCHEDULER", "launchd").env("FASTPILOT_SCHEDULER_DIR", &sched_dir).env("FASTPILOT_LIVE_DIR", home.join("live"));
+        c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let mut child = c.spawn().expect("fastpilot");
+        child.stdin.take().expect("stdin").write_all(stdin.as_bytes()).expect("stdin");
+        let out = child.wait_with_output().expect("fastpilot");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let store = || -> Value { serde_json::from_str(&std::fs::read_to_string(home.join(".fastpilot/schedules.json")).unwrap_or_default()).unwrap_or(Value::Null) };
+
+    // The app from Chat, a saved test there that signs in with its password, and the password.
+    let (st, body) = post("/api/chat", json!({ "message": format!("add the app file://{target} please") }));
+    assert_eq!(st, 200, "{body}");
+    wait_idle(&ui);
+    assert!(dash.join(".fastpilot").is_dir(), "Chat's history is kept in the dashboard's folder");
+    std::fs::create_dir_all(dash.join("tests")).expect("tests");
+    std::fs::write(dash.join("tests/login.md"), format!("# Login\nplatform: web\ntarget: file://{target}\n- Sign in with a@b.com / ${{DEMO_PASS}} and tap \"Masuk\"\n- Check that \"Budi\" is visible\n")).expect("test");
+    let out = fp(&["secret", "set", "DEMO_PASS"], &dash, "f1b-pass-7\n");
+    assert!(out.contains("Saved password DEMO_PASS for"), "{out}");
+
+    // "Every night", from the Schedules page, then Run now.
+    let (st, body) = post("/api/schedules", json!({ "action": "preset", "preset": "night" }));
+    assert_eq!(st, 200, "{body}");
+    let id = serde_json::from_str::<Value>(&body).expect("json")["id"].as_str().expect("id").to_owned();
+    let (st, body) = post("/api/schedules", json!({ "action": "run", "id": id }));
+    assert_eq!(st, 200, "{body}");
+    let until = Instant::now() + Duration::from_secs(120);
+    let last = loop {
+        let last = store()["last"][&id].clone();
+        if last["finished_ms"].is_u64() {
+            break last;
+        }
+        assert!(Instant::now() < until, "Run now did not end: {last}");
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    assert_eq!(last["passed"], true, "Run now: {last}");
+
+    // The scheduled run: the command in its system scheduler entry, started in `/`.
+    let out = fp(&["schedule", "run", &id], Path::new("/"), "");
+    assert!(out.contains("1 tests: 1 passed") && !out.contains("needs the secret"), "{out}");
+    assert_eq!(store()["last"][&id]["passed"], true);
+
+    // Made from a terminal (no dashboard key): no app, so no app's passwords; nor a terminal run.
+    let out = fp(&["schedule", "add", "--every-2h"], &dash, "");
+    let other = store()["schedules"].as_array().expect("schedules").iter().find(|s| s["id"] != id.as_str()).cloned().unwrap_or_else(|| panic!("{out}"));
+    assert!(other["app"].is_null(), "{other}");
+    let setup = "needs the secret DEMO_PASS, and it is not set";
+    assert!(fp(&["schedule", "run", other["id"].as_str().unwrap_or("")], Path::new("/"), "").contains(setup));
+    assert!(fp(&["run", "tests/login.md"], &dash, "").contains(setup));
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// F1 (FastTest, v0.7.2): Chat first. `fastpilot ui` in an empty folder, the app added from Chat,
 /// a saved test with the app's password and one with a one-time code, "run the … test": the run uses
 /// the app's password and asks for the code once. Chat keeps its history in that folder's
