@@ -622,6 +622,25 @@ fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// FastTest 7044 M2 (v0.7.1): what Chat does at once is never described as waiting for a click.
+/// The bot's "It needs your click to be saved" above a schedule made at once is dropped; its test
+/// result ("When you click Pay … nothing happens") stays.
+#[test]
+fn chat_never_says_a_click_is_needed_for_what_it_did_at_once() {
+    let home = std::env::temp_dir().join(format!("fp-chat-noclick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": "run all my tests every night" }).to_string(), true);
+    assert_eq!(st, 200, "{body}");
+    let bot = wait_idle(&ui)["messages"][1].clone();
+    assert_eq!((bot["proposals"][0]["kind"].as_str(), bot["proposals"][0]["status"].as_str()), (Some("schedule"), Some("applied")), "{bot}");
+    let text = bot["text"].as_str().unwrap_or_default();
+    assert!(!text.contains("needs your click") && text.contains("I set it up.") && text.contains("When you click Pay on the shop page, nothing happens."), "{text}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D1: one sentence in Chat -> a "Save test & schedule" card -> nothing written until Save &
 /// schedule -> the file (in the project's tests folder, written by the server from the card's data),
 /// the schedule and its OS entry, and a first run that passes and shows in Live. The same name is not

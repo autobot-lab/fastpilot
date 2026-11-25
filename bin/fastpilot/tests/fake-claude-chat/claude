@@ -121,6 +121,11 @@ if "jadwal" in low:
     text.append("Ini jadwalnya, cek dulu ya:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Login harian", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
         "every": "day", "time": "09:00", "notify": {"webhook": True, "os": True}}) + "\n```")
+if "my tests every night" in low:
+    # FastTest 7044 M2: real Claude's words above a schedule that is made at once.
+    text.append("I set it up. It needs your click to be saved. When you click Pay on the shop page, nothing happens.\n```fastpilot-proposal\n" + json.dumps({
+        "kind": "schedule", "name": "Every night", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),
+        "every": "day", "time": "02:00", "notify": {"os": True}}) + "\n```")
 if "every 2 hours" in low and "save it" not in low:
     text.append("Here it is:\n```fastpilot-proposal\n" + json.dumps({
         "kind": "schedule", "name": "Checkout every 2 hours", "tests": os.environ.get("FAKE_CHAT_TESTS", "/nonexistent"),

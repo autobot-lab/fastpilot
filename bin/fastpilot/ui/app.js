@@ -310,11 +310,11 @@ function providerGroup() {
 }
 
 // S6: one line says what runs the tests (the signed-in Claude Code, found by itself); the models
-// and other providers are under More options, which says how many differ from the defaults.
+// and other providers are in the sections below.
 function modelUsing(run) {
   if (provData && !provData.error && provData.provider && provData.provider !== "claude") {
     return h("p", { class: "using", role: "status" }, `Using ${PROV_LABEL[provData.provider] || provData.provider}${provData.model ? " · " + provData.model : ""}`,
-      h("span", { class: "s muted" }, " · change it under More options"));
+      h("span", { class: "s muted" }, " · change it below"));
   }
   if (!doctorCache) return h("p", { class: "using s muted", role: "status" }, "Looking for Claude Code…");
   if (run && run.status === "ok") return h("p", { class: "using ok", role: "status" }, "Using Claude Code ✓", h("span", { class: "s muted" }, ` · ${run.detail} · your own sign-in, no API key`));
@@ -385,7 +385,7 @@ function limitsSummary() {
   parts.push(`Every test fastpilot runs (Run, schedules) stops after ${mins} minutes and ${steps} AI steps.`);
   const head = blocked.length && !scripts
     ? h("div", { class: "protect ok", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "✓"), h("div", {}, h("b", {}, "You are protected"), h("p", {}, parts.join(" "))))
-    : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, blocked.length ? "Less protected: page scripts may run" : "Less protected: no button is blocked"), h("p", {}, parts.join(" "), blocked.length ? " Turn \"Run any JavaScript\" off under More options." : " Turn the built-in list back on under More options.")));
+    : h("div", { class: "protect warn", role: "status" }, h("span", { class: "protect-mark", "aria-hidden": "true" }, "!"), h("div", {}, h("b", {}, blocked.length ? "Less protected: page scripts may run" : "Less protected: no button is blocked"), h("p", {}, parts.join(" "), blocked.length ? " Turn \"Run any JavaScript\" off in Every limit below." : " Turn the built-in list back on in Every limit below.")));
   const say = (t) => () => openChat(t);
   return [head,
     h("section", { class: "grp limit-say", "aria-label": "Change something in Chat" },
@@ -2172,7 +2172,7 @@ function lastRun(x) {
 function notifyText(x) {
   const n = x.schedule.notify || {};
   const out = [];
-  if (n.webhook) out.push(x.webhook ? `Slack (${x.webhook.replace(/^https?:\/\//, "").replace(/\/•••$/, "")})` : "Slack (URL missing)");
+  if (n.webhook) out.push(x.webhook ? `Webhook (${x.webhook.replace(/^https?:\/\//, "").replace(/\/•••$/, "")})` : "Webhook (URL missing)");
   if (n.os) out.push("Mac notification");
   if (n.github) out.push(`GitHub issue in ${n.github}`);
   return out.length ? out.join(", ") : h("span", { class: "muted" }, "None");
@@ -2275,7 +2275,7 @@ function schedPanel() {
   sync();
   const n = f.notify || {};
   const wh = h("input", { type: "checkbox", checked: !!n.webhook });
-  const whUrl = h("input", { type: "password", autocomplete: "off", placeholder: f.webhook_set ? "saved · type to replace it" : "https://hooks.slack.com/services/…", class: "mono" });
+  const whUrl = h("input", { type: "password", autocomplete: "off", placeholder: f.webhook_set ? "saved · type to replace it" : "https://…", class: "mono" });
   // S5: a Mac notification by default; the GitHub repo comes from the app's own repo.
   const os = h("input", { type: "checkbox", checked: editing ? !!n.os : true });
   const gh = h("input", { type: "checkbox", checked: !!n.github });
@@ -2348,7 +2348,7 @@ function schedPanel() {
       releaseHint,
       h("fieldset", { class: "fld" }, notifyLegend,
         h("label", { class: "ck" }, os, " Mac notification"),
-        h("label", { class: "ck" }, wh, " Slack (webhook)"), h("div", { class: "sub-fld" }, whField),
+        h("label", { class: "ck" }, wh, " Webhook"), h("div", { class: "sub-fld" }, whField),
         h("label", { class: "ck" }, gh, " GitHub issue"), h("div", { class: "sub-fld" }, repoField)),
       h("div", { class: "btns" },
         h("button", { class: "btn", onclick: cancel }, "Cancel"),
@@ -2441,9 +2441,9 @@ function pageSchedules() {
     $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, first, list.length ? table : null));
     return;
   }
-  // FC4b: other times, which tests, Slack and GitHub: a visible section (no "More options").
+  // FC4b: other times, which tests, webhook and GitHub: a visible section (no "More options").
   const more = UI.section("Other times",
-    h("p", { class: "s muted" }, "Choose which tests, other times, Slack and GitHub messages. Or say it in Chat."),
+    h("p", { class: "s muted" }, "Choose which tests, other times, webhook and GitHub messages. Or say it in Chat."),
     schedForm ? schedPanel() : h("button", { class: "btn sm", onclick: openForm }, icon("plus", "sm"), "New schedule"));
   $body().replaceChildren(...UI.kids(schedData.error ? UI.notice("error", "Could not read the schedules: " + schedData.error) : null, schedPresets(), schedRelease(), more, table,
     sayIt(["Run all tests every 2 hours", "Turn off the nightly run"])));

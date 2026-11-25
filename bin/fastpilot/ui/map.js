@@ -74,7 +74,7 @@ function makeTest(s) {
 
 // ---- S1 (v0.7): Map in one click (seamless-v13 s1b) ----
 // One button for the current app; the start, the kind of device and the limits come from the app
-// and sit under More options. A phone app with no phone running gets a Start button (state 2); no
+// (the screens and minutes are chosen above the note). A phone app with no phone running gets a Start button (state 2); no
 // app yet is "Add your app first" (state 4).
 let devices = null; // the Device page's lines (/api/fix), to see if the phone is ready
 
@@ -138,7 +138,7 @@ function startForm(note) {
       notReady ? UI.notice("warn", line.detail === "No emulator running" ? "No Android emulator is running." : line.detail === "No simulator running" ? "No iPhone simulator is running." : line.detail) : null,
       h("div", { class: "btns" }, go),
       more,
-      h("p", { class: "s muted" }, "Read-only: it does not fill in forms or press Pay or Delete. Start, device and limits come from the app; change them under More options.")));
+      h("p", { class: "s muted" }, "Read-only: it does not fill in forms or press Pay or Delete. Start, device and limits come from the app.")));
 }
 
 // ---- while mapping (design state 2) ----
