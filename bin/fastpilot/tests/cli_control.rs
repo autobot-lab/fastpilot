@@ -109,7 +109,9 @@ fn apps_passwords_schedules_skills_and_stop_from_the_terminal() {
     let (code, out) = fp(&home, &["secret", "set", "TEST_PASSWORD", "hunter2-in-history"], "");
     assert_eq!((code, out.as_str()), (1, "✗ Do not put the password in the command. Run: fastpilot secret set TEST_PASSWORD and type it when asked. Nothing was saved.\n"));
     assert_eq!(fp(&home, &["secret", "set", "test password"], "x\n").1, "✗ “test password” is not a valid name. Use letters, numbers and underscores, like TEST_PASSWORD.\n");
-    assert_eq!(fp(&home, &["secret", "set", "SHORT"], "abc\n").1.lines().last(), Some("✗ That password is too short. Use at least 4 characters. Nothing was saved."));
+    // E5 (#231): a 1-character password is saved too.
+    assert_eq!(fp(&home, &["secret", "set", "SHORT"], "7\n").1.lines().last(), Some("✓ Saved password SHORT for Shop"));
+    assert_eq!(fp(&home, &["secret", "remove", "SHORT"], "").0, 0);
     assert_eq!(fp(&home, &["secret", "set", "EMPTY"], "").1.lines().last(), Some("✗ No password was given. Run this in a terminal and type it when asked, or pipe it in."));
     let (code, out) = fp(&home, &["secret", "set", "TEST_PASSWORD"], "fp-cli-pass-77\n");
     assert_eq!((code, out.lines().last()), (0, Some("✓ Saved password TEST_PASSWORD for Shop")), "{out}");

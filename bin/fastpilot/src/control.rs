@@ -1054,8 +1054,8 @@ pub fn secret_cli(args: &[String], read_value: impl FnOnce(&str) -> Res<String>)
             if value.is_empty() {
                 return Err(fail("no_value", "No password was given. Run this in a terminal and type it when asked, or pipe it in."));
             }
-            if fastpilot_core::secrets::check_value(&value).is_err() {
-                return Err(fail("too_short", "That password is too short. Use at least 4 characters. Nothing was saved."));
+            if let Err(e) = fastpilot_core::secrets::check_value(&value) {
+                return Err(fail("bad_value", format!("{e} Nothing was saved.")));
             }
             let existed = fastpilot_core::secrets::has(&app.id, name);
             set_secret(&app, name, &value, "terminal").map_err(|_| fail("keychain", "Could not save to the Keychain. Nothing was saved. Unlock the Keychain, then run the command again."))?;

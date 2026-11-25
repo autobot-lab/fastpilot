@@ -220,8 +220,6 @@ async fn a_password_set_once_is_used_only_on_its_apps_site_and_never_written_out
     let (st, r) = ui.post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": shop } }));
     assert_eq!(st, 200, "{r}");
     assert_eq!(ui.post("/api/apps", json!({ "action": "use", "id": "shop" })).0, 200);
-    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "DEMO_PASS", "value": "abc" }));
-    assert!(st == 400 && r.to_string().contains("at least 4"), "a 3-character value is refused: {r}");
     assert_eq!(ui.post("/api/secrets", json!({ "action": "set", "name": "DEMO_PASS", "value": FRAMED })).0, 200);
     let client: Client = ().serve(mcp(&home, &home.join("fastpilot/apps/shop"))).await.expect("initialize");
     let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "s", "target": shop })).await;
@@ -246,6 +244,49 @@ async fn a_password_set_once_is_used_only_on_its_apps_site_and_never_written_out
 }
 
 const FRAMED: &str = "kunci-iframe-77";
+
+/// E5 (#231): a 1-character password is saved from the dashboard, typed only on its app's own
+/// site, and shown as *** where it is typed; ordinary words and numbers in what fastpilot shows
+/// stay as they are ("Step 7 of 7 passed" with the password `7`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_character_password_is_kept_on_its_site_and_masked_only_where_typed() {
+    if !chrome() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-secrets-short-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let (port, seen) = site();
+    let pin = format!("http://127.0.0.1:{port}/pin.html");
+    let ui = Ui::start(&home);
+    assert_eq!(ui.post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": pin } })).0, 200);
+    assert_eq!(ui.post("/api/apps", json!({ "action": "use", "id": "shop" })).0, 200);
+    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "SHOP_PIN", "value": "7" }));
+    assert_eq!(st, 200, "a 1-character value is saved: {r}");
+    let (st, r) = ui.post("/api/secrets", json!({ "action": "set", "name": "SHOP_PIN", "value": "" }));
+    assert!(st == 400 && r.to_string().contains("Type the value first"), "an empty one is not: {r}");
+    let client: Client = ().serve(mcp(&home, &home.join("fastpilot/apps/shop"))).await.expect("initialize");
+    let (ok, out) = call(&client, "session", json!({ "action": "start", "id": "s", "target": pin })).await;
+    assert!(ok, "{out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": "- inputText: { into: PIN, text: \"${SHOP_PIN}\" }\n- assertVisible: Step 7 of 7 passed\n" })).await;
+    assert!(ok, "typed on the app's own site: {out}");
+    let (ok, out) = call(&client, "snapshot", json!({ "session": "s" })).await;
+    assert!(ok && out.contains("value=\"***\"") && !out.contains("value=\"7\""), "*** where it is typed: {out}");
+    assert!(out.contains("Step 7 of 7 passed. Add a product."), "ordinary text is not masked: {out}");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- openUrl: \"http://localhost:{port}/log?p=${{SHOP_PIN}}\"\n") })).await;
+    assert!(!ok && out.contains("only used on its own website"), "another site: {out}");
+    // Security #237 M1: a session's address and a value made from it in a runFlow env, too.
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": format!("- session: {{ start: evil, platform: web, target: \"http://localhost:{port}/log/s/${{SHOP_PIN}}\" }}\n") })).await;
+    assert!(!ok && out.contains("only used on its own website"), "a session's address: {out}");
+    let made = format!("- runFlow:\n    env:\n      MADE: \"${{SHOP_PIN}}x\"\n    commands:\n      - openUrl: \"http://localhost:{port}/log?m=${{MADE}}\"\n");
+    let (ok, out) = call(&client, "run_flow", json!({ "flow": made, "session": "s" })).await;
+    assert!(!ok && out.contains("only used on its own website"), "a value made from it: {out}");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!seen.lock().expect("seen").iter().any(|p| p.starts_with("/log")), "nothing reached the other site");
+    client.cancel().await.expect("shutdown");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
 
 /// A tiny web server on 127.0.0.1: `/app.html` (a password field and an iframe from
 /// `localhost`, another site), `/frame.html` (a field that reports what is typed into it), and
@@ -272,6 +313,8 @@ fn site() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
             log.lock().expect("log").push(path.clone());
             let body = if path.starts_with("/app.html") {
                 format!("<!doctype html><title>Shop</title><label>Password <input type=password aria-label=Password></label><iframe src=\"http://localhost:{port}/frame.html\" width=400 height=120></iframe>")
+            } else if path.starts_with("/pin.html") {
+                "<!doctype html><title>Shop</title><label>PIN <input aria-label=PIN></label><p>Step 7 of 7 passed. Add a product.</p>".to_owned()
             } else if path.starts_with("/frame.html") {
                 "<!doctype html><label>Widget password <input type=password aria-label=\"Widget password\" oninput=\"fetch('/got?v=' + encodeURIComponent(this.value))\"></label>".to_owned()
             } else {

@@ -148,7 +148,8 @@ pub(crate) fn looks_secret(name: &str) -> bool {
 static SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub(crate) fn add_secret(value: &str) {
-    if value.chars().count() >= 3 {
+    // E5: a saved password can be 1 character; a short one is masked as a whole word only.
+    if !value.is_empty() {
         let mut s = SECRETS.lock().unwrap_or_else(|p| p.into_inner());
         if !s.iter().any(|v| v == value) {
             s.push(value.to_owned());
@@ -1501,7 +1502,66 @@ static APP_SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::n
 /// S-1: does this (already substituted) text hold a password saved for the app? A value from the
 /// environment fastpilot starts in is not one: it keeps the older rules (allowed domains).
 pub(crate) fn holds_app_secret(text: &str) -> bool {
-    APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| !v.is_empty() && text.contains(v.as_str()))
+    APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| !v.is_empty() && find_secret(text, v, 0).is_some())
+}
+
+/// Security #237 M1: is `value` exactly a password saved for the app (read in this process)?
+pub(crate) fn is_app_value(value: &str) -> bool {
+    !value.is_empty() && APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|v| v == value)
+}
+
+/// Security #237 M1: a value made from a saved password (a runFlow `env` like `${PIN}x`) is held to
+/// the app's site and masked like the password itself.
+pub(crate) fn keep_app_value(value: &str) {
+    add_secret(value);
+    let mut kept = APP_SECRETS.lock().unwrap_or_else(|p| p.into_inner());
+    if !value.is_empty() && !kept.iter().any(|v| v == value) {
+        kept.push(value.to_owned());
+    }
+}
+
+/// Security #237 M1: does `text` name a `${NAME}` saved for the app (a short password is found by
+/// its name, wherever it is put)?
+pub(crate) fn names_app_secret(text: &str) -> bool {
+    var_names(text).iter().any(|n| crate::secrets::lookup(n).is_some())
+}
+
+/// E5: values shorter than this are short: they match only as a whole value.
+const SHORT: usize = 4;
+
+/// Where `form` of a secret is in `text` at or after `from`: anywhere for a long value. A short one
+/// (the password `a` or `12`) only as a whole value: the entire text, or between quotes, after `=`
+/// (an address) or inside a tag. So a field's `value="a"`, a tool's `"text":"a"` and `?pin=12` are
+/// found, and `Step 12 passed` or `a product` never are: reports stay readable.
+fn find_secret(text: &str, form: &str, from: usize) -> Option<usize> {
+    if form.chars().count() >= SHORT {
+        return text[from..].find(form).map(|i| from + i);
+    }
+    let opens = |head: &str| head.is_empty() || ["\"", "'", "`", "=", ">", "&quot;", "&#39;"].iter().any(|d| head.ends_with(d));
+    let closes = |tail: &str| tail.is_empty() || ["\"", "'", "`", "<", "&", "&quot;", "&#39;"].iter().any(|d| tail.starts_with(d));
+    let mut at = from;
+    while let Some(i) = text[at..].find(form) {
+        let start = at + i;
+        let end = start + form.len();
+        if opens(&text[..start]) && closes(&text[end..]) {
+            return Some(start);
+        }
+        at = start + text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+/// `text` with every place `form` stands (see `find_secret`) replaced by `***`.
+fn mask_form(text: &str, form: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(i) = find_secret(text, form, at) {
+        out.push_str(&text[at..i]);
+        out.push_str("***");
+        at = i + form.len();
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 /// Replace `${NAME}` with allowed environment values of fastpilot's own process.
@@ -1585,7 +1645,8 @@ fn secret_forms(v: &str) -> Vec<String> {
         crate::recording::escape_html(v),
         v.split_whitespace().collect::<Vec<_>>().join(" "),
     ];
-    forms.retain(|f| f.chars().count() >= 3);
+    // E5: a short saved password keeps its short forms (masked as whole words only).
+    forms.retain(|f| !f.is_empty());
     // Longest first, so an escaped form is masked whole rather than around its raw core.
     forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
     forms.dedup();
@@ -1598,7 +1659,7 @@ pub(crate) fn redact_with(text: &str, secrets: &[String]) -> String {
     let mut out = text.to_owned();
     for f in &forms {
         if out.contains(f.as_str()) {
-            out = out.replace(f.as_str(), "***");
+            out = mask_form(&out, f);
         }
     }
     // Output clipped with `…` may show only the start of a secret: mask that prefix too.
@@ -2057,6 +2118,23 @@ mod tests {
         std::fs::write(dir.join("loop.yaml"), "- runFlow: loop.yaml\n").expect("write");
         assert!(parse_flow_file("- runFlow: loop.yaml\n", &main).expect_err("cycle")[0].message.contains("deeper"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// E5 (#231): a short saved password (1 to 3 characters) is masked where it stands as a whole
+    /// value (a field's value, a quoted argument, an address parameter), never inside ordinary
+    /// words or numbers, so reports stay readable; S-1 finds it the same way.
+    #[test]
+    fn a_short_password_is_masked_only_as_a_whole_value() {
+        let s = |v: &str| vec![v.to_owned()];
+        assert_eq!(redact_with("Login passed. Add a product. Step 7 of 7.", &s("a")), "Login passed. Add a product. Step 7 of 7.");
+        assert_eq!(redact_with("Step 7 of 7 passed", &s("7")), "Step 7 of 7 passed");
+        assert_eq!(redact_with("textfield \"PIN\" value=\"7\"", &s("7")), "textfield \"PIN\" value=\"***\"");
+        assert_eq!(redact_with("{\"text\":\"ab\"}", &s("ab")), "{\"text\":\"***\"}");
+        assert_eq!(redact_with("https://x.example/?pin=12&next=1", &s("12")), "https://x.example/?pin=***&next=1");
+        assert_eq!(redact_with("7", &s("7")), "***");
+        assert_eq!(redact_with("type rahasia123 here", &s("rahasia123")), "type *** here", "a long one anywhere, as before");
+        assert_eq!(find_secret("InputText { text: \"a\" }", "a", 0), Some(19));
+        assert_eq!(find_secret("TapOn(Text(\"Save\"))", "a", 0), None);
     }
 
     /// E1: one-time codes are run-time values, by their name or by the words of their step.
