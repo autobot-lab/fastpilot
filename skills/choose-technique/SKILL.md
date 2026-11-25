@@ -1,7 +1,7 @@
 ---
 name: choose-technique
 description: Pick the right test design technique before testing anything, and say which one was used. Use whenever the user asks to "test", "check properly", "test this field / rule / flow / ticket" without naming a technique. Routes to equivalence-partitioning, boundary-value-analysis, decision-table, state-transition, the experience-based skills, or ticket-to-test, and adds a "Techniques used" section with a coverage map to every result.
-license: Apache-2.0
+license: MIT
 ---
 
 # Choose technique

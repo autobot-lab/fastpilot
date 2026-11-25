@@ -1,7 +1,7 @@
 ---
 name: regression
 description: Run every saved fastpilot test again and say what is newly broken. Use when the user asks for a regression, "run all tests", "check nothing broke", "run the Android tests only", "test what I changed", or a re-check after a release or a fix. Separates newly failing tests from known failures and flaky tests, and gives a short summary a non-technical person can act on.
-license: Apache-2.0
+license: MIT
 ---
 
 # Regression

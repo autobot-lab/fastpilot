@@ -25,7 +25,7 @@ fastpilot menjanjikan automation full-AI yang cepat dan stabil untuk web dan mob
 - APK agent tetap di-embed ke binary (`include_bytes!`). Artefak rilis tidak boleh meminta user membangun APK sendiri.
 - Secret hanya lewat `FASTPILOT_VARS`, disamarkan `***` di semua output. Aturan ini berlaku juga untuk log CI, artefak pipeline, report HTML, dan JUnit.
 - Path memory dan evidence tetap lokal di `.fastpilot/`; CI hanya mengunggahnya sebagai artefak pipeline, tidak ke layanan pihak ketiga.
-- Lisensi Apache-2.0, sesuai `Cargo.toml`.
+- Lisensi MIT sejak 0.7.2 (sampai 0.7.1: Apache-2.0), sesuai `Cargo.toml`.
 
 **Invarian:**
 - `main` hanya bergerak lewat fast-forward atau merge commit; tidak ada force-push (aturan yang sudah dipakai sesi implementasi).

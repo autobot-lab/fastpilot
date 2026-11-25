@@ -31,7 +31,7 @@ class Fastpilot < Formula
   desc "AI-driven QA for web, Android and iOS: MCP server and shell CLI"
   homepage "https://github.com/autobot-lab/fastpilot"
   version "$version"
-  license "Apache-2.0"
+  license "MIT"
 
   on_macos do
     on_arm do

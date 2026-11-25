@@ -1,7 +1,7 @@
 ---
 name: safe-checkout
 description: Test a cart and checkout up to the final order summary without paying - adding items, quantities, vouchers, shipping, totals and taxes. Use when the user asks to test checkout, cart, voucher, promo code, discount, shipping cost or order summary. Stops before any real payment.
-license: Apache-2.0
+license: MIT
 ---
 
 # Safe checkout

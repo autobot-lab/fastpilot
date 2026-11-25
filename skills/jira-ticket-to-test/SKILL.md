@@ -1,7 +1,7 @@
 ---
 name: jira-ticket-to-test
 description: Read a Jira ticket's acceptance criteria through the Atlassian MCP server and turn them into draft fastpilot tests with the ticket-to-test skill. Use when the user gives a Jira key or link ("make tests from SHOP-123", "test the tickets in QA") and Claude Code has the Atlassian server connected. Read only - it never writes to Jira.
-license: Apache-2.0
+license: MIT
 ---
 
 # Jira ticket to test

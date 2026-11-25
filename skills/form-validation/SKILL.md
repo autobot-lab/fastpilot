@@ -1,7 +1,7 @@
 ---
 name: form-validation
 description: Check a form end to end - required fields, wrong formats, error messages, keeping typed data, and a successful submit. Use when the user asks to test a form, sign-up, profile, address, contact or any page where people type and submit data.
-license: Apache-2.0
+license: MIT
 ---
 
 # Form validation

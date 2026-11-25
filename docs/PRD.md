@@ -433,7 +433,7 @@ Akurasi grounding diukur dengan suite referensi (login, form, list+scroll, dialo
 
 ## 19. Pertanyaan terbuka
 
-1. Nama final produk dan lisensi (usulan: Apache-2.0, seperti agent-browser dan mobile-mcp).
+1. Nama final produk dan lisensi: MIT sejak 0.7.2 (sampai 0.7.1: Apache-2.0).
 2. Apakah `parallel:` perlu `wait_for: any|all` untuk skenario race (mis. salah satu sesi yang pertama melihat notifikasi)?
 3. Format path memory: JSON terstruktur saja, atau juga YAML flow siap pakai agar bisa langsung dikirim sebagai `run_flow`?
 4. Batas jumlah sesi per proses dan kebijakan jika device pool habis.

@@ -17,7 +17,7 @@ fn json(rel: &str) -> Value {
 fn the_repo_is_a_claude_code_marketplace_with_the_fastpilot_plugin() {
     let plugin = json(".claude-plugin/plugin.json");
     assert_eq!(plugin["name"], "fastpilot");
-    assert_eq!(plugin["license"], "Apache-2.0");
+    assert_eq!(plugin["license"], "MIT");
     assert_eq!(plugin["repository"], "https://github.com/autobot-lab/fastpilot");
     assert_eq!(plugin["mcpServers"]["fastpilot"], serde_json::json!({ "command": "npx", "args": ["-y", "fastpilot", "mcp"] }), "the MCP server from npm");
     let market = json(".claude-plugin/marketplace.json");

@@ -1,7 +1,7 @@
 ---
 name: checklist-based
 description: Test an area with a ready-made checklist and report every item as passed, failed or not checked. Use for areas that are tested again and again - login and OTP, forms, checkout, accessibility, mobile behaviour - or when the user says "use the checklist", "run the login checklist", or gives their own list of things to check.
-license: Apache-2.0
+license: MIT
 ---
 
 # Checklist-based testing

@@ -1,7 +1,7 @@
 ---
 name: equivalence-partitioning
 description: Split an input into groups the app should treat the same (valid and invalid) and test one value from each group. Use for any field with kinds or ranges - age, quantity, amount, file type, country, user role - or when the user asks for "equivalence partitioning", "EP", "valid and invalid inputs". Usually paired with boundary-value-analysis.
-license: Apache-2.0
+license: MIT
 ---
 
 # Equivalence partitioning
