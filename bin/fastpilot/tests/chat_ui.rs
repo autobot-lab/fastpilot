@@ -622,6 +622,33 @@ fn a_login_check_that_needs_the_password_shows_the_card_in_the_same_answer() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// v0.7.1 M5 (FastTest 7044 M4): the time per test is in minutes. "make tests stop after 5 minutes"
+/// is applied at once with Undo, even when the bot wrote 300 (seconds); a longer time is a looser
+/// limit: the red card, never "a page tried to change a limit".
+#[test]
+fn chat_sets_the_time_per_test_in_minutes() {
+    let home = std::env::temp_dir().join(format!("fp-chat-timeout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let say = |text: &str| -> Value {
+        let (st, body) = request(ui.port, "POST", "/api/chat", &ui.cookie, &json!({ "message": text }).to_string(), true);
+        assert_eq!(st, 200, "{body}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot")
+    };
+    let bot = say("make tests stop after 5 minutes");
+    let card = &bot["proposals"][0];
+    assert_eq!((card["kind"].as_str(), card["status"].as_str(), card["undo"].as_bool()), (Some("setting"), Some("applied"), Some(true)), "{bot}");
+    assert!(bot["page_attempts"].as_array().is_none_or(Vec::is_empty), "{bot}");
+    assert!(config(&home).contains("test_timeout = 5"), "{}", config(&home));
+    let bot = say("let tests take 60 minutes per test");
+    let card = &bot["proposals"][0];
+    assert_eq!((card["status"].as_str(), card["setting"]["level"].as_str()), (Some("pending"), Some("loosen")), "{bot}");
+    assert!(config(&home).contains("test_timeout = 5"), "nothing looser before the click: {}", config(&home));
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// FastTest 7044 M2 (v0.7.1): what Chat does at once is never described as waiting for a click.
 /// The bot's "It needs your click to be saved" above a schedule made at once is dropped; its test
 /// result ("When you click Pay … nothing happens") stays.

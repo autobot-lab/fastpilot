@@ -261,6 +261,11 @@ if "check the login with a@b.com" in low:
 if "check the login with b@c.com" in low:
     # The same promise without a card.
     text.append("To sign in I need the password. fastpilot will ask you for it in a masked field.")
+if "stop after 5 minutes" in low:
+    # FastTest 7044 M4: real Claude wrote seconds for the user's "5 minutes".
+    text.append("Here:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "test_timeout", "set": 300}]}) + "\n```")
+if "60 minutes per test" in low:
+    text.append("Here:\n```fastpilot-proposal\n" + json.dumps({"kind": "settings", "changes": [{"setting": "test_timeout", "set": 60}]}) + "\n```")
 if "longgar" in low:
     text.append("```fastpilot-proposal\n" + json.dumps({"kind": "limits", "set": {"max_steps": 500}}) + "\n```")
 # v0.6 Jira: the user's own words come after fastpilot's marker when fastpilot read a ticket.
