@@ -1708,7 +1708,9 @@ fn a_chat_first_app_runs_its_tests_with_its_password_and_asks_its_code_once() {
     let say = |text: &str| -> Value {
         let (st, body) = post("/api/chat", json!({ "message": text }));
         assert_eq!(st, 200, "{body}");
-        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().unwrap_or_default()
+        // The answer to this message (a run started earlier may post its result after it, F2).
+        let msgs = wait_idle(&ui)["messages"].as_array().cloned().unwrap_or_default();
+        msgs.iter().rposition(|m| m["role"] == "user").and_then(|u| msgs.get(u + 1)).cloned().unwrap_or_default()
     };
     let fp = |args: &[&str], env: &[(&str, &str)], stdin: &str| -> String {
         let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_fastpilot"));

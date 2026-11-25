@@ -956,16 +956,29 @@ fn keep(key: &str) {
 /// F2 (FastTest v0.7.2): a run this chat started has ended: its result as a message of the chat
 /// ("All 3 demo tests passed." and a table of the tests), not only "Running…".
 fn post_run_result(key: &str, tests: &std::path::Path, out: &str, demo: bool) {
-    let text = run_answer(tests, out, demo);
-    let mut c = chat_of(key);
-    c.runs = c.runs.saturating_sub(1);
-    if c.removed {
-        return;
+    // F4 (agreed with Bug Fixer): one test stopped because nobody typed its one-time code: its own
+    // line, in red, nothing else ("Stopped at step N: no code was typed in 3 minutes. …").
+    let not_typed = out.lines().filter(|l| ["✓ ", "~ ", "✗ ", "q "].iter().any(|m| l.starts_with(m))).collect::<Vec<_>>();
+    let stopped = match not_typed.as_slice() {
+        [one] => one.split_once(" could not run [setup]: ").map(|(_, w)| w.trim()).filter(|w| w.starts_with("Stopped at step ")).map(str::to_owned),
+        _ => None,
+    };
+    let (text, error) = match stopped {
+        Some(line) => (String::new(), Some(line)),
+        None => (run_answer(tests, out, demo), None),
+    };
+    // Security L23: a chat removed or deleted while its run went on stays gone.
+    {
+        let mut map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(c) = map.get_mut(key) else { return };
+        c.runs = c.runs.saturating_sub(1);
+        if c.removed {
+            return;
+        }
+        c.next += 1;
+        let id = c.next;
+        c.msgs.push(Msg { id, role: "bot", text, tools: vec![], proposals: vec![], error, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, stopped: false, outside: false, needs: vec![] });
     }
-    c.next += 1;
-    let id = c.next;
-    c.msgs.push(Msg { id, role: "bot", text, tools: vec![], proposals: vec![], error: None, page_attempts: vec![], verdict: None, bug: None, jira_reads: vec![], done: true, stopped: false, outside: false, needs: vec![] });
-    drop(c);
     keep(key);
 }
 
@@ -4268,6 +4281,26 @@ mod tests {
 
     /// E4: a bot-chosen password name becomes the test account's, the same name everywhere.
     /// F3: only a message that asks to undo and nothing else is an undo request.
+    /// F4 + Security L23: a run that stopped because no code was typed posts that one red line;
+    /// a chat that was deleted while its run went on does not come back.
+    #[test]
+    fn a_run_result_is_one_line_for_a_missed_code_and_never_revives_a_deleted_chat() {
+        let key = "f2-run-result-test";
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).insert(key.into(), Chat { runs: 1, ..Default::default() });
+        let line = "Stopped at step 4: no code was typed in 3 minutes. Say “run it again” when you have the code.";
+        post_run_result(key, std::path::Path::new("/nonexistent"), &format!("✗ login-otp could not run [setup]: {line}\n\n1 tests: 0 passed, 0 failed, 1 could not run, 0 quarantined failures, in 180.0s\n"), false);
+        let (msg, runs) = {
+            let map = CHATS.lock().unwrap_or_else(|p| p.into_inner());
+            let c = map.get(key).expect("chat");
+            (c.msgs.last().map(|m| (m.text.clone(), m.error.clone())), c.runs)
+        };
+        assert_eq!(msg, Some((String::new(), Some(line.to_owned()))));
+        assert_eq!(runs, 0);
+        CHATS.lock().unwrap_or_else(|p| p.into_inner()).remove(key);
+        post_run_result(key, std::path::Path::new("/nonexistent"), "✓ a 1.0s, 1 turns, haiku: ok\n", false);
+        assert!(!CHATS.lock().unwrap_or_else(|p| p.into_inner()).contains_key(key), "a deleted chat stays deleted");
+    }
+
     #[test]
     fn undo_that_is_only_a_bare_undo_request() {
         for yes in ["undo that", "Undo", "undo it please", "undo the last change", "batalkan itu", "tolong urungkan yang tadi"] {
