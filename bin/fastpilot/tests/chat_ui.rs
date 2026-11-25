@@ -753,6 +753,25 @@ fn remove_my_app_in_chat_removes_it_with_undo() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// G7 (design parity v0.7.2, g19): a key the provider does not accept says, on the dashboard,
+/// "Check it and paste it again. Nothing was saved." (the terminal keeps "run the command again").
+#[test]
+fn a_wrong_key_on_the_dashboard_says_paste_it_again() {
+    let home = std::env::temp_dir().join(format!("fp-g7-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[]);
+    let body = json!({ "action": "add", "provider": "openai", "key": "not a key" }).to_string();
+    let (st, b) = request(ui.port, "POST", "/api/providers", &ui.cookie, &body, true);
+    let v: Value = serde_json::from_str(&b).expect("json");
+    assert_eq!(st, 422, "{b}");
+    assert_eq!(v["code"], "key_not_accepted", "{b}");
+    assert!(v["error"].as_str().is_some_and(|e| e.ends_with("Check it and paste it again. Nothing was saved.") && !e.contains("command")), "{b}");
+    assert!(!b.contains("not a key"), "the key is never sent back");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// E3 (user, v0.7.1): Chat said "rename it any time in Settings › Your apps", a page that no longer
 /// exists. Now the app card says to say "rename this app to …", and saying it renames the chat's own
 /// app at once, with Undo; a name the user did not say is never applied.

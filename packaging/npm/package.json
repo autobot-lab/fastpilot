@@ -8,7 +8,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/autobot-lab/fastpilot.git" },
   "bin": { "fastpilot": "bin/fastpilot.js" },
   "scripts": { "postinstall": "node install.js" },
-  "files": ["bin/fastpilot.js", "lib/download.js", "install.js", "README.md"],
+  "files": ["bin/fastpilot.js", "lib/download.js", "install.js", "README.md", "LICENSE"],
   "os": ["darwin", "linux"],
   "cpu": ["arm64", "x64"],
   "engines": { "node": ">=18" }
