@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 
 pub use dsl::{
     Branch, Condition, Flow, FlowError, FlowStep, HttpRequest, OtpSource, Random, ReadOtp, Step, check_flow, check_flow_file, flow_to_yaml, parse_flow,
-    parse_flow_file, redact, to_vars,
+    parse_flow_file, redact, to_vars, is_code, code_needed,
 };
 pub use recording::{Mark, Span, timeline};
 pub use engine::{AssertKind, FlowReport, Launcher, RunOptions, SessionRegistry, StepRecord, assert, check_session_id, reset_app, run_flow, sessions_used};

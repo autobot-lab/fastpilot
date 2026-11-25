@@ -902,10 +902,12 @@ fn chat_says_once_that_claude_code_needs_a_login() {
 }
 
 /// QA B2 + B3 (real Claude, v0.4): Chat gets the project's secrets the way `fastpilot demo` writes
-/// them (.mcp.json), and only those; the bot is told which names exist; a test that uses names
-/// nobody saved is not saved, and the card says which ones.
+/// them (.mcp.json), and only those; the bot is told which names exist. E1 (v0.7.2): a test that
+/// uses passwords nobody saved gets the password card in the same answer, never "add the secret
+/// in Settings", and one message only. (After a page was read, the card asks for the test account
+/// instead: Security #208 M1, tested with N1.)
 #[test]
-fn chat_knows_the_projects_secrets_and_never_saves_a_test_sure_to_fail() {
+fn chat_knows_the_projects_secrets_and_asks_for_a_missing_password_in_place() {
     if !chrome_available() {
         return eprintln!("skipping: no Chrome");
     }
@@ -918,18 +920,18 @@ fn chat_knows_the_projects_secrets_and_never_saves_a_test_sure_to_fail() {
     let mcp = json!({ "mcpServers": { "fastpilot": { "command": "fastpilot", "args": ["mcp"], "env": {
         "FASTPILOT_VARS": "DEMO_PASS", "DEMO_PASS": "rahasia123", "FASTPILOT_ALLOW_EVAL_SCRIPT": "true", "FASTPILOT_BLOCK_ACTIONS": "" } } } });
     std::fs::write(project.join(".mcp.json"), mcp.to_string()).expect("mcp");
-    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0")]);
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
     let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
 
     let (st, _) = post("/api/chat", json!({ "message": "invent a test for the demo login and save it" }));
     assert_eq!(st, 200);
     let v = wait_idle(&ui);
-    let card = v["messages"][1]["proposals"][0].clone();
-    let note = card["note"].as_str().unwrap_or("");
-    assert!(note.contains("This test uses ${EMAIL} and ${PASSWORD}, which are not a saved secret, so it would fail") && note.contains("use a saved secret (DEMO_PASS)"), "{card}");
-    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "test" }));
-    assert!(st != 200 && body.contains("${EMAIL} and ${PASSWORD}"), "{st} {body}");
-    assert!(!project.join("tests").exists(), "nothing saved");
+    let cards = v["messages"][1]["proposals"].as_array().cloned().unwrap_or_default();
+    let card = cards.iter().find(|p| p["kind"] == "test").cloned().expect("test card");
+    assert!(card["note"].is_null(), "no warning on the test card: {card}");
+    let pw = cards.iter().find(|p| p["kind"] == "open" && p["open"] == "secrets").expect("the password card in the same answer");
+    assert_eq!(pw["names"], json!(["EMAIL", "PASSWORD"]), "{pw}");
+    assert!(!v.to_string().contains("Settings › Secrets") && !v.to_string().contains("not a saved secret"), "never sent to Settings: {v}");
 
     // What Claude Code got: the project's secret, not the other settings; and the names it may use.
     let calls: Vec<Value> = std::fs::read_dir(home.join("claude-log")).expect("log").flatten().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect();
@@ -946,8 +948,52 @@ fn chat_knows_the_projects_secrets_and_never_saves_a_test_sure_to_fail() {
     // The demo's own secret is fine: no warning.
     let (_, _) = post("/api/chat", json!({ "message": "write a test for the demo login and save it" }));
     let v = wait_idle(&ui);
+    let cards = v["messages"][3]["proposals"].as_array().cloned().unwrap_or_default();
+    assert!(cards.len() == 1 && cards[0]["kind"] == "test" && cards[0]["note"].is_null(), "no password card, no warning: {cards:?}");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// E1 (user, v0.7.1): the bot's test for an SMS one-time code (`Isi kode OTP ${MOTMAINA_OTP} di
+/// kolom 5 digit`) was refused: "${MOTMAINA_OTP} … is not a saved secret … add the secret in
+/// Settings › Secrets", twice (orange, then red "Not saved"). A one-time code is got when the test
+/// runs: the test saves with no warning and no password card; with a schedule, one line says what a
+/// scheduled run needs.
+#[test]
+fn a_test_with_a_one_time_code_saves_with_no_warning() {
+    let home = std::env::temp_dir().join(format!("fp-chat-e1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("shop");
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    std::fs::create_dir_all(&project).expect("project");
+    let ui = start_ui_in(&home, &project, &[("FAKE_CHAT_NO_RUN", "1")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+
+    let (st, _) = post("/api/chat", json!({ "message": "buat tes login dengan otp ke nomor HP saya" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let cards = v["messages"][1]["proposals"].as_array().cloned().unwrap_or_default();
+    assert!(cards.len() == 1 && cards[0]["kind"] == "test", "only the test card, no password card: {cards:?}");
+    let card = &cards[0];
+    assert!(card["steps"].to_string().contains("Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit"), "{card}");
+    assert!(card["note"].is_null(), "no warning: {card}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "test" }));
+    assert_eq!(st, 200, "saved: {body}");
+    let file = std::fs::read_dir(project.join("tests")).expect("tests").flatten().next().expect("a test file");
+    assert!(std::fs::read_to_string(file.path()).expect("file").contains("${MOTMAINA_OTP}"), "the code stays a run-time value");
+
+    // Saved with a schedule: one line, no blocking.
+    let (st, _) = post("/api/chat", json!({ "message": "buat tes login dengan otp, tiap 2 jam" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
     let card = v["messages"][3]["proposals"][0].clone();
-    assert!(!card["note"].as_str().unwrap_or("").contains("saved secret"), "{card}");
+    let line = "Scheduled runs need a code fastpilot can read (test inbox or SMS on the emulator) or a fixed test code.";
+    assert_eq!(card["note"], line, "{card}");
+    let (st, body) = post("/api/chat/decide", json!({ "id": card["id"], "apply": true, "mode": "preset:release" }));
+    assert_eq!(st, 200, "{body}");
+    let v = wait_idle(&ui);
+    let note = v["messages"][3]["proposals"][0]["note"].as_str().unwrap_or("").to_owned();
+    assert!(note.starts_with("Saved.") && note.ends_with(line) && note.matches(line).count() == 1, "{note}");
     drop(ui);
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -734,6 +734,22 @@ fn finish(key: &str, text: &str, bot: u64, reads: Vec<Value>, error: Option<Stri
             proposals.clear();
             attempts.clear();
         }
+        // E1: a drafted test that types a password with no value here gets the password card in this
+        // answer (never "add it in Settings"), merged with the bot's own; the gates below apply.
+        let need: Vec<String> = proposals.iter().filter(|p| p.kind == "test" && p.status == "pending").filter_map(|p| test_of(&p.data).ok()).flat_map(|t| missing_passwords(&t)).collect();
+        if !need.is_empty() {
+            let bots = proposals.iter().filter(|p| p.kind == "open" && p.open.as_deref() == Some("secrets")).flat_map(|p| p.names.clone());
+            let mut names: Vec<String> = Vec::new();
+            for n in bots.chain(need) {
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+            if let Ok(card) = open_card(&json!({ "kind": "open", "page": "secrets", "names": names.iter().take(4).collect::<Vec<_>>() })) {
+                proposals.retain(|p| !(p.kind == "open" && p.open.as_deref() == Some("secrets")));
+                proposals.push(card);
+            }
+        }
         // FastTest 7345 N1: the bot's password card in a turn that read a page or a ticket, asked for
         // by a check or a login (not the word "password"): the same names as a run's card (Security
         // #208 M1); any other name a page could have chosen becomes the test account's.
@@ -1126,7 +1142,11 @@ and compare them side by side, e.g. when the user says \"run the login test on a
 with the same steps worded so they fit every platform; for an existing test, copy its steps into a new card. steps: 1-30 plain sentences, one \
 action or check each, as the user would say them; secrets only as ${NAME}; schedule is optional and has the same \
 fields as a schedule proposal without name and tests. When you can, open the app first so the steps match the \
-screen.) Never propose a schedule for a test that is not saved yet: put the schedule in the test card instead.
+screen.) Never propose a schedule for a test that is not saved yet: put the schedule in the test card instead. \
+A one-time code (sent by SMS or email, or from an authenticator app) changes on every sign-in, so it is never a saved \
+secret: write its step as \"Type the one-time code ${LOGIN_OTP} …\" with a name that ends in _OTP; fastpilot gets the \
+code when the test runs. A password the test needs and that is not saved gets fastpilot's password card below the \
+test: say so in one line, never send the user to Settings. Never promise something a card does not do.
 To create a new agent (a tester with its own chat, schedules and rules) when the user asks for one:
 ```fastpilot-proposal
 {\"kind\":\"agent\",\"name\":\"Mobile Payments\",\"job\":\"Keep cart and payment working in the Android and iOS app\",\"devices\":[\"android_emulator\",\"ios_simulator\"],\"app\":\"Shop (staging)\",\"instructions\":[\"Log in with the test account before each test\",\"Never press Pay; stop at the order summary\"],\"blocked\":[\"Confirm order\"]}
@@ -3464,16 +3484,19 @@ pub fn project_secrets() -> Vec<(String, bool)> {
     out
 }
 
-/// The `${NAME}`s of a test.
-fn secret_names(t: &TestDraft) -> Vec<String> {
-    let mut names = Vec::new();
+/// The `${NAME}`s of a test, each with whether it is a one-time code (E1: by its name, or by the
+/// words of a step it is in).
+fn secret_names(t: &TestDraft) -> Vec<(String, bool)> {
+    let mut names: Vec<(String, bool)> = Vec::new();
     for text in std::iter::once(&t.title).chain(std::iter::once(&t.target)).chain(t.targets.iter().map(|(_, x)| x)).chain(t.steps.iter()) {
         let mut rest = text.as_str();
         while let Some(at) = rest.find("${") {
             let after = &rest[at + 2..];
             let Some(end) = after.find('}') else { break };
-            if !names.iter().any(|n| n == &after[..end]) {
-                names.push(after[..end].to_owned());
+            let (name, code) = (&after[..end], fastpilot_core::is_code(&after[..end], text));
+            match names.iter_mut().find(|(n, _)| n == name) {
+                Some(found) => found.1 |= code,
+                None => names.push((name.to_owned(), code)),
             }
             rest = &after[end + 1..];
         }
@@ -3481,32 +3504,21 @@ fn secret_names(t: &TestDraft) -> Vec<String> {
     names
 }
 
-/// QA B3: a test whose `${NAME}`s are not saved secrets (or have no value here) is sure to fail:
-/// say which ones before it is saved.
-pub fn missing_secrets(t: &TestDraft) -> Option<String> {
+/// QA B3, E1: the passwords a test types that have no value here (names only). A one-time code is
+/// never one: it changes on every sign-in and is got when the test runs.
+pub fn missing_passwords(t: &TestDraft) -> Vec<String> {
     let known = project_secrets();
-    let used = secret_names(t);
-    let unknown: Vec<String> = used.iter().filter(|n| !known.iter().any(|(k, _)| k == *n)).map(|n| format!("${{{n}}}")).collect();
-    let empty: Vec<String> = used.iter().filter(|n| known.iter().any(|(k, has)| k == *n && !has)).map(|n| format!("${{{n}}}")).collect();
-    let saved: Vec<&str> = known.iter().filter(|(_, has)| *has).map(|(k, _)| k.as_str()).collect();
-    let list = |v: &[String]| match v {
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-        [] => String::new(),
-    };
-    if !unknown.is_empty() {
-        let choice = if saved.is_empty() { "add the secret in Settings › Secrets first".to_owned() } else { format!("use a saved secret ({})", saved.join(", ")) };
-        return Some(format!(
-            "This test uses {}, which {} not a saved secret, so it would fail. Edit it: {choice}, or write a value that is not secret (like an email) as plain text.",
-            list(&unknown),
-            if unknown.len() == 1 { "is" } else { "are" }
-        ));
-    }
-    if !empty.is_empty() {
-        return Some(format!("{} {} no value on this computer, so the test would fail. Set the value first (Settings › Secrets).", list(&empty), if empty.len() == 1 { "has" } else { "have" }));
-    }
-    None
+    secret_names(t).into_iter().filter(|(n, code)| !code && !known.iter().any(|(k, has)| k == n && *has)).map(|(n, _)| n).collect()
 }
+
+/// E1: the one-time codes a test types that have no fixed test code saved here.
+fn open_codes(t: &TestDraft) -> Vec<String> {
+    let known = project_secrets();
+    secret_names(t).into_iter().filter(|(n, code)| *code && !known.iter().any(|(k, has)| k == n && *has)).map(|(n, _)| n).collect()
+}
+
+/// E1: the one line a test with a one-time code gets when it runs on a schedule (no blocking).
+const CODE_ON_SCHEDULE: &str = "Scheduled runs need a code fastpilot can read (test inbox or SMS on the emulator) or a fixed test code.";
 
 /// Where Chat saves tests: `tests/` in the folder `fastpilot ui` was started in.
 pub fn tests_dir() -> std::path::PathBuf {
@@ -3564,12 +3576,14 @@ fn test_card(id: String, v: &Value) -> Res<Proposal> {
         rows.push(("Run".to_owned(), schedule::describe(when)));
         rows.push(("On failure".to_owned(), notify_text(notify)));
     }
-    let note = if let Some(why) = missing_secrets(&t) {
-        Some(why)
-    } else if dir.join(format!("{}.md", t.id)).exists() {
+    // E1: a password with no value gets fastpilot's password card next to this one (`finish`), and
+    // a one-time code is got when the test runs: neither is a note here.
+    let note = if dir.join(format!("{}.md", t.id)).exists() {
         Some(format!("A test named \"{}\" is already saved. Give this one another name with Edit.", t.id))
     } else if outside_a_project(&dir) {
         Some(format!("fastpilot ui was started in {}, which is not a project folder. The test will be saved in {}.", dir.parent().unwrap_or(&dir).display(), dir.display()))
+    } else if sched.is_some() && !open_codes(&t).is_empty() {
+        Some(CODE_ON_SCHEDULE.to_owned())
     } else {
         None
     };
@@ -3793,9 +3807,6 @@ fn save_test(key: &str, agent: &str, id: &str, data: &Value, mode: Option<&str>,
         }
     }
     let t = test_of(&v)?;
-    if let Some(why) = missing_secrets(&t) {
-        return Err(why);
-    }
     // S5: the card's three one-click schedules ("preset:night" …), with a Mac notification.
     let preset = mode.and_then(|m| m.strip_prefix("preset:")).map(|k| schedule::presets().into_iter().find(|p| p.0 == k).map(|p| p.3).ok_or("Unknown choice")).transpose()?;
     let from_preset = preset.is_some();
@@ -3841,6 +3852,7 @@ fn save_test(key: &str, agent: &str, id: &str, data: &Value, mode: Option<&str>,
         }
         None => "Test saved. Press Run now to run it, or ask me to schedule it.".to_owned(),
     };
+    let msg = if saved["schedule"].is_string() && !open_codes(&t).is_empty() { format!("{msg} {CODE_ON_SCHEDULE}") } else { msg };
     if let Some(p) = chat_of(key).msgs.iter_mut().flat_map(|m| m.proposals.iter_mut()).find(|p| p.id == id) {
         p.status = "applied".into();
         p.note = Some(msg.clone());
@@ -3985,6 +3997,13 @@ pub fn run_saved(id: &str) -> Res<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E1: the bot writes a one-time code as a run-time value and never promises what a card refuses.
+    #[test]
+    fn the_bot_writes_one_time_codes_as_run_time_values() {
+        assert!(SYSTEM.contains("so it is never a saved secret: write its step as \"Type the one-time code ${LOGIN_OTP}"));
+        assert!(SYSTEM.contains("Never promise something a card does not do."));
+    }
 
     /// FastTest (v0.7.1 dry run, High): the bot's prompt names every action Chat does at once, so a
     /// real Claude proposes them instead of sending the user to the page.

@@ -384,8 +384,35 @@ pub struct MissingSecret {
 
 /// The secrets `case` needs that are not usable here (V042, DEMO_PASS): named as `${NAME}`, and not
 /// both allowed and set. A name the test also writes bare (a value a step captures) is its own, not
-/// a secret.
+/// a secret. A one-time code is not one either (E1): see `missing_codes`.
 pub fn missing_secrets(case: &Case) -> Vec<MissingSecret> {
+    let codes = code_names(&case.text);
+    unusable(case).into_iter().filter(|m| !codes.contains(&m.name)).collect()
+}
+
+/// E1: the one-time codes `case` types (`${LOGIN_OTP}`, or a `${NAME}` in a step about a code) that
+/// have no fixed value here and that no step captures: only a person (or a readable inbox) has them.
+pub fn missing_codes(case: &Case) -> Vec<String> {
+    let codes = code_names(&case.text);
+    unusable(case).into_iter().filter(|m| codes.contains(&m.name)).map(|m| m.name).collect()
+}
+
+/// The `${NAME}`s of `text` that are one-time codes, by their name or by the line they are in.
+fn code_names(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        for part in line.split("${").skip(1) {
+            if let Some(name) = part.split('}').next().filter(|n| fastpilot_core::is_code(n, line))
+                && !out.iter().any(|o| o == name)
+            {
+                out.push(name.to_owned());
+            }
+        }
+    }
+    out
+}
+
+fn unusable(case: &Case) -> Vec<MissingSecret> {
     let allowed: Vec<String> = fastpilot_core::config::var("FASTPILOT_VARS").unwrap_or_default().split(',').map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).collect();
     let text = &case.text;
     let mut out: Vec<MissingSecret> = Vec::new();
@@ -1195,6 +1222,20 @@ async fn attempt(case: &Case, opts: &Options, pool: &Pool, retry: bool, avoid: &
     result
 }
 
+/// What `case` needs before it can start, said at once instead of four failing attempts.
+fn cannot_start(case: &Case) -> Option<CaseResult> {
+    // V042: a missing secret is a setup problem.
+    let missing = missing_secrets(case);
+    if !missing.is_empty() {
+        return Some(CaseResult::needs_secrets(case, &missing));
+    }
+    // E1: a one-time code nobody here can give (no person to type it, no inbox to read it from) is
+    // a plain setup problem, never "needs the secret".
+    missing_codes(case).first().map(|code| {
+        CaseResult::setup_problem(case, &format!("Could not run: a step needs the one-time code {code}. A person types it during the run (start it from the dashboard), or the test reads it from a test inbox or the emulator's SMS."))
+    })
+}
+
 pub async fn run_with_retries(
     case: &Case,
     opts: &Options,
@@ -1202,10 +1243,8 @@ pub async fn run_with_retries(
     breaker: &Breaker,
     pool: &Pool,
 ) -> CaseResult {
-    // V042: a missing secret is a setup problem: say so at once instead of four failing attempts.
-    let missing = missing_secrets(case);
-    if !missing.is_empty() {
-        return CaseResult::needs_secrets(case, &missing);
+    if let Some(r) = cannot_start(case) {
+        return r;
     }
     if breaker.is_open() {
         return CaseResult::skipped(case, "skipped: the infra circuit breaker is open (consecutive infra failures)");
@@ -1619,6 +1658,23 @@ mod tests {
 
     fn case(text: &str) -> Case {
         Case::of_text(text.to_owned(), Path::new("tests/x.md"), "x")
+    }
+
+    /// E1: a one-time code is not a missing secret ("needs the secret … add it"): a run that cannot
+    /// get it says plainly that a person must type it; a step that captures it, or a fixed code
+    /// saved for it, is fine.
+    #[test]
+    fn a_one_time_code_is_not_a_missing_secret() {
+        let t = "# Login OTP\nplatform: web\ntarget: examples/demo/login.html\n- Isi nomor telepon 81200000000\n- Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit\n- Sign in with ${E1_NOT_SAVED_PASS}\n";
+        let c = case(t);
+        assert_eq!(missing_secrets(&c).iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["E1_NOT_SAVED_PASS"]);
+        assert_eq!(missing_codes(&c), ["MOTMAINA_OTP"]);
+        let read = case("# Login OTP\nplatform: android\ntarget: com.x\n- Read the SMS code into MOTMAINA_OTP\n- Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit\n");
+        assert!(missing_codes(&read).is_empty() && missing_secrets(&read).is_empty());
+        let only_code = case("# Login OTP\nplatform: web\ntarget: examples/demo/login.html\n- Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit\n");
+        let r = cannot_start(&only_code).expect("not started");
+        assert!(!r.passed && r.class == Some(Class::Setup) && r.attempts == 0);
+        assert!(r.notes.contains("one-time code MOTMAINA_OTP") && r.notes.contains("A person types it") && !r.notes.contains("secret"), "{}", r.notes);
     }
 
     /// PF5: `platform: web, android, ios` (or `all`) runs the test once per platform, each with its

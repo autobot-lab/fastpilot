@@ -1488,7 +1488,8 @@ function testCard(p) {
   } else if (p.status === "cancelled") {
     foot = h("div", { class: "prop-state muted", tabindex: "-1" }, "Dismissed");
   }
-  const note = p.status === "pending" && p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
+  // E1: one message only: the red refusal where the person clicked replaces a note that says the same.
+  const note = p.status === "pending" && p.note && chatRefused[p.id] !== p.note ? h("p", { class: "s warnline" }, rich(p.note)) : null;
   const detail = p.detail ? h("details", { class: "t-detail" }, h("summary", {}, "Details"), h("p", { class: "s" }, p.detail)) : null;
   return h("section", { class: "grp prop test " + p.status, "aria-label": (p.schedules ? "Save test & schedule: " : "Save test: ") + p.title, "data-pid": String(p.id) },
     head, h("div", { class: "prop-body" }, body, note, detail, refusedNow, foot));

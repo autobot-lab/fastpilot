@@ -1410,6 +1410,25 @@ fn expand(s: &str, mut var: impl FnMut(&str) -> Result<String, String>) -> Resul
     Ok(out)
 }
 
+/// E1: a `${NAME}` that holds a one-time code (it changes on every sign-in, so it is never a saved
+/// secret): the name says so (`LOGIN_OTP`, `SMS_CODE`, `PIN`), or `text`, the step it is in, does
+/// ("Type the one-time code", "Isi kode OTP").
+pub fn is_code(name: &str, text: &str) -> bool {
+    let parts: Vec<&str> = name.split('_').filter(|p| !p.is_empty()).collect();
+    let by_name = parts.last().is_some_and(|p| ["OTP", "TOTP", "CODE", "PIN", "MFA", "2FA"].contains(p)) || parts.first() == Some(&"OTP");
+    let words: Vec<String> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    let says = |phrase: &[&str]| words.windows(phrase.len()).any(|w| w.iter().zip(phrase).all(|(a, b)| a == b));
+    by_name || [&["otp"][..], &["one", "time", "code"], &["onetime", "code"], &["verification", "code"], &["kode"], &["2fa"]].iter().any(|p| says(p))
+}
+
+/// E1: what a run says when it reaches a one-time code it cannot get (never "setup needed: the
+/// test needs the password", which makes a password card).
+pub fn code_needed(name: &str) -> String {
+    format!(
+        "one-time code needed: the step needs the one-time code {name}, sent when signing in. It is never a saved password. A person types it while the test runs in the dashboard, or the test reads it from a test inbox or the emulator's SMS (readOtp); nothing was typed"
+    )
+}
+
 fn is_var(n: &str) -> bool {
     let mut chars = n.chars();
     chars.next().is_some_and(|c| c.is_ascii_uppercase() || c == '_')
@@ -1442,6 +1461,9 @@ fn lookup(name: &str) -> Result<String, String> {
     // from the environment.
     let saved = crate::secrets::lookup(name);
     if saved.is_none() && !allowed().iter().any(|a| a == name) {
+        if is_code(name, "") {
+            return Err(code_needed(name));
+        }
         return Err(format!(
             "setup needed: the test needs the password {name} and it is not saved for this app. The user sets it once in the dashboard (ask for it in Chat, or Settings › Secrets), or lists it in FASTPILOT_VARS and gives it in the environment fastpilot starts in; nothing was typed"
         ));
@@ -1462,6 +1484,7 @@ fn lookup(name: &str) -> Result<String, String> {
             }
             Ok(v)
         }
+        None if is_code(name, "") => Err(code_needed(name)),
         None => Err(format!(
             "setup needed: the test needs the password {name} and it is not set for this app. The user sets it once in the dashboard (Settings › Secrets › {name} › Set value), or sets it in the environment fastpilot starts in; nothing was typed"
         )),
@@ -1996,6 +2019,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// E1: one-time codes are run-time values, by their name or by the words of their step.
+    #[test]
+    fn tells_a_one_time_code_from_a_password() {
+        for (name, step) in [
+            ("MOTMAINA_OTP", "Isi kode OTP ${MOTMAINA_OTP} di kolom 5 digit"),
+            ("SMS", "Isi kode OTP ${SMS} di kolom 5 digit"),
+            ("X", "Type the one-time code ${X}"),
+            ("X", "Enter the verification code ${X}"),
+            ("LOGIN_CODE", ""),
+            ("PIN", ""),
+            ("OTP_EMAIL", ""),
+        ] {
+            assert!(is_code(name, step), "{name} in {step:?}");
+        }
+        for (name, step) in [("DEMO_PASS", "Sign in with ${DEMO_PASS}"), ("CODENAME", ""), ("PINTU", "Open the footprint page"), ("TEST_PASSWORD", "Type ${TEST_PASSWORD}"), ("PROMO", "Enter the voucher ${PROMO}")] {
+            assert!(!is_code(name, step), "{name} in {step:?}");
+        }
+    }
+
     #[test]
     fn substitutes_env() {
         assert_eq!(var_names("a ${X} b ${Y_2} `${a.b}` $${Z}"), vec!["X", "Y_2"]);
@@ -2005,6 +2047,9 @@ mod tests {
         let e = substitute("${HOME}").expect_err("not allowlisted");
         assert!(e.contains("ask for it in Chat, or Settings › Secrets") && e.contains("nothing was typed"), "{e}");
         assert_eq!(substitute("`${document.title}` $${X} $5"), Ok("`${document.title}` ${X} $5".into()));
+        // E1: a one-time code nobody can save is not reported as a missing password.
+        let e = substitute("${MOTMAINA_OTP}").expect_err("no code");
+        assert!(e.starts_with("one-time code needed:") && !e.contains("setup needed") && e.contains("nothing was typed"), "{e}");
         assert!(parse_flow("- inputText: { into: Phone, text: +62812 }").is_err());
     }
 
