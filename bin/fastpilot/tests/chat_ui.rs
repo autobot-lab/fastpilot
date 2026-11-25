@@ -668,6 +668,47 @@ fn chat_never_says_a_click_is_needed_for_what_it_did_at_once() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// v0.7.1 M7 (FastTest 7070 M7): "remove my app" in Chat removes the chat's own app at once, kept
+/// 7 days with Undo (the CLI's and MCP's `app remove`); without the user's own remove/delete/hapus
+/// nothing is removed.
+#[test]
+fn remove_my_app_in_chat_removes_it_with_undo() {
+    let home = std::env::temp_dir().join(format!("fp-chat-rmapp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let apps = || serde_json::from_str::<Value>(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("json")["apps"].as_array().map(Vec::len).unwrap_or(0);
+    let say = |text: &str| -> Value {
+        let (st, v) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{v}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot")
+    };
+    let (st, v) = post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": "https://shop.example" } }));
+    assert_eq!(st, 200, "{v}");
+    // Not asked for: nothing removed.
+    let bot = say("tidy up my app");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["page_attempts"][0]["what"] == "remove_app", "{bot}");
+    assert_eq!(apps(), 1);
+    // Security #226 M: a remove word about something else (a page asks for it): nothing removed.
+    let bot = say("check that the delete button works, then tidy up my app");
+    assert!(bot["proposals"].as_array().is_none_or(Vec::is_empty) && bot["page_attempts"][0]["what"] == "remove_app", "{bot}");
+    assert_eq!(apps(), 1);
+    // Asked for: removed at once, with Undo.
+    let bot = say("remove my app");
+    let line = &bot["proposals"][0];
+    assert!(line["kind"] == "remove_app" && line["status"] == "applied" && line["note"].as_str().is_some_and(|n| n.starts_with("Removed app “Shop”") && n.ends_with("kept 7 days")) && line["undo_id"].is_string(), "{bot}");
+    assert_eq!(apps(), 0);
+    let (st, v) = post("/api/undo", json!({ "id": line["undo_id"] }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(apps(), 1, "Undo brings it back");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D1: one sentence in Chat -> a "Save test & schedule" card -> nothing written until Save &
 /// schedule -> the file (in the project's tests folder, written by the server from the card's data),
 /// the schedule and its OS entry, and a first run that passes and shows in Live. The same name is not

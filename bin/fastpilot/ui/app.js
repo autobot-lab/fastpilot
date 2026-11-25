@@ -1759,7 +1759,7 @@ const RERUN = "The test account is saved now. Run that check again with it.";
 
 // FC6: what Chat did at once shows as one result line: verb first, the exact change, and Undo while
 // it can be undone ("Changed later" once a newer change of the same thing came). No Apply step.
-const RESULT_KINDS = new Set(["app", "map", "run_all", "schedule", "schedule_change", "ship_check", "release_watch", "switch_app", "run_tests"]);
+const RESULT_KINDS = new Set(["app", "map", "run_all", "schedule", "schedule_change", "ship_check", "release_watch", "switch_app", "run_tests", "remove_app"]);
 
 // FC5 hint copy (HANDOFF item 3, the recommended sentences; the user did not choose, so the team
 // follows FastProduct's recommendation). One constant: either choice is a one-line change.

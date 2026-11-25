@@ -187,6 +187,9 @@ if "turn on the release watch" in low:
     card({"kind": "release_watch", "on": True})
 if "switch to shop android" in low or "switch apps please" in low:
     card({"kind": "switch_app", "app": "Shop Android"})
+if "remove my app" in low or "tidy up my app" in low:
+    # v0.7.1 M7: "remove my app" (and a message that does not ask to remove anything).
+    card({"kind": "remove_app"})
 if "run the login test" in low:
     card({"kind": "run_tests", "test": "login"})
 if "see what it wants" in low:
