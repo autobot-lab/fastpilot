@@ -941,6 +941,8 @@ async fn agents_change(axum::Json(body): axum::Json<Value>) -> Response {
                     .and_then(|r| r.map_err(|f| f.msg));
                     match others {
                         Err(e) => Err(e),
+                        // v0.7.1 M6: no chat, but a run its Chat started was stopped: say so.
+                        Ok(line) if chats == 0 && !line.starts_with("Nothing to stop") => Ok(json!({ "stopped": 1, "message": line })),
                         Ok(_) if chats == 0 => Ok(json!({ "stopped": 0, "message": format!("Nothing to stop. {} has no running chats.", a.name) })),
                         Ok(_) => Ok(json!({ "stopped": chats, "message": format!("Stopped {} in {}", if chats == 1 { "1 chat".to_owned() } else { format!("{chats} chats") }, a.name), "next": "Say “run it again” to start them again." })),
                     }
