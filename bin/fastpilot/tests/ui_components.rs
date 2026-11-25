@@ -81,6 +81,8 @@ async fn dashboard(name: &str, seed: fn(&Path)) -> Dash {
         .env("FASTPILOT_SCHEDULER", "launchd")
         .env("FASTPILOT_SCHEDULER_DIR", home.join("LaunchAgents"))
         .env("FASTPILOT_LIVE_DIR", home.join("live"))
+        // Never the Ollama of this computer (E8): nobody listens on port 9.
+        .env("FASTPILOT_OLLAMA_URL", "http://127.0.0.1:9/v1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -208,14 +210,12 @@ async fn every_confirmation_is_in_the_page_and_esc_changes_nothing() {
     let state = |what: &str| -> String {
         match what {
             "agent" => format!("(async () => String((await api('/api/agents')).agents.some((x) => (x.agent || x).id === '{agent}')))()"),
-            "key" => "(async () => String(!!(await api('/api/provider')).key.has))()".to_owned(),
             "schedule" => format!("(async () => String((await api('/api/schedules')).schedules.some((x) => x.id === '{schedule}')))()"),
             _ => "(async () => (await api('/api/memory')).tests.find((t) => t.id === 'export').status)()".to_owned(),
         }
     };
     for (what, hash, sees, opener, verb, after) in [
         ("agent", format!("#/agents/{agent}/settings"), "Delete agent", "Delete agent", "Delete agent", "\"false\""),
-        ("key", "#/settings/model".to_owned(), "Delete key", "Delete key", "Delete key", "\"false\""),
         ("schedule", "#/schedules".to_owned(), "Night run", "Delete", "Delete schedule", "\"false\""),
         ("aside", "#/memory".to_owned(), "Why failing?", "Set aside", "Set aside", "\"set_aside\""),
     ] {
@@ -387,12 +387,9 @@ async fn buttons_use_one_set_of_words() {
     let edit = eval(c, main_button).await;
     assert!(edit.contains("Save changes") && !edit.contains("Create schedule"), "editing a schedule: {edit}");
 
-    // Agent settings and the AI model: edits say "Save changes"; the key is "Delete key".
+    // Agent settings: edits say "Save changes".
     open(c, "#/agents/default/settings", "AI model").await;
     assert!(eval(c, main_button).await.contains("Save changes"), "agent settings");
-    eval(c, "(async () => { await api('/api/provider', { action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }); await loadSettings(); return 'ok'; })()").await;
-    open(c, "#/settings/model", "Delete key").await;
-    assert!(eval(c, main_button).await.contains("Save changes"), "AI model");
 
     // A confirmation's safe button is "Keep it" (History's "Keep them" is gone: see the scan above).
     let keep = eval(c, "(async () => { const p = UI.confirmDialog({ title: 't', text: 'x', verb: 'Delete' }); const k = document.querySelector('dialog.cdlg button').textContent; document.querySelector('dialog.cdlg button').click(); await p; return k; })()").await;
@@ -458,39 +455,96 @@ async fn the_app_switcher_adds_switches_and_removes_apps() {
     see(c, "Connect Jira").await;
 }
 
-/// S6 (v0.7): Settings › AI model says in one line what runs the tests (the signed-in Claude Code,
-/// found by itself); the models and other providers are under More options, closed. A new install
-/// explores with Sonnet, not Opus (DC7). Another provider shows on that line, and More options
-/// counts it as changed.
+/// E8 + E6 (v0.7.2, g19a–g19i): Settings › AI model has the default models and the providers;
+/// "+ Add a provider" connects an OpenAI-compatible server on this computer (no key) and its model
+/// list loads; the agent's Model tab picks one of its models at once with Undo (only for that
+/// agent), by mouse or keyboard; Remove asks in the page, not the browser.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_ai_model_page_says_what_runs_the_tests_in_one_line() {
+async fn the_model_tab_and_providers_pick_any_providers_model_with_undo() {
     if !chrome_available() {
         return eprintln!("skipping: no Chrome");
     }
+    let port = fake_models_server(&["fake/m1", "fake/m2"]);
     let d = dashboard("ui-model", |_| {}).await;
     let c = &d.client;
-    open(c, "#/settings/model", "AI model").await;
-    // The line: Claude Code found (this Mac) or not (a CI runner without it); never a form first.
-    // The machine check (doctor) can take a while; the line waits for it, never guessing.
-    let mut line = String::new();
-    for _ in 0..120 {
-        line = eval(c, "(() => { const u = document.querySelector('.using.ok') || document.querySelector('#body .notice'); return u ? u.textContent : document.querySelector('.using') ? document.querySelector('.using').textContent : 'none'; })()").await;
-        if !line.contains("Looking for Claude Code") {
+    open(c, "#/settings/model", "Default models").await;
+    see(c, "Providers").await;
+    let claude = eval(c, "[...document.querySelectorAll('.pcard b')].map((b) => b.textContent).join('|')").await;
+    assert!(claude.contains("Claude Code"), "{claude}");
+    // Add a provider: the menu lists them; Other asks for an address (and an optional key).
+    eval(c, "[...document.querySelectorAll('#body button')].find((b) => b.textContent === '+ Add a provider').click(), 'ok'").await;
+    let menu = eval(c, "[...document.querySelectorAll('#addmenu [role=menuitem] b')].map((b) => b.textContent).join('|')").await;
+    for name in ["OpenAI", "OpenRouter", "Groq", "Ollama", "Other"] {
+        assert!(menu.contains(name), "{name} in {menu}");
+    }
+    eval(c, "[...document.querySelectorAll('#addmenu [role=menuitem]')].find((b) => b.querySelector('b').textContent.startsWith('Other')).click(), 'ok'").await;
+    see(c, "Connect").await;
+    let set = format!("(() => {{ const i = document.querySelector('.pconnect input[aria-label=\"Address\"]'); i.value = 'http://127.0.0.1:{port}/v1'; [...document.querySelectorAll('.pconnect button')].find((b) => b.textContent === 'Connect').click(); return 'ok'; }})()");
+    eval(c, &set).await;
+    see(c, "Connected").await;
+    see(c, "2 models").await;
+    // The Model tab: Replay picks fake/m1 from the list at once, with Undo; Explore stays default.
+    open(c, "#/agents/default/model", "Which AI runs this agent’s tests. Each agent can use its own.").await;
+    let tabs = eval(c, "[...document.querySelectorAll('.tabs2 a')].map((a) => a.textContent).join('|')").await;
+    assert!(tabs.contains("Map|Model|About") || tabs.contains("Live|Model|About") || tabs.contains("Model"), "{tabs}");
+    eval(c, "document.querySelector('.mpick').click(), 'ok'").await;
+    see(c, "Search models").await;
+    let opts = eval(c, "[...document.querySelectorAll('#mlist [role=option]')].map((o) => o.dataset.v).join('|')").await;
+    assert!(opts.contains("default") && opts.contains(":fake/m1") && opts.contains(":fake/m2") && opts.contains("claude"), "{opts}");
+    // Keyboard: arrows move, Esc closes and gives the focus back to the button.
+    key(c, "Down").await;
+    let on = eval(c, "document.activeElement.getAttribute('role')").await;
+    assert_eq!(on, "\"option\"");
+    key(c, "Escape").await;
+    let back = eval(c, "String(!document.getElementById('mlist') && document.activeElement.classList.contains('mpick'))").await;
+    assert_eq!(back, "\"true\"", "Esc closes the list and the focus is back on the button");
+    eval(c, "(() => { document.querySelector('.mpick').click(); [...document.querySelectorAll('#mlist [role=option]')].find((o) => o.dataset.v.endsWith(':fake/m1')).click(); return 'ok'; })()").await;
+    see(c, "Changed Replay model").await;
+    let state = || eval(c, "(async () => { const d = await api('/api/agent-model?agent=default'); return [d.replay.choice ? d.replay.choice.model : 'default', d.explore.choice ? d.explore.choice.model : 'default'].join('|'); })()");
+    assert_eq!(state().await, "\"fake/m1|default\"", "only Replay changed");
+    see(c, "Use default").await;
+    // Undo gives the default back.
+    eval(c, "[...document.querySelectorAll('.toast button')].find((b) => b.textContent === 'Undo').click(), 'ok'").await;
+    for _ in 0..20 {
+        if state().await == "\"default|default\"" {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
-    assert!(line.starts_with("\"Using Claude Code ✓") || line.contains("Claude Code is not on this computer yet"), "{line}");
-    let shut = eval(c, "(() => { const sel = document.querySelector('select[aria-label=\"Exploring model\"]'); return [!!document.querySelector('#body .more-btn'), document.querySelector('#body .more-h').textContent, !!sel.closest('[hidden]')].join('|'); })()").await;
-    assert_eq!(shut, "\"false|Models and providers|false\"", "FC4b: the models are a visible section");
-    // DC7: the built-in exploring model is Sonnet.
-    let built_in = eval(c, "document.querySelector('select[aria-label=\"Exploring model\"]').options[0].textContent").await;
-    assert_eq!(built_in, "\"Built in · Claude Code · Sonnet 5.5\"");
-    // Another provider: said on the line, and counted under More options.
-    eval(c, "(async () => { await api('/api/provider', { action: 'save', provider: 'openai', model: 'gpt-4.1-mini', key: 'sk-test-not-real' }); provData = null; await loadProvider(); return 'ok'; })()").await;
-    open(c, "#/settings/model", "Using OpenAI").await;
-    let other = eval(c, "document.querySelector('.using').textContent").await;
-    assert!(other.contains("Using OpenAI · gpt-4.1-mini"), "{other}");
+    assert_eq!(state().await, "\"default|default\"", "Undo");
+    // Remove a provider: an in-page dialog, never the browser's.
+    open(c, "#/settings/model", "Connected").await;
+    let shown = eval(c, "(() => { window.__native = 0; [...document.querySelectorAll('.pcard button')].find((b) => b.textContent === 'Remove').click(); const d = document.querySelector('dialog.cdlg'); return [window.__native, d ? d.getAttribute('role') : 'none', d ? [...d.querySelectorAll('button')].map((b) => b.textContent).join('/') : ''].join('|'); })()").await;
+    assert_eq!(shown, "\"0|alertdialog|Keep it/Remove provider\"");
+    key(c, "Escape").await;
+}
+
+/// A fake OpenAI-compatible server on this computer: `GET /v1/models` lists `models`.
+fn fake_models_server(models: &'static [&'static str]) -> u16 {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut r = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                    break;
+                }
+            }
+            let body = if line.starts_with("GET /v1/models") {
+                json!({ "object": "list", "data": models.iter().map(|id| json!({ "id": id, "object": "model" })).collect::<Vec<_>>() }).to_string()
+            } else {
+                json!({ "error": { "message": "not here" } }).to_string()
+            };
+            let mut s = stream;
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    port
 }
 
 /// A2 (v0.7): Settings › Limits starts with one protection statement worked out from the settings

@@ -8,8 +8,9 @@
 "use strict";
 
 // E7: Live sits next to Chat and About comes last; both show from the first start.
-const TABS = [["chat", "Chat"], ["live", "Live"], ["skills", "Skills"], ["schedules", "Schedules"], ["history", "History"], ["memory", "Memory"], ["map", "Map"], ["about", "About"]];
-const OWN_TABS = ["chat", "live", "skills", "about"];
+// E8: Model sits after Map.
+const TABS = [["chat", "Chat"], ["live", "Live"], ["skills", "Skills"], ["schedules", "Schedules"], ["history", "History"], ["memory", "Memory"], ["map", "Map"], ["model", "Model"], ["about", "About"]];
+const OWN_TABS = ["chat", "live", "skills", "model", "about"];
 const SHOWN = 5;
 const KEY = "fastpilot.agent";
 let data = null; // /api/agents
@@ -166,7 +167,9 @@ function aboutParts(x, inTab) {
   const a = x.agent;
   const row = (k, v, extra) => [h("dt", {}, k), h("dd", {}, v, extra ? h("small", {}, extra) : null)];
   const n = x.running || 0;
-  const model = a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
+  // E8: the real model names ("Replay: Haiku 5.5 · Explore and repair: Sonnet 5.5"), opening the Model tab.
+  const m = x.models || {};
+  const model = m.replay ? [h("a", { class: "lk", href: `#/agents/${a.id}/model`, onclick: () => closeAbout() }, `Replay: ${m.replay} · Explore and repair: ${m.explore}`), null] : a.model ? [x.model_label || a.model, null] : ["Fast and cheap by default", "Haiku and Sonnet"];
   const told = [a.job, ...(a.instructions || [])].filter(Boolean).join(" ");
   const run = n ? [h("h3", {}, "Running now"), h("div", { class: "ab-box ab-run", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, n === 1 ? "1 chat is running" : `${n} chats are running`),
     h("button", { type: "button", class: "btn", "data-fk": "stop", "aria-label": `Stop all ${n} running ${n === 1 ? "chat" : "chats"} in ${a.name}`, onclick: () => stopAll(a) }, `Stop all (${n})`))] : null;

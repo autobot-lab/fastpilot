@@ -217,130 +217,9 @@ function topSettings() {
   UI.pageHeader({ icon: "settings", title: "Settings" });
 }
 
-const MODELS = [
-  ["claude-haiku-5-5", "Claude Code · Haiku 5.5"],
-  ["claude-sonnet-5-5", "Claude Code · Sonnet 5.5"],
-  ["claude-opus-5-5", "Claude Code · Opus 5.5"],
-  ["claude-fable-5-2", "Claude Code · Fable 5.2"],
-];
-
-// Who drives `fastpilot run`: Claude Code, or an OpenAI-compatible API (B2).
-let provData = null, provBusy = false, provResult = null;
-// What the user picked and typed but did not save yet: the page is redrawn (device check done,
-// Save busy, a refused save) and must not throw it away. The API key is never kept here.
-let provDraft = null;
-const PROV_LABEL = { claude: "Claude Code (built in, no API key)", openai: "OpenAI", openrouter: "OpenRouter", groq: "Groq", ollama: "Ollama (local)", custom: "Other (OpenAI-compatible)" };
-
-async function loadProvider() {
-  try { provData = await api("/api/provider"); } catch (e) { provData = { error: e.message }; }
-  if ((location.hash || "").startsWith("#/settings/model")) render();
-}
-
-async function provAction(body) {
-  provBusy = true;
-  render();
-  try {
-    const r = await api("/api/provider", body);
-    provResult = { ok: true, text: r.message };
-    if (body.action === "save") provDraft = null;
-    if (body.action !== "test") toast(r.message, true);
-  } catch (e) {
-    provResult = { ok: false, text: e.message };
-    if (body.action !== "test") toast(e.message);
-  }
-  provBusy = false;
-  await loadProvider();
-}
-
-function providerGroup() {
-  if (!provData) { loadProvider(); return h("div", { class: "grp" }, h("div", { class: "gh" }, icon("plug"), "who runs the tests"), h("div", { class: "empty small" }, "Reading…")); }
-  if (provData.error) return UI.notice("error", "Cannot read the provider: " + provData.error);
-  const preset0 = (n) => provData.presets.find((p) => p.name === n) || {};
-  const d = provDraft || { provider: provData.provider, base_url: provData.base_url || preset0(provData.provider).base_url || "", model: provData.model || "" };
-  const pick = h("select", { class: "sel", "aria-label": "Model provider for fastpilot run", disabled: provData.env.provider },
-    provData.presets.map((p) => h("option", { value: p.name, selected: p.name === d.provider }, PROV_LABEL[p.name] || p.name)));
-  const preset = (n) => provData.presets.find((p) => p.name === n) || {};
-  const hosted = (n) => ["openai", "openrouter", "groq"].includes(n);
-  const url = h("input", { type: "text", class: "mono", value: d.base_url, placeholder: "https://…/v1", "aria-label": "Base URL" });
-  const urlHint = h("span", { class: "s" });
-  // Only Claude Code was tried with fastpilot's demo; every other provider says so (v0.4).
-  const untested = h("p", { class: "s prov-untested" }, h("span", { class: "ag-untested" }, "not tested yet"),
-    " fastpilot has not been tried with this provider yet: run a few tests and check the results before you rely on them.");
-  const model = h("input", { type: "text", class: "mono", value: d.model, placeholder: "for example gpt-4.1-mini, llama3.1", "aria-label": "Model id" });
-  const keepDraft = () => { provDraft = { provider: pick.value, base_url: url.value, model: model.value }; };
-  url.addEventListener("input", keepDraft);
-  model.addEventListener("input", keepDraft);
-  const k = provData.key || {};
-  const key = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: k.has ? `saved in ${k.where} · type to replace it` : "sk-…", "aria-label": "API key" });
-  const detail = h("div", { class: "prov-fields" },
-    h("label", { class: "fld" }, h("span", { class: "l" }, "Base URL"), url, urlHint),
-    h("label", { class: "fld" }, h("span", { class: "l" }, "Model"), model),
-    h("label", { class: "fld" }, h("span", { class: "l" }, "API key"), key,
-      h("span", { class: "s" }, provData.env.key ? "FASTPILOT_PROVIDER_API_KEY is set in the environment and is used first."
-        : k.has ? `Saved in ${k.where}${k.origin ? `, only for ${k.origin}` : ""}. Never shown again; the key is only sent to the server it was saved for.`
-        : `Saved in ${k.where || "the system key store"}, not in the settings file, and only sent to this server. A local Ollama needs no key.`)));
-  // Changing provider changes the server: the preset's URL replaces the previous one (Design must-fix).
-  let shownFor = d.provider;
-  const sync = () => {
-    detail.hidden = pick.value === "claude";
-    untested.hidden = pick.value === "claude";
-    const p = preset(pick.value);
-    if (pick.value !== shownFor) {
-      url.value = p.base_url || "";
-      shownFor = pick.value;
-    }
-    url.readOnly = hosted(pick.value);
-    urlHint.textContent = hosted(pick.value)
-      ? `${PROV_LABEL[pick.value]} always uses this server. For another server choose "Other (OpenAI-compatible)".`
-      : pick.value === "custom" ? "Required, for example https://llm.company.com/v1. https is required, except to this computer."
-      : "Ollama's default on this computer; change it if Ollama uses another port.";
-  };
-  pick.addEventListener("change", () => { sync(); keepDraft(); });
-  sync();
-  const btns = h("div", { class: "btns" },
-    h("button", { class: "btn p", disabled: provBusy || provData.env.provider, onclick: () => provAction({ action: "save", provider: pick.value, base_url: url.value, model: model.value, key: key.value }) }, "Save changes"),
-    provData.provider !== "claude" ? h("button", { class: "btn", disabled: provBusy, onclick: () => provAction({ action: "test" }) }, provBusy ? "Testing…" : "Test the connection") : null,
-    provData.provider !== "claude" && k.has ? h("button", { class: "btn danger", disabled: provBusy, onclick: async () => { if (await UI.confirmDialog({ title: "Delete the saved API key?", text: "The key is removed from this computer. Tests cannot use this provider until you enter a key again. Your other settings stay.", verb: "Delete key" })) provAction({ action: "delete-key" }); } }, "Delete key") : null);
-  return h("div", { class: "grp" },
-    h("div", { class: "gh" }, icon("plug"), "who runs the tests · fastpilot run"),
-    provData.env.provider ? h("div", { class: "banner" }, icon("info"), h("span", {}, "The provider is set in the environment (FASTPILOT_PROVIDER…), which wins over this setting.")) : null,
-    opt("Provider", "Claude Code uses your login. An OpenAI-compatible API is optional; it applies from the next run.", pick, null),
-    h("div", { class: "prov" }, untested, detail, btns,
-      provResult ? h("p", { class: "prov-result " + (provResult.ok ? "ok" : "bad"), role: "status" }, provResult.ok ? "✓ " : "✗ ", provResult.text) : null));
-}
-
-// S6: one line says what runs the tests (the signed-in Claude Code, found by itself); the models
-// and other providers are in the sections below.
-function modelUsing(run) {
-  if (provData && !provData.error && provData.provider && provData.provider !== "claude") {
-    return h("p", { class: "using", role: "status" }, `Using ${PROV_LABEL[provData.provider] || provData.provider}${provData.model ? " · " + provData.model : ""}`,
-      h("span", { class: "s muted" }, " · change it below"));
-  }
-  if (!doctorCache) return h("p", { class: "using s muted", role: "status" }, "Looking for Claude Code…");
-  if (run && run.status === "ok") return h("p", { class: "using ok", role: "status" }, "Using Claude Code ✓", h("span", { class: "s muted" }, ` · ${run.detail} · your own sign-in, no API key`));
-  return UI.notice("warn", "Claude Code is not on this computer yet. fastpilot uses your own Claude Code sign-in, with no API key. ",
-    h("a", { class: "lk", href: "https://claude.com/claude-code", target: "_blank", rel: "noopener" }, "Get Claude Code"), ", sign in once, then come back.");
-}
-
+// E8 + E6 (v0.7.2, g19g): Default models and Providers (models.js); replaces "who runs what".
 function pageModel() {
-  const run = doctorCache && doctorCache.checks.find((c) => c.area === "run");
-  if (!provData) loadProvider();
-  const status = !doctorCache ? h("span", { class: "tag" }, "Checking…")
-    : run && run.status === "ok" ? h("span", { class: "tag" }, "✓ Installed")
-    : h("span", { class: "tag warn" }, "Not installed");
-  const replay = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_replay)?.[1] || S.defaults.model_replay}`], ...MODELS];
-  const explore = [["", `Built in · ${MODELS.find(([v]) => v === S.defaults.model_explore)?.[1] || S.defaults.model_explore}`], ...MODELS];
-  return h("section", { class: "panel" },
-    h("h2", {}, "AI model", savedNote()),
-    modelUsing(run),
-    UI.section("Models and providers",
-      h("p", { class: "sub" }, "fastpilot picks the models by itself: a fast one to replay recorded steps, a balanced one to explore. These only apply when fastpilot runs tests itself; from Claude Code, the model is chosen in that app."),
-      h("div", { class: "grp" },
-        h("div", { class: "gh" }, icon("model"), "ai model · who runs what"),
-        opt("Replay (fast & cheap)", "Replays steps that are already recorded", select("model_replay", replay, "Replay model"), get("model_replay")),
-        opt("Exploring / repairing", "Used when a replay fails, or for a new test", select("model_explore", explore, "Exploring model"), get("model_explore")),
-        opt("Claude Code", run ? `${run.detail}` : "Uses your Claude Code login, no API key", status)),
-      providerGroup()));
+  return Models.settingsPage(h("section", { class: "panel" }));
 }
 
 // The "Tests at once" list for Settings: the Live data says the current value, the most and the default.
@@ -511,7 +390,6 @@ function pageSettings(sub) {
   }
   const page = sub === "model" ? pageModel() : sub === "secrets" ? pageSecret() : sub === "security" ? pageSecurity() : pageLimits();
   $body().replaceChildren(h("div", { class: "set" }, settingsNav(["model", "secrets", "security"].includes(sub) ? sub : "limits"), page));
-  if (sub === "model" && !doctorCache) loadDoctor(false);
 }
 
 // ---- Settings › Security: remembered browsers (E3) ----
