@@ -333,6 +333,7 @@ pub fn router(state: Arc<Ui>) -> Router {
         .route("/api/history", get(crate::history_api::list).post(crate::history_api::change))
         .route("/api/removed", get(removed_list).post(removed_restore))
         .route("/api/undo", post(undo_api))
+        .route("/api/report", get(report_file).post(report_make))
         .route("/api/history/report", get(crate::history_api::report))
         .route("/api/history/chat", get(crate::history_api::conversation))
         .route("/api/memory", get(crate::memory_api::list).post(crate::memory_api::change))
@@ -791,6 +792,38 @@ async fn agent_model_change(axum::Json(body): axum::Json<Value>) -> Response {
     match r {
         Ok(c) => axum::Json(json!({ "message": c.done.line, "lines": c.lines, "undo": c.done.undo })).into_response(),
         Err(f) => said_no(&f),
+    }
+}
+
+// ---- E9: reports of a run -----------------------------------------------------------------
+
+/// `?id=<History id>&kind=html|md[&download=1]`: the report fastpilot made for that run, only from
+/// its own folder. The page is served with a policy that allows nothing but its inlined images.
+async fn report_file(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let id = q.get("id").map(String::as_str).unwrap_or("");
+    let kind = if q.get("kind").map(String::as_str) == Some("md") { "md" } else { "html" };
+    let Some(path) = crate::reports::file(id, kind) else { return refuse(StatusCode::NOT_FOUND, "There is no report of this run yet. Make one first.") };
+    let Ok(body) = std::fs::read(&path) else { return refuse(StatusCode::NOT_FOUND, "The report could not be read.") };
+    let ty = if kind == "md" { "text/markdown; charset=utf-8" } else { "text/html; charset=utf-8" };
+    let mut r = ([(header::CONTENT_TYPE, ty)], body).into_response();
+    let h = r.headers_mut();
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    if q.contains_key("download") {
+        let name = if kind == "md" { "attachment; filename=\"fastpilot-report.md\"" } else { "attachment; filename=\"fastpilot-report.html\"" };
+        h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static(name));
+    }
+    r
+}
+
+/// `{id?}`: make (or make again) the report of a run; the newest run without an id.
+async fn report_make(axum::Json(body): axum::Json<Value>) -> Response {
+    let id = body["id"].as_str().map(str::to_owned);
+    match tokio::task::spawn_blocking(move || crate::reports::make(id.as_deref(), crate::control::Surface::Mcp)).await {
+        Ok(Ok(made)) => axum::Json(json!({ "message": made.line, "id": made.id, "note": crate::reports::NOTE })).into_response(),
+        Ok(Err(f)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &f.msg),
+        Err(e) => refuse(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
 

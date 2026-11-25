@@ -27,6 +27,7 @@ mod keystore;
 mod provider;
 mod pool;
 mod report;
+mod reports;
 mod report_cards;
 mod run;
 mod run_all;
@@ -297,6 +298,19 @@ async fn run_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         Some("ui") => ui::ui(&args[1..]).await,
         Some("schedule") => schedule::cli(&args[1..]).await,
         // v0.7.1: the dashboard's apps, passwords and agents from the terminal.
+        // E9: a shareable report of a run.
+        Some("report") if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") => {
+            println!("{}", reports::USAGE);
+            Ok(())
+        }
+        Some("report") => {
+            let r = reports::cli(&args[1..]);
+            if let Err(f) = &r {
+                control::print_fail(f);
+                std::process::exit(control::exit_code(&r));
+            }
+            Ok(())
+        }
         Some("undo") if args.get(1).is_some_and(|a| a == "--help" || a == "-h" || a == "help") => {
             println!("{}", undo::UNDO_USAGE);
             Ok(())

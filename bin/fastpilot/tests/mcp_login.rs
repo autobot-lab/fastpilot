@@ -57,7 +57,7 @@ async fn login_and_parallel_sessions_over_mcp() {
     let mut names: Vec<_> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
     // v0.7.1 FC1: the dashboard's pages as tools too (apps … history).
-    assert_eq!(names, ["agents", "apps", "assert", "check_flow", "config", "docs", "history", "jira_comment", "jira_create_issue", "jira_read", "map", "memory", "related_tests", "report", "run_flow", "schedules", "screenshot", "secrets", "session", "ship_check", "snapshot", "state", "tests"]);
+    assert_eq!(names, ["agents", "apps", "assert", "check_flow", "config", "docs", "history", "jira_comment", "jira_create_issue", "jira_read", "map", "memory", "providers", "related_tests", "report", "reports", "run_flow", "schedules", "screenshot", "secrets", "session", "ship_check", "snapshot", "state", "tests"]);
 
     let (ok, out) = call(&client, "run_flow", json!({ "flow": LOGIN })).await;
     if out.contains("Chrome not found") {

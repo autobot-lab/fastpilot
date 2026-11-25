@@ -292,6 +292,25 @@ impl History {
         items
     }
 
+    /// E9: a History row (`suite:<id>` or `run:<folder>`) with its test run folders, in order.
+    pub fn row(&self, id: &str) -> Option<(Item, Vec<PathBuf>)> {
+        let item = self.runs().into_iter().find(|r| r.id == id)?;
+        let folders = if let Some(name) = id.strip_prefix("run:").filter(|n| safe_id(n)) {
+            vec![self.runs_dir().join(name)]
+        } else {
+            let sid = id.strip_prefix("suite:").filter(|n| safe_id(n))?;
+            let s: Suite = serde_json::from_str(&fs::read_to_string(self.suite_path(sid)).ok()?).ok()?;
+            s.runs.iter().filter(|n| safe_id(n)).map(|n| self.runs_dir().join(n)).filter(|d| fs::symlink_metadata(d).is_ok_and(|m| m.is_dir())).collect()
+        };
+        Some((item, folders))
+    }
+
+    /// E9: where a row's shareable report goes (`history/reports/<kind>-<id>/`), never outside it.
+    pub fn report_dir(&self, id: &str) -> Option<PathBuf> {
+        let (kind, rest) = id.split_once(':')?;
+        (matches!(kind, "suite" | "run") && safe_id(rest)).then(|| self.dir().join("reports").join(format!("{kind}-{rest}")))
+    }
+
     /// The HTML report of a row (`suite:<id>` or `run:<folder>`), only inside this project's
     /// History or a report fastpilot wrote for the suite.
     pub fn report(&self, id: &str) -> Option<PathBuf> {

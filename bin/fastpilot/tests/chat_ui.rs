@@ -41,6 +41,17 @@ fn request(port: u16, method: &str, path: &str, cookie: &str, body: &str, origin
     (status, raw.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default())
 }
 
+/// A GET with the headers kept: (status, the raw response).
+fn request_raw(port: u16, path: &str, cookie: &str) -> (u16, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\n\r\n");
+    s.write_all(req.as_bytes()).expect("write");
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).expect("read");
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    (raw.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), raw)
+}
+
 fn start_ui(home: &Path) -> Ui {
     start_ui_with(home, &[])
 }
@@ -776,6 +787,38 @@ fn rename_this_app_in_chat_renames_it_with_undo() {
     let (st, v) = post("/api/undo", json!({ "id": line["undo_id"] }));
     assert_eq!(st, 200, "{v}");
     assert_eq!(name(), before, "Undo gives the old name back");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// E9 (v0.7.2): "make a report of the last run" in Chat makes the report at once (fastpilot writes
+/// it, not the bot): a card that opens the page, downloads it or the Markdown; the page is served
+/// with a policy that runs nothing, and a page or ticket alone never makes one.
+#[test]
+fn a_report_of_the_last_run_is_made_from_chat() {
+    let home = std::env::temp_dir().join(format!("fp-chat-report-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let run = home.join("project-fastpilot/runs/20261125-100000-login");
+    std::fs::create_dir_all(&run).expect("run");
+    std::fs::write(run.join("report.md"), "# login — fail\n\n- paid with 4111 1111 1111 1111\n").expect("md");
+    std::fs::write(run.join("fail-1.jpg"), b"\xff\xd8fake\xff\xd9").expect("shot");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let (st, _) = post("/api/chat", json!({ "message": "make a report of the last run please" }));
+    assert_eq!(st, 200);
+    let v = wait_idle(&ui);
+    let card = v["messages"][1]["proposals"][0].clone();
+    assert!(card["kind"] == "report" && card["status"] == "applied" && card["saved"]["report"] == "run:20261125-100000-login", "{card}");
+    assert!(card["note"].as_str().is_some_and(|n| n.starts_with("Made report for “login” · ") && n.ends_with(" · 1 of 1 failed · 1 screenshot")), "{card}");
+    let id = card["saved"]["report"].as_str().unwrap_or("").replace(':', "%3A");
+    let (st, raw) = request_raw(ui.port, &format!("/api/report?id={id}&kind=html"), &ui.cookie);
+    assert_eq!(st, 200, "{raw}");
+    assert!(raw.to_lowercase().contains("content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox") && raw.contains("paid with ***") && !raw.contains("4111"), "{raw}");
+    let (st, raw) = request_raw(ui.port, &format!("/api/report?id={id}&kind=md&download=1"), &ui.cookie);
+    assert!(st == 200 && raw.to_lowercase().contains("content-disposition: attachment; filename=\"fastpilot-report.md\""), "{raw}");
+    let (st, _) = request_raw(ui.port, "/api/report?id=run%3A..%2F..%2Fetc&kind=html", &ui.cookie);
+    assert_eq!(st, 404, "only a report fastpilot made, in its own folder");
     drop(ui);
     let _ = std::fs::remove_dir_all(home);
 }

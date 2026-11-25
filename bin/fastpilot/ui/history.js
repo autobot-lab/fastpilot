@@ -149,7 +149,15 @@ function runsTable() {
         h("td", { class: "next" }, when(r.finished_ms)),
         h("td", { class: "acts" }, r.has_report
           ? h("a", { class: "btn sm", href: "/api/history/report?id=" + encodeURIComponent(r.id), target: "_blank", rel: "noopener" }, "Open")
-          : h("span", { class: "s muted" }, "No report")));
+          : h("span", { class: "s muted" }, "No report"),
+          // E9 (e9d): a shareable report of this run (web page and Markdown, made on this Mac).
+          h("button", { type: "button", class: "btn sm", onclick: async () => {
+            try {
+              const m = await api("/api/report", { id: r.id });
+              toast(`${m.message} · ${m.note}`, true);
+              window.open("/api/report?id=" + encodeURIComponent(m.id) + "&kind=html", "_blank", "noopener");
+            } catch (e) { toast(e.message); }
+          } }, "Make a report")));
     }))));
 }
 
