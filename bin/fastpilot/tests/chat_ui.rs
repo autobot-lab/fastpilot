@@ -742,6 +742,44 @@ fn remove_my_app_in_chat_removes_it_with_undo() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// E3 (user, v0.7.1): Chat said "rename it any time in Settings › Your apps", a page that no longer
+/// exists. Now the app card says to say "rename this app to …", and saying it renames the chat's own
+/// app at once, with Undo; a name the user did not say is never applied.
+#[test]
+fn rename_this_app_in_chat_renames_it_with_undo() {
+    let home = std::env::temp_dir().join(format!("fp-chat-rename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FAKE_CHAT_NO_RUN", "1")]);
+    let post = |path: &str, body: Value| -> (u16, Value) {
+        let (st, b) = request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+        (st, serde_json::from_str(&b).unwrap_or(json!({ "text": b })))
+    };
+    let name = || serde_json::from_str::<Value>(&request(ui.port, "GET", "/api/apps", &ui.cookie, "", false).1).expect("json")["apps"][0]["name"].as_str().unwrap_or("").to_owned();
+    let say = |text: &str| -> Value {
+        let (st, v) = post("/api/chat", json!({ "message": text }));
+        assert_eq!(st, 200, "{v}");
+        wait_idle(&ui)["messages"].as_array().and_then(|m| m.last()).cloned().expect("bot")
+    };
+    let (st, v) = post("/api/apps", json!({ "action": "add", "name": "Shop", "targets": { "web": "https://shop.example" } }));
+    assert_eq!(st, 200, "{v}");
+    let before = name();
+    // A name the user did not say: nothing renamed.
+    let bot = say("give the app a better name");
+    assert!(bot["proposals"].as_array().is_none_or(|p| p.iter().all(|c| c["status"] != "applied")), "{bot}");
+    assert_eq!(name(), before);
+    // Said: renamed at once, with Undo.
+    let bot = say("rename this app to Shop (test)");
+    let line = &bot["proposals"][0];
+    assert!(line["kind"] == "rename_app" && line["status"] == "applied" && line["note"] == "Renamed the app to “Shop (test)”" && line["undo_id"].is_string(), "{bot}");
+    assert_eq!(name(), "Shop (test)");
+    let (st, v) = post("/api/undo", json!({ "id": line["undo_id"] }));
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(name(), before, "Undo gives the old name back");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D1: one sentence in Chat -> a "Save test & schedule" card -> nothing written until Save &
 /// schedule -> the file (in the project's tests folder, written by the server from the card's data),
 /// the schedule and its OS entry, and a first run that passes and shows in Live. The same name is not

@@ -26,6 +26,8 @@ pub enum Op {
     RemoveApp { id: String },
     /// "Removed app …": bring it back.
     RestoreApp { id: String },
+    /// E3: "Renamed the app to …": its name before.
+    RenameApp { id: String, name: String },
     /// "Created schedule …": remove it again (it goes to Recently removed).
     RemoveSchedule { id: String },
     /// "Removed schedule …": bring it back.
@@ -193,6 +195,10 @@ pub fn undo(id: Option<&str>, by: Surface) -> Result<String, Fail> {
             undone
         }
         Op::RestoreApp { id } => restore_app(id).map_err(|e| if e.code == "expired" { expired(&c) } else { e })?,
+        Op::RenameApp { id, name } => {
+            apps::update(id, Some(name), None).map_err(|e| fail("failed", e))?;
+            undone
+        }
         Op::RemoveSchedule { id } => {
             let s = schedule::load().schedules.into_iter().find(|x| &x.id == id).ok_or_else(|| fail("failed", format!("{} is not there any more.", q(&c.line))))?;
             remove_schedule(&s, "", false)?;

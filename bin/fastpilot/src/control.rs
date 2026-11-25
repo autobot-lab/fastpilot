@@ -276,6 +276,19 @@ pub fn switch_app(typed: &str, s: Surface) -> Result<(App, bool), Fail> {
     Ok((apps::set_current(&app.id)?, true))
 }
 
+/// E3: rename an app (its id, folder and passwords stay): "Renamed the app to “Shop (test)”", with
+/// Undo.
+pub fn rename_app(typed: &str, name: &str, s: Surface) -> Result<(App, Done), Fail> {
+    let app = resolve_app(typed, s)?;
+    let renamed = apps::update(&app.id, Some(name), None).map_err(|e| fail("bad_name", format!("Not renamed: {e}.")))?;
+    if renamed.name == app.name {
+        return Ok((renamed, Done::plain(format!("The app is already called {}. Nothing changed.", q(&app.name)))));
+    }
+    let line = format!("Renamed the app to {}", q(&renamed.name));
+    let undo = crate::undo::record(&line, &format!("app:{}", app.id), crate::undo::Op::RenameApp { id: app.id.clone(), name: app.name.clone() });
+    Ok((renamed, Done { line, undo }))
+}
+
 /// Remove an app for 7 days (FC6): "Removed app “X” · 4 tests, … · kept 7 days".
 pub fn remove_app(typed: &str, s: Surface) -> Result<(App, Done), Fail> {
     let app = resolve_app(typed, s)?;
