@@ -2930,6 +2930,14 @@ fn setting_card(op: Result<(String, change::Op), String>, t: &mut Turn, attempts
     };
     match card.level {
         change::Level::Applied => {
+            // Security #223 L8: a shorter time per test applies at once only from the user's own
+            // words when a page or a ticket was read in this turn (else it stops every test early).
+            let said = |w: &[&str]| t.user.to_lowercase().split(|ch: char| !ch.is_alphanumeric()).any(|x| w.contains(&x));
+            if c.key == "test_timeout" && (t.read_app || !t.tickets.is_empty()) && !said(&["minute", "minutes", "min", "mins", "menit", "time", "timeout", "waktu"]) {
+                change::audit(&c.key, c.before.as_deref(), c.after.as_deref(), "dashboard", "refused-no-provenance");
+                attempts.push(json!({ "what": card.title }));
+                return None;
+            }
             t.words += 1;
             if t.words > MAX_AUTO_PER_TURN {
                 return refuse(format!("Only {MAX_AUTO_PER_TURN} changes like this at once; ask again for the rest."));
@@ -4311,6 +4319,23 @@ mod tests {
         assert_eq!(kept, "Created it. The Delete button removes the account without your confirmation. The menu opens only after you click it twice.");
         assert_eq!(dropped, vec!["It needs your click to be saved.".to_owned()]);
         assert!(!SYSTEM.contains("a stricter limit) is done at once") && SYSTEM.contains("A card that changes a limit or the AI model waits for the user's click unless fastpilot's result line says it is done"));
+    }
+
+    /// Security #223 L8: after a page or a ticket was read, a shorter time per test needs the user's
+    /// own words; "make tests stop after 1 minute" still applies at once.
+    #[test]
+    fn a_page_cannot_shorten_the_time_per_test() {
+        let cfg = Cfg::new("timeout-page");
+        let one = settings(json!([{ "setting": "test_timeout", "set": "1" }]));
+        let mut read = turn("check the login page");
+        read.read_app = true;
+        let (_, cards, tried) = proposals_in(&one, &mut read);
+        assert!(cards.is_empty() && tried.len() == 1, "{cards:?} {tried:?}");
+        assert!(cfg.text().is_empty(), "nothing written");
+        let mut asked = turn("make tests stop after 1 minute");
+        asked.read_app = true;
+        let (_, cards, _) = proposals_in(&one, &mut asked);
+        assert_eq!(cards.first().map(|c| c.status.as_str()), Some("applied"), "{cards:?}");
     }
 
     /// A temporary config file for one test (serialized by ENV_LOCK).
