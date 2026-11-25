@@ -10,10 +10,6 @@ See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0
 
 <img src="docs/images/07-chat-save-test.png" width="860" alt="The fastpilot dashboard. On the left, the agent My tester with its chat. In the chat, one sentence became a test card: the steps, a schedule every 2 hours, and the buttons Save and schedule, Save test only, Edit and Dismiss, with one-click schedules below them: Every 2 hours, Every night and Before each release.">
 
-<img src="docs/images/demo.gif" width="860" alt="A 60-second tour of fastpilot: one sentence in Chat becomes a test card, Save and schedule runs it every 2 hours, Live shows each step on web and on an Android emulator where the Pay button is blocked, and a failing test is explained in plain words.">
-
-*A 60-second tour, sped up where the AI is thinking. It was recorded with 0.5.1, so the dashboard looks different now; the steps are the same.*
-
 ## Start in 2 steps
 
 You need a Mac (or Linux), Google Chrome, and [Claude Code](https://claude.com/claude-code) signed in.
@@ -83,10 +79,6 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
   asks you first and says what it will do. They work only from this page, never from Chat.
 - **iPhone** testing needs a one-time setup with your Xcode (about 5 minutes).
 - Only web? Chrome is enough.
-
-<img src="docs/images/02-device.png" width="860" alt="fastpilot's Device page: two Android emulators installed on this computer, each with a Start button, and the iPhone simulators tests can use.">
-
-*This picture of the Device page shows the older look.*
 
 ### 2. AI model and passwords: **Settings**
 - **AI model:** Claude Code is used by default, with your own sign-in and no API key. fastpilot picks
