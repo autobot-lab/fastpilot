@@ -1569,19 +1569,61 @@ pub(crate) fn substitute(s: &str) -> Result<String, String> {
     expand(s, lookup)
 }
 
-/// Like `substitute`, flow-local variables (runFlow `env`, captures) first.
+/// Like `substitute`, flow-local variables (runFlow `env`, captures) first. A local value that is a
+/// one-time code still to be asked ([`defer_codes`]) is asked for now, by the step that types it.
 pub(crate) fn substitute_with(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
-    expand(s, |n| local.get(n).cloned().map_or_else(|| lookup(n), Ok))
+    expand(s, |n| match local.get(n) {
+        Some(v) => match deferred(v) {
+            Some(t) => expand(t, lookup),
+            None => Ok(v.clone()),
+        },
+        None => lookup(n),
+    })
 }
 
 /// Like `substitute_with`, for a check before the step runs: a one-time code with no fixed value
 /// is left empty, never asked for (E1: the person is asked once, when the step types it).
 pub(crate) fn substitute_for_check(s: &str, local: &HashMap<String, String>) -> Result<String, String> {
+    let for_check = |n: &str| if unsaved_code(n) { Ok(String::new()) } else { lookup(n) };
     expand(s, |n| match local.get(n) {
-        Some(v) => Ok(v.clone()),
-        None if unsaved_code(n) => Ok(String::new()),
-        None => lookup(n),
+        Some(v) => match deferred(v) {
+            Some(t) => expand(t, for_check),
+            None => Ok(v.clone()),
+        },
+        None => for_check(n),
     })
+}
+
+/// Marks a flow-local value that still holds a one-time code to be asked ([`defer_codes`]). Values
+/// come from flow text, which cannot hold a NUL character.
+const DEFERRED: &str = "\u{0}fastpilot-code\u{0}";
+
+/// The template of a value made by [`defer_codes`]: only `${CODE}`s and escaped text.
+fn deferred(v: &str) -> Option<&str> {
+    v.strip_prefix(DEFERRED)
+}
+
+/// A flow-local value that still holds a one-time code to be asked ([`defer_codes`]).
+pub(crate) fn is_deferred(v: &str) -> bool {
+    deferred(v).is_some()
+}
+
+/// Security L3 (#233 follow-up): a runFlow `env` value that types a one-time code the person will
+/// be asked for is not filled in now (that would ask before any step's own-site check). Everything
+/// else in it is filled in now; the code stays `${NAME}` until a step types the variable, after that
+/// step's S-1 check ([`asks_code`] sees it through the variable).
+pub(crate) fn defer_codes(v: &str, local: &HashMap<String, String>) -> Result<String, String> {
+    if !asks_code(v, local) {
+        return substitute_with(v, local);
+    }
+    // Filled-in text is escaped (`$${`), so it is never read as a variable again.
+    let esc = |t: String| t.replace("${", "$${");
+    let t = expand(v, |n| match local.get(n) {
+        Some(x) => Ok(deferred(x).map_or_else(|| esc(x.clone()), str::to_owned)),
+        None if unsaved_code(n) => Ok(format!("${{{n}}}")),
+        None => lookup(n).map(esc),
+    })?;
+    Ok(format!("{DEFERRED}{t}"))
 }
 
 /// E1: a one-time code with no fixed value here: the person is asked for it when its step runs.
@@ -1592,7 +1634,11 @@ fn unsaved_code(name: &str) -> bool {
 /// Security #233 M1: does `text` type a one-time code the person will be asked for? Such a step
 /// is held to the app's own site (S-1) before anyone is asked, like one with a saved password.
 pub(crate) fn asks_code(text: &str, local: &HashMap<String, String>) -> bool {
-    var_names(text).iter().any(|n| !local.contains_key(n) && unsaved_code(n))
+    var_names(text).iter().any(|n| match local.get(n) {
+        // L3: a runFlow `env` variable that still holds a code to be asked.
+        Some(v) => deferred(v).is_some_and(|t| var_names(t).iter().any(|c| unsaved_code(c))),
+        None => unsaved_code(n),
+    })
 }
 
 /// Security #233 M1: a code the person typed is masked and kept to the app's own site (S-1), as

