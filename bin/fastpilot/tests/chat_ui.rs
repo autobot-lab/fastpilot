@@ -574,6 +574,46 @@ fn chat_answers_with_the_agents_explore_and_repair_model() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+/// Security L28: after the Explore and repair model moves to another provider, the new one gets
+/// none of the earlier conversation: Ollama on this Mac → Claude Code → a hosted provider.
+#[test]
+fn a_new_provider_gets_none_of_the_earlier_conversation() {
+    let home = std::env::temp_dir().join(format!("fp-chat-l28-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".fastpilot")).expect("home");
+    let (local, on_mac) = fake_text_model();
+    let (hosted, elsewhere) = fake_text_model();
+    let ollama = format!("http://127.0.0.1:{local}/v1");
+    let ui = start_ui_with(&home, &[("FAKE_CHAT_DELAY_MS", "0"), ("FASTPILOT_OLLAMA_URL", ollama.as_str())]);
+    let post = |path: &str, body: Value| request(ui.port, "POST", path, &ui.cookie, &body.to_string(), true);
+    let say = |text: &str, at: usize| {
+        let (st, body) = post("/api/chat", json!({ "agent": "default", "message": text }));
+        assert_eq!(st, 200, "{body}");
+        let v = wait_agent(&ui, "default");
+        assert!(v["messages"][at]["error"].is_null(), "{v}");
+    };
+    let explore = |m: &str| {
+        let (st, body) = post("/api/agent-model", json!({ "agent": "default", "explore": m }));
+        assert_eq!(st, 200, "{body}");
+    };
+    let sent = |log: &Requests| -> Vec<Vec<String>> {
+        log.lock().expect("log").iter().filter(|(l, _)| l.starts_with("POST /v1/chat/completions")).map(|(_, b)| b["messages"].as_array().expect("messages").iter().filter(|m| m["role"] != "system").map(|m| m["content"].as_str().unwrap_or("").to_owned()).collect()).collect()
+    };
+
+    explore("ollama:chat-model");
+    say("page text that stays on this Mac", 1);
+    assert_eq!(sent(&on_mac), [["page text that stays on this Mac"]]);
+    explore("claude-opus-5-5");
+    say("now on Claude Code", 3);
+    let (st, body) = post("/api/providers", json!({ "action": "add", "provider": "other", "base_url": format!("http://127.0.0.1:{hosted}/v1") }));
+    assert_eq!(st, 200, "{body}");
+    explore("other:chat-model");
+    say("first message to the hosted one", 5);
+    assert_eq!(sent(&elsewhere), [["first message to the hosted one"]], "nothing said on Ollama or Claude Code reaches the hosted provider");
+    drop(ui);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 /// D10b: an agent on another provider (an OpenAI-compatible server) answers in Chat with the same
 /// fastpilot tools (not `config`), its key only as a bearer header, its conversation kept between
 /// messages, and every D9 rule: a looser limit it was not asked for gives no card (M1); asked for,
