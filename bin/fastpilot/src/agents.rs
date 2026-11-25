@@ -211,6 +211,36 @@ pub fn set_skills_if_empty(agent: &str, skills: Vec<String>) -> Res<bool> {
     write(&s).map(|()| true)
 }
 
+/// E2 (v0.7.2): the agent of the demo app, "Demo shop". The one that already tests it, else the first
+/// agent when nobody has used it yet (a new install: no app, no chat, its built-in name and job),
+/// else a new agent. `fastpilot demo` again finds the same one.
+pub fn demo_agent(app: &str) -> Res<Agent> {
+    const NAME: &str = "Demo shop";
+    const JOB: &str = "Tests the fastpilot demo shop.";
+    {
+        let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut s = read();
+        if let Some(a) = s.agents.iter().find(|x| x.app == app) {
+            return Ok(a.clone());
+        }
+        let built = default_agent();
+        let taken = s.agents.iter().any(|x| x.id != DEFAULT && x.name.eq_ignore_ascii_case(NAME));
+        if let Some(d) = s.agents.iter_mut().find(|x| x.id == DEFAULT && x.app.is_empty() && x.conversations.is_empty() && x.instructions.is_empty() && x.name == built.name && x.job == built.job)
+            && !taken
+        {
+            d.name = NAME.into();
+            d.job = JOB.into();
+            d.app = app.to_owned();
+            let out = d.clone();
+            write(&s)?;
+            return Ok(out);
+        }
+    }
+    let names = list().into_iter().map(|x| x.name).collect::<Vec<_>>();
+    let name = (1..).map(|n| if n == 1 { NAME.to_owned() } else { format!("{NAME} {n}") }).find(|n| !names.iter().any(|x| x.eq_ignore_ascii_case(n))).unwrap_or_else(|| NAME.into());
+    create(Agent { name, job: JOB.into(), app: app.to_owned(), devices: vec!["web".into()], skills: crate::control::GENERAL_QA.iter().map(|x| (*x).to_owned()).collect(), ..Default::default() })
+}
+
 /// v0.7.1 FC5: agent `agent` tests app `app` (an app id) from now on: an app added from its Chat.
 pub fn bind_app(agent: &str, app: &str) -> Res<()> {
     let _l = LOCK.lock().unwrap_or_else(|p| p.into_inner());

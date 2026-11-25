@@ -2029,6 +2029,17 @@ window.setChatNotice = (r) => { chatNotice = { key: draftKey(), message: r.messa
 
 let chatDraft = { key: null, text: "", focused: false };
 const draftKey = () => `${chatAgent}/${chatId || "new"}`;
+// E2 (v0.7.2, e2a): `fastpilot demo` opens on the demo agent: plain text (no form, no chips) with the
+// tests of the demo folder, by their titles.
+function demoWelcome(d) {
+  if (d.error) return h("li", { class: "msg bot demo-welcome" }, h("div", { class: "res bd", role: "alert" }, d.error));
+  const n = d.tests.length;
+  return h("li", { class: "msg bot demo-welcome" },
+    h("p", { class: "md" }, h("b", {}, "This is the demo."), ` It has a small practice shop and ${n} test${n === 1 ? "" : "s"} that ${n === 1 ? "is" : "are"} ready to run. Nothing here touches your own apps.`),
+    h("ul", { class: "md" }, d.tests.map((t) => h("li", {}, t))),
+    h("p", { class: "md" }, "Say “run the demo tests” to watch them. To test your own website, paste its address."));
+}
+
 function renderChat() {
   const busy = !!(chatData && chatData.busy);
   let root = document.getElementById("chat-root");
@@ -2059,13 +2070,18 @@ function renderChat() {
   const log = document.getElementById("chat-log");
   const scroll = document.getElementById("chat-scroll");
   const msgs = (chatData && chatData.messages) || [];
-  const sig = JSON.stringify(msgs) + (chatData && chatData.error) + JSON.stringify([chatData && chatData.waiting, chatData && chatData.device_wait, chatData && chatData.signin]);
+  // E2: the demo agent's welcome comes with the sidebar's data (it can arrive after the chat).
+  const demo = window.Shell && chatAgent !== "new" ? (Shell.agentData(chatAgent) || {}).demo : null;
+  if (!msgs.length && window.Shell && !Shell.data()) Shell.refresh().then(() => { chatSig = ""; renderChat(); });
+  const sig = JSON.stringify(msgs) + (chatData && chatData.error) + JSON.stringify([chatData && chatData.waiting, chatData && chatData.device_wait, chatData && chatData.signin, demo]);
   if (sig === chatSig) return;
   chatSig = sig;
   const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
   root.classList.toggle("empty-chat", !msgs.length && !(chatData && chatData.error));
   if (chatData && chatData.error) {
     log.replaceChildren(h("li", { class: "res bd", role: "alert" }, "Cannot read the chat: " + chatData.error));
+  } else if (!msgs.length && demo) {
+    log.replaceChildren(demoWelcome(demo));
   } else if (!msgs.length) {
     // FC4 empty state: a greeting and the box. No suggestions.
     log.replaceChildren(h("li", { class: "hero2" }, h("h2", {}, chatAgent === "new" ? "What should this agent test?" : "What should I test?"), h("p", { class: "sub" }, HINT.empty)));

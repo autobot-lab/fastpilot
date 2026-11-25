@@ -16,6 +16,9 @@ pub const PAGES: &[(&str, &str)] = &[
     ("account.html", include_str!("../../../examples/demo/account.html")),
     ("help.html", include_str!("../../../examples/demo/help.html")),
     ("login.html", include_str!("../../../examples/demo/login.html")),
+    // E2 (v0.7.2): the practice shop of the demo tests.
+    ("products.html", include_str!("../../../examples/demo/products.html")),
+    ("checkout.html", include_str!("../../../examples/demo/checkout.html")),
     ("widgets.html", include_str!("../../../examples/demo/widgets.html")),
     ("pin.html", include_str!("../../../examples/demo/pin.html")),
     ("secret.html", include_str!("../../../examples/demo/secret.html")),
@@ -34,12 +37,26 @@ pub const PRACTICE: &[(&str, &str)] = &[
     ("orders.html", "state transitions"),
 ];
 
-/// The example test cases of `tests/`, with the platform shown in the output.
+/// The demo's test cases, where they go in the demo folder, and the platform shown in the output.
+/// E2 (v0.7.2): `tests/` holds the three website tests the dashboard shows and runs (from
+/// `examples/demo-tests/`); the Android ones (from the repository's `tests/`) are in
+/// `tests/android/`, run by name once the demo app is on a device.
 pub const TESTS: &[(&str, &str, &str)] = &[
-    ("login.md", include_str!("../../../tests/login.md"), "web"),
-    ("login-android.md", include_str!("../../../tests/login-android.md"), "android"),
-    ("login-cross-platform.md", include_str!("../../../tests/login-cross-platform.md"), "web + android"),
+    ("login.md", include_str!("../../../examples/demo-tests/login.md"), "web"),
+    ("cart.md", include_str!("../../../examples/demo-tests/cart.md"), "web"),
+    ("card-form.md", include_str!("../../../examples/demo-tests/card-form.md"), "web"),
+    ("android/login-android.md", include_str!("../../../tests/login-android.md"), "android"),
+    ("android/login-cross-platform.md", include_str!("../../../tests/login-cross-platform.md"), "web + android"),
 ];
+
+/// Where a demo test comes from in the repository (`TESTS` names).
+#[cfg(test)]
+fn source_of(name: &str) -> String {
+    match name.strip_prefix("android/") {
+        Some(n) => format!("tests/{n}"),
+        None => format!("examples/demo-tests/{name}"),
+    }
+}
 
 /// The Android demo app (empty when it was not built before this binary).
 const APK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fastpilot-demo.apk"));
@@ -234,6 +251,7 @@ pub async fn demo(args: &[String]) -> Res<()> {
             std::process::exit(1);
         }
         write_folder(&dir, &shown)?;
+        register(&dir);
     }
     let installed = install_android(android, device.as_deref()).await;
     if write {
@@ -254,6 +272,19 @@ pub async fn demo(args: &[String]) -> Res<()> {
         crate::offer::dashboard(&dir, true, Some(&cd));
     }
     Ok(())
+}
+
+/// E2 (v0.7.2): the demo folder becomes the app "fastpilot demo" with its agent "Demo shop", the
+/// app in use, so the dashboard opens on that agent's Chat with the demo tests (not "No app yet").
+/// Not while `FASTPILOT_DIR` pins a folder (then there are no apps to add to).
+fn register(dir: &Path) {
+    if std::env::var_os("FASTPILOT_DIR").is_some() {
+        return;
+    }
+    match crate::apps::add_demo(dir).and_then(|app| crate::agents::demo_agent(&app.id).map(|a| (app, a))) {
+        Ok((app, agent)) => println!("  ✓ {:<42} agent “{}” in the dashboard", format!("app “{}”", app.name), agent.name),
+        Err(e) => println!("  ! the demo could not be added to the dashboard: {e}"),
+    }
 }
 
 fn write_folder(dir: &Path, shown: &str) -> Res<()> {
@@ -339,7 +370,7 @@ async fn install_android(asked: bool, device: Option<&str>) -> Option<bool> {
     };
     match done {
         Ok(()) => {
-            println!("  ✓ {serial} · {APP} installed\n  type in Claude: \"Use fastpilot to run tests/login-android.md\"");
+            println!("  ✓ {serial} · {APP} installed\n  type in Claude: \"Use fastpilot to run tests/android/login-android.md\"");
             Some(true)
         }
         Err(e) => {
@@ -365,7 +396,7 @@ mod tests {
         }
         assert_eq!(PAGES.len(), std::fs::read_dir(format!("{ROOT}/examples/demo")).expect("dir").filter(|e| e.as_ref().is_ok_and(|e| e.path().extension().is_some_and(|x| x == "html"))).count(), "every demo page is embedded");
         for (name, text, _) in TESTS {
-            let repo = std::fs::read_to_string(format!("{ROOT}/tests/{name}")).expect("test");
+            let repo = std::fs::read_to_string(format!("{ROOT}/{}", source_of(name))).expect("test");
             assert_eq!(*text, repo, "{name}");
             assert_eq!(test_case(text), repo.replace("examples/demo/", "demo/"));
             assert!(!test_case(text).contains("examples/"), "{name} points into the demo folder");
