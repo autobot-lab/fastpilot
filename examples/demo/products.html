@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Products · fastpilot demo shop</title>
+  <style>body{font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px}li{margin:10px 0}</style>
+</head>
+<body>
+  <h1>Products</h1>
+  <ul>
+    <li>Blue mug · Rp 45.000 <button type="button" data-item="Blue mug" onclick="add(this)">Add Blue mug to cart</button></li>
+    <li>Notebook · Rp 30.000 <button type="button" data-item="Notebook" onclick="add(this)">Add Notebook to cart</button></li>
+  </ul>
+  <h2>Cart</h2>
+  <p id="cart" role="status">Your cart is empty</p>
+  <p><a href="checkout.html">Go to checkout</a> · <a href="index.html">Back to the shop</a></p>
+  <script>
+    const items = [];
+    function add(b) {
+      items.push(b.dataset.item);
+      document.getElementById("cart").textContent = `Cart: ${items.length} item${items.length === 1 ? "" : "s"} (${items.join(", ")})`;
+    }
+  </script>
+</body>
+</html>

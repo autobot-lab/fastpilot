@@ -1,7 +1,7 @@
 ---
 name: state-transition
 description: Test something that moves through states - an order, booking, ticket, subscription, account - by checking every allowed move and that forbidden moves are refused. Use when the user mentions statuses, a lifecycle, "flow from created to delivered", or asks for "state transition" testing.
-license: Apache-2.0
+license: MIT
 ---
 
 # State transition

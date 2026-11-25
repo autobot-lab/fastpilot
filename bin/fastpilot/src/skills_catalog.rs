@@ -98,7 +98,7 @@ pub fn library() -> Value {
         .iter()
         .filter_map(|(id, pack, name, line)| {
             let text = fastpilot_mcp::skills::get(id)?;
-            let license = text.lines().take(8).find_map(|l| l.strip_prefix("license: ")).unwrap_or("Apache-2.0");
+            let license = text.lines().take(8).find_map(|l| l.strip_prefix("license: ")).unwrap_or("MIT");
             let credit = text.contains("petrkindlmann/qa-skills").then_some("Ideas adapted from open-source work (MIT)");
             Some(json!({ "id": id, "pack": pack, "name": name, "line": line, "description": fastpilot_mcp::skills::description(text), "license": license, "credit": credit }))
         })

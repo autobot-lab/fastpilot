@@ -1,7 +1,7 @@
 ---
 name: login-and-otp
 description: Test sign-in flows - correct login, wrong password, locked or unknown account, logout, forgot password, and one-time codes sent by email or SMS. Use when the user asks to test login, sign up, OTP, verification code, magic link, password reset or session expiry.
-license: Apache-2.0
+license: MIT
 ---
 
 # Login and OTP

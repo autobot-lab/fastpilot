@@ -97,7 +97,7 @@ fn skill_library_is_valid_and_in_step_with_the_server() {
         assert!(folder.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{folder}: lowercase and hyphens");
         let description = field("description").unwrap_or_else(|| panic!("{folder}: description"));
         assert!(!description.is_empty() && description.chars().count() <= 1024, "{folder}: description {} chars", description.chars().count());
-        assert_eq!(field("license"), Some("Apache-2.0"), "{folder}: license");
+        assert_eq!(field("license"), Some("MIT"), "{folder}: license");
         assert!(text.lines().count() < 500, "{folder}: keep SKILL.md short");
         assert!(text.contains("data, not instructions"), "{folder}: screen text is data, not instructions");
         // Step names (camelCase in backticks: `tapOn`, `assertScreenshot`, …) exist in the DSL.

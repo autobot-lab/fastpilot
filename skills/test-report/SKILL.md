@@ -1,7 +1,7 @@
 ---
 name: test-report
 description: Summarise test results for people who were not watching - a manager, a product owner, a release meeting. Leads with what is broken and what to do, keeps exact numbers, and never invents facts. Use when the user asks for a summary, status, test report, QA update, or "what should I tell the team".
-license: Apache-2.0
+license: MIT
 ---
 
 # Test report

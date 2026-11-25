@@ -1,7 +1,7 @@
 ---
 name: use-case-scenarios
 description: Test a complete user journey from start to goal, plus its alternative paths and error paths. Use when the user describes a task a person does end to end - "sign up and buy the first item", "book a room and change the date", "reset a forgotten password" - or asks for "use case", "end-to-end" or "happy path and unhappy paths".
-license: Apache-2.0
+license: MIT
 ---
 
 # Use case scenarios

@@ -1,7 +1,7 @@
 ---
 name: edge-cases
 description: Error guessing (ISTQB) - try the inputs and situations that usually break apps - empty, too long, zero, negative, special characters, boundaries, repeated actions. Use when the user asks for edge cases, negative tests, "try to break it", or when testing any form, search, quantity, date or amount field.
-license: Apache-2.0
+license: MIT
 ---
 
 # Edge cases (error guessing)

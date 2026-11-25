@@ -1,7 +1,7 @@
 ---
 name: fastpilot
 description: Run QA tests on web (Chrome), Android and iOS apps with the fastpilot MCP server or its shell CLI. Use when the user asks to test, check, reproduce or automate something in a web page, an Android app or an iOS app, to run test cases written in plain language (tests/*.md), or to log in, tap, type and assert on a screen. Covers the test loop (session, run_flow, report), path-memory hints, secrets as ${NAME}, and the guard rails an agent must respect.
-license: Apache-2.0
+license: MIT
 ---
 
 # fastpilot

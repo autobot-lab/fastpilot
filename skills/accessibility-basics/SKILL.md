@@ -1,7 +1,7 @@
 ---
 name: accessibility-basics
 description: Quick accessibility check of a page or screen - buttons and fields without names, missing labels, keyboard use on web, tiny tap targets, and readable text when the language or size changes. Use when the user asks about accessibility, a11y, screen readers, WCAG, or "can everyone use this".
-license: Apache-2.0
+license: MIT
 ---
 
 # Accessibility basics

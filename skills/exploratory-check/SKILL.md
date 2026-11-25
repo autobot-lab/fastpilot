@@ -1,7 +1,7 @@
 ---
 name: exploratory-check
 description: Exploratory testing (ISTQB) - explore one page or feature for 10-20 minutes with a short charter like a curious user and report anything wrong or confusing, without a written test. Use when the user says "look around", "explore", "try this new feature", "check this page", or gives only a URL / app and no test case.
-license: Apache-2.0
+license: MIT
 ---
 
 # Exploratory check (exploratory testing)
