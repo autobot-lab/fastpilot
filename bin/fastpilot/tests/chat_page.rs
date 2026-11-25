@@ -385,6 +385,42 @@ async fn a_waiting_chat_says_how_many_go_first_and_keyboard_focus_shows() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// F3 (FastTest v0.7.2): "rename this app to …" and "use Haiku for this agent" in Chat show their
+/// result line with an Undo button (design e3a, g19f), and the button puts the old value back.
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_and_model_lines_in_chat_have_undo() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-f3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[("FASTPILOT_DIR", "")]).await;
+    eval(&client, "(async () => { await api('/api/apps', { action: 'add', name: 'Shop', targets: { web: 'https://shop.example' } }); location.hash = '#/agents/default/chat'; return 'ok'; })()").await;
+    see(&client, "What should I test?").await;
+    let app_name = "(async () => (await (await fetch('/api/apps')).json()).apps[0].name)()";
+    say(&client, "rename this app to Shop (test)").await;
+    see(&client, "Renamed the app to “Shop (test)”").await;
+    assert_eq!(eval(&client, app_name).await.trim_matches('"'), "Shop (test)");
+    let undo = eval(&client, "[...document.querySelectorAll('.result-line')].filter((l) => l.querySelector('.rl-undo')).length").await;
+    assert_eq!(undo, "1", "the rename line has Undo");
+    eval(&client, "document.querySelector('.result-line .rl-undo').click(), 'ok'").await;
+    see(&client, "Undone").await;
+    assert_eq!(eval(&client, app_name).await.trim_matches('"'), "Shop", "Undo gives the old name back");
+
+    say(&client, "use Haiku for this agent").await;
+    eval(&client, "new Promise((ok) => { const t = setInterval(() => { if (document.querySelector('.result-line .rl-undo')) { clearInterval(t); ok('ok'); } }, 100); setTimeout(() => ok('none'), 10000); })").await;
+    let model = "(async () => { const j = await (await fetch('/api/agent-model?agent=default')).json(); return JSON.stringify(j.explore).toLowerCase().includes('haiku-5') ? 'haiku' : 'other'; })()";
+    let before = eval(&client, model).await;
+    let lines = eval(&client, "[...document.querySelectorAll('.result-line')].map((l) => (l.querySelector('.rl-text').textContent) + (l.querySelector('.rl-undo') ? ' [Undo]' : '')).join('|')").await;
+    assert!(lines.contains("[Undo]"), "the model line has Undo: {lines}");
+    eval(&client, "document.querySelector('.result-line .rl-undo').click(), 'ok'").await;
+    eval(&client, "new Promise((ok) => setTimeout(() => ok('ok'), 800))").await;
+    let after = eval(&client, model).await;
+    assert_eq!((before.trim_matches('"'), after.trim_matches('"')), ("haiku", "other"), "Haiku, then Undo puts the old models back");
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// E7: every agent has a Live and an About tab from the first start. Live lists only this agent's
 /// tests ("Nothing is running" and Go to Chat when none run); About shows what the agent is, what it
 /// is told and how to remove it; arrow keys move between the tabs.
