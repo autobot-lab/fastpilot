@@ -840,6 +840,8 @@ async fn agents_api() -> Response {
     let busy = crate::chat::busy_agents();
     // D10d: an agent with a session waiting in the queue shows as queued.
     let claims = fastpilot_core::claim::entries();
+    // E7: each agent's tests running now (the Live tab's count).
+    let live: Vec<(String, usize)> = fastpilot_core::live::read_all().into_iter().map(|p| (p.agent.unwrap_or_else(|| agents::DEFAULT.to_owned()), p.sessions.len())).collect();
     let store = schedule::load();
     let list: Vec<Value> = agents::list()
         .into_iter()
@@ -853,7 +855,7 @@ async fn agents_api() -> Response {
             let (label, tested) = agents::model_label(&a);
             let queued = claims.iter().any(|e| e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
             let running = claims.iter().any(|e| !e.waiting && e.agent.as_deref().unwrap_or(agents::DEFAULT) == a.id);
-            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "demo": demo_welcome(&a), "running": crate::chat::running(&a.id), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() })
+            json!({ "agent": a, "initials": agents::initials(&a.name), "busy": busy.contains(&a.id) || running, "queued": queued, "schedules": scheds, "model_label": label, "tested": tested, "app_line": app_line(&a), "app_id": crate::agents::app_of(&a).map(|x| x.id), "running": crate::chat::running(&a.id), "live": live.iter().filter(|(id, _)| *id == a.id).map(|(_, n)| n).sum::<usize>(), "skills_line": crate::control::skills_header(&a).split_once(" · ").map(|(_, r)| r.to_owned()).unwrap_or_default() , "demo": demo_welcome(&a) })
         })
         .collect();
     let devices: Vec<Value> = agents::DEVICES.iter().map(|(k, n)| json!({ "id": k, "name": n })).collect();

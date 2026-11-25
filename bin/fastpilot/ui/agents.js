@@ -194,13 +194,14 @@ function page(id, tab) {
   const x = byId(id);
   if (!x) { location.replace("#/agents/default/chat"); return; }
   const a = x.agent;
-  const elsewhere = { live: "#/live", schedules: "#/schedules", history: "#/history", memory: "#/memory", map: "#/map" };
+  const elsewhere = { schedules: "#/schedules", history: "#/history", memory: "#/memory", map: "#/map" };
   if (elsewhere[tab]) { location.replace(elsewhere[tab]); return; }
   const box = h("div", { class: "ag-main col2" });
-  const title = tab === "skills" ? "Skills" : "About this agent";
+  const title = tab === "skills" ? "Skills" : tab === "about" ? "About" : "About this agent";
   $top().replaceChildren(h("h1", { tabindex: "-1" }, title));
   $body().replaceChildren(box);
   if (tab === "skills") tabSkills(x, box);
+  else if (tab === "about" && window.Shell) Shell.aboutPage(a.id, box);
   else box.replaceChildren(tabInstructions(x), tabSettings(x));
 }
 

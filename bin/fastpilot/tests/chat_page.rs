@@ -385,6 +385,64 @@ async fn a_waiting_chat_says_how_many_go_first_and_keyboard_focus_shows() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// E7: every agent has a Live and an About tab from the first start. Live lists only this agent's
+/// tests ("Nothing is running" and Go to Chat when none run); About shows what the agent is, what it
+/// is told and how to remove it; arrow keys move between the tabs.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_agent_has_live_and_about_tabs() {
+    if !chrome_available() {
+        return eprintln!("skipping: no Chrome");
+    }
+    let home = std::env::temp_dir().join(format!("fp-e7-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let (_ui, client) = open_ui(&home, &home.join("shop"), &[]).await;
+    eval(&client, "location.hash = '#/agents/default/chat', 'ok'").await;
+    see(&client, "What should I test?").await;
+    let tabs = eval(&client, "[...document.querySelectorAll('.tabs2 a')].map((a) => a.textContent).join('|')").await;
+    assert_eq!(tabs.trim_matches('"'), "Chat|Live|About", "before a saved test: Chat, Live and About");
+    eval(&client, "[...document.querySelectorAll('.tabs2 a')].find((a) => a.textContent === 'Live').click(), 'ok'").await;
+    see(&client, "Nothing is running").await;
+    see(&client, "Tests that run for My tester show up here, so you can watch them and take over.").await;
+    let go = eval(&client, "[...document.querySelectorAll('a.btn')].find((a) => a.textContent.includes('Go to Chat'))?.getAttribute('href') || 'none'").await;
+    assert_eq!(go.trim_matches('"'), "#/agents/default/chat");
+    // Arrow keys move between the tabs.
+    let moved = eval(&client, "(() => { const links = [...document.querySelectorAll('.tabs2 a')]; links[1].focus(); links[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return document.activeElement.textContent; })()").await;
+    assert_eq!(moved.trim_matches('"'), "About");
+    eval(&client, "location.hash = '#/agents/default/about', 'ok'").await;
+    see(&client, "About My tester").await;
+    see(&client, "say “rename this agent to …” in Chat").await;
+    see(&client, "What it is told").await;
+    let on = eval(&client, "document.querySelector('.tabs2 a.on')?.textContent || 'none'").await;
+    assert_eq!(on.trim_matches('"'), "About");
+
+    // Live lists only this agent's tests: one of "My tester" (no agent set) and one of another agent.
+    let tester = |agent: Option<&'static str>| {
+        let (h, live) = (home.join(format!("t-{}", agent.unwrap_or("mine"))), home.join("live"));
+        std::fs::create_dir_all(&h).expect("home");
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_fastpilot")).configure(move |c| {
+            c.arg("mcp").current_dir(ROOT).env("HOME", &h).env("FASTPILOT_LIVE_DIR", &live).env_remove("FASTPILOT_CONFIG").env_remove("FASTPILOT_AGENT");
+            if let Some(a) = agent {
+                c.env("FASTPILOT_AGENT", a).env("FASTPILOT_AGENT_NAME", a);
+            }
+        })
+    };
+    let mine: Client = ().serve(TokioChildProcess::new(tester(None)).expect("spawn")).await.expect("mine");
+    let theirs: Client = ().serve(TokioChildProcess::new(tester(Some("checkout-qa"))).expect("spawn")).await.expect("theirs");
+    let (ok, out) = call(&mine, "session", json!({ "action": "start", "id": "mine1", "platform": "web", "target": "examples/demo/login.html" })).await;
+    assert!(ok, "{out}");
+    let (ok, out) = call(&theirs, "session", json!({ "action": "start", "id": "theirs1", "platform": "web", "target": "examples/demo/login.html" })).await;
+    assert!(ok, "{out}");
+    eval(&client, "location.hash = '#/agents/default/live', 'ok'").await;
+    see(&client, "Tests running now for My tester. Take over to click for yourself.").await;
+    see(&client, "mine1").await;
+    let listed = eval(&client, "String(document.body.innerText.includes('theirs1')) + '|' + (document.querySelector('.tabs2 a[href$=\"/live\"]')?.getAttribute('aria-label') || 'none')").await;
+    assert_eq!(listed.trim_matches('"'), "false|Live, 1 running", "only this agent's test, and the count on the tab");
+    let _ = call(&mine, "session", json!({ "action": "stop", "id": "mine1" })).await;
+    let _ = call(&theirs, "session", json!({ "action": "stop", "id": "theirs1" })).await;
+    let _ = call(&client, "session", json!({ "action": "stop", "id": "viewer" })).await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// v0.7.1 FC4b: one look for the whole dashboard. On every page: no "More options" (nothing hidden
 /// behind one), no hard shadow on cards or buttons, control borders in the --ctl grey; Settings has
 /// one tab bar with Integrations in it; Integrations shows the webhook as it is and no "Coming
