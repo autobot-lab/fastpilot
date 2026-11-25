@@ -1,3 +1,12 @@
+## What's new in 0.7.3
+
+### Fixes
+- **All tabs show on every agent from the start:** Chat, Live, Skills, Schedules, History, Memory, Map, Model, About. Before, a new agent showed only Chat, Live and About until a test was saved, so you could not pick its model. Empty tabs now say what to do next, with a **Make a test in Chat** button that opens that agent's Chat.
+
+### Known limits
+- Released without the full release gate, by the owner's choice; CI and the regression test passed.
+- The known limits of 0.7.2 still apply.
+
 ## What's new in 0.7.2
 
 Pick the AI model for each agent, share a report of a run, and type one-time codes during a test without ever saving them. fastpilot is now under the MIT license.
