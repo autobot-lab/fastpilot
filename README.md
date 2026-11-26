@@ -5,9 +5,11 @@ You say what to check; AI runs it on your own computer, shows you every step liv
 what passed and what failed. Free, open source, no cloud. Payment and delete-account buttons are
 blocked from the start.
 
-New in 0.7.2: each agent can use its **own AI model**, **reports** of a run you can share, one-time
-codes asked once while the test waits, and a **Live** and **About** tab on every agent. fastpilot is
-now **MIT**-licensed. See the [release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2).
+New in 0.7.4: **Chat answers with the AI model you chose for each agent** (Claude, or another
+provider), and every agent shows all its tabs from the first start. Since 0.7.2, each agent can use
+its **own AI model**, you can make **reports** of a run to share, and one-time codes are asked once
+while the test waits. fastpilot is **MIT**-licensed. See the
+[release notes](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.4).
 
 <img src="docs/images/11-chat-demo-result.png" width="860" alt="The fastpilot dashboard. On the left, the agent Demo shop. In the chat, the answer to 'run the demo tests': All 3 demo tests passed, with one row per test: Fill in the card form (stops before Pay), Add a product to the cart and Check the login, each Passed.">
 
@@ -94,8 +96,9 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
   provider, and you can type a model id yourself. **Default models** are what new agents start with.
   An API key is kept in this Mac's key store, never shown again, and sent only to its own provider.
   We have tried Claude only: models from other providers are shown as "not tried with fastpilot yet",
-  and we have not run real OpenAI, OpenRouter or Groq accounts. Page text from the tests goes to the
-  provider you choose; with Ollama it stays on this Mac.
+  and we have not run real OpenAI, OpenRouter or Groq accounts. Page text from the tests, and what you
+  type in Chat when that provider is the agent's Explore and repair model, go to the provider you
+  choose; with Ollama they stay on this Mac.
 - **Passwords:** you are not asked to add names first. The first time a check needs a password, a
   masked field appears in the same answer in Chat: type it once and click **Save and run**.
   **Settings › Secrets** only lists the passwords your tests use (names only, never values), with
@@ -107,9 +110,9 @@ Shows whether Chrome, Android, and iOS are ready, with a ✓ or the reason why n
   the maker yet ([setup](docs/guide.md#jira)).
 
 ### 3. Agents and skills
-An agent is a tester for one app. **My tester** is there from the start. **Chat**, **Live** and
-**About** are there at once; **Skills**, **Schedules**, **History**, **Memory**, **Map** and **Model**
-show after your first saved test.
+An agent is a tester for one app. **My tester** is there from the start, with all its tabs: **Chat**,
+**Live**, **Skills**, **Schedules**, **History**, **Memory**, **Map**, **Model** and **About**. A tab with
+nothing in it yet says what to do next.
 - **New agent** (top left) asks for a website address, or say *"test my Android app"*. Or describe the
   agent in one sentence in Chat and click **Create**.
 - The **Skills** tab: **General QA** (8 skills) is always on. Specialist skills are switches, grouped by
@@ -120,9 +123,10 @@ show after your first saved test.
 - The **Model** tab: choose the AI for this agent, one for **Replay** (repeats steps that are already
   recorded, fast and cheap) and one for **Explore and repair** (talks with you in Chat, makes new tests, and
   fixes a replay that fails).
-  Each is **Same as default** or a provider and model, and they can come from different providers. If a
-  provider does not answer, the run stops with a plain message; nothing goes to another provider by
-  itself.
+  Each is **Same as default** or a provider and model, and they can come from different providers. Chat
+  answers with the Explore and repair model, and the tab says what goes to that provider. If a
+  provider does not answer, the run or the Chat answer stops with a plain message; nothing goes to
+  another provider by itself. After you change a model or provider, Chat starts fresh.
 - The **Live** tab shows only this agent's running tests. The **About** tab has its name, model,
   skills, **Stop all** and **Remove agent** (with Undo).
 
@@ -308,7 +312,7 @@ fastpilot doctor
 | A test stops with "setup needed: the test needs the password …" | In Chat, click **Save and run** on the card and type it once (or **Set value** in Settings › Secrets). In CI: `export FASTPILOT_VARS=TEST_PASS TEST_PASS=...` |
 | A test stops with "a password of this app is only used on its own website" | On purpose: a saved password is typed and sent only to the app's own site. Check the app's address with `fastpilot app list` |
 | A test stops with "no code was typed in 3 minutes" | On purpose: a one-time code is asked while the test waits. Say *"run it again"* and type the code when the card appears |
-| A model or provider is "Not running" or "Not answering" | Start it (Ollama), or check the address and key in **Settings › AI model**, then **Check again**. Runs that need it stop until it answers; they do not switch to another provider |
+| A model or provider is "Not running" or "Not answering" | Start it (Ollama), or check the address and key in **Settings › AI model**, then **Check again**. Runs and Chat answers that need it stop until it answers; they do not switch to another provider |
 | A test or chat runs too long | Click **Stop** in the chat, or **Stop all** under the agent's name. Or say *"stop tests after 5 minutes"* |
 
 ## Learn more
@@ -317,7 +321,7 @@ fastpilot doctor
   devices on another computer, known limits
 - [Physical phones](docs/real-devices.md)
 - [Release notes](https://github.com/autobot-lab/fastpilot/releases) (the latest is
-  [0.7.2](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2))
+  [0.7.4](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.4))
 
 ## Contributing
 
