@@ -39,8 +39,6 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement through GitHub's private reporting: open **Security › Report a vulnerability** at https://github.com/autobot-lab/fastpilot/security/advisories/new and start the title with "Conduct:". Only the maintainers can read it.
 
-<!-- TODO(maintainer): add a conduct contact here (an email or a private form) once you have one; until then the private report above is the contact. -->
-
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
