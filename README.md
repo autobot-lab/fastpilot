@@ -319,4 +319,14 @@ fastpilot doctor
 - [Release notes](https://github.com/autobot-lab/fastpilot/releases) (the latest is
   [0.7.2](https://github.com/autobot-lab/fastpilot/releases/tag/v0.7.2))
 
+## Contributing
+
+Bug reports, ideas and pull requests are welcome.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): build, test, and how to send a pull request
+- [Discussions](https://github.com/autobot-lab/fastpilot/discussions): questions and ideas
+- [Issues](https://github.com/autobot-lab/fastpilot/issues): bugs, and `good first issue` to start small
+- [SECURITY.md](SECURITY.md): report a security problem privately, not in a public issue
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+
 License: [MIT](LICENSE). Versions up to 0.7.1 were released under Apache-2.0.

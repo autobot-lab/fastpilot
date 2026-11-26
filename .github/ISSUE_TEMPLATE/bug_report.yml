@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in fastpilot does not work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Please do not paste real passwords, API keys, tokens or personal data**: use fake ones, and look at screenshots before you attach them.
+        For a security problem, do not use this form: see [SECURITY.md](https://github.com/autobot-lab/fastpilot/security/policy).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what did you see?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest steps that show it. If you can, use `fastpilot demo` so we see the same thing.
+      placeholder: |
+        1. Run `fastpilot demo`
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: fastpilot version
+      description: Run `fastpilot --version`.
+      placeholder: fastpilot 0.7.4
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where does it happen?
+      multiple: true
+      options:
+        - Web (Chrome)
+        - Android emulator
+        - Android phone
+        - iPhone simulator
+        - iPhone
+        - Dashboard (`fastpilot ui`)
+        - Terminal or MCP only
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Your computer
+      description: For example macOS 15 on Apple silicon, or Ubuntu 24.04.
+    validations:
+      required: true
+  - type: dropdown
+    id: ai
+    attributes:
+      label: Which AI was used?
+      options:
+        - Claude Code (default)
+        - Another provider (OpenAI, OpenRouter, Groq, Ollama, other)
+        - Not sure
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or screenshots (optional)
+      description: Output of `fastpilot doctor` often helps. Remove anything private first.
+      render: shell

@@ -1,0 +1,29 @@
+# Every pull request asks the maintainer for review. The paths below are listed on purpose: they
+# can run code on a user's machine, handle passwords and keys, or ship what users install.
+*                                   @yogiis
+
+/.github/                           @yogiis
+/packaging/                         @yogiis
+/scripts/                           @yogiis
+/Cargo.toml                         @yogiis
+/Cargo.lock                         @yogiis
+/crates/android/                    @yogiis
+/crates/mcp/                        @yogiis
+/server.json                        @yogiis
+/docs/releasing.md                  @yogiis
+**/build.rs                         @yogiis
+
+# Secrets, keys and what is sent to a model provider
+/crates/core/src/secrets.rs         @yogiis
+/crates/core/src/policy.rs          @yogiis
+/bin/fastpilot/src/keystore.rs      @yogiis
+/bin/fastpilot/src/filestore.rs     @yogiis
+/bin/fastpilot/src/provider.rs      @yogiis
+/bin/fastpilot/src/models.rs        @yogiis
+/bin/fastpilot/src/chat.rs          @yogiis
+/bin/fastpilot/src/run.rs           @yogiis
+/crates/core/src/dsl.rs             @yogiis
+
+# The local dashboard server and its pages
+/bin/fastpilot/src/ui.rs            @yogiis
+/bin/fastpilot/ui/                  @yogiis

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/autobot-lab/fastpilot/discussions
+    about: Ask how to do something, or talk through an idea before you open an issue.
+  - name: Security problem
+    url: https://github.com/autobot-lab/fastpilot/security/advisories/new
+    about: Report it privately here. Please do not open a public issue for a security problem.
