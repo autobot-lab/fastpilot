@@ -1,0 +1,15 @@
+# Weekly version updates. Each update is a normal pull request: it needs the same review and CI as any other.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: /packaging/npm
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 2
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
