@@ -1,3 +1,19 @@
+## What's new in 0.7.4
+
+Chat now follows the model you chose for each agent.
+
+### Chat uses the agent's Explore and repair model
+- **Chat answers with the agent's Explore and repair model:** a Claude model or another provider (OpenAI, OpenRouter, Groq, Ollama, Other). Pick it on the **Model** tab; the tab says what goes to that provider.
+- **No silent switch.** If that provider does not answer, Chat stops with one line and nothing is switched for you.
+- **A model or provider change starts Chat fresh,** so earlier messages do not go to the new provider.
+
+### Upgrade note
+- Agents that never chose a model and whose default Explore and repair model is not Claude now chat with that provider.
+
+### Known limits
+- Only Claude was tried with real accounts; other providers were tested with a local fake server.
+- The known limits of 0.7.3 and 0.7.2 still apply.
+
 ## What's new in 0.7.3
 
 ### Fixes
