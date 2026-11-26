@@ -15,7 +15,7 @@ while the test waits. fastpilot is **MIT**-licensed. See the
 
 <img src="docs/images/demo.gif" width="860" alt="A 50-second tour of fastpilot: run the demo tests from Chat, watch the steps on Live, see the answer, pick the AI on the Model tab, make a report, turn on a one-click schedule, and rename an app with Undo.">
 
-*A 50-second tour, sped up where the AI is working. It was recorded from the code of 0.7.2, with fastpilot's own demo and Claude as the AI.*
+*A 50-second tour, sped up where the AI is working. It was recorded from the code of 0.7.4, with fastpilot's own demo and Claude as the AI.*
 
 ## Start in 2 steps
 
