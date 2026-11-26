@@ -5,6 +5,10 @@
 /.github/                           @yogiis
 /packaging/                         @yogiis
 /scripts/                           @yogiis
+/Cargo.toml                         @yogiis
+/Cargo.lock                         @yogiis
+/crates/android/                    @yogiis
+/crates/mcp/                        @yogiis
 /server.json                        @yogiis
 /docs/releasing.md                  @yogiis
 **/build.rs                         @yogiis
@@ -17,6 +21,9 @@
 /bin/fastpilot/src/provider.rs      @yogiis
 /bin/fastpilot/src/models.rs        @yogiis
 /bin/fastpilot/src/chat.rs          @yogiis
+/bin/fastpilot/src/run.rs           @yogiis
+/crates/core/src/dsl.rs             @yogiis
 
-# The local dashboard server
+# The local dashboard server and its pages
 /bin/fastpilot/src/ui.rs            @yogiis
+/bin/fastpilot/ui/                  @yogiis

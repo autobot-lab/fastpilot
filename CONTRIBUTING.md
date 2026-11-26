@@ -38,36 +38,37 @@ needs a Mac with Xcode. You can work on most of the code without any of them.
 
 ## Test
 
-Unit tests are quick and need nothing else:
+Some tests write to your home folder (fastpilot data, logins, the Keychain), so **run every test
+command in a throwaway home**. This subshell keeps your Rust toolchain, uses a temporary `HOME`, and
+leaves your own shell untouched when it ends:
 
 ```bash
-cargo test --locked --workspace --lib
+( export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
+  export HOME="$(mktemp -d)" FASTPILOT_KEYSTORE=file FASTPILOT_ADB_SERVER=127.0.0.1:1
+  cargo test --locked --workspace --lib )
 ```
+
+`FASTPILOT_KEYSTORE=file` keeps keys in a file in that folder instead of the Keychain.
+`FASTPILOT_ADB_SERVER=127.0.0.1:1` makes web tests ignore any device that is plugged in.
+Put any `cargo test` command below inside the same subshell.
+
+Unit tests (the command above) are quick and need nothing else.
 
 The web end-to-end suites live in `bin/fastpilot/tests/`. They drive a real Chrome and start
 `fastpilot` with a stand-in for Claude Code, so they need Chrome but no sign-in and no API key.
-Run one suite, or all of them:
+Run the one suite that fits your change, for example `--test chat_ui`:
 
 ```bash
-cargo test --locked -p fastpilot --test chat_ui
-cargo test --locked -p fastpilot   # all web suites: this takes a while
+( export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
+  export HOME="$(mktemp -d)" FASTPILOT_KEYSTORE=file FASTPILOT_ADB_SERVER=127.0.0.1:1
+  cargo test --locked -p fastpilot --test chat_ui )
 ```
 
-Many suites skip themselves when Chrome is missing, and the Android and iPhone suites need a device
-(the maintainers run them with [`scripts/release-check.sh`](scripts/release-check.sh)). **You do not need to run
-those.** If your change touches device code, say so in the pull request and we will run them.
-
-**Run tests with a throwaway home folder**, so they never touch your own fastpilot data, logins or
-Keychain (some tests write there). Keep your Rust toolchain by pinning its folders first:
-
-```bash
-export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
-export HOME="$(mktemp -d)" FASTPILOT_KEYSTORE=file FASTPILOT_ADB_SERVER=127.0.0.1:1
-cargo test --locked --workspace --lib
-```
-
-(`FASTPILOT_KEYSTORE=file` keeps keys in a file in that folder instead of the Keychain.
-`FASTPILOT_ADB_SERVER=127.0.0.1:1` makes web tests ignore any device that is plugged in.)
+Running `cargo test -p fastpilot` without `--test` runs **every** suite, including the Android and
+iPhone ones. Those need an emulator, a phone or a simulator, and on a Mac with Xcode the iPhone suite
+can start a simulator. Many suites skip themselves when Chrome is missing. **You do not need to run the
+device suites.** The maintainers run them with [`scripts/release-check.sh`](scripts/release-check.sh).
+If your change touches device code, say so in the pull request and we will run them.
 
 Before you push, also run the lint the maintainers use, which treats warnings as errors:
 
